@@ -1,0 +1,25 @@
+{
+  "schema": "comma.triage-reasoning-probe.v1",
+  "provenance": "Synthetic local production-path run triage-silent-live-r1; not a real incident or provider wire capture",
+  "artifact": {
+    "access_token": {
+      "expires_at": "2026-09-07T10:00:00Z"
+    },
+    "credentials_redacted": true,
+    "failed_request": {
+      "error": "token_expired",
+      "status": 401
+    },
+    "incident_id": "incident-0e3140b9",
+    "last_refresh_attempt_at": null,
+    "observed_at": "2026-09-07T10:05:00Z",
+    "refresh_token": {
+      "expires_at": "2026-09-07T12:00:00Z",
+      "revoked": false
+    }
+  },
+  "source_question": "orion meet bot 的 salix token 怎么被注销了",
+  "actual_task_command": "【调查任务】调查 orion meet bot 的 salix token 被注销的原因\n\n背景与来源：\n- 来源消息：slack://T_ATLAS/C_ATLAS/1787019000.000001/1787019000.000001\n- 问题：\"orion meet bot 的 salix token 怎么被注销了\"\n\n调查要求与需收集的证据：\n1. 检索 orion meet bot 相关的 salix token 记录、状态变更日志及审计追踪。\n2. 查明 token 被注销（revocation）的准确时间戳、操作主体（发起者/系统服务）、注销方式及触发原因。\n3. 收集相关的诊断日志、审计记录或系统事件。如存在诊断文件，请保存在自身 VFS 中并通过 Task Message 附件提交（严格注意脱敏，严禁泄露完整 token、密码或无关敏感数据）。\n4. 对其他信息源，提供准确引用的范围与上下文。\n\n交付与验收标准：\n- 严格基于事实与直接观测证据，区分客观事实与合理推论，界定证据的时间跨度与覆盖范围。\n- 必须通过 im_api.internal.send_message 在当前 Task 对话中返回排查证据与观测结论。",
+  "actual_worker_report": "【排查结果与证据汇报】关于 orion meet bot 的 salix token 状态调查\n\n事件编号（Incident ID）：incident-0e3140b9\n观测快照时间（Observed At）：2026-09-07T10:05:00Z\n诊断证据文件：/diagnostics/token-session.json（已脱敏）\n\n一、核心排查结论\n根据工作区诊断日志记录，orion meet bot 的 Salix token 并未被注销（Revocation 未发生）。\n请求失败的直接原因为 Access Token 自然过期（token_expired），而非主动注销或被动吊销。\n\n二、直接观测事实与证据明细\n1. Access Token 状态：\n   - 过期时间（expires_at）：2026-09-07T10:00:00Z。\n   - 观测时间为 2026-09-07T10:05:00Z，Access Token 在观测时已过期 5 分钟。\n2. 失败请求记录（Failed Request）：\n   - HTTP 状态码：401 Unauthorized\n   - 错误代码（error）：\"token_expired\"\n3. Refresh Token 状态：\n   - 是否被注销（revoked）：false（明确未被注销）\n   - 有效期至（expires_at）：2026-09-07T12:00:00Z（快照时尚在有效期内）\n4. Token 刷新尝试记录：\n   - 最近刷新尝试时间（last_refresh_attempt_at）：null（无刷新记录）\n5. 数据脱敏情况：\n   - 凭据均已脱敏（credentials_redacted: true），无明文秘钥泄露。\n\n三、对调查要求的逐项说明\n1. 注销时间戳、操作主体、注销方式及触发原因：\n   - 经核查，refresh_token.revoked 为 false，且错误为 token_expired。因此不存在注销时间戳、注销主体或注销触发事件。\n2. 问题定性与合理推论：\n   - 用户反馈的“token 被注销”系因接口返回 401 且报错 token_expired 导致的误判。\n   - 实际原因是 Access Token 到期后，客户端尚未执行 token 刷新流程（last_refresh_attempt_at 为 null），导致携带过期 token 请求时触发 401 认证失败。\n\n四、覆盖范围与后续排查建议\n- 当前证据覆盖范围为 2026-09-07T10:05:00Z 捕获的会话诊断快照。\n- 待确认事项：orion meet bot 客户端未在 Access Token 到期（10:00:00Z）前后调用 refresh token 刷新机制的具体原因，需进一步排查该 bot 自身的 token 生命周期管理与自动刷新逻辑日志。",
+  "actual_router_report": "【调查结论】orion meet bot 的 Salix token 状态排查结果\n\n一、核心结论\n经核验诊断日志快照（Incident ID: incident-0e3140b9，观测时间：2026-09-07T10:05:00Z），orion meet bot 的 Salix token **并未被注销**。请求失败的原因为 Access Token 到期自然失效（token_expired），而非被主动注销或被动吊销。\n\n二、直接观测事实（基于 /diagnostics/token-session.json）\n1. **Access Token 状态**：过期时间为 2026-09-07T10:00:00Z，在观测时（10:05:00Z）已过期 5 分钟。\n2. **失败请求记录**：HTTP 状态码为 401 Unauthorized，错误原因为 `token_expired`。\n3. **Refresh Token 状态**：`revoked: false`（明确未被注销），有效期至 2026-09-07T12:00:00Z，处于正常有效状态。\n4. **刷新记录**：`last_refresh_attempt_at` 为 null，未记录到刷新尝试。\n5. **脱敏保护**：凭据已完成脱敏（`credentials_redacted: true`），无明文秘钥泄露。\n\n三、推论与分析\n- **定性**：外部反馈“token 被注销”系因请求返回 401 且提示 token_expired 导致的误解。\n- **触发机理**：Access Token 到期后，客户端未触发使用 Refresh Token 刷新 Access Token 的操作，导致后续请求携带过期凭据被服务端拒绝。\n\n四、证据覆盖范围与后续检查建议\n- **证据范围**：上述结论严格基于 2026-09-07T10:05:00Z 采集到的诊断快照及会话记录。\n- **下一步排查**：建议检查 orion meet bot 客户端服务的后台日志及鉴权配置，排查其 token 自动刷新机制（Refresh Token 换取新 Access Token）未正常调用的具体原因。"
+}

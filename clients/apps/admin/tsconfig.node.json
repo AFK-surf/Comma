@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.admin.node.tsbuildinfo",
+    "paths": {
+      "@comma/config": ["../../packages/config/src/index.ts"]
+    }
+  },
+  "include": [
+    "vite.config.ts",
+    "wrangler.worker.ts",
+    "playwright.config.ts",
+    "../../vite/*.ts",
+    "../../packages/config/src/**/*.ts"
+  ],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/**/*.test.*",
+    "../../packages/**/*.spec.*"
+  ]
+}

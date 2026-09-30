@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.electron.utility.tsbuildinfo",
+    "types": ["node", "electron"]
+  },
+  "include": ["src/utility.ts", "src/utility/**/*.ts", "src/shared/**/*.ts"],
+  "exclude": ["**/*.test.*", "**/*.spec.*"]
+}

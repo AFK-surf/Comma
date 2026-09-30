@@ -1,0 +1,33 @@
+{
+  "name": "@comma/layout-inspector",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./vite": {
+      "types": "./src/vite.ts",
+      "default": "./src/vite.ts"
+    }
+  },
+  "sideEffects": [
+    "*.css"
+  ],
+  "dependencies": {
+    "@babel/parser": "^7.29.7",
+    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.1.296",
+    "magic-string": "^0.30.21",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@comma/test-utils": "workspace:*",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  }
+}

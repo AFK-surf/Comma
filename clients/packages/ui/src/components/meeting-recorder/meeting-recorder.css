@@ -1,0 +1,569 @@
+/* Card resize keeps the painted surface and its hit area in the same live layout. */
+.comma-recording-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  width: 240px;
+  padding: var(--spacing-md);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: var(--shadow-lg);
+}
+.comma-recording-block > div:first-child > svg {
+  transition: color 50ms ease-out;
+}
+.comma-recording-block[data-paused] > div:first-child > svg {
+  color: var(--color-ai-input-panel-icon-disabled);
+}
+.comma-draggable-recorder {
+  position: fixed;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  z-index: 50;
+  touch-action: none;
+  cursor: grab;
+  transition:
+    left 180ms var(--motion-easing-surface-smooth-out),
+    top 180ms var(--motion-easing-surface-smooth-out);
+}
+.comma-draggable-recorder[data-placement="bottom-left"] {
+  left: 24px;
+  bottom: 24px;
+}
+.comma-draggable-recorder[data-placement="top-center"] {
+  left: 50%;
+  top: 32px;
+  transform: translateX(-50%);
+}
+.comma-draggable-recorder[data-contained] {
+  transition: none;
+}
+.comma-draggable-recorder[data-dragging] {
+  transition: none;
+  cursor: grabbing;
+}
+.comma-draggable-recorder button {
+  cursor: default;
+}
+@media (prefers-reduced-motion: reduce) {
+  .comma-draggable-recorder {
+    transition: none;
+  }
+}
+.comma-recorder-motion {
+  --resize-dur: 180ms;
+  --recorder-presence-duration: 100ms;
+  --recorder-presence-delay: 40ms;
+  width: var(--meeting-recorder-width);
+  max-width: min(100%, calc(100vw - var(--spacing-xl) * 2));
+  min-width: 0;
+}
+.comma-meeting-recorder {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-xl);
+  text-align: left;
+  /* Menu focus returns here while compact; the UA outline follows overflowing
+     controls instead of the rounded painted surface. */
+  outline: none;
+  -webkit-app-region: no-drag;
+}
+.comma-recorder-surface {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border: var(--border-width-0-5) solid var(--color-border-primary);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-popup-primary);
+  box-shadow: var(--shadow-lg);
+  transform-origin: top left;
+  pointer-events: none;
+}
+.comma-meeting-recorder:focus-visible:not([data-compact]) > .comma-recorder-surface {
+  box-shadow: var(--shadow-focus-gray), var(--shadow-lg);
+}
+.comma-recorder-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+}
+.comma-recorder-copy {
+  min-width: 0;
+  flex: 1;
+}
+.comma-recorder-title {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+}
+/* Shimmer's inline-block leaves a baseline strut in the copy container.
+   Keep its gradient text-sized without offsetting the title from the timer. */
+.comma-meeting-recorder .comma-recorder-title.comma-shiny-text {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+.comma-recorder-subtitle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-xxs);
+  color: var(--color-text-secondary);
+  font-size: var(--text-mini);
+  line-height: var(--text-mini--line-height);
+}
+.comma-recorder-product {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.comma-recorder-product img {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  object-fit: contain;
+}
+.comma-recorder-live-controls,
+.comma-recorder-actions,
+.comma-recorder-microphone,
+.comma-recorder-stop {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+.comma-recorder-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  outline: none;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    transform var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    background-color var(--motion-duration-state-change) ease,
+    color var(--motion-duration-state-change) ease;
+}
+.comma-recorder-control:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+.comma-recorder-control:disabled {
+  color: var(--color-text-disabled);
+  cursor: default;
+}
+.comma-recorder-control[data-pressed="true"]:not(:disabled),
+.comma-meeting-recorder button:active:not(:disabled) {
+  transform: scale(var(--motion-scale-pressed));
+}
+.comma-meeting-recorder button {
+  transform-origin: center;
+  transition:
+    transform var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    background-color var(--motion-duration-state-change) ease,
+    color var(--motion-duration-state-change) ease;
+}
+.comma-recorder-microphone {
+  gap: 0;
+}
+.comma-recorder-close {
+  width: var(--spacing-3xl);
+  height: var(--spacing-4xl);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+}
+.comma-recorder-mic-trigger {
+  width: calc(var(--spacing-xl) + var(--spacing-lg));
+  height: var(--spacing-4xl);
+  gap: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+}
+.comma-recorder-pause {
+  width: var(--spacing-4xl);
+  height: var(--spacing-4xl);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-quaternary);
+  color: var(--color-text-primary);
+}
+.comma-recorder-icon-swap {
+  display: inline-flex;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    transform var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+@starting-style {
+  .comma-recorder-icon-swap {
+    opacity: 0;
+    transform: scale(var(--motion-scale-menu-enter));
+  }
+}
+.comma-recorder-timer {
+  min-width: 7ch;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  margin-right: var(--spacing-xs);
+}
+.comma-recorder-stop {
+  gap: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-button-primary-error-bg);
+  color: var(--color-button-primary-error-fg);
+  box-shadow: var(--shadow-xs);
+}
+.comma-recorder-stop-main {
+  height: var(--spacing-4xl);
+  gap: var(--spacing-xs);
+  padding-left: var(--spacing-md);
+  padding-right: var(--spacing-xs);
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+.comma-recorder-stop-chevron {
+  height: var(--spacing-4xl);
+  width: var(--spacing-3xl);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: transparent;
+  color: inherit;
+}
+.comma-recorder-notice {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--text-mini);
+  color: var(--color-text-secondary);
+}
+.comma-meeting-recorder:has(.comma-recorder-notice) {
+  flex-wrap: wrap;
+}
+.comma-meeting-recorder[data-phase="saved"],
+.comma-meeting-recorder[data-phase="error"] {
+  width: var(--meeting-recorder-width);
+  align-items: flex-start;
+}
+.comma-meeting-recorder[data-phase="saved"] .comma-recorder-subtitle {
+  display: block;
+}
+.comma-meeting-recorder .text-error-primary {
+  color: var(--color-text-error-primary);
+}
+.comma-meeting-recorder-viewport {
+  top: var(--meeting-recorder-viewport-inset-top);
+}
+.comma-meeting-recorder-enter {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--motion-duration-toast-enter) var(--motion-easing-smooth-out),
+    transform var(--motion-duration-toast-enter) var(--motion-easing-smooth-out);
+}
+@starting-style {
+  .comma-meeting-recorder-enter {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-reveal-item)));
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .comma-recorder-control:hover:not(:disabled) {
+    background: var(--color-bg-quaternary);
+    color: var(--color-text-primary);
+  }
+  .comma-recorder-stop .comma-recorder-control:hover {
+    background: var(--color-button-primary-error-bg-hover);
+    color: inherit;
+  }
+}
+@media (max-width: 480px) {
+  .comma-meeting-recorder[data-phase="recording"],
+  .comma-meeting-recorder[data-phase="paused"] {
+    flex-wrap: wrap;
+  }
+  .comma-recorder-live-controls {
+    margin-left: auto;
+  }
+}
+[data-motion-input="keyboard"] .comma-meeting-recorder button,
+[data-motion-input="keyboard"] .comma-recorder-icon-swap {
+  transition: none;
+  transform: none !important;
+}
+:root[data-comma-reduced-motion="true"] .comma-meeting-recorder button,
+:root[data-comma-reduced-motion="true"] .comma-recorder-icon-swap,
+:root[data-comma-reduced-motion="true"] .comma-meeting-recorder-enter,
+:root[data-comma-reduced-motion="true"] .comma-recorder-menu {
+  transform: none !important;
+  transition-property: opacity, color, background-color;
+}
+@media (prefers-reduced-motion: reduce) {
+  .comma-meeting-recorder button,
+  .comma-recorder-icon-swap,
+  .comma-meeting-recorder-enter,
+  .comma-recorder-menu {
+    transform: none !important;
+    transition-property: opacity, color, background-color;
+  }
+}
+
+/* Figma 1453:17404 — the recording stays readable and stoppable while unattended. */
+.comma-recorder-motion[data-compact] {
+  width: var(--meeting-recorder-compact-width);
+}
+.comma-meeting-recorder[data-compact] {
+  width: 100%;
+  height: var(--meeting-recorder-compact-height);
+  flex-wrap: nowrap;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-md) var(--spacing-lg);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-surface {
+  border-width: var(--border-width-default);
+  background: var(--color-bg-popup-secondary);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-logo {
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-mini);
+  line-height: var(--text-mini--line-height);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-timer {
+  min-width: 0;
+  margin-right: 0;
+  font-size: var(--text-mini);
+  line-height: var(--text-mini--line-height);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-live-controls {
+  gap: var(--spacing-xl);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-stop-main {
+  height: var(--spacing-3xl);
+  padding: 0;
+  gap: 0;
+  border-radius: var(--radius-md);
+}
+
+/* Figma 1453:17299 — compact secondary Button, preserving the shared button behavior. */
+.comma-meeting-recorder .comma-recorder-start {
+  height: var(--meeting-recorder-start-button-height);
+  min-height: var(--meeting-recorder-start-button-height);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  gap: var(--spacing-xs);
+  font-size: var(--text-mini);
+  line-height: var(--text-mini--line-height);
+}
+
+/* Geometry and visibility use separate compositor animations. */
+.comma-recorder-motion {
+  position: relative;
+}
+.comma-recorder-exits {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+[data-recorder-motion] {
+  transform-origin: top left;
+}
+.comma-recorder-timer {
+  transform-origin: top right;
+}
+.comma-recorder-stop {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+  box-shadow: none;
+}
+.comma-recorder-stop-surface {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: var(--radius-md);
+  background: var(--color-button-primary-error-bg);
+  box-shadow: var(--shadow-xs);
+  pointer-events: none;
+}
+.comma-recorder-stop-icon {
+  display: inline-flex;
+}
+
+/* Keep controls mounted: their own slots contract while content fades away.
+   No scaled surface or detached visual copies during hover. */
+.comma-meeting-recorder {
+  transition:
+    height var(--resize-dur) var(--resize-ease),
+    padding var(--resize-dur) var(--resize-ease),
+    gap var(--resize-dur) var(--resize-ease);
+}
+.comma-meeting-recorder[data-phase="recording"] .comma-recorder-copy {
+  overflow: clip;
+}
+.comma-recorder-logo {
+  transition:
+    width var(--resize-dur) var(--resize-ease),
+    height var(--resize-dur) var(--resize-ease);
+}
+.comma-recorder-logo > svg {
+  width: 100%;
+  height: 100%;
+}
+.comma-recorder-logo [data-slot="meeting-recorder-static-logo"] {
+  transition: color 50ms ease-out;
+}
+.comma-meeting-recorder[data-phase="paused"]
+  [data-slot="meeting-recorder-static-logo"] {
+  color: var(--color-ai-input-panel-icon-disabled);
+}
+.comma-meeting-recorder[data-phase="paused"] .comma-recorder-timer {
+  color: var(--color-text-disabled);
+}
+.comma-recorder-title,
+.comma-recorder-timer {
+  transition:
+    font-size var(--resize-dur) var(--resize-ease),
+    line-height var(--resize-dur) var(--resize-ease),
+    min-width var(--resize-dur) var(--resize-ease),
+    margin-right var(--resize-dur) var(--resize-ease);
+}
+.comma-recorder-timer {
+  transition:
+    color 50ms ease-out,
+    font-size var(--resize-dur) var(--resize-ease),
+    line-height var(--resize-dur) var(--resize-ease),
+    min-width var(--resize-dur) var(--resize-ease),
+    margin-right var(--resize-dur) var(--resize-ease);
+}
+.comma-recorder-live-controls {
+  gap: 0;
+}
+.comma-recorder-microphone {
+  width: calc(var(--spacing-xl) + var(--spacing-lg));
+  margin-left: var(--spacing-xs);
+}
+.comma-recorder-pause,
+.comma-recorder-stop {
+  margin-left: var(--spacing-xs);
+}
+.comma-recorder-stop {
+  transition: margin-left var(--resize-dur) var(--resize-ease);
+}
+.comma-meeting-recorder .comma-recorder-stop-main {
+  min-width: var(--spacing-3xl);
+  transition:
+    transform var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    height var(--resize-dur) var(--resize-ease),
+    padding var(--resize-dur) var(--resize-ease),
+    gap var(--resize-dur) var(--resize-ease),
+    background-color var(--motion-duration-state-change) ease;
+}
+.comma-recorder-stop-label-wrap {
+  display: grid;
+  grid-template-columns: 1fr;
+  transition: grid-template-columns var(--resize-dur) var(--resize-ease);
+}
+.comma-recorder-stop-label {
+  min-width: 0;
+  overflow: clip;
+  white-space: nowrap;
+}
+.comma-recorder-microphone,
+.comma-meeting-recorder .comma-recorder-pause,
+.comma-meeting-recorder .comma-recorder-stop-chevron,
+.comma-recorder-stop-label {
+  overflow: clip;
+  opacity: 1;
+  transition:
+    transform var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    width var(--resize-dur) var(--resize-ease),
+    height var(--resize-dur) var(--resize-ease),
+    margin-left var(--resize-dur) var(--resize-ease),
+    opacity var(--recorder-presence-duration) var(--resize-ease)
+      var(--recorder-presence-delay),
+    background-color var(--motion-duration-state-change) ease;
+}
+.comma-meeting-recorder:is([data-phase="recording"], [data-phase="paused"]):not(
+    :has(.comma-recorder-notice)
+  ) {
+  height: calc(var(--spacing-4xl) + var(--spacing-lg) * 2);
+}
+/* Let the complete label fade while its grid slot changes width. Clipping it
+   would briefly spell "Sto" during expansion. The hidden label is inert text. */
+.comma-recorder-stop-label {
+  overflow: visible;
+}
+.comma-meeting-recorder[data-compact][data-phase="recording"] {
+  height: var(--meeting-recorder-compact-height);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-live-controls {
+  gap: 0;
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-stop {
+  margin-left: var(--spacing-xl);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-stop-label-wrap {
+  grid-template-columns: 0fr;
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-microphone,
+.comma-meeting-recorder[data-compact] .comma-recorder-pause,
+.comma-meeting-recorder[data-compact] .comma-recorder-stop-chevron {
+  width: 0;
+  margin-left: 0;
+  height: var(--spacing-3xl);
+}
+.comma-meeting-recorder[data-compact] .comma-recorder-microphone,
+.comma-meeting-recorder[data-compact] .comma-recorder-pause,
+.comma-meeting-recorder[data-compact] .comma-recorder-stop-chevron,
+.comma-meeting-recorder[data-compact] .comma-recorder-stop-label {
+  opacity: 0;
+  pointer-events: none;
+  --recorder-presence-duration: 80ms;
+  --recorder-presence-delay: 0ms;
+}
+/* Focus reveals controls immediately. Touch retains the full layout. */
+.comma-recorder-motion[data-motion-input="keyboard"],
+.comma-recorder-motion[data-motion-input="keyboard"] *,
+:root[data-comma-reduced-motion="true"] .comma-recorder-motion,
+:root[data-comma-reduced-motion="true"] .comma-recorder-motion * {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .comma-recorder-motion,
+  .comma-recorder-motion * {
+    transition: none !important;
+  }
+}
+
+/* A narrow native buffer is not a mobile viewport: its endpoint must stay
+   consistent with the desktop recorder's reserved 56px height. */
+@media (max-width: 480px) {
+  :root:not([data-comma-window-role="meeting-recorder"])
+    .comma-meeting-recorder:is([data-phase="recording"], [data-phase="paused"]):not(
+      [data-compact]
+    ):not(:has(.comma-recorder-notice)) {
+    height: auto;
+  }
+}

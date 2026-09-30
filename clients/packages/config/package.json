@@ -1,0 +1,15 @@
+{
+  "name": "@comma/config",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "data": {
+    "location": "绍兴",
+    "source": "天气评测数据",
+    "queriedAt": "2026-09-16 11:01 UTC",
+    "days": [
+      {
+        "date": "9/16",
+        "condition": "阴",
+        "high": 28.9,
+        "low": 19.6,
+        "precipMm": 0,
+        "precipPct": 0
+      },
+      {
+        "date": "9/17",
+        "condition": "阴",
+        "high": 29.8,
+        "low": 18.5,
+        "precipMm": 0,
+        "precipPct": 0
+      },
+      {
+        "date": "9/18",
+        "condition": "阴",
+        "high": 30.3,
+        "low": 21.2,
+        "precipMm": 0,
+        "precipPct": 0
+      },
+      {
+        "date": "9/19",
+        "condition": "雾",
+        "high": 30.5,
+        "low": 23.1,
+        "precipMm": 0,
+        "precipPct": 0
+      },
+      {
+        "date": "9/20",
+        "condition": "阴",
+        "high": 30.1,
+        "low": 23.8,
+        "precipMm": 0.3,
+        "precipPct": null
+      },
+      {
+        "date": "9/21",
+        "condition": "阴",
+        "high": 28.9,
+        "low": 22.7,
+        "precipMm": 0,
+        "precipPct": 0
+      },
+      {
+        "date": "9/22",
+        "condition": "多云",
+        "high": 30,
+        "low": 21.7,
+        "precipMm": 0,
+        "precipPct": 0
+      }
+    ]
+  },
+  "html": "<section class=\"card stack motion-enter\" aria-label=\"绍兴未来7天天气预报\"><div class=\"widget-head spread\"><div class=\"stack\"><h2 class=\"widget-title\">绍兴未来 7 天</h2><small>预报高温</small></div><small class=\"widget-meta\">9/16–9/22</small></div><div class=\"spread\"><div class=\"stack\"><strong id=\"heroHigh\" class=\"display\"></strong><span id=\"heroRange\" class=\"sub\"></span></div><div class=\"stack align-end\"><comma-icon name=\"cloud\" class=\"icon-hero\" aria-label=\"阴\"></comma-icon><span>今天：阴</span><small>无当前实测温度</small></div></div><div class=\"strip\" aria-label=\"逐日预报\"><div class=\"stack\"><small>9/16</small><comma-icon name=\"cloud\" aria-label=\"阴\"></comma-icon><strong id=\"d0\"></strong></div><div class=\"stack\"><small>9/17</small><comma-icon name=\"cloud\" aria-label=\"阴\"></comma-icon><strong id=\"d1\"></strong></div><div class=\"stack\"><small>9/18</small><comma-icon name=\"cloud\" aria-label=\"阴\"></comma-icon><strong id=\"d2\"></strong></div><div class=\"stack\"><small>9/19</small><comma-icon name=\"info\" aria-label=\"雾\"></comma-icon><strong id=\"d3\"></strong></div><div class=\"stack\"><small>9/20</small><comma-icon name=\"cloud\" aria-label=\"阴，有微量降水\"></comma-icon><strong id=\"d4\"></strong></div><div class=\"stack\"><small>9/21</small><comma-icon name=\"cloud\" aria-label=\"阴\"></comma-icon><strong id=\"d5\"></strong></div><div class=\"stack\"><small>9/22</small><comma-icon name=\"partly-cloudy\" aria-label=\"多云\"></comma-icon><strong id=\"d6\"></strong></div></div><div class=\"widget-footer\"><small id=\"note\"></small><small id=\"source\" class=\"muted\"></small></div></section>",
+  "script": "const ds=comma.data.days; const r=n=>Math.round(n); comma.text('heroHigh',r(ds[0].high)+'°'); comma.text('heroRange','今日高 '+r(ds[0].high)+'° · 低 '+r(ds[0].low)+'°'); ds.forEach((d,i)=>comma.text('d'+i,r(d.high)+'° / '+r(d.low)+'°')); comma.text('note','整体以阴天为主；9/20 预计有 0.3 mm 微量降水。'); comma.text('source',comma.data.source+' · 查询于 '+comma.data.queriedAt+' · 非实时');",
+  "summary": "绍兴未来7天天气预报（天气评测数据，查询于 2026-09-16 11:01 UTC，非实时）：\n- 9/16：阴，28.9/19.6°C\n- 9/17：阴，29.8/18.5°C\n- 9/18：阴，30.3/21.2°C\n- 9/19：雾，30.5/23.1°C\n- 9/20：阴，30.1/23.8°C，预计降水 0.3 mm\n- 9/21：阴，28.9/22.7°C\n- 9/22：多云，30.0/21.7°C\n\n整体以阴天为主，最高温大多在 29–31°C；没有当前实测温度。每日东北风约 8 mph。"
+}

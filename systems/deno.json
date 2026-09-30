@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "e2e": "deno test --allow-all e2e/tests"
+  },
+  "fmt": {
+    "include": ["e2e/**/*.ts"]
+  }
+}

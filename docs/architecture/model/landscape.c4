@@ -1,0 +1,418 @@
+model {
+  comma_user = actor 'Comma 用户' {
+    description '使用 Web 或 Electron 完成个人 Chat、Task 与文件工作'
+  }
+
+  bft_user = actor 'BridgeForTeams 成员 / 管理员' {
+    description '管理组织、Agent Swarm、集成、运行环境并使用团队 Chat'
+  }
+
+  operator = actor '开发与运维人员' {
+    description '发布、观测并排查 Comma 平台'
+  }
+
+  identity_email = external_system '身份与邮件服务' {
+    #external
+    description 'Google OIDC、Postmark / SMTP'
+  }
+
+  commerce = external_system '支付服务' {
+    #external
+    description 'Stripe 等外部计费渠道'
+  }
+
+  model_providers = external_system '模型与媒体 Provider' {
+    #external
+    description 'OpenAI、Anthropic、兼容 Responses / Chat Completions 的服务及图像视频 Provider'
+  }
+
+  collaboration_providers = external_system '协作与日历 Provider' {
+    #external
+    description 'Slack、Feishu、Telegram、WeChat、Google Calendar、OAuth / MCP 服务'
+  }
+
+  runtime_providers = external_system '设备与 Cloud VM Provider' {
+    #external
+    description 'Mac Connector、Cloudflare Sandbox gateway'
+  }
+
+  comma_platform = software_system 'Comma Platform' {
+    #current
+    description 'Comma 产品、BridgeForTeams 与共享 Salix 多 Agent 执行平台'
+
+    clients = component '客户端运行时' {
+      description '共享 React 产品界面，以及 Web 与 Electron 各自的宿主边界'
+
+      shared_react = component '@comma/app + @comma/ui' {
+        description 'Web 与 Electron 共享的产品 shell、Chat、Inbox、Session UI 与设计系统'
+        technology 'React + TypeScript'
+        link ../../../clients/packages/app/src/index.tsx 'Source'
+      }
+
+      web = application 'Comma Web' {
+        description '浏览器 SPA；HttpOnly Cookie 是认证凭证权威'
+        technology 'Vite + React + Cloudflare Worker hosting'
+        link ../../../clients/apps/web/src/main.tsx 'Entry point'
+      }
+
+      admin = application 'Comma Admin' {
+        description '独立管理界面；使用受限的 Admin API surface'
+        technology 'Vite + React + Cloudflare Worker hosting'
+        link ../../../clients/apps/admin/src/main.tsx 'Entry point'
+      }
+
+      electron = application 'Comma Electron' {
+        description '桌面宿主；Main 持有 bearer、native capability 和本地数据协调权'
+        technology 'Electron Forge + Vite + React'
+
+        renderer = component 'Renderer' {
+          description '只消费 token-free Session 和生成后的 native bridge'
+          technology 'Chromium renderer + React'
+          link ../../../clients/apps/electron/src/renderer/src/main.tsx 'Entry point'
+        }
+
+        preload = component '生成式 Preload Bridge' {
+          description '暴露 leaf-first 生成的受限 Main↔Renderer capability'
+          technology 'Electron contextBridge'
+          link ../../../clients/apps/electron/src/preload/index.ts 'Source'
+        }
+
+        ipc_gateway = component 'IPC Gateway 与权限策略' {
+          description '所有新 capability 的唯一生成式 IPC command path；绑定 caller、permission 与 Session admission'
+          technology 'Electron ipcMain + Zod'
+          link ../../../clients/apps/electron/src/main/modules/ipc/index.ts 'Source'
+        }
+
+        legacy_ipc = component '冻结的 legacy raw IPC allowlist' {
+          #legacy
+          description 'updates、Connector 与 computer-use permission flow 的存量例外；只允许迁移后收缩，不能新增'
+          technology 'hand-authored ipcMain handlers'
+          link ../../../clients/apps/electron/src/main/index.ts 'Current exceptions'
+        }
+
+        main_session = component 'Main Session 权威' {
+          description '桌面 bearer、Session generation/lease 与认证并发的唯一 owner'
+          technology 'TypeScript composition root + safeStorage'
+          link ../../../clients/apps/electron/src/main/modules/session/session-service.ts 'Source'
+        }
+
+        main_product = component 'Main Chat 与 ProductInbox 协调器' {
+          description '在 exact Session lease 下访问产品 API，并协调 renderer demand'
+          technology 'TypeScript services'
+          link ../../../clients/apps/electron/src/main/modules/electron-main.module.ts 'Composition root'
+        }
+
+        sqlite_utility = component 'LocalData Utility Process' {
+          description '保存按 principal/audience 分区、可重建的 SQLite cache；不持有 bearer'
+          technology 'Electron utility process + SQLite'
+          link ../../../clients/apps/electron/src/utility/local-data-service.ts 'Source'
+        }
+
+        native_hosts = component '原生能力宿主' {
+          description 'Notch、Side Chat、Connector 与操作系统能力的 Main-owned 实现'
+          technology 'Swift helpers / JSON Lines / local process'
+          link ../../../clients/apps/electron/src/main/native-side-chat.ts 'Example'
+        }
+      }
+
+      web .depends_on shared_react '共享产品 UI 与 Web Session Port'
+      electron.renderer .depends_on shared_react '共享产品 UI 与 Electron Session Port'
+      electron.renderer .command electron.preload 'getNativeBridge()'
+      electron.preload .command electron.ipc_gateway '生成式 IPC Binding'
+      electron.renderer .command electron.legacy_ipc '冻结的兼容表面'
+      electron.ipc_gateway .command electron.main_session 'Session 命令与准入'
+      electron.ipc_gateway .command electron.main_product 'Chat / Inbox 命令'
+      electron.main_product .local_call electron.sqlite_utility '不托管 bearer 的 cache 读写'
+      electron.ipc_gateway .command electron.native_hosts 'Native Capability Handler'
+    }
+
+    systems = application 'Comma Systems Release' {
+      description '一个 Elixir/Mix umbrella 与一个 release；按 COMMA_SUBSYSTEMS 选择启动的 OTP apps'
+      technology 'Elixir / OTP / BEAM'
+      link ../../../systems/apps/comma/lib/comma.ex 'Subsystem registry'
+
+      comma_product = component 'Comma 产品控制面' {
+        description '个人产品账户、Session、Workspace、授权、public Conversation binding 与 API'
+
+        comma_web = component 'comma_web' {
+          description 'Comma Product/Admin HTTP API 与 SSE surface'
+          technology 'Bandit + Plug'
+          link ../../../systems/apps/comma_web/lib/comma_web/router.ex 'Router'
+        }
+
+        comma_core = component 'comma_core' {
+          description '账户、Workspace、Chat binding、Recommendation projection 与 Comma.Salix anti-corruption seam'
+          technology 'Elixir contexts + Ecto + Oban'
+          link ../../../systems/apps/comma_core/lib/comma/salix/client.ex 'Salix seam'
+        }
+
+        recommendations = component 'Comma Center Recommendation 控制域' {
+          #projection
+          description 'Member×Workspace 的设置、generation/source_revision、active run、严格版本化 snapshot 与 freshness 的唯一产品 SSOT；不是 Conversation Message'
+          technology 'Comma.Recommendations + PostgreSQL row locks + Oban'
+          link ../../../systems/apps/comma_core/lib/comma/recommendations.ex 'Implementation owner'
+        }
+
+        recommendation_sources = component 'Recommendation Runtime Adapter / Source Collector' {
+          description 'Comma Web 有界只读收集已选 Group OAuth binding 或 Composio account facts；Oban 执行无工具单次模型请求，产品 owner 结算 exact run'
+          technology 'CommaWeb.RecommendationSourceCollector + RecommendationRuntime'
+          link ../../../systems/apps/comma_web/lib/comma_web/recommendation_source_collector.ex 'Collector'
+        }
+
+        comma_web .local_call comma_core '鉴权并执行产品命令'
+        comma_web .local_call recommendations '授权后的读取、设置与 refresh'
+        comma_web .local_call recommendation_sources '为 exact run 执行有界 source collection / renderer delivery'
+        recommendations .async recommendation_sources 'Oban comma_discovery worker 经 configured runtime adapter 同步 source profile'
+        recommendation_sources .command recommendations '记录 source evidence；按 exact run/generation/source_revision publish/fail'
+      }
+
+      bft = component 'BridgeForTeams 产品控制面' {
+        description '组织、成员、Agent Swarm、集成、商业产品状态与团队 Dashboard'
+
+        bft_web = component 'bridge_for_teams_web' {
+          description '团队 Dashboard 与 onboarding surface'
+          technology 'Phoenix LiveView'
+          link ../../../systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/application.ex 'Application'
+        }
+
+        bft_core = component 'bridge_for_teams_core' {
+          description 'BFT 产品 contexts、Postgres SoT、projection 与环境管理'
+          technology 'Elixir contexts + Ecto'
+          link ../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/application.ex 'Application'
+        }
+
+        reconciler = component 'BFT→Salix 收敛器' {
+          description '有界地消费 Postgres outbox，并以 at-least-once/idempotent 方式收敛到 Salix'
+          technology 'GenServer + Ecto transaction + :erpc'
+          link ../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/salix/reconciler.ex 'Source'
+        }
+
+        bft_web .local_call bft_core '鉴权并变更 BFT 产品事实'
+      }
+
+      billing = component 'Billing' {
+        description '共享的计费账户、价格、用量与 provider adapter；产品 plan key 是内部身份'
+        technology 'billing_core + billing_commerce + billing_stripe'
+        link ../../../systems/apps/billing_core/lib/billing_core/application.ex 'Application'
+      }
+
+      salix = component 'Salix 执行面' {
+        description '共享的 multi-tenant、多 Agent 执行 substrate；不拥有 Comma/BFT end-user/RBAC 模型'
+
+        salix_web = component 'salix_web' {
+          description 'Salix HTTP/SSE、控制面与 Connector ingress'
+          technology 'Bandit + Plug + Phoenix PubSub'
+          link ../../../systems/apps/salix_web/lib/salix_web/application.ex 'Application'
+        }
+
+        conversation_runtime = component 'Conversation 所有权运行时' {
+          description 'ConversationServer 路由到 Conversation、Group、Participant 的精确 owner'
+          technology 'salix_im + GenServer actors'
+          link ../../../systems/apps/salix_im/lib/salix_im/conversation_server.ex 'Mutation entry'
+        }
+
+        agent_runtime = component 'Agent 运行时' {
+          description 'Agent Server 拥有 root claim/租约与唤醒周期；投递经 rpc 直达 session ledger；role/session actors 拥有 LLM、tool 与 session mutation'
+          technology 'salix_agent + OTP gen_statem / GenServer actors'
+          link ../../../systems/apps/salix_agent/lib/salix_agent/server.ex 'State machine'
+        }
+
+        cluster_runtime = component '放置与恢复' {
+          description 'libring 负责建议放置；S3 CAS fencing 才是 exactly-one-executor 保证'
+          technology 'salix_cluster + libcluster + S3 leases'
+          link ../../../systems/apps/salix_cluster/lib/salix_cluster/application.ex 'Application'
+        }
+
+        integration_runtime = component '能力与外部运行时' {
+          description 'LLM、MCP、JS、media、Calendar、Meeting、IM、Connected Runtime 与 Compute adapters'
+          technology 'salix_llm/mcp/js/media/calendar/meet/im/env'
+          link ../../../systems/apps/salix_env/lib/salix_env/application.ex 'Environment runtime'
+        }
+
+        compute_control = component 'Compute 控制域' {
+          description 'Pool→Allocation→Environment→Workload→RuntimeInstance 的共享 SSOT；持有 generation/CAS、grant、command、bounded reconciliation 与迁移控制，不暴露 Provider-native ID'
+          technology 'SalixStore.Compute + provider-neutral schemas'
+          link ../../../systems/apps/salix_store/lib/salix_store/compute.ex 'Implementation owner'
+        }
+
+        compute_providers = component 'Compute Provider Adapters' {
+          description 'Cloudflare、Agent VMM 实现同一 capability/allocate/observe/release/bootstrap/checkpoint contract；Provider 私有 registration/trust/endpoint 留在 adapter 内'
+          technology 'SalixEnv.ComputeProvider'
+          link ../../../systems/apps/salix_env/lib/salix_env/compute_provider.ex 'Provider contract'
+        }
+
+        runtime_binding = component 'External Worker Runtime Binding' {
+          description '只接受 connected_runtime 或 compute_workload；stable target 与 live connection epoch 分离，catch-up 后才采用 reconnect epoch'
+          technology 'SalixAgent.RuntimeBindingResolver + SalixWeb driver'
+          link ../../../systems/apps/salix_agent/lib/salix_agent/runtime_binding_resolver.ex 'Resolver'
+        }
+
+        service_routes = component 'Service Route Authority' {
+          description 'provider-neutral export/import/route ledger；每次访问重查两端 Workload generation、route capability、环境 authority 与 expiry'
+          technology 'SalixStore.ServiceRoutes'
+          link ../../../systems/apps/salix_store/lib/salix_store/service_routes.ex 'Implementation owner'
+        }
+
+        personal_mesh_registry = component 'Personal Mesh Registry（已实现组件）' {
+          #current
+          description 'device-signed operation、remove-wins tombstone、freshness receipt、rate/retention/audit 与 endpoint projection 已有代码、schema、route 与测试；真实 signer/生产演练/public-preview 仍是门禁'
+          technology 'SalixStore + PostgreSQL'
+          link ../../../systems/apps/salix_store/lib/salix_store/personal_mesh_registry.ex 'Implementation owner'
+        }
+
+        storage_kernel = component 'Salix 存储内核' {
+          description 'journal、snapshot、inbox、delivery、lease 与 CAS；封装 S3-compatible storage'
+          technology 'salix_store'
+          link ../../../systems/apps/salix_store/lib/salix_store/application.ex 'Application'
+        }
+
+        analytics = component '分析镜像' {
+          description '以 lease-gated tailer 将 typed events/metering 镜像到 ClickHouse'
+          technology 'salix_analytics'
+          link ../../../systems/apps/salix_analytics/lib/salix_analytics/application.ex 'Application'
+        }
+
+        salix_web .local_call conversation_runtime 'Conversation 命令与读取'
+        salix_web .local_call agent_runtime 'Agent 控制与 Stream'
+        conversation_runtime .command agent_runtime 'Participant 投递与唤醒'
+        conversation_runtime .read_write storage_kernel 'Conversation 事实与投递状态'
+        agent_runtime .read_write storage_kernel 'Claim、root/session state 与 inbox'
+        cluster_runtime .read_write storage_kernel 'Lease、恢复与调度'
+        agent_runtime .command integration_runtime 'Tool 与 Provider 调用'
+        agent_runtime .command runtime_binding 'External Session 解析 stable target 与 live epoch'
+        integration_runtime .command compute_control 'Compute intent、grant 与 current generation'
+        compute_control .command compute_providers '按 pool policy 与 capability 调度 Provider operation'
+        service_routes .read_write compute_control '每次访问重查 Workload/Environment authority'
+        salix_web .local_call personal_mesh_registry 'Personal Mesh HTTP/control routes'
+        analytics .read_write storage_kernel '跟随持久事件'
+      }
+
+      comma_product.comma_core .local_call salix.conversation_runtime 'Comma.Salix 边界；权威 Chat/Task 执行'
+      comma_product.recommendation_sources .command salix.agent_runtime '复用 Salix LLM 边界执行无工具请求，仅发送 server-collected facts'
+      comma_product.comma_core .local_call billing '产品计费策略'
+      bft.bft_core .local_call billing '组织计费策略'
+      bft.bft_core .async bft.reconciler '事务内写入 reconcile_outbox'
+      bft.reconciler .command salix.salix_web 'BridgeForTeams.Salix.Client 经由 :erpc'
+    }
+
+    data = component '数据所有权边界' {
+      description '逻辑所有权与物理数据库部署分开表达'
+
+      comma_db = datastore 'Comma 产品 PostgreSQL Schema' {
+        description '用户、Session、Workspace、public binding 与产品 projection 的 SoT'
+        technology 'PostgreSQL / Ecto'
+      }
+
+      bft_db = datastore 'BridgeForTeams PostgreSQL Schema' {
+        description '组织、成员、Agent Swarm、集成、outbox 与 Dashboard projection 的 SoT'
+        technology 'PostgreSQL / Ecto'
+      }
+
+      billing_db = datastore 'Billing PostgreSQL Schema' {
+        description '计费账户、账本、价格目录与 provider mapping 的 SoT'
+        technology 'PostgreSQL / Ecto'
+      }
+
+      salix_control_db = datastore 'Salix 控制元数据' {
+        description '配置后启用的控制面 PostgreSQL；与 S3 execution state 分权'
+        technology 'PostgreSQL / Ecto'
+      }
+
+      salix_s3 = datastore 'Salix 执行状态' {
+        description 'Agent/Conversation journal、snapshot、inbox、delivery、lease 与 CAS objects'
+        technology 'S3-compatible object storage'
+      }
+
+      redis = datastore 'Redis' {
+        description '认证挑战、分布式限流等短期协调状态'
+        technology 'Redis'
+      }
+
+      clickhouse = datastore '分析存储' {
+        #projection
+        description '可重放/去重的 telemetry、metering 与分析 projection'
+        technology 'ClickHouse'
+      }
+    }
+
+    edge_runtimes = component '边缘与设备运行时' {
+      web_hosting = application 'Web/Admin 托管 Workers' {
+        description '托管静态 SPA，并把 API 请求代理到受信后端'
+        technology 'Cloudflare Workers'
+      }
+
+      vm_gateway = application 'Salix VM Gateway' {
+        description '受控接入 Cloudflare Sandbox runtime'
+        technology 'Cloudflare Worker'
+        link ../../../systems/cloudflare/salix-vm-gateway/src/index.ts 'Source'
+      }
+
+      connector = application 'Salix Connector / Fin machine' {
+        description '设备侧能力与远程执行 runtime；通过 WebSocket 连接 SalixEnv'
+        technology 'Go connector + local services'
+        link ../../../systems/connector/README.md 'Source guide'
+      }
+
+      runtime_agent = application 'Salix Runtime Agent' {
+        description '所有 External Worker carrier 共用 durable inbox/outbox、stable event ID、partial ACK、dedupe、catch-up 与 native resume；只使用 outbound scoped credential'
+        technology 'salix-connect --runtime-agent'
+        link ../../../systems/connector/salix-connect/main.go 'Source'
+      }
+
+      agent_vmm = application 'Agent VMM host / connector' {
+        description '本机 VM/runtime/workspace/service/trust/policy owner；通过 remote connector 接入独立 Salix VMM gateway'
+        technology 'Go host + Go connector'
+        link ../../../../agent-vmm/docs/architecture.md 'Architecture'
+      }
+
+      iroh_relay = application 'Agent VMM Iroh Relay（已实现组件）' {
+        #current
+        description '独立 Helm chart、Service、PDB、PrometheusRule 与 relay workload contract 已存在；生产 identity/rotation/fault drill 与 public preview 仍是门禁'
+        technology 'Independent Helm release'
+        link ../../../k8s/iroh-relay/README.md 'Workload contract'
+      }
+
+      salix_vmm_gateway = application 'Salix VMM Gateway' {
+        description 'remote.v1与PersonalMeshRegistryService transport owner、exact host.v1 reverse proxy；只持有live connection/session，不复制Salix business ledger'
+        technology 'Independent Go workload / Helm release'
+        link ../../../systems/gateway/salix-vmm-gateway/README.md 'Workload contract'
+      }
+
+    }
+
+    source_inventory = component '程序生成的仓库事实清单' {
+      #evidence
+      description '由脚本从 package.json、mix.exs、capability leaves、legacy IPC 与 Helm template 生成；仅作为证据附录'
+    }
+
+    clients.web .request systems.comma_product.comma_web 'HTTPS JSON/SSE；HttpOnly Cookie'
+    clients.admin .request systems.comma_product.comma_web 'HTTPS /v1/admin；受限 Cookie Surface'
+    clients.electron.main_session .request systems.comma_product.comma_web 'HTTPS 认证；Main 持有 bearer'
+    clients.electron.main_product .request systems.comma_product.comma_web '精确 Session Lease 下的 HTTPS JSON/SSE'
+    edge_runtimes.agent_vmm .request edge_runtimes.iroh_relay '已实现 relay fallback；不授予应用 authority'
+    systems.comma_product.comma_core .read_write data.comma_db '产品事实与 Projection'
+    systems.comma_product.recommendations .read_write data.comma_db 'Recommendation profile/run SSOT 与 row-lock settlement'
+    systems.comma_product.comma_core .read_write data.redis '认证 Challenge 协调'
+    systems.bft.bft_core .read_write data.bft_db 'BFT 事实、Outbox 与 Projection'
+    systems.bft.bft_core .read_write data.redis '分布式认证与限流'
+    systems.billing .read_write data.billing_db '账本与目录'
+    systems.salix.storage_kernel .read_write data.salix_s3 '条件对象操作'
+    systems.salix.storage_kernel .read_write data.salix_control_db '可选控制元数据'
+    systems.salix.personal_mesh_registry .read_write data.salix_control_db 'Personal Mesh records、audit 与 rate buckets'
+    systems.salix.analytics .read_write data.clickhouse '类型化镜像与计量'
+    systems.salix.integration_runtime .request model_providers 'LLM/媒体 Provider 协议'
+    systems.salix.integration_runtime .request collaboration_providers 'IM/日历/OAuth/MCP API 与回调'
+    systems.comma_product.recommendation_sources .request collaboration_providers '有界只读：Salix 解析 Group OAuth binding 凭证并直连 GitHub/Linear/Notion；其他 provider 经 Composio exact connected-account recipe'
+    systems.salix.integration_runtime .command edge_runtimes.connector 'WebSocket Bridge 与执行 Stream'
+    systems.salix.runtime_binding .command edge_runtimes.runtime_agent '同一 External Worker transport contract'
+    systems.salix.compute_providers .command edge_runtimes.runtime_agent 'Provider bootstrap 后 outbound attach'
+    systems.salix.integration_runtime .command edge_runtimes.vm_gateway '受管 Cloud VM Attach/Control'
+    edge_runtimes.vm_gateway .request runtime_providers 'Sandbox 生命周期'
+    systems.comma_product.comma_core .request identity_email 'OIDC Discovery/JWKS 与邮件投递'
+    systems.billing .request commerce '官方 Provider Adapter'
+  }
+
+  comma_user .request comma_platform '个人产品体验（Web / Electron）'
+  bft_user .request comma_platform '团队产品体验（Dashboard / LiveView）'
+  operator .request comma_platform '管理、发布与审计'
+}

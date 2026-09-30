@@ -1,0 +1,164 @@
+[
+  {
+    "table": "slack_message_payloads",
+    "partition": "202605",
+    "parts": 1,
+    "rows": 18189
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202512",
+    "parts": 2,
+    "rows": 4935
+  },
+  {
+    "table": "slack_message_search_documents",
+    "partition": "13",
+    "parts": 3,
+    "rows": 11560
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202602",
+    "parts": 1,
+    "rows": 2174
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202608",
+    "parts": 1,
+    "rows": 23832
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202604",
+    "parts": 5,
+    "rows": 21558
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202609",
+    "parts": 2,
+    "rows": 6250
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202603",
+    "parts": 4,
+    "rows": 13556
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202602",
+    "parts": 1,
+    "rows": 2174
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202608",
+    "parts": 1,
+    "rows": 23832
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202605",
+    "parts": 5,
+    "rows": 18189
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202512",
+    "parts": 2,
+    "rows": 4935
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202609",
+    "parts": 2,
+    "rows": 6245
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202603",
+    "parts": 4,
+    "rows": 13556
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202604",
+    "parts": 1,
+    "rows": 21558
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202601",
+    "parts": 2,
+    "rows": 4456
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202606",
+    "parts": 2,
+    "rows": 8180
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202511",
+    "parts": 2,
+    "rows": 3930
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202510",
+    "parts": 1,
+    "rows": 2230
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202607",
+    "parts": 3,
+    "rows": 9439
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202606",
+    "parts": 2,
+    "rows": 8180
+  },
+  {
+    "table": "slack_messages",
+    "partition": "202511",
+    "parts": 2,
+    "rows": 3930
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202601",
+    "parts": 2,
+    "rows": 4456
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202510",
+    "parts": 1,
+    "rows": 2230
+  },
+  {
+    "table": "slack_message_payloads",
+    "partition": "202607",
+    "parts": 3,
+    "rows": 9439
+  },
+  {
+    "table": "slack_message_search_documents",
+    "partition": "2",
+    "parts": 6,
+    "rows": 107169
+  },
+  {
+    "table": "slack_message_search_components",
+    "partition": "2",
+    "parts": 11,
+    "rows": 83225
+  }
+]

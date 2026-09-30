@@ -1,0 +1,13 @@
+{
+  "tag": "v0.1.2",
+  "archives": {
+    "darwin/arm64": {
+      "archive": "opendropkit-v0.1.2-arm64-apple-darwin.tar.gz",
+      "sha256": "e40266f7eb4a4bb63841285e474e76d819936ea9a0209d7c1f43f85062b947f4"
+    },
+    "darwin/x64": {
+      "archive": "opendropkit-v0.1.2-x86_64-apple-darwin.tar.gz",
+      "sha256": "f6b86de991da906d60413bdf726a317cde4f17c154f41d09cb2d46e1dd79fbf2"
+    }
+  }
+}

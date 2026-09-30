@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "../../.types/server",
+    "tsBuildInfoFile": "../../node_modules/.cache/evalens/server.tsbuildinfo",
+    "rootDir": "./src",
+    "types": ["bun", "@cloudflare/workers-types"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./src"],
+  "references": [{ "path": "../core" }, { "path": "../store" }]
+}

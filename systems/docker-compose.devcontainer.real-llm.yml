@@ -1,0 +1,6 @@
+services:
+  devcontainer:
+    env_file:
+      - ../.local/comma-real-llm.env
+    volumes:
+      - ../.local/compose-dev-real-llm.json:/etc/salix/config.json:ro

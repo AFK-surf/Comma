@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      href="brand/comma/icon.png"
+      data-comma-brand-icon="true"
+    />
+    <script>
+      // Start the official SDK while the application bundle downloads.
+      if (new URLSearchParams(location.search).get("source") === "telegram") {
+        window.commaTelegramReady = new Promise((resolve) => {
+          if (window.Telegram?.WebApp) {
+            resolve(window.Telegram.WebApp);
+            return;
+          }
+          const script = document.createElement("script");
+          script.src = "https://telegram.org/js/telegram-web-app.js?63";
+          const finish = () => {
+            clearTimeout(timer);
+            const app = window.Telegram?.WebApp;
+            app?.ready?.();
+            resolve(app);
+          };
+          const timer = setTimeout(finish, 4000);
+          script.addEventListener("load", finish, { once: true });
+          script.addEventListener("error", finish, { once: true });
+          document.head.appendChild(script);
+        });
+      }
+    </script>
+    <title>%COMMA_PRODUCT_NAME%</title>
+  </head>
+  <body>
+    <div id="root">
+      <main
+        style="
+          min-height: 100svh;
+          display: grid;
+          place-items: center;
+          font-family: system-ui, sans-serif;
+          color: #39404a;
+          background: #fafafa;
+        "
+      >
+        <output>Opening Task panel…</output>
+      </main>
+    </div>
+    <script type="module" src="/src/task-panel.tsx"></script>
+  </body>
+</html>

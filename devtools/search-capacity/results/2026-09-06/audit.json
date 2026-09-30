@@ -1,0 +1,292 @@
+{
+  "checked_at": "2026-09-06T06:24:53.698869+00:00",
+  "method": "Check raw result IDs against the original generator metadata, restricted to each recorded corpus prefix. This validates synthetic scope filters, not production authorization.",
+  "records": [
+    {
+      "file": "balanced/results-100000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 9675,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "balanced/results-1000000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "balanced/results-1000032-ef200-prefix-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "balanced/results-2000042-ef200-prefix-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "balanced/results-300000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "balanced/results-3000000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "balanced/results-3000011-ef200-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-100000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-1000000-ef200-prefix-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-1000000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-2000030-ef200-prefix-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-300000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-3000000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "chat/results-3000004-ef200-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "diffuse/results-100000-ef200.json",
+      "cases": 7,
+      "requests": 168,
+      "returned_hits": 3300,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "diffuse/results-300000-ef200.json",
+      "cases": 7,
+      "requests": 168,
+      "returned_hits": 3360,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "diffuse/results-300006-ef2000-tuned2000.json",
+      "cases": 7,
+      "requests": 168,
+      "returned_hits": 3360,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-100000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 8925,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-1000000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-1000010-ef200-prefix-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-2000040-ef200-prefix-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-300000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 9564,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-3000000-ef200.json",
+      "cases": 7,
+      "requests": 504,
+      "returned_hits": 10080,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "media/results-3000017-ef200-fresh64.json",
+      "cases": 8,
+      "requests": 512,
+      "returned_hits": 10240,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "clickhouse/balanced-100000.json",
+      "cases": 10,
+      "requests": 240,
+      "returned_hits": 4632,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "clickhouse/balanced-1000000.json",
+      "cases": 10,
+      "requests": 240,
+      "returned_hits": 4800,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "clickhouse/balanced-300000.json",
+      "cases": 10,
+      "requests": 240,
+      "returned_hits": 4720,
+      "errors": 0,
+      "warmup_failures": 0,
+      "skipped": 0,
+      "violations": []
+    },
+    {
+      "file": "clickhouse/balanced-3000000.json",
+      "cases": 1,
+      "requests": 24,
+      "returned_hits": 440,
+      "errors": 2,
+      "warmup_failures": 1,
+      "skipped": 0,
+      "violations": []
+    }
+  ],
+  "requests": 11904,
+  "returned_hits": 235656,
+  "request_errors": 2,
+  "warmup_failures": 1,
+  "skipped": 0,
+  "violations": []
+}

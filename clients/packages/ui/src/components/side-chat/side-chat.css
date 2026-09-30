@@ -1,0 +1,1572 @@
+html[data-comma-window-role="side-chat"],
+body[data-comma-window-role="side-chat"] {
+  background: transparent;
+}
+
+html[data-comma-window-role="side-chat"] #root {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: transparent;
+}
+
+.comma-side-chat-host {
+  --comma-side-chat-motion-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --comma-side-chat-response-enter-duration: 160ms;
+  --comma-side-chat-surface-border: rgb(224 227 230 / 92%);
+  --comma-side-chat-surface-bg: rgb(252 252 255 / 96%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 8%);
+  --comma-side-chat-secondary-text: rgb(0 0 0 / 46%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 88%);
+  --comma-side-chat-assistant-bg: rgb(255 255 255 / 88%);
+  --comma-side-chat-assistant-text: rgb(15 18 20 / 94%);
+  --comma-side-chat-composer-border: rgb(224 227 230 / 96%);
+  --comma-side-chat-tool-bg: rgb(245 247 250 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(238 241 246 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(247 248 251 / 96%);
+  position: absolute;
+  bottom: -9px;
+  left: 5px;
+  display: flex;
+  min-width: 0;
+  flex: none;
+  align-items: stretch;
+  /* The transcript owns scrolling. Focus must not scroll this outer clip. */
+  overflow: clip;
+  background: transparent;
+  color: var(--color-text-primary);
+  transform-origin: left bottom;
+  will-change: transform;
+  -webkit-app-region: no-drag;
+}
+
+.comma-side-chat-panel {
+  position: relative;
+  display: flex;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 18px;
+}
+
+.comma-side-chat-conversation {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.comma-side-chat-messages {
+  display: flex;
+  min-height: 0;
+  width: 100%;
+  transition:
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    filter 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.comma-side-chat-conversation[data-content-mode="cards"] .comma-side-chat-messages {
+  pointer-events: none;
+  opacity: 0;
+  filter: blur(12px);
+  transform: scale(0.82) translateY(14px);
+}
+
+.comma-chat-route[data-variant="side-chat"] {
+  background: transparent;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-column,
+.comma-chat-route[data-variant="side-chat"] .comma-chat-composer-frame {
+  --comma-chat-avatar-gutter: 0px;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-message-assistant[data-actor-role]:not(
+    [data-router-identity-hidden="true"]
+  ) {
+  /* Router bubbles remain flush; replies with identity chrome need its gutter. */
+  --comma-chat-avatar-gutter: calc(24px + var(--spacing-md));
+
+  margin-inline-start: var(--comma-chat-avatar-gutter);
+  max-width: min(
+    calc(500px + 28px + var(--spacing-md)),
+    calc(100% - var(--comma-chat-avatar-gutter))
+  );
+}
+
+.comma-side-chat-host .comma-scroll-area__viewport:focus {
+  outline: none;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-thread {
+  --comma-chat-thread-top-inset: var(--spacing-2xl);
+
+  /* The chat scroll viewport is a size container. */
+  min-height: 100cqb;
+  align-items: flex-end;
+  padding: 0;
+}
+
+/* The thread marks its own empty-card state. Finding the card with `:has()`
+   from the zone made every chat restyle its whole transcript whenever a node
+   was added or removed inside it. */
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-thread-zone[data-empty-card="true"],
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-thread-zone[data-empty-card="true"]
+  .comma-scroll-area,
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-thread-zone[data-empty-card="true"]
+  .comma-scroll-area__viewport {
+  overflow: visible;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-column {
+  --comma-chat-message-gap: 10px;
+  max-width: 100%;
+  justify-content: flex-end;
+  gap: var(--comma-chat-message-gap);
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-side-chat-turn {
+  --comma-chat-turn-row-gap: 10px;
+  min-width: 0;
+  row-gap: var(--comma-chat-turn-row-gap);
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-column:not([data-empty-card="true"]) {
+  padding-block: 24px 10px;
+}
+
+.comma-side-chat-empty-card {
+  display: flex;
+  width: 100%;
+  height: 88px;
+  min-height: 88px;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  border: 0.5px solid var(--comma-side-chat-surface-border);
+  border-radius: 12px;
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  padding: 14px 16px;
+}
+
+.comma-side-chat-empty-mark {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgb(32 91 255 / 10%);
+  color: #205bff;
+}
+
+.comma-side-chat-empty-mark--brand {
+  overflow: hidden;
+  border-radius: 9px;
+  background: transparent;
+}
+
+.comma-side-chat-empty-mark--brand img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.comma-side-chat-empty-exit-layer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: var(--comma-chat-avatar-gutter);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.comma-side-chat-empty-card[data-exiting="true"] {
+  animation: comma-side-chat-empty-send-out 140ms var(--comma-side-chat-motion-ease-out)
+    both;
+  transform-origin: bottom;
+}
+
+.comma-side-chat-message-slot {
+  width: 100%;
+}
+
+.comma-side-chat-message-slot-inner {
+  min-height: 0;
+  /* Include the avatar gutter without clipping bubble tails below the row. */
+  margin-inline-start: calc(-1 * var(--comma-chat-avatar-gutter));
+  padding-inline-start: var(--comma-chat-avatar-gutter);
+  overflow: visible;
+}
+
+.comma-side-chat-assistant-entry {
+  transform-origin: left bottom;
+  /* Release opacity after entry so reply-chain feedback can fade the row. */
+  animation: comma-side-chat-assistant-enter
+    var(--comma-side-chat-response-enter-duration)
+    var(--comma-side-chat-motion-ease-out) backwards;
+}
+
+.comma-side-chat-assistant-slot {
+  width: 100%;
+}
+
+.comma-side-chat-assistant-slot-inner {
+  min-height: 0;
+  overflow: visible;
+}
+
+.comma-side-chat-empty-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.comma-side-chat-empty-copy h2,
+.comma-side-chat-empty-copy p {
+  margin: 0;
+}
+
+.comma-side-chat-empty-copy h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+.comma-side-chat-empty-copy p {
+  color: var(--comma-side-chat-secondary-text);
+  font-size: 0.78125rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-user-bubble-slot {
+  /* Same containment as the default variant: the cap resolves against the
+     definite column container, not the shrink-to-fit flex-end chain. */
+  max-width: calc(100cqi - 42px);
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-user-bubble {
+  --comma-chat-user-bubble-background: var(--comma-side-chat-user-bg);
+  --comma-chat-user-bubble-padding-block: 10px;
+
+  max-width: 100%;
+  border-radius: 20px;
+  background: var(--comma-chat-user-bubble-background);
+  padding-inline: 13px;
+  color: white;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-message-assistant {
+  width: 100%;
+  max-width: 100%;
+  align-self: flex-start;
+  background: transparent;
+  padding: 0;
+  color: var(--comma-side-chat-assistant-text);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+/* One reply keeps its document/selection identity; only its parsed blocks
+   own bubble surfaces. Code and tables retain their shared scroll controls. */
+.comma-chat-route[data-variant="side-chat"] .markdown-stream-bubble {
+  --comma-chat-tail-filter: saturate(180%);
+  backdrop-filter: saturate(180%);
+  width: fit-content;
+  min-width: 50px;
+  max-width: min(100%, calc(100cqi - 42px));
+  border-radius: 20px;
+  background: var(--comma-side-chat-assistant-bg);
+  padding: 10px 13px;
+  color: var(--comma-side-chat-assistant-text);
+  overflow-wrap: anywhere;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .markdown-stream-bubble:is([data-kind="code_block"], [data-kind="table"]) {
+  width: 100%;
+  padding: 0;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .markdown-stream-bubble-block
+  + .markdown-stream-bubble-block {
+  margin-top: var(--spacing-lg);
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .markdown-stream-bubble-block
+  + .markdown-stream-bubble-block[data-node-type="heading"] {
+  margin-top: var(--spacing-2xl);
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .markdown-stream-bubble-block
+  + .markdown-stream-bubble-block[data-node-type="thematic_break"],
+.comma-chat-route[data-variant="side-chat"]
+  .markdown-stream-bubble-block[data-node-type="thematic_break"]
+  + .markdown-stream-bubble-block {
+  margin-top: var(--spacing-4xl);
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .markdown-stream-bubble
+  > .markdown-stream-bubble-block
+  > .markdown-stream-surface {
+  border-radius: 20px;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-assistant-source-label {
+  margin-bottom: 6px;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-block-extras {
+  max-width: min(100%, calc(100cqi - 42px));
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-assistant-response-body
+  > .markdown-stream:empty
+  + .comma-chat-block-extras {
+  margin-top: 0;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-message-actions {
+  min-height: 20px;
+  margin-top: 4px;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-message-action-button {
+  width: 22px;
+  height: 22px;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-ref-card {
+  width: min(280px, 100%);
+  background: var(--comma-side-chat-assistant-bg);
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-activity-slot {
+  min-height: 32px;
+  height: auto;
+  padding: 0;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-activity-line {
+  max-width: 100%;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-activity-slot[data-presentation="tool-call"] {
+  width: fit-content;
+  max-width: calc(100% - 42px);
+  border-radius: 20px;
+  background: var(--comma-side-chat-assistant-bg);
+  padding: 10px 13px;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-activity-slot[data-presentation="tool-call"]
+  .comma-chat-activity-line {
+  min-width: 0;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-chat-activity-slot[data-presentation="tool-call"]
+  .comma-ai-activity-text-summary {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-composer-zone {
+  padding: 8px 0 0;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-composer-frame {
+  max-width: 100%;
+}
+
+/* AiInput owns composer geometry in both chat surfaces. Only the floating
+   surface treatment belongs to Side Chat. */
+.comma-chat-route[data-variant="side-chat"] .comma-chat-composer {
+  border-color: var(--comma-side-chat-composer-border);
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+}
+
+/* Side Chat's native window height math is px-based (setContentSize). Pin the
+   composer's type grid in px — like the [data-comma-icon] 16px rule — so the
+   root font preference cannot desync renderer and native heights. Values
+   mirror text-md (15px) on the 20px line grid at the default root size. */
+.comma-chat-route[data-variant="side-chat"] .comma-chat-composer textarea,
+.comma-chat-route[data-variant="side-chat"] .comma-chat-composer .ai-input-rich-editor {
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.comma-chat-route[data-variant="side-chat"] .comma-chat-route-state,
+.comma-chat-route[data-variant="side-chat"] .comma-chat-terminal-state {
+  min-height: 0;
+  padding: 18px;
+}
+
+.comma-side-chat-cards {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 0;
+  animation: comma-side-chat-card-in 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.comma-side-chat-cards-deck {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.comma-side-chat-cards-column {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  animation: comma-side-chat-column-switch 240ms ease-in-out both;
+}
+
+.comma-side-chat-cards-scroll,
+.comma-side-chat-task-detail-scroll {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.comma-side-chat-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 1px;
+}
+
+.comma-side-chat-task-card-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  animation: comma-side-chat-task-card-enter 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--comma-side-chat-card-index, 0) * 45ms);
+}
+
+.comma-side-chat-task-card-button:focus-visible {
+  border-radius: 12px;
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: 2px;
+}
+
+.comma-side-chat-cards-refreshing {
+  position: absolute;
+  z-index: 1;
+  top: 6px;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 5px;
+  border-radius: 999px;
+  background: var(--comma-side-chat-tool-bg);
+  padding: 4px 9px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  color: var(--comma-side-chat-secondary-text);
+  font-size: 0.6875rem;
+}
+
+.comma-side-chat-cards-state {
+  display: flex;
+  width: 100%;
+  min-height: 140px;
+  align-self: flex-end;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  border: 0.5px solid var(--comma-side-chat-surface-border);
+  border-radius: 12px;
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  padding: 18px;
+  text-align: center;
+}
+
+.comma-side-chat-cards-state-icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgb(32 91 255 / 10%);
+  color: #205bff;
+}
+
+.comma-side-chat-cards-state strong {
+  font-size: 0.84375rem;
+  line-height: 1.25rem;
+}
+
+.comma-side-chat-cards-state > span:not(.comma-side-chat-cards-state-icon) {
+  max-width: 278px;
+  color: var(--comma-side-chat-secondary-text);
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
+}
+
+.comma-side-chat-cards-state button {
+  border: 0;
+  background: transparent;
+  padding: 2px 7px;
+  color: #205bff;
+  font-size: 0.78125rem;
+  font-weight: 600;
+}
+
+.comma-side-chat-cards-tabs {
+  display: flex;
+  /* Same 36px content row and border as compact AiInput. */
+  height: calc(36px + 2px);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--comma-side-chat-composer-border);
+  border-radius: 999px;
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  padding-inline: 8px;
+}
+
+/* Auto margin consumes only spare viewport space; long lists keep their
+   natural scroll extent and their content measurement remains unchanged. */
+.comma-side-chat-cards-scroll > .comma-scroll-area__viewport {
+  display: flex;
+  flex-direction: column;
+}
+
+.comma-side-chat-cards-scroll
+  > .comma-scroll-area__viewport
+  > .comma-scroll-area__content {
+  flex: none;
+  margin-top: auto;
+}
+
+.comma-side-chat-task-detail {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  border: 0.5px solid var(--comma-side-chat-surface-border);
+  border-radius: 12px;
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  animation: comma-side-chat-column-switch 240ms ease-in-out both;
+}
+
+.comma-side-chat-task-detail > header {
+  display: flex;
+  height: 40px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 0.5px solid var(--comma-side-chat-surface-border);
+  padding: 0 10px;
+  color: var(--comma-side-chat-secondary-text);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.comma-side-chat-task-detail > header button {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
+.comma-side-chat-task-detail > header button:hover {
+  background: var(--comma-side-chat-tool-bg-hover);
+}
+
+.comma-side-chat-task-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.comma-side-chat-task-detail-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.comma-side-chat-task-detail-title > span {
+  display: inline-flex;
+  width: 18px;
+  height: 20px;
+  flex: none;
+  align-items: center;
+}
+
+.comma-side-chat-task-detail-title h2,
+.comma-side-chat-task-detail-content p {
+  margin: 0;
+}
+
+.comma-side-chat-task-detail-title h2 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-side-chat-task-detail-content p {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.1875rem;
+}
+
+.comma-side-chat-task-detail-content .comma-side-chat-task-detail-activity {
+  border-radius: 6px;
+  background: var(--comma-side-chat-tool-bg);
+  padding: 7px 9px;
+  font-size: 0.75rem;
+}
+
+.comma-side-chat-task-detail-content time {
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+}
+
+.comma-side-chat-status {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 0.5px solid var(--comma-side-chat-surface-border);
+  border-radius: 12px;
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  margin: 18px;
+  padding: 22px;
+  text-align: center;
+}
+
+.comma-side-chat-status-content {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex: none;
+  align-items: center;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.comma-side-chat-fallback .comma-side-chat-status {
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.comma-side-chat-fallback .comma-side-chat-status-content {
+  gap: 4px;
+}
+
+.comma-side-chat-status strong {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-side-chat-status p {
+  max-width: 280px;
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.0625rem;
+}
+
+.comma-side-chat-sign-in-button {
+  margin-top: 2px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+}
+
+@keyframes comma-side-chat-card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.88) translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes comma-side-chat-empty-send-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.985);
+  }
+}
+
+@keyframes comma-side-chat-assistant-enter {
+  from {
+    opacity: 0.58;
+    transform: translateY(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes comma-side-chat-column-switch {
+  from {
+    opacity: 0;
+    filter: blur(10px);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes comma-side-chat-task-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(30px) scale(0.94);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-side-chat-empty-card[data-exiting="true"],
+  .comma-side-chat-assistant-entry,
+  .comma-side-chat-cards,
+  .comma-side-chat-cards-column,
+  .comma-side-chat-task-card-button,
+  .comma-side-chat-task-detail {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+}
+
+.comma-side-chat-host[data-theme="Light mode"] {
+  --comma-side-chat-surface-border: rgb(224 227 230 / 92%);
+  --comma-side-chat-surface-bg: rgb(252 252 255 / 96%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 8%);
+  --comma-side-chat-secondary-text: rgb(0 0 0 / 46%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 88%);
+  --comma-side-chat-assistant-bg: rgb(255 255 255 / 88%);
+  --comma-side-chat-assistant-text: rgb(15 18 20 / 94%);
+  --comma-side-chat-composer-border: rgb(224 227 230 / 96%);
+  --comma-side-chat-tool-bg: rgb(245 247 250 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(238 241 246 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(247 248 251 / 96%);
+}
+
+.comma-side-chat-host[data-theme="Dark mode"] {
+  --comma-side-chat-surface-border: rgb(255 255 255 / 10%);
+  --comma-side-chat-surface-bg: rgb(26 26 28 / 94%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 28%);
+  --comma-side-chat-secondary-text: rgb(255 255 255 / 56%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 92%);
+  --comma-side-chat-assistant-bg: rgb(0 0 0 / 78%);
+  --comma-side-chat-assistant-text: rgb(255 255 255 / 92%);
+  --comma-side-chat-composer-border: rgb(255 255 255 / 12%);
+  --comma-side-chat-tool-bg: rgb(38 38 41 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(46 46 50 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(34 34 37 / 96%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .comma-side-chat-host:not([data-theme="Light mode"]) {
+    --comma-side-chat-surface-border: rgb(255 255 255 / 10%);
+    --comma-side-chat-surface-bg: rgb(26 26 28 / 94%);
+    --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 28%);
+    --comma-side-chat-secondary-text: rgb(255 255 255 / 56%);
+    --comma-side-chat-user-bg: rgb(32 91 255 / 92%);
+    --comma-side-chat-assistant-bg: rgb(0 0 0 / 78%);
+    --comma-side-chat-assistant-text: rgb(255 255 255 / 92%);
+    --comma-side-chat-composer-border: rgb(255 255 255 / 12%);
+    --comma-side-chat-tool-bg: rgb(38 38 41 / 94%);
+    --comma-side-chat-tool-bg-hover: rgb(46 46 50 / 98%);
+    --comma-side-chat-planned-input-bg: rgb(34 34 37 / 96%);
+  }
+}
+
+/* Embedded previews inherit an explicit product theme from their host. This is
+   intentionally declared after the system fallback so Storybook's toolbar
+   wins over the machine color scheme without changing Electron's fallback. */
+[data-theme="Light mode"] .comma-side-chat-host:not([data-theme]) {
+  --comma-side-chat-surface-border: rgb(224 227 230 / 92%);
+  --comma-side-chat-surface-bg: rgb(252 252 255 / 96%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 8%);
+  --comma-side-chat-secondary-text: rgb(0 0 0 / 46%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 88%);
+  --comma-side-chat-assistant-bg: rgb(255 255 255 / 88%);
+  --comma-side-chat-assistant-text: rgb(15 18 20 / 94%);
+  --comma-side-chat-composer-border: rgb(224 227 230 / 96%);
+  --comma-side-chat-tool-bg: rgb(245 247 250 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(238 241 246 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(247 248 251 / 96%);
+}
+
+[data-theme="Dark mode"] .comma-side-chat-host:not([data-theme]) {
+  --comma-side-chat-surface-border: rgb(255 255 255 / 10%);
+  --comma-side-chat-surface-bg: rgb(26 26 28 / 94%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 28%);
+  --comma-side-chat-secondary-text: rgb(255 255 255 / 56%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 92%);
+  --comma-side-chat-assistant-bg: rgb(0 0 0 / 78%);
+  --comma-side-chat-assistant-text: rgb(255 255 255 / 92%);
+  --comma-side-chat-composer-border: rgb(255 255 255 / 12%);
+  --comma-side-chat-tool-bg: rgb(38 38 41 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(46 46 50 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(34 34 37 / 96%);
+}
+
+html[data-comma-window-role="side-chat-test"],
+body[data-comma-window-role="side-chat-test"] {
+  margin: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+html[data-comma-window-role="side-chat-test"] #root {
+  width: 100vw;
+  height: 100vh;
+  background: transparent !important;
+}
+
+.comma-side-chat-test-window {
+  --comma-side-chat-surface-border: rgb(224 227 230 / 92%);
+  --comma-side-chat-surface-bg: rgb(252 252 255 / 96%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 8%);
+  --comma-side-chat-secondary-text: rgb(0 0 0 / 46%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 88%);
+  --comma-side-chat-assistant-bg: rgb(255 255 255 / 88%);
+  --comma-side-chat-assistant-text: rgb(15 18 20 / 94%);
+  --comma-side-chat-composer-border: rgb(224 227 230 / 96%);
+  --comma-side-chat-tool-bg: rgb(245 247 250 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(238 241 246 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(247 248 251 / 96%);
+  --dialog-background: rgb(252 252 255);
+  --dialog-border: rgb(0 0 0 / 10%);
+  --dialog-divider: rgb(0 0 0 / 8%);
+  --dialog-primary: rgb(15 18 20);
+  --dialog-secondary: rgb(0 0 0 / 54%);
+  --dim-opacity: 0.38;
+  --primary-color: rgb(76 217 207);
+
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  color: var(--dialog-primary);
+  background: rgb(0 0 0 / 0%);
+  transition: background-color 420ms ease;
+  user-select: none;
+}
+
+.comma-side-chat-test-window[data-theme="Dark mode"] {
+  --comma-side-chat-surface-border: rgb(255 255 255 / 10%);
+  --comma-side-chat-surface-bg: rgb(26 26 28 / 94%);
+  --comma-side-chat-surface-shadow: 0 3px 16px rgb(0 0 0 / 28%);
+  --comma-side-chat-secondary-text: rgb(255 255 255 / 56%);
+  --comma-side-chat-user-bg: rgb(32 91 255 / 92%);
+  --comma-side-chat-assistant-bg: rgb(0 0 0 / 78%);
+  --comma-side-chat-assistant-text: rgb(255 255 255 / 92%);
+  --comma-side-chat-composer-border: rgb(255 255 255 / 12%);
+  --comma-side-chat-tool-bg: rgb(38 38 41 / 94%);
+  --comma-side-chat-tool-bg-hover: rgb(46 46 50 / 98%);
+  --comma-side-chat-planned-input-bg: rgb(34 34 37 / 96%);
+  --dialog-background: rgb(26 26 28);
+  --dialog-border: rgb(255 255 255 / 16%);
+  --dialog-divider: rgb(255 255 255 / 11%);
+  --dialog-primary: rgb(255 255 255 / 94%);
+  --dialog-secondary: rgb(255 255 255 / 60%);
+  --dim-opacity: 0.56;
+}
+
+.comma-side-chat-test-window[data-expanded="true"] {
+  background: rgb(0 0 0 / var(--dim-opacity));
+}
+
+.comma-side-chat-test-shell {
+  position: absolute;
+  top: var(--source-y);
+  left: var(--source-x);
+  box-sizing: border-box;
+  width: var(--source-width);
+  height: var(--source-height);
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  color: inherit;
+  background: var(--dialog-background);
+  border: 1px solid color-mix(in srgb, var(--dialog-border) 35%, transparent);
+  border-radius: min(calc(var(--source-width) / 2), calc(var(--source-height) / 2));
+  box-shadow: 0 0 0 rgb(0 0 0 / 0%);
+  transition:
+    top 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    left 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    width 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    height 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-radius 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 420ms ease-in,
+    border-color 420ms ease,
+    box-shadow 420ms ease;
+}
+
+.comma-side-chat-test-window[data-expanded="true"] .comma-side-chat-test-shell {
+  top: 50%;
+  left: 50%;
+  width: clamp(340px, 28vw, 420px);
+  height: 276px;
+  transform: translate(-50%, -50%);
+  border-color: var(--dialog-border);
+  border-radius: 24px;
+  box-shadow: 0 20px 38px rgb(0 0 0 / 24%);
+}
+
+/* Task windows lay out at their final size once. Only composited properties
+   move: transcript measurement must not run on every entrance/exit frame. */
+.comma-side-chat-test-window[data-window-content="task-chat"] {
+  background: transparent;
+  transition: none;
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / var(--dim-opacity));
+  opacity: 0;
+  transition: opacity var(--motion-duration-dialog-enter)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"][data-expanded="true"]::before {
+  opacity: 1;
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"]
+  .comma-side-chat-test-shell {
+  top: 50%;
+  left: 50%;
+  width: min(560px, calc(100vw - 80px));
+  height: min(680px, calc(100vh - 80px));
+  border-radius: 20px;
+  border-color: var(--dialog-border);
+  box-shadow: 0 20px 38px rgb(0 0 0 / 24%);
+  transform: var(--task-source-transform, translate(-50%, -50%));
+  opacity: 0;
+  transition:
+    transform var(--motion-duration-dialog-enter) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-dialog-enter) var(--motion-easing-smooth-out);
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"][data-expanded="true"]
+  .comma-side-chat-test-shell {
+  transform: translate(calc(-50% + var(--task-chat-offset, 0px)), -50%);
+  opacity: 1;
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"]
+  .comma-side-chat-test-shell {
+  z-index: 2;
+}
+
+.comma-side-chat-task-sidebar {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 50%;
+  height: min(680px, calc(100vh - 80px));
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--motion-duration-dialog-enter) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-dialog-enter) var(--motion-easing-smooth-out);
+}
+
+[data-sidebar-open="true"][data-expanded="true"] > .comma-side-chat-task-sidebar {
+  transform: translate(var(--task-sidebar-x), -50%);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.comma-side-chat-task-sidebar .comma-chat-sidebar {
+  width: var(--comma-right-sidebar-rendered-width);
+  height: 100%;
+  overflow: visible;
+  transition: none;
+  border-radius: 20px;
+  box-shadow: 0 20px 38px rgb(0 0 0 / 24%);
+}
+
+.comma-side-chat-task-sidebar .comma-chat-sidebar-surface {
+  border: 0.5px solid var(--dialog-border);
+  border-radius: inherit;
+}
+
+.comma-side-chat-task-sidebar .comma-chat-sidebar-header {
+  border-radius: 20px 20px 0 0;
+}
+
+.comma-side-chat-task-sidebar .comma-chat-sidebar-surface > :last-child {
+  border-radius: 0 0 20px 20px;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-side-chat-task-sidebar {
+    transition-property: opacity;
+  }
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"][data-transition-phase="closing"]
+  .comma-side-chat-test-shell,
+.comma-side-chat-test-window[data-window-content="task-chat"][data-transition-phase="closing"]::before {
+  transition-duration: var(--motion-duration-dialog-exit);
+}
+
+/* Hydrate at final geometry without stacking two dim layers or exposing a
+   second shell underneath the first-paint entrance. */
+html[data-comma-window-role="side-chat-test"]:has(#comma-task-window-boot) #root {
+  visibility: hidden;
+}
+
+.comma-task-window-boot {
+  z-index: var(--z-index-modal-overlay);
+  pointer-events: none;
+}
+
+/* The source shell is opaque on its first visible frame. Only its own
+   transform moves; the sibling backdrop never inherits that transform. */
+.comma-side-chat-test-window.comma-task-window-boot[data-window-content="task-chat"]
+  .comma-side-chat-test-shell {
+  opacity: 1;
+}
+
+.comma-side-chat-test-window.comma-task-window-boot[data-expanded="false"]
+  .comma-side-chat-test-shell {
+  transition: none;
+}
+
+.comma-task-window-placeholder {
+  width: 40%;
+  height: 12px;
+  margin: 22px;
+  border-radius: 999px;
+  background: var(--dialog-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-side-chat-test-window[data-window-content="task-chat"]
+    .comma-side-chat-test-shell {
+    transform: translate(-50%, -50%);
+    transition-property: opacity;
+  }
+}
+
+.comma-side-chat-test-window[data-theme="Dark mode"][data-expanded="true"]
+  .comma-side-chat-test-shell {
+  box-shadow: 0 20px 38px rgb(0 0 0 / 42%);
+}
+
+.comma-side-chat-test-content {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: clamp(340px, 28vw, 420px);
+  height: 276px;
+  padding: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease-out;
+}
+
+.comma-side-chat-test-window[data-content-visible="true"]
+  .comma-side-chat-test-content {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.comma-side-chat-task-window-content {
+  width: 100%;
+  height: 100%;
+  gap: 0;
+  padding: 0;
+}
+
+.comma-side-chat-task-window-layout {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.comma-side-chat-task-window-chat {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--color-bg-primary);
+}
+
+.comma-side-chat-task-window-header {
+  display: flex;
+  height: 48px;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 0.5px solid var(--comma-side-chat-surface-border);
+  padding: 0 16px 0 20px;
+}
+
+.comma-side-chat-task-window-header h1 {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-side-chat-task-window-header button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.comma-side-chat-task-window-header button:hover {
+  background: var(--comma-side-chat-tool-bg-hover);
+}
+
+.comma-side-chat-task-window-state {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: 32px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.comma-side-chat-task-window-chat > .comma-chat-route[data-variant="side-chat"] {
+  min-height: 0;
+  flex: 1;
+  padding: 0 18px 18px;
+}
+
+.comma-side-chat-task-window-chat
+  > .comma-chat-route[data-variant="side-chat"]
+  .comma-chat-composer {
+  border-color: var(--dialog-border);
+  background: var(--color-bg-secondary);
+}
+
+.comma-side-chat-test-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+}
+
+.comma-side-chat-test-header h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+.comma-side-chat-test-title-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--primary-color);
+}
+
+.comma-side-chat-test-close {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin-left: auto;
+  color: var(--dialog-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  place-items: center;
+}
+
+.comma-side-chat-test-close:hover {
+  background: color-mix(in srgb, var(--dialog-primary) 8%, transparent);
+}
+
+.comma-side-chat-test-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.comma-side-chat-test-divider {
+  height: 1px;
+  background: var(--dialog-divider);
+}
+
+.comma-side-chat-test-metrics {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+  margin: 0;
+}
+
+.comma-side-chat-test-metric-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 16px;
+  font-size: 0.8125rem;
+  line-height: 1rem;
+}
+
+.comma-side-chat-test-metric-row dt {
+  color: var(--dialog-secondary);
+}
+
+.comma-side-chat-test-metric-row dd {
+  margin: 0 0 0 auto;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  color: var(--dialog-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-side-chat-test-status {
+  flex: 1;
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--dialog-secondary);
+}
+
+.comma-side-chat-test-refresh {
+  align-self: flex-start;
+  padding: 8px 12px;
+  font-size: 0.78125rem;
+  font-weight: 600;
+  line-height: 1rem;
+  color: rgb(8 20 23);
+  cursor: pointer;
+  background: rgb(76 217 207 / 84%);
+  border: 0;
+  border-radius: 999px;
+}
+
+.comma-side-chat-test-refresh:hover {
+  background: rgb(76 217 207 / 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .comma-side-chat-test-window:not([data-theme]) {
+    --dialog-background: rgb(26 26 28);
+    --dialog-border: rgb(255 255 255 / 16%);
+    --dialog-divider: rgb(255 255 255 / 11%);
+    --dialog-primary: rgb(255 255 255 / 94%);
+    --dialog-secondary: rgb(255 255 255 / 60%);
+    --dim-opacity: 0.56;
+  }
+
+  .comma-side-chat-test-window:not([data-theme])[data-expanded="true"]
+    .comma-side-chat-test-shell {
+    box-shadow: 0 20px 38px rgb(0 0 0 / 42%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-side-chat-test-window,
+  .comma-side-chat-test-shell,
+  .comma-side-chat-test-content {
+    transition-duration: 1ms;
+  }
+}
+
+.side-chat-story-desktop {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: #eef1f5;
+  background-position: center;
+  background-size: cover;
+}
+.side-chat-story-desktop[data-background-mock="true"] {
+  background-image: url("../chat-panel/assets/generated-image-preview.png");
+}
+.side-chat-story-desktop::after {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgb(255 255 255 / 4%), rgb(5 18 45 / 10%));
+  content: "";
+}
+.side-chat-story-desktop > .comma-side-chat-host {
+  z-index: 2;
+  transition: transform 220ms cubic-bezier(0.33, 1, 0.67, 1);
+}
+.side-chat-story-desktop > .comma-side-chat-host[data-story-visible="false"] {
+  pointer-events: none;
+  transform: translateX(-539px);
+}
+.side-chat-story-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+}
+.side-chat-story-toggle {
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 999px;
+  background: rgb(20 24 32 / 68%);
+  padding: 7px 11px;
+  color: white;
+  font-size: 0.75rem;
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+}
+.side-chat-story-conversation,
+.side-chat-story-fallback {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.side-chat-story-history {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+.side-chat-story-history-list {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 1px 8px;
+}
+.side-chat-story-assistant,
+.side-chat-story-user {
+  max-width: calc(100% - 42px);
+  border-radius: 20px;
+  padding: 10px 13px;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.side-chat-story-assistant {
+  align-self: flex-start;
+  background: var(--comma-side-chat-assistant-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  color: var(--comma-side-chat-assistant-text);
+}
+.side-chat-story-user {
+  align-self: flex-end;
+  background: var(--comma-side-chat-user-bg);
+  color: white;
+}
+.comma-side-chat-input {
+  display: grid;
+  width: 100%;
+  min-height: 36px;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--comma-side-chat-composer-border);
+  border-radius: 18px;
+  background: var(--comma-side-chat-surface-bg);
+  box-shadow: var(--comma-side-chat-surface-shadow);
+  padding: 3px 3px 3px 12px;
+  transition:
+    border-radius 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    padding 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.comma-side-chat-input[data-multiline="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 28px;
+  align-items: end;
+  gap: 6px;
+  padding: 10px 3px 3px 12px;
+}
+.comma-side-chat-input[data-multiline="true"] button {
+  justify-self: end;
+}
+.comma-side-chat-input:focus-within {
+  border-color: color-mix(in srgb, #205bff 48%, var(--comma-side-chat-composer-border));
+}
+.comma-side-chat-input textarea {
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  max-height: 80px;
+  resize: none;
+  overflow-x: hidden;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--comma-side-chat-assistant-text);
+  font-size: var(--text-md);
+  line-height: 1.25rem;
+  transition: height 160ms cubic-bezier(0.23, 1, 0.32, 1);
+  scrollbar-width: none;
+}
+.comma-side-chat-input textarea::-webkit-scrollbar {
+  display: none;
+}
+.comma-side-chat-input textarea::placeholder {
+  color: var(--comma-side-chat-secondary-text);
+}
+.comma-side-chat-input button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: #205bff;
+  color: white;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.comma-side-chat-input button:active {
+  transform: scale(0.94);
+}
+.comma-side-chat-input button:disabled {
+  opacity: 0.42;
+}
+.side-chat-story-fallback .comma-side-chat-status {
+  margin: 0;
+}
+.side-chat-story-link {
+  border: 0;
+  background: transparent;
+  color: #205bff;
+}
+
+/* Centering moves both shells during resize. Apply pointer geometry immediately,
+   including the final pointer-up render; only open/close changes animate. */
+.comma-side-chat-test-window:has(.comma-chat-sidebar[data-resizing="true"])
+  .comma-side-chat-test-shell,
+.comma-side-chat-test-window:has(.comma-chat-sidebar[data-resizing="true"])
+  .comma-side-chat-task-sidebar {
+  transition: none;
+}
+
+.comma-side-chat-test-window[data-window-content="task-chat"][data-transition-phase="open"][data-sidebar-moving="false"]
+  > .comma-side-chat-test-shell,
+.comma-side-chat-test-window[data-sidebar-moving="false"]
+  > .comma-side-chat-task-sidebar {
+  transition: none;
+}
+
+.comma-side-chat-task-sidebar .comma-chat-sidebar-browser-viewport {
+  border-radius: 0 0 20px 20px;
+  overflow: hidden;
+}
+
+.comma-chat-route[data-variant="side-chat"]
+  .comma-side-chat-turn[data-continues-role="true"] {
+  margin-block-start: calc(
+    var(--comma-chat-consecutive-message-gap) - var(--comma-chat-message-gap)
+  );
+}
+
+.comma-side-chat-message-slot:has(.comma-chat-message-user)
+  + .comma-side-chat-message-slot:has(.comma-chat-message-user),
+.comma-side-chat-message-slot:has(.comma-chat-message-assistant)
+  + .comma-side-chat-message-slot:has(.comma-chat-message-assistant) {
+  margin-block-start: calc(
+    var(--comma-chat-consecutive-message-gap) - var(--comma-chat-turn-row-gap)
+  );
+}

@@ -1,0 +1,86 @@
+services:
+  # Dev Containers starts every active Compose service. Keep the release-image
+  # path available for explicit diagnostics without building or starting it on
+  # the source-mode developer path.
+  comma:
+    profiles: [release]
+
+  comma-migrate:
+    profiles: [release]
+
+  devcontainer:
+    image: comma-devcontainer:local
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    init: true
+    stdin_open: true
+    tty: true
+    environment:
+      COMMA_SUBSYSTEMS: salix,comma_product
+      COMMA_ENVIRONMENT: local
+      COMMA_SESSION_COOKIE_SECURE: "false"
+      COMMA_GOOGLE_WEB_CLIENT_ID: "${COMMA_GOOGLE_WEB_CLIENT_ID:-}"
+      COMMA_GOOGLE_ELECTRON_CLIENT_ID: "${COMMA_GOOGLE_ELECTRON_CLIENT_ID:-}"
+      COMMA_TELEGRAM_ENABLED: "${COMMA_TELEGRAM_ENABLED:-true}"
+      COMMA_TELEGRAM_BOT_TOKEN: "${COMMA_TELEGRAM_BOT_TOKEN:-comma-local-dev-bot-token}"
+      COMMA_TELEGRAM_BOT_USERNAME: "${COMMA_TELEGRAM_BOT_USERNAME:-CommaLocalBot}"
+      COMMA_TELEGRAM_PUBLIC_BASE_URL: "${COMMA_TELEGRAM_PUBLIC_BASE_URL:-http://127.0.0.1:4200}"
+      COMMA_TELEGRAM_WEBHOOK_SECRET: "${COMMA_TELEGRAM_WEBHOOK_SECRET:-comma-local-dev-webhook-secret-0001}"
+      COMMA_TELEGRAM_CLIENT_ID: "${COMMA_TELEGRAM_CLIENT_ID:-}"
+      COMMA_TELEGRAM_CLIENT_SECRET: "${COMMA_TELEGRAM_CLIENT_SECRET:-}"
+      COMMA_TELEGRAM_API_BASE_URL: "${COMMA_TELEGRAM_API_BASE_URL:-http://telegram-mock:43124}"
+      COMMA_LOCAL_RECOMMENDATION_MOCK: "true"
+      COMMA_REDIS_URL: redis://redis:6379/0
+      COMMA_MAIL_HOST: mailpit
+      COMMA_MAIL_PORT: "1025"
+      RELEASE_COOKIE: comma-dev-cookie
+      SALIX_SNOWFLAKE_WORKER_ID: "0"
+      SALIX_CONFIG_PATH: /etc/salix/config.json
+      MIX_BUILD_PATH: /var/lib/comma-dev/mix-build
+      MIX_DEPS_PATH: /var/lib/comma-dev/mix-deps
+      HEX_HOME: /var/lib/comma-dev/hex
+      REBAR_CACHE_DIR: /var/lib/comma-dev/rebar
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      llm-mock:
+        condition: service_healthy
+      telegram-mock:
+        condition: service_healthy
+    ports:
+      - "${COMMA_DEV_SALIX_PORT:-4000}:4000"
+      - "${COMMA_DEV_COMMA_PORT:-4200}:4200"
+      - "${COMMA_DEV_TRANSFER_PORT:-4400}:4400"
+    volumes:
+      - ..:/workspace/Comma:cached
+      - ./config/compose-dev.json:/etc/salix/config.json:ro
+      - comma-dev-cache:/var/lib/comma-dev
+      - type: volume
+        source: comma-dev-salix-agent-priv
+        target: /workspace/Comma/systems/apps/salix_agent/priv
+        volume:
+          nocopy: true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /var/lib/comma-dev/seed-ready && curl -fsS http://127.0.0.1:4000/health >/dev/null && curl -fsS http://127.0.0.1:4200/health >/dev/null",
+        ]
+      interval: 2s
+      timeout: 3s
+      start_period: 20s
+      retries: 300
+    restart: "no"
+
+volumes:
+  comma-dev-cache:
+  comma-dev-salix-agent-priv:

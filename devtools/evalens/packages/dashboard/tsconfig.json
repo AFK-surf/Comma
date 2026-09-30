@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "allowJs": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../../node_modules/.cache/evalens/dashboard.tsbuildinfo",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"]
+  },
+  "include": ["./src"],
+  "exclude": ["./vite.config.ts"],
+  "references": [{ "path": "../server" }]
+}

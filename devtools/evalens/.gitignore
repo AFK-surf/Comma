@@ -1,0 +1,12 @@
+node_modules/
+runs/
+.evalens/
+coverage/
+.types/
+packages/dashboard/src/paraglide/
+# Local Evalens configs may contain tenant credentials. Never commit them.
+evalens.config.json
+evalens.local.config.json
+evalens.*.local.config.json
+datasets/
+temp/

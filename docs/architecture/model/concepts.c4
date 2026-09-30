@@ -1,0 +1,544 @@
+model {
+  // 第一层：只使用产品/用户语言。这里的节点不是进程、模块或数据库表。
+  product_user = concept '用户' {
+    description '登录产品、获得授权并发起工作的人；Comma 用户与 BFT 用户是各自产品控制面的身份，不是 Salix Agent'
+  }
+
+  product_account_scope = concept '账户与授权范围' {
+    description '决定用户能看见和管理什么：Comma 中由 Workspace 承担；BFT 中由 Organization 与 Membership 承担'
+  }
+
+  product_agent_scope = concept 'Agent 工作范围' {
+    description '一组协作 Agent、Conversation、能力和运行环境共同工作的范围：Comma Workspace 或 BFT Agent Swarm'
+  }
+
+  product_router = concept 'Router' {
+    description '配置后成为工作范围内唯一的当前协调 Agent；持续理解跨 Conversation 的上下文并把任务委派给 Worker'
+  }
+
+  product_worker = concept 'Worker' {
+    description '完成具体任务的 Agent；一个工作范围可以有多个 Worker，同一 Worker 可以处理多个独立 Task'
+  }
+
+  product_chat = concept 'Assistant Chat' {
+    description '用户与当前 Router 的长期可见对话；每个“用户 × 当前 Agent 工作范围”至多一个当前 Chat'
+  }
+
+  product_task = concept 'Agent Task' {
+    description 'Router 或 Worker 委派的独立、可持久工作 Conversation；当前 Router 通过 im_api.internal.task.create assigns one responsible Worker'
+  }
+
+  product_task_lifecycle = concept 'Task Lifecycle（唯一 status）' {
+    description 'Conversation status 是恰好一份的权威 Task 生命周期'
+  }
+
+
+
+
+  product_task_review = concept '人类 Task Review' {
+    description '基于用户实际读到的 exact review version 接受 ready_for_review 结果；automation 都不直接进入 completed'
+  }
+
+
+  product_conversation = concept 'Conversation' {
+    description '用户和 Agent 可见的协作消息事实边界；Chat 与 Task 是两种主要 Conversation kind'
+  }
+
+  product_message = concept 'Message' {
+    description 'Conversation 中有序保存的可见事实；sender 是具体用户、Agent 或 Provider 身份'
+  }
+
+  product_result = concept '工作结果 / Artifact' {
+    description 'Task 或主动工作产生、可被用户查看和继续处理的结果'
+  }
+
+  product_recommendation = concept 'Comma Center Recommendation' {
+    #projection
+    description '成员在当前 Workspace 中看到的结构化 briefing 与至多六张版本化卡片；是产品 projection，不是 Conversation Message'
+  }
+
+  product_recommendation_action = concept 'Recommendation Action' {
+    description '严格注册的 open_url、open_task_form 或 send_to_comma；两种 prompt action 都只填充 composer 草稿，用户手动发送才进入既有 Assistant Chat path'
+  }
+
+
+
+
+
+  product_capability = concept '集成与运行环境' {
+    description 'Agent 在该工作范围内获准使用的 Provider、OAuth、Connected Runtime 或 Compute 能力'
+  }
+
+  product_compute_environment = concept 'Compute Environment' {
+    description 'Comma Workspace 或 BFT Agent Swarm 拥有的计算环境；产品只表达 intent、retention 与 readiness，不选择 Provider'
+  }
+
+  product_compute_workload = concept 'Compute Workload' {
+    description 'Environment 内的稳定工作单元；以 capability requirement 描述需要的能力，不暴露 Provider-native ID'
+  }
+
+  product_external_worker = concept 'External Worker Binding' {
+    description '恰好两种稳定目标：connected_runtime(device_runtime_id) 或 compute_workload(workload_id + runtime_spec)'
+  }
+
+  product_service_route = concept 'Service Route' {
+    description '在 source/destination Workload generation、route capability 与 expiry 都有效时才授权的服务连接'
+  }
+
+  product_compute_node = concept 'Compute Node' {
+    description '用户显式 opt-in 后将本机作为 Compute Pool 容量；连接、runtime readiness、工作、准入和安装健康分别展示'
+  }
+
+  product_user .maps_to product_account_scope 'Owner / Membership：获得 0..N 个范围的访问权'
+  product_account_scope .owns product_agent_scope '包含 0..N 个 Agent 工作范围；Comma 当前由同一个 Workspace 同时承担两层'
+  product_agent_scope .owns product_router '一般状态 0..1；chat-ready / active execution scope 恰好 1 个'
+  product_agent_scope .owns product_worker '0..N 个 Worker'
+  product_agent_scope .owns product_capability '范围内授权与配置'
+  product_agent_scope .owns product_compute_environment '恰好 1 个产品 owner；0..N 个环境'
+  product_compute_environment .owns product_compute_workload '0..N；由共享 Compute SSOT 放置和收敛'
+  product_worker .maps_to product_external_worker '外部执行时绑定稳定 target；活跃 Session 不原地换绑'
+  product_compute_workload .maps_to product_external_worker 'compute_workload variant'
+  product_compute_workload .owns product_service_route '0..N 个 capability-gated export/import/route'
+  product_compute_node .maps_to product_capability '本机容量是 opt-in 能力，不是 per-Agent VM'
+  product_user .owns product_chat '每个 User × 当前范围：0..1 个当前 Chat'
+  product_chat .maps_to product_conversation 'kind = user_chat'
+  product_router .generates product_task '作为 delegator 委派 0..N 个 Task'
+  product_worker .generates product_task '作为 delegator 再委派 0..N 个 Task'
+  product_task .maps_to product_conversation 'kind = agent_task'
+  product_task .owns product_task_lifecycle '恰好 1 份；由 Conversation status 表达'
+  product_task .maps_to product_worker 'Exactly one responsible Worker'
+  product_user .generates product_task_review '授权用户基于自己实际读到的 exact review version 做决定'
+  product_task_review .maps_to product_task_lifecycle 'exact Conversation updated_at：ready_for_review → completed'
+  product_conversation .owns product_message '0..N 条有序可见消息'
+  product_user .generates product_message '作为具体 sender；sender identity 保存在 Message 上'
+  product_task .generates product_result '0..N 个结果'
+  comma_workspace_product .owns product_recommendation '每个 Member×Workspace 恰好 0..1 个 profile/current snapshot'
+  product_recommendation .owns product_recommendation_action '模板注册表约束的有界 action'
+  product_recommendation_action .maps_to comma_chat_product '仅 prompt action：填充用户当前 Comma Assistant Chat 的 composer 草稿'
+
+  // 第二层：同一组抽象在两个产品表面的稳定命名。
+  comma_workspace_product = concept 'Comma Workspace' {
+    description 'Comma 的个人授权范围，同时也是 Agent 工作范围'
+  }
+
+  bft_organization_product = concept 'BFT Organization' {
+    description '团队账户、成员、RBAC 与计费范围'
+  }
+
+  bft_swarm_product = concept 'BFT Agent Swarm' {
+    description 'Organization 下的 Agent 工作范围；代码中的历史名为 Project'
+  }
+
+  comma_chat_product = concept 'Comma Assistant Chat' {
+    description '每个 User × Workspace × 当前 Group generation 的 Chat'
+  }
+
+  comma_chat_product .maps_to product_conversation '当前 Chat 对应 kind = user_chat 的 Conversation；mutation 仍走既有 Chat path'
+
+  bft_chat_product = concept 'BFT New Home Chat' {
+    description '每个 User × Agent Swarm 的 Chat'
+  }
+
+  product_account_scope .maps_to comma_workspace_product 'Comma 产品命名'
+  product_account_scope .maps_to bft_organization_product 'BFT 产品命名'
+  product_agent_scope .maps_to comma_workspace_product 'Comma 中两层合一'
+  product_agent_scope .maps_to bft_swarm_product 'BFT 产品命名'
+  bft_organization_product .owns bft_swarm_product '0:N；Organization 可以尚未创建 Agent Swarm'
+  product_chat .maps_to comma_chat_product 'Comma 产品命名'
+  product_chat .maps_to bft_chat_product 'BFT 产品命名'
+
+  // 第三层：协作事实与执行上下文。Single Session 指这里的 Router runtime session。
+  product_participant_target = concept 'Participant（接收目标）' {
+    description 'Conversation 的投递目标；决定谁会被通知，不代表 Message 的 sender'
+  }
+
+
+  router_participant_target = concept 'Router Participant（接收目标）' {
+    description 'Conversation 中指向当前 Router 的唯一投递成员；payload 固定使用该 Router 的 canonical session_id'
+  }
+
+  assigned_worker_participant_target = concept 'Assigned Worker Participant（执行目标）' {
+    description 'agent_task 中恰好一个执行 Worker；首次物化时获得新的 Task Runtime Session'
+  }
+
+  router_delegator_participant_target = concept 'Router Delegator Participant（委派者）' {
+    description 'Router 创建 Task 时在 Task Conversation 中的委派者接收目标；继续使用 Router canonical Session'
+  }
+
+  worker_delegator_participant_target = concept 'Worker Delegator Participant（委派者）' {
+    description 'Worker 再委派 Task 时的委派者接收目标；复用来源 origin_session_id，而不是创建新 Session'
+  }
+
+  router_runtime_session = concept 'Router Canonical Runtime Session' {
+    description 'Router 的唯一长期执行上下文；保存 LLM/runtime transcript、wait、tool 与 activity，不是用户可见 Conversation'
+  }
+
+  worker_runtime_session = concept 'Worker Task Runtime Session' {
+    description 'Worker 处理 Task 的执行上下文；目标 Worker 获得新 Session，Worker 委派者可继续使用 origin Session'
+  }
+
+  internal_reply_operation = concept '内部 Chat 显式回复操作' {
+    description '所有内部用户可见回答、追问、进度、结果、rich/multiple/cross-conversation 输出都显式调用 im_api.internal.send_message'
+  }
+
+  direct_chat_final_operation = concept 'Participant 实时草稿状态' {
+    description 'exact Conversation Participant 可暴露 transient activity/draft；只用于展示，不创建 Message，客户端不直接绑定 Runtime Session'
+  }
+
+  provider_reply_operation = concept '外部 Provider 显式回复操作' {
+    description '显式调用 Feishu、Slack 等 Provider operation；成功后写入外部 Channel，不追加产品 Conversation'
+  }
+
+  external_im_channel = concept '外部 IM Channel' {
+    description 'Feishu、Slack 等 Provider 持有的用户可见消息表面；不是 Comma/BFT 产品 Conversation'
+  }
+
+  reassignment_previous_router = concept '重新指定前的 Router' {
+    description '低频人工或控制面操作完成前，Group router_agent_id 明确引用的 Router Agent'
+  }
+
+  reassignment_current_router = concept '控制面当前 Router' {
+    description '显式重新指定完成后，Group router_agent_id 当前明确引用的 Router Agent；不表示请求级自动切换'
+  }
+
+  reassignment_previous_session = concept '重新指定前 Router 的 Canonical Session' {
+    description '只属于重新指定前的 Router；控制面操作不会转移这份执行上下文'
+  }
+
+  reassignment_current_session = concept '控制面当前 Router 的 Canonical Session' {
+    description '只属于控制面当前 Router；与重新指定前 Router 的 Session 是两个不同执行上下文'
+  }
+
+  reassignment_existing_conversation = concept '既有 Conversation' {
+    description '控制面显式重新指定 Group Router 前，产品 Chat binding 已经指向的 Conversation'
+  }
+
+  reassignment_replacement_conversation = concept 'BFT 替代 Conversation' {
+    description 'BFT 检测既有 Conversation 的 required Router Participant 不匹配后创建的替代 Conversation'
+  }
+
+  product_conversation .owns product_participant_target '0..N 个接收目标'
+  router_participant_target .maps_to product_participant_target '一种 Agent target'
+  assigned_worker_participant_target .maps_to product_participant_target '一种 Agent target'
+  router_delegator_participant_target .maps_to product_participant_target '一种 Agent target'
+  worker_delegator_participant_target .maps_to product_participant_target '一种 Agent target'
+  product_conversation .owns router_participant_target '需要 Router 投递时 0..1；指向当前 Router'
+  product_task .owns assigned_worker_participant_target '恰好 1 个 assigned Worker 执行目标'
+  product_task .owns router_delegator_participant_target 'Router 委派时 1 个；否则 0'
+  product_task .owns worker_delegator_participant_target 'Worker 再委派时 1 个；否则 0'
+  router_participant_target .maps_to router_runtime_session 'N 个 Conversation → 同一个 Router Session'
+  router_delegator_participant_target .maps_to router_runtime_session '复用 Router canonical Session'
+  assigned_worker_participant_target .maps_to worker_runtime_session '目标 Worker：新建 Session'
+  worker_delegator_participant_target .maps_to worker_runtime_session 'Worker 委派者：复用 origin Session'
+  product_router .owns router_runtime_session '1:1；这就是 single-session 不变量'
+  product_worker .owns worker_runtime_session '0:N；Worker 保持 multi-session'
+  direct_chat_final_operation .maps_to product_participant_target '仅更新 exact Participant transient status；不创建 Message'
+  internal_reply_operation .maps_to product_conversation '成功后追加内部可见 Message'
+  provider_reply_operation .maps_to external_im_channel '成功后写外部 Provider 消息'
+
+  // “Session”同名概念。只有 Agent Runtime Session 属于本次 single-session 设计。
+  auth_session_term = concept '登录 / Auth Session' {
+    description '认证用户、bearer/cookie、设备 lease 与退出；属于产品身份边界'
+  }
+
+  runtime_session_term = concept 'Agent Runtime Session' {
+    description 'Agent 执行模型调用、Tool、Wait 与运行状态的上下文；single session 指这一类'
+  }
+
+  work_session_term = concept 'work_session Conversation' {
+    description 'BFT 用于展示一次已完成工作日志的 Conversation kind；不是 runtime session'
+  }
+
+  native_session_term = concept 'Provider Native Thread / Session' {
+    description 'Codex/Pi/Kimi 等 Connector 本机恢复身份；实现细节，不替代 Salix session_id'
+  }
+
+  auth_session_term .maps_to product_user '只负责认证与请求授权'
+  runtime_session_term .maps_to router_runtime_session 'Router 的实例'
+  runtime_session_term .maps_to worker_runtime_session 'Worker 的实例'
+  work_session_term .maps_to product_conversation '只是一个 Conversation kind'
+  native_session_term .maps_to worker_runtime_session 'External runtime 可在 Connector 本机一一恢复'
+
+  // 第四层：产品概念到当前实现锚点。这里才出现模块、记录和字段。
+  impl_product_users = code_module '产品 User 记录' {
+    description 'Comma.Accounts.User / BridgeForTeams.Schema.User；两套产品身份都不创建 Salix User'
+    technology 'Ecto schemas'
+    link ../../../systems/apps/comma_core/lib/comma/accounts/user.ex 'Comma User'
+  }
+
+  impl_comma_workspace = code_module 'Comma.Data.Workspace' {
+    description '保存 owner、salix_tenant_id、salix_group_id、router/worker agent id 与 group generation'
+    technology 'comma_workspaces + WorkspaceGroupBinding'
+    link ../../../systems/apps/comma_core/lib/comma/data/schemas.ex 'Workspace schema'
+  }
+
+  impl_bft_scope = code_module 'BFT Organization / Project' {
+    description 'Organization 1:1 映射 Salix Tenant；Project（产品名 Agent Swarm）1:1 映射 Salix Group'
+    technology 'Ecto schemas + reconcile outbox'
+    link ../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/project.ex 'Project schema'
+  }
+
+  impl_chat_binding = code_module '当前 Chat Binding' {
+    description 'Comma AssistantChats 授权当前 Group 后直接解析 Group 固定 router_conversation_id；BFT UserAssistantChat 继续使用 User×Project 唯一键'
+    technology 'Salix Group fixed Conversation + BFT PostgreSQL binding'
+    link ../../../systems/apps/comma_core/lib/comma/assistant_chats.ex 'Comma fixed Chat entry'
+  }
+
+  impl_conversation = code_module 'SalixIM.ConversationActor' {
+    description 'Conversation meta、message append 与 participant membership 的唯一 mutation owner；通过同一 private Store 原子 CAS Conversation status'
+    technology 'GenServer + private ConversationStore'
+    link ../../../systems/apps/salix_im/lib/salix_im/conversation_actor.ex 'Source'
+  }
+
+  impl_conversation_read_model = code_module 'SalixIM.Conversations Read Facade' {
+    description '从 canonical Conversation/Message/Participant records 构造公开、无副作用 snapshot；读取不通过 ConversationActor 也不产生 mutation'
+    technology 'SalixIM public read API'
+    link ../../../systems/apps/salix_im/lib/salix_im/conversations.ex 'Source'
+  }
+
+  impl_task_create = code_module 'im_api.internal.task.create' {
+    description 'internal IM Provider 拥有 Router-only 严格 schema、认证 scope、server-sealed provenance、Participant 解析和公开响应；显式 connect_id=internal，经 SalixIM.Ports.TaskCreate 提交 durable primitive'
+    technology 'SalixIM provider manual + Provider.Internal'
+    link ../../../systems/apps/salix_im/lib/salix_im/provider/internal.ex 'Source'
+  }
+
+
+  impl_task_conversation_seam = code_module 'Task Conversation Creation Seam' {
+    description '窄 TaskCreate outbound port 经 AgentConversations binding、TaskSchedules 和 TaskConversationInput，最终由 ConversationServer reserve/create 路由到 exact ConversationActor'
+    technology 'SalixIM port → binding/cluster input → SalixIM owner boundary'
+    link ../../../systems/apps/salix_im/lib/salix_im/ports/task_create.ex 'Source'
+  }
+
+
+
+
+  impl_session_activity = code_module 'SalixIM.Ports.SessionActivity' {
+    description 'TaskWorkerWatch 按 Participant 当前 agent_id/session_id 订阅与重读权威 Activity snapshot；事件本身不是状态事实，临时读失败只触发单定时 reconcile retry'
+    technology 'Port + SalixAgent adapter'
+    link ../../../systems/apps/salix_im/lib/salix_im/ports/session_activity.ex 'Source'
+  }
+
+
+
+  impl_bft_conversation_read_seam = code_module 'BFT → Salix Conversation Read Seam' {
+    description 'ConversationLive/DashboardProjection 经 BridgeForTeams.Conversations + Salix.Client.impl/:erpc 调用 SalixIM.Conversations 公开读取；不直接调用 ConversationActor'
+    technology 'BFT context + :erpc + SalixIM read facade'
+    link ../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/conversations.ex 'Source'
+  }
+
+  impl_participant = code_module 'ConversationParticipantActor + payload.session_id' {
+    description 'Participant 的 lifecycle/delivery owner；Agent target 通过 agent_id 与明确 session_id 指向运行上下文'
+    technology 'GenServer + private ParticipantStore'
+    link ../../../systems/apps/salix_im/lib/salix_im/conversation_participant_actor.ex 'Source'
+  }
+
+  impl_router_actor = code_module 'Agent control record + AgentRoleActor' {
+    description 'Control record 持久化 router_session_id；Router 的 AgentRoleActor 覆盖所有 delivery session hint，固定路由到该 ID'
+    technology 'SalixAgent role actor'
+    link ../../../systems/apps/salix_agent/lib/salix_agent/agent_role_actor.ex 'Source'
+  }
+
+  impl_worker_actor = code_module 'AgentRoleActor + AgentDeliveryPayload' {
+    description 'Worker 保留 participant 中的 session_id；目标 Worker 获得新 ID，Worker delegator 可复用 origin_session_id'
+    technology 'SalixAgent role actor + SalixIM adapter'
+    link ../../../systems/apps/salix_im/lib/salix_im/agent_delivery_payload.ex 'Session mapping'
+  }
+
+  impl_internal_session = code_module 'InternalSessionActor(agent_id, session_id)' {
+    description '内部 LLM transcript、round、tool、wait、compaction 与 activity 的单写者'
+    technology 'GenServer + InternalSessionStore'
+    link ../../../systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex 'Source'
+  }
+
+  impl_external_session = code_module 'ExternalSessionActor(agent_id, session_id)' {
+    description '外部 runtime input queue、event record 与 tool lifecycle 的单写者；不写 internal transcript'
+    technology 'GenServer + ExternalSessionStore'
+    link ../../../systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex 'Source'
+  }
+
+  impl_compute = code_module 'SalixStore.Compute' {
+    description 'Compute Pool、Environment、ProviderBinding、Allocation、Workload、RuntimeInstance、Grant 与 command ledger 的唯一共享写者；provider facts 只留在 adapter 私域'
+    technology 'Ecto domain + CAS/generation fences'
+    link ../../../systems/apps/salix_store/lib/salix_store/compute.ex 'Source'
+  }
+
+  impl_compute_provider = code_module 'SalixEnv.ComputeProvider' {
+    description 'Cloudflare、Agent VMM 共用 allocate/observe/release/bootstrap/checkpoint contract 与 conformance suite'
+    technology 'Provider behaviour + adapters'
+    link ../../../systems/apps/salix_env/lib/salix_env/compute_provider.ex 'Source'
+  }
+
+  impl_runtime_binding = code_module 'RuntimeBindingResolver + ExternalWorkerDriver' {
+    description '验证 exact two-variant binding；stable target 与 live epoch 分离，Compute reconnect 只有 catch-up 后才可授权'
+    technology 'Salix Agent/Web runtime boundary'
+    link ../../../systems/apps/salix_agent/lib/salix_agent/runtime_binding_resolver.ex 'Source'
+  }
+
+  impl_service_route = code_module 'SalixStore.ServiceRoutes' {
+    description 'prepare/activate/renew/drain/revoke/expiry；每次访问重查两端 Workload generation、环境 authority 与 exact capability'
+    technology 'Provider-neutral route ledger'
+    link ../../../systems/apps/salix_store/lib/salix_store/service_routes.ex 'Source'
+  }
+
+  impl_compute_node = code_module 'Electron ComputeNodeService' {
+    description 'Main 管理已 provisioned 节点的 status/configure/restart/repair/drain/remove；renderer 只消费生成式 native state/commands；configure 必须观察到底层 enrollment ready，不能把安装成功冒充已接入'
+    technology 'Generated native capability kernel'
+    link ../../../clients/apps/electron/src/main/modules/compute-node/index.ts 'Source'
+  }
+
+  impl_recommendation_profile = code_module 'Comma.Recommendations + RecommendationProfile/Run' {
+    description 'PostgreSQL 行锁下持有设置、source_revision、requested/published generation、current snapshot 与 active run；source 变化立即隐藏旧 projection，publish/fail 结算 exact run'
+    technology 'Comma Core product SSOT + Ecto + Oban'
+    link ../../../systems/apps/comma_core/lib/comma/recommendations.ex 'Implementation owner'
+  }
+
+  impl_recommendation_runtime = code_module 'CommaWeb Recommendation Collector / Runtime' {
+    description '最多 12 个 exact selected Group OAuth bindings 或 Composio accounts、4 路并发、每 source 10 秒且总计 30 秒；只读 facts 先由 server 收集；无工具单次模型请求，产品 owner 结算 exact run'
+    technology 'Comma Web bounded collector + stateless RecommendationRenderer'
+    link ../../../systems/apps/comma_web/lib/comma_web/recommendation_runtime.ex 'Runtime adapter'
+  }
+
+  impl_recommendation_contract = code_module '@comma/recommendation-contract + server validator' {
+    description 'text-list@1 / media-list@1 的版本化 schema 与 bounded document/action contract；未知或 malformed generated card 不作为当前模板执行'
+    technology 'Zod + Elixir strict validator + resource drift check'
+    link ../../../clients/packages/recommendation-contract/src/index.ts 'Client SSOT'
+  }
+
+  impl_recommendation_media = code_module 'Electron Recommendation Media Loader' {
+    description '生成式 native capability；Main 仅接收 credential-free HTTPS，经 public DNS pin、redirect 重验、deadline、尺寸/格式检查后解码重编码为 bounded PNG；Web 只显示 text/action fallback'
+    technology 'recommendationMedia.load leaf + Electron Main'
+    link ../../../clients/apps/electron/src/main/modules/recommendation-media/index.ts 'Main owner'
+  }
+
+  product_user .maps_to impl_product_users '产品身份落点'
+  comma_workspace_product .maps_to impl_comma_workspace 'Comma scope 落点'
+  bft_organization_product .maps_to impl_bft_scope 'Organization record'
+  bft_swarm_product .maps_to impl_bft_scope 'Project record'
+  comma_chat_product .maps_to impl_chat_binding '当前 Group 固定 Chat 入口'
+  bft_chat_product .maps_to impl_chat_binding '当前 Binding'
+  product_conversation .maps_to impl_conversation '权威消息事实 owner'
+  product_conversation .maps_to impl_conversation_read_model '公开权威 snapshot 读取；无 lazy transcript projection'
+  product_task .maps_to impl_task_create '显式 Task 创建入口'
+  product_task_lifecycle .maps_to impl_conversation '唯一 status 物理持久化'
+  product_task_review .maps_to impl_conversation '统一 exact updated_at 的 ready_for_review 接受'
+  impl_task_create .local_call impl_task_conversation_seam 'Provider 完成 server-sealed provenance、Participant target resolution后，只经窄 TaskCreate port 提交 durable create primitive'
+  impl_task_conversation_seam .command impl_conversation 'configured binding → TaskSchedules → TaskConversationInput → ConversationServer 唯一外部 mutation path'
+  impl_bft_conversation_read_seam .request impl_conversation_read_model 'Salix.Client.impl/:erpc → SalixIM.Conversations 公开 snapshot/read facade'
+  product_participant_target .maps_to impl_participant '精确投递 owner 与 runtime target'
+  router_participant_target .maps_to impl_participant 'Router target payload'
+  assigned_worker_participant_target .maps_to impl_participant '目标 Worker payload'
+  router_delegator_participant_target .maps_to impl_participant 'Router delegator payload'
+  worker_delegator_participant_target .maps_to impl_participant 'Worker delegator payload'
+  product_router .maps_to impl_router_actor 'Role / session selection'
+  product_worker .maps_to impl_worker_actor 'Role / session selection'
+  router_runtime_session .maps_to impl_internal_session 'Comma/BFT 当前产品路径使用 internal Router'
+  router_runtime_session .maps_to impl_external_session 'Salix 平台层也支持 external Router runtime'
+  worker_runtime_session .maps_to impl_internal_session 'internal worker'
+  worker_runtime_session .maps_to impl_external_session 'external worker'
+  product_compute_environment .maps_to impl_compute '共享 SSOT；Comma/BFT 只保存 ACL、intent 与 bounded projection'
+  product_compute_workload .maps_to impl_compute 'stable workload/generation'
+  product_compute_workload .maps_to impl_compute_provider '按 policy/capability 放置，不由普通成员选择 provider'
+  product_external_worker .maps_to impl_runtime_binding 'exact binding validation、resolution 与 status'
+  product_service_route .maps_to impl_service_route 'provider-neutral authority'
+  product_compute_node .maps_to impl_compute_node 'leaf-first generated native bridge'
+  product_recommendation .maps_to impl_recommendation_profile 'member-scoped product projection SSOT'
+  product_recommendation .maps_to impl_recommendation_runtime '有界 source facts → 受限 renderer'
+  product_recommendation .maps_to impl_recommendation_contract '严格版本化 snapshot/template schema'
+  product_recommendation .maps_to impl_recommendation_media 'Electron-only progressive image enhancement；失败不改变 snapshot'
+  product_recommendation_action .maps_to impl_recommendation_contract 'action kind 与字段由 schema 限定'
+
+  extend comma_platform {
+    product_authority = component '产品事实与执行事实' {
+      description '在产品概念明确之后，再区分每类事实由哪个控制面持有'
+
+      comma_fact = concept 'Comma 产品事实' {
+        description 'User、Auth Session、Workspace、授权、当前 Chat public binding 与 Inbox projection'
+      }
+
+      bft_fact = concept 'BFT 产品事实' {
+        description 'Organization、Membership、Agent Swarm、Agent roster、integration 与 Dashboard projection'
+      }
+
+      salix_fact = concept 'Salix 执行事实' {
+        description 'Tenant、Group、Agent control、Conversation、Participant、Message 与 Runtime Session'
+      }
+
+      product_projection = concept '产品 Binding / Projection' {
+        #projection
+        description '保存公开 ID、authorization、列表 membership 与 freshness；不复制 canonical transcript'
+      }
+
+      reconcile_outbox = concept 'BFT→Salix 收敛 Outbox' {
+        description '产品事实事务提交后，以有界、可重试、幂等方式收敛执行 control plane'
+      }
+
+      comma_fact .maps_to salix_fact 'Comma.Salix anti-corruption seam；Workspace → Tenant + Group'
+      bft_fact .generates reconcile_outbox '同一个 Postgres 事务'
+      reconcile_outbox .projects salix_fact 'At-least-once / 幂等收敛'
+      product_projection .projects salix_fact '冲突或不新鲜时重读 Salix 权威事实'
+    }
+
+    single_writer = component '单写者与生成式内核概念' {
+      description '关键资源的唯一 mutation authority；放置、存储和读取不是第二个 owner'
+
+      conversation_resource = concept 'Conversation 资源' {
+        description 'Conversation-local aggregate；外部 mutation 只通过 ConversationServer 路由'
+      }
+
+      conversation_actor = concept 'ConversationActor' {
+        description 'Conversation membership/message/status 的序列化物理 owner，并持有一个 private Store PID'
+        link ../../../systems/apps/salix_im/lib/salix_im/conversation_actor.ex 'Source'
+      }
+
+
+
+
+      participant_resource = concept 'Participant 投递目标' {
+        description '目标而非 sender；拥有 lifecycle、provider log cursor、retry 与平台回执'
+      }
+
+      participant_actor = concept 'ConversationParticipantActor' {
+        description '精确 participant 的唯一 mutation owner，并持有一个 private Store PID'
+        link ../../../systems/apps/salix_im/lib/salix_im/conversation_participant_actor.ex 'Source'
+      }
+
+      agent_resource = concept 'Agent 持久身份' {
+        description '暂停时是 S3 root；活跃时一个 Server 持有 root commit handle，session state 另有 owner'
+      }
+
+      agent_server = concept 'SalixAgent.Server' {
+        description '受 S3 root CAS epoch/ETag fencing 的 gen_statem owner；唤醒 session actors，不独占 LLM round'
+        link ../../../systems/apps/salix_agent/lib/salix_agent/server.ex 'Source'
+      }
+
+      placement = concept 'Ring 放置建议' {
+        description '决定应该在哪个 node 启动；不是持久化排他保证'
+      }
+
+      head_cas = concept 'S3 Root CAS Fencing' {
+        description 'commit 前重新验证 epoch/ETag；阻止 stale owner 持久化'
+      }
+
+      capability_leaf = concept 'Native Capability Leaf' {
+        description 'command / event / state 的 schema、permission、handler metadata 与 fallback SSOT'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf registry'
+      }
+
+      generated_gateway = concept '生成式 Bridge 与 Gateway Binding' {
+        description 'Renderer/preload/web fallback/main binding 从 leaf registry 生成'
+      }
+
+      main_owner = concept 'Electron Main 服务 Owner' {
+        description '唯一实际 handler、bearer/native state authority；Renderer 不可绕过'
+      }
+
+      conversation_actor .owns conversation_resource '串行化 Conversation 变更'
+      participant_actor .owns participant_resource '串行化 Participant 与投递变更'
+      placement .maps_to agent_server '建议运行节点'
+      agent_server .owns agent_resource 'Claim 有效期间拥有 Root Commit'
+      head_cas .owns agent_server '阻止过期 Executor 提交'
+      capability_leaf .generates generated_gateway '一份 Registry → 全部运行时 Assembly'
+      generated_gateway .maps_to main_owner '类型化 Handler Provider/Member Binding'
+    }
+  }
+}

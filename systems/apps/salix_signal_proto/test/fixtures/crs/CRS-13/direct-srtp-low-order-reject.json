@@ -1,0 +1,35 @@
+{
+  "section": "CRS-13",
+  "name": "direct-srtp-low-order-reject",
+  "description": "A remote ephemeral public key that yields an all-zero X25519 shared secret (low-order point) must be rejected and the call must fail. The oracle key agreement rejects these inputs.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "local_ephemeral_private": "9ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d74",
+        "remote_public_key": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "result": "rejected"
+      }
+    },
+    {
+      "inputs": {
+        "local_ephemeral_private": "9ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d74",
+        "remote_public_key": "0100000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "result": "rejected"
+      }
+    },
+    {
+      "inputs": {
+        "local_ephemeral_private": "9ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d74",
+        "remote_public_key": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+      },
+      "outputs": {
+        "result": "rejected"
+      }
+    }
+  ]
+}

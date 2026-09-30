@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang={BridgeForTeamsWeb.I18n.lang_tag(assigns[:locale] || "en")} class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <.live_title default="BridgeForTeams">
+      {assigns[:page_title]}
+    </.live_title>
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <link phx-track-static rel="stylesheet" href={~p"/assets/app.css"} />
+    <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
+    </script>
+  </head>
+  <body class="h-full bg-white antialiased">
+    {@inner_content}
+  </body>
+</html>

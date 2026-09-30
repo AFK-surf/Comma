@@ -1,0 +1,24 @@
+{
+  "name": "@evalens/adapters",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./codex": "./src/codex/index.ts",
+    "./observers": "./src/observers/index.ts",
+    "./salix": "./src/salix/index.ts",
+    "./slack": "./src/slack/index.ts"
+  },
+  "dependencies": {
+    "@evalens/core": "workspace:*",
+    "@evalens/utils": "workspace:*",
+    "@linear/sdk": "^38.0.0",
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "@octokit/rest": "^22.0.0",
+    "@slack/web-api": "^8.0.0",
+    "googleapis": "^166.0.0",
+    "radash": "^12.1.1",
+    "zod": "^4.4.3"
+  }
+}

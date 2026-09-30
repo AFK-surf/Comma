@@ -1,0 +1,2189 @@
+{
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "schemaVersion": 42,
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "gcm_datasource",
+        "skipUrlSync": false,
+        "multi": false,
+        "allowCustomValue": true,
+        "includeAll": false,
+        "auto": false,
+        "auto_min": "10s",
+        "auto_count": 30,
+        "label": "Cloud Monitoring datasource",
+        "query": "stackdriver",
+        "hide": 2
+      },
+      {
+        "type": "query",
+        "name": "gcp_project",
+        "skipUrlSync": false,
+        "multi": false,
+        "allowCustomValue": true,
+        "includeAll": false,
+        "auto": false,
+        "auto_min": "10s",
+        "auto_count": 30,
+        "label": "Cloud Monitoring project",
+        "datasource": {
+          "type": "stackdriver",
+          "uid": "${gcm_datasource}"
+        },
+        "query": {
+          "selectedQueryType": "projects",
+          "projectName": ""
+        },
+        "refresh": 1,
+        "hide": 2
+      }
+    ]
+  },
+  "annotations": {},
+  "title": "Comma Salix Runtime",
+  "uid": "comma-staging-salix-runtime",
+  "description": "Salix domain, Triage, VM, LLM, reporting, and recovery signals. All Salix metrics are lazy; only workload scrape health is required.",
+  "tags": [
+    "comma",
+    "generated",
+    "staging",
+    "salix"
+  ],
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 501,
+      "title": "Workload scrape health",
+      "description": "Required health for the workload that runs Salix. Missing series is a collection failure and is never synthesized as zero.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "min by (workload) (up{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "mode": "markdown",
+        "content": "Every Salix signal below is event-driven or lazily created, including reporting queue depth. No data is not converted to zero.\n\nUse the required workload health above and [Platform Overview](/d/comma-staging-platform-overview) for scrape, rollout, resource, and shared dependency context. Cloud Monitoring owns platform paging; the two bounded LLM queries below also feed staging-only Grafana P2 rules.\n\n- [Telemetry contracts](https://github.com/AFK-surf/Comma/blob/main/docs/observability.md)"
+      },
+      "id": 502,
+      "title": "Dashboard semantics",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 16,
+        "h": 5
+      }
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 510,
+      "title": "Operations traffic / outcomes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Domain traffic and error outcomes are grouped by bounded component, operation, surface, and outcome.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{component}} {{operation}} {{surface}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, component, operation, surface, outcome) (rate(salix_operations_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 511,
+      "title": "Operations p95 latency",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Latency is computed from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{component}} {{surface}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, component, surface) (rate(salix_operations_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 520,
+      "title": "VM operations traffic / outcomes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. VM traffic and error outcomes are grouped by bounded surface, provider, operation, and outcome.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{operation}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, provider, operation, outcome) (rate(salix_vm_operations_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 521,
+      "title": "VM operation p95 latency",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Latency is computed from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{operation}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, surface, provider, operation) (rate(salix_vm_operations_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 530,
+      "title": "LLM logical requests / attempts",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Logical request and provider-attempt rates remain separate so retries are visible without reconstructing business state.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "request {{workload}} {{surface}} {{provider}} {{model_key}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, provider, model_key, outcome) (rate(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "attempt {{workload}} {{surface}} {{provider}} {{model_key}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, provider, model_key, outcome) (rate(salix_llm_attempts_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 531,
+      "title": "LLM attempt p95 latency",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Provider attempt latency uses the current singular attempt metric name.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 21,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{model_key}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, surface, provider, model_key) (rate(salix_llm_attempt_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 532,
+      "title": "LLM TTFT p95",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Time to first token is computed from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{model_key}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, surface, provider, model_key) (rate(salix_llm_ttft_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 533,
+      "title": "LLM token rate",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Tokens are grouped only by bounded surface, provider, model key, and kind.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 21,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{model_key}} {{kind}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, provider, model_key, kind) (rate(salix_llm_tokens_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 540,
+      "title": "Reporting queue depth",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Queue depth itself is lazy and must not be treated as a required zero-valued gauge.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{sink}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload, sink) (salix_reporting_queue_depth{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 541,
+      "title": "Reporting rejection / drop rate",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Queue-full events and dropped rows are shown without inventing a capacity threshold.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 29,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{sink}} queue full",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, sink) (rate(salix_reporting_queue_full_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{sink}} dropped rows",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, sink) (rate(salix_reporting_dropped_rows_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 542,
+      "title": "Reporting flush p95",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Flush latency is computed from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{sink}} p95",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, sink) (rate(salix_reporting_flush_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 543,
+      "title": "Reporting flush failures",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Count non-ok flush completions as failures.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 29,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{sink}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, sink, outcome) (rate(salix_reporting_flush_duration_seconds_count{namespace=\"comma\",workload=\"comma\",outcome!=\"ok\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 550,
+      "title": "VM state transitions",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Transition rates are grouped by bounded surface, provider, and state.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{state}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, provider, state) (rate(salix_vm_transitions_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 551,
+      "title": "VM recovery scan work",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Recovery scans are work signals, not a reconstructed runtime state projection.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 37,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{provider}} {{state}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, provider, state) (rate(salix_vm_recovery_scanned_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 552,
+      "title": "External status projections",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Projection outcomes expose write failures without scanning business records.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 37,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, outcome) (rate(salix_external_status_projections_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 553,
+      "title": "Derived-storage convergence passes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Sustained error outcomes need triage: before first completion they mean the derived data cannot converge (readiness held); after the durable completed_ever fact, a failed completion-marker write also reports error while readiness stays true (scheduling state only).",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{operation}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, operation, outcome) (rate(salix_store_convergence_passes_total{namespace=\"comma\",workload=\"comma\"}[15m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 554,
+      "title": "Derived-storage convergence work",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Converged volume is bootstrap progress on first pass and drift healing afterwards; failed records block pass completion.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 45,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{operation}} converged",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, operation) (rate(salix_store_convergence_converged_total{namespace=\"comma\",workload=\"comma\"}[15m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{operation}} failed",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, operation) (increase(salix_store_convergence_failed_total{namespace=\"comma\",workload=\"comma\"}[30m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 555,
+      "title": "S3 settlement outcomes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. CAS and create-once ambiguity settlement is bounded. Sustained indeterminate or error outcomes mean the read-back budget is exhausting or storage is failing; precondition_failed and exists are proved competing-owner results.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 45,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{mode}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, mode, outcome) (rate(salix_storage_settlement_total{namespace=\"comma\",workload=\"comma\"}[15m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "mode": "markdown",
+        "content": "**Grafana evaluates the adjacent queries as staging P2 rules; the panels themselves only explain the signals. Cloud Monitoring remains the platform paging owner.**\n\n- Logical-request error ratio: above 10% with at least 10 requests in 15 minutes.\n- LLM TTFT p95: above 30 seconds with at least 20 TTFT samples in 15 minutes.\n\nA point shows the current 15-minute window breaching. Grafana sends FIRING/RESOLVED to `#comma-app-alerts` only after the condition remains true for 15 continuous minutes. TTFT is provider-attempt and workload-wide; a missing billing surface currently normalizes to `system`. Do not infer end-to-end customer or surface impact from a point."
+      },
+      "id": 560,
+      "title": "Staging P2 alert contracts",
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "percentunit",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 561,
+      "title": "LLM logical error breach",
+      "description": "Exact query used by staging P2 rule comma-stg-llm-error. A point is the 15-minute logical-request error ratio only when it exceeds 10% and the same window contains at least 10 requests.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 53,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} candidate breach",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "(((((sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\",outcome=\"error\"}[15m]))) or on(workload) (0 * (sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m]))))) / (sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m])))) > 0.1) and on(workload) ((sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m]))) >= 10)) or on(workload) (0 * (sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m]))))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 562,
+      "title": "LLM TTFT breach",
+      "description": "Exact query used by staging P2 rule bfsralwg6q1hcd. A point is the 15-minute provider-attempt p95 only when it exceeds 30 seconds and the same window contains at least 20 TTFT samples. It is not end-to-end user latency.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 53,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} candidate breach",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "(((histogram_quantile(0.95, sum by (workload, le) (rate(salix_llm_ttft_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[15m])))) > 30) and on(workload) ((sum by (workload) (increase(salix_llm_ttft_seconds_count{namespace=\"comma\",workload=\"comma\"}[15m]))) >= 20)) or on(workload) (0 * (sum by (workload) (increase(salix_llm_ttft_seconds_count{namespace=\"comma\",workload=\"comma\"}[15m]))))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 570,
+      "title": "User-dependency job outcomes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Timeout, saturation, and crash outcomes identify unhealthy user-owned dependencies without consuming agent-core capacity.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 61,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{kind}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, kind, outcome) (rate(salix_dependency_jobs_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 571,
+      "title": "Dependency and event pressure",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Compare active dependency work with detached Connector event backlog; sustained pressure should be read with timeout and saturation outcomes.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 61,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{kind}} active jobs",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload, kind) (salix_dependency_jobs_active{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} external-event queue",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload) (salix_connector_external_event_queue_depth{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 572,
+      "title": "Connector external-event outcomes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Completion and terminal/cache-hit outcomes should keep pace with accepted and retry outcomes; sustained retry, timeout, or saturation indicates dependency trouble.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 69,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, outcome) (rate(salix_connector_external_events_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 573,
+      "title": "Connector ownership cleanup",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Pending RPC and stream outcomes expose caller, deadline, capacity, and transport cleanup without high-cardinality operation identities.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 69,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "RPC {{workload}} {{transport}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, transport, outcome) (rate(salix_connector_pending_rpcs_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "read {{workload}} {{transport}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, transport, outcome) (rate(salix_connector_read_streams_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "C",
+          "queryType": "promQL",
+          "aliasBy": "write {{workload}} {{transport}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, transport, outcome) (rate(salix_connector_write_streams_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 580,
+      "title": "Triage phase outcomes",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Native-Triage progress and failures are grouped by bounded phase, outcome, and source mode labels.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{phase}} {{outcome}} {{source_mode}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, phase, outcome, source_mode) (rate(salix_triage_phases_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 581,
+      "title": "Triage phase p95 latency",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Native-Triage phase latency is computed from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 77,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{phase}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, phase, outcome) (rate(salix_triage_phase_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 582,
+      "title": "Triage recovery backlog",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Backlog is a bounded continuation-presence signal (0 or 1), not an exact global queue depth.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 77,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{lane}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload, lane) (salix_triage_recovery_backlog{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 583,
+      "title": "Triage recovery record errors",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Sustained errors mean unreadable or invalid durable records are preventing a recovery lane from reporting clean progress.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 77,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{lane}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, lane, outcome) (rate(salix_triage_recovery_record_errors_total{namespace=\"comma\",workload=\"comma\"}[15m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 590,
+      "title": "Meeting runtime-lost terminalizations",
+      "description": "Exact query used by staging P2 rule comma-stg-meeting-runtime-lost. A point counts meetings the summary watchdog terminalized as runtime_lost, i.e. attendees received an incomplete-record notice instead of a summary.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 85,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} runtime-lost",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "((sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_watchdog\",outcome=\"ok\"}[30m]))) > 0) or on(workload) (0 * (sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_watchdog\",outcome=\"ok\"}[30m]))))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 591,
+      "title": "Meetings stuck without an anchor",
+      "description": "Exact query used by staging P2 rule comma-stg-meeting-stuck. A point counts dispatched, non-abandoned meetings the watchdog could not safely terminalize because every timestamp anchor was missing.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 85,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} stuck",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "((sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_stuck_nonterminal\"}[30m]))) > 0) or on(workload) (0 * (sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_stuck_nonterminal\"}[30m]))))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 592,
+      "title": "Meeting delivery errors",
+      "description": "Exact query used by staging P2 rule comma-stg-meeting-delivery-error. Deliveries parked on a disabled connect report the retained outcome and are excluded, so this is genuine failure only.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 85,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} delivery error",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "((sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_delivery\",outcome=\"error\"}[30m]))) > 0) or on(workload) (0 * (sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_delivery\",outcome=\"error\"}[30m]))))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    }
+  ]
+}

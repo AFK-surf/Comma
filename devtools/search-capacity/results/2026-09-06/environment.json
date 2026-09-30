@@ -1,0 +1,85 @@
+{
+  "date": "2026-09-06",
+  "timezone": "Asia/Shanghai",
+  "host": {
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.5",
+    "model": "Apple M5",
+    "memory_bytes": "34359738368",
+    "cpu_count": "10"
+  },
+  "containers": [
+    {
+      "name": "comma-search-capacity-os-0906",
+      "image": "opensearchproject/opensearch:3.8.0",
+      "image_id_provenance_only": "sha256:bcc1797519726ceb6d651d4a3e60b7c30da91793914a8dfe75fd441d4f641509",
+      "cpu_limit": 4.0,
+      "memory_limit_bytes": 6442450944,
+      "memory_swap_limit_bytes": 6442450944,
+      "started_at": "2026-09-06T04:16:06.953098821Z",
+      "observed_state": "exited",
+      "finished_at": "2026-09-06T05:58:45.487545719Z"
+    },
+    {
+      "name": "comma-search-capacity-ch-0906",
+      "image": "clickhouse/clickhouse-server:26.8",
+      "image_id_provenance_only": "sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb",
+      "cpu_limit": 4.0,
+      "memory_limit_bytes": 6442450944,
+      "memory_swap_limit_bytes": 6442450944,
+      "started_at": "2026-09-06T05:58:45.718254538Z",
+      "observed_state": "exited",
+      "finished_at": "2026-09-06T06:23:57.085281332Z"
+    }
+  ],
+  "acceptance": {
+    "p95_ms": 2000,
+    "mean_semantic_recall_at_20": 0.95,
+    "request_errors": 0,
+    "scope_and_duplicate_violations": 0
+  },
+  "limitations": [
+    "synthetic vectors and snippets; no real media embedding-quality claim",
+    "closed-loop clients; no constant arrival rate overload experiment",
+    "no real GroupDirectory/ProviderConnects/PG publication path",
+    "OS page cache not forcibly cleared",
+    "ordinary background merges may continue; no force merge",
+    "OpenSearch and ClickHouse timed runs do not overlap"
+  ],
+  "docker_vm": {
+    "cpus": 10,
+    "memory_bytes": 16819609600
+  },
+  "resources": {
+    "os": {
+      "samples": 836,
+      "sample_errors": 8,
+      "first_sample": 1788670184.135926,
+      "last_sample": 1788674362.187787,
+      "memory_peak_bytes": 6442450944,
+      "oom_events_max": 0,
+      "oom_kill_events_max": 0,
+      "memory_max_events_max": 80175,
+      "major_page_fault_counter_max": 25176761,
+      "cpu_throttled_microseconds_max": 5267472748,
+      "raw_file": "resources-os.jsonl.gz"
+    },
+    "ch": {
+      "samples": 295,
+      "sample_errors": 0,
+      "first_sample": 1788674363.025666,
+      "last_sample": 1788675833.9787169,
+      "memory_peak_bytes": 6442450944,
+      "oom_events_max": 0,
+      "oom_kill_events_max": 0,
+      "memory_max_events_max": 64631,
+      "major_page_fault_counter_max": 2115,
+      "cpu_throttled_microseconds_max": 1178516461,
+      "raw_file": "resources-ch.jsonl.gz"
+    }
+  },
+  "engine_versions": {
+    "opensearch": "3.8.0",
+    "clickhouse": "26.8.2.7"
+  }
+}

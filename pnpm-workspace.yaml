@@ -1,0 +1,29 @@
+packages:
+  - clients
+  - website
+  - clients/apps/*
+  - clients/packages/*
+  - observability/grafana
+
+ignoredBuiltDependencies:
+  - "@central-icons-react/round-filled-radius-2-stroke-2"
+  - "@central-icons-react/round-outlined-radius-2-stroke-2"
+
+onlyBuiltDependencies:
+  - "@swc/core"
+  - electron-winstaller
+  - esbuild
+  - fs-xattr
+  - macos-alias
+  - sharp
+  - unrs-resolver
+  - workerd
+
+# yauzl 2 uses legacy streams that stall extraction in Electron 42.
+overrides:
+  "extract-zip>yauzl": "^3.4.0"
+
+# Keep cancellation listeners until every CSS property has settled.
+# A once-only listener retains detached chat viewports after multiple cancellations.
+patchedDependencies:
+  react-aria@3.49.0: patches/react-aria@3.49.0.patch

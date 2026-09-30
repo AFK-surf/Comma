@@ -1,0 +1,168 @@
+{
+  "section": "CRS-02",
+  "name": "username-hash",
+  "description": "Username hash: 32-byte compressed Ristretto255 point for nickname.discriminator. Hashing is case-insensitive on the nickname. Invalid usernames produce an error output: the oracle rejected the input, and the text is a neutral summary of the failed rule.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "username": "vectorbot.42"
+      },
+      "outputs": {
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c"
+      }
+    },
+    {
+      "inputs": {
+        "username": "VectorBot.42"
+      },
+      "outputs": {
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vector_bot.01"
+      },
+      "outputs": {
+        "hash": "f4e9849d3472d595f2c51c81b8dd6d1162eda3e456e66716c6c9cc143bf3335e"
+      }
+    },
+    {
+      "inputs": {
+        "username": "abc.99"
+      },
+      "outputs": {
+        "hash": "249ca2ea7b11f55fe4dcd2fe1396fadf575ce105bb2b4b3b8896760092707751"
+      }
+    },
+    {
+      "inputs": {
+        "username": "a_b.10"
+      },
+      "outputs": {
+        "hash": "d40c2fc589fc5b9e71d756259514d9ca4507ef5587506a927ab6c77327a48f2d"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot.1234567"
+      },
+      "outputs": {
+        "hash": "ccade41b6386072826e240b359fec1198199a1751b17f3b5aec81b8a4f2efd7c"
+      }
+    },
+    {
+      "inputs": {
+        "username": "x2345678901234567890123456789012.55"
+      },
+      "outputs": {
+        "hash": "bc795b3f3066036f13e3ceb413da7f7dc25d86e84830725bd6c15f5c995ee02a"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vector9.100"
+      },
+      "outputs": {
+        "hash": "e2494de409d7076cd9c40098156ab864020fb1be2ab2982b2f83c7866cb1715b"
+      }
+    },
+    {
+      "inputs": {
+        "username": "signal_ai.987654321"
+      },
+      "outputs": {
+        "hash": "b0ee165c991340c5062b0bc123f3aed2e1a9a7365d99d3f69c747fd37136b34d"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot.9223372036854775807"
+      },
+      "outputs": {
+        "hash": "b26b10d6864818f2872acbac6afc6e9c9fec5b8f09e362e05a1543e6e6606279"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot"
+      },
+      "outputs": {
+        "error": "rejected: no '.' separator"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot.0"
+      },
+      "outputs": {
+        "error": "rejected: discriminator is zero"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot.00"
+      },
+      "outputs": {
+        "error": "rejected: discriminator is zero"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot.1"
+      },
+      "outputs": {
+        "error": "rejected: discriminator has a single digit"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vectorbot.012"
+      },
+      "outputs": {
+        "error": "rejected: discriminator of three or more digits has a leading zero"
+      }
+    },
+    {
+      "inputs": {
+        "username": "1vector.42"
+      },
+      "outputs": {
+        "error": "rejected: nickname starts with a digit"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vector-bot.42"
+      },
+      "outputs": {
+        "error": "rejected: nickname has a character outside the allowed set"
+      }
+    },
+    {
+      "inputs": {
+        "username": "vector.bot.4x"
+      },
+      "outputs": {
+        "error": "rejected: discriminator has a non-digit character"
+      }
+    },
+    {
+      "inputs": {
+        "username": ".42"
+      },
+      "outputs": {
+        "error": "rejected: nickname is empty"
+      }
+    },
+    {
+      "inputs": {
+        "username": "véctorbot.42"
+      },
+      "outputs": {
+        "error": "rejected: nickname has a character outside the allowed set"
+      }
+    }
+  ]
+}

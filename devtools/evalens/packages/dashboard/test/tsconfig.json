@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "allowJs": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../../../node_modules/.cache/evalens/dashboard-test.tsbuildinfo",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
+  },
+  "include": ["../src", "./*.ts", "./*.tsx"],
+  "references": [{ "path": "../../core" }, { "path": "../../server" }]
+}

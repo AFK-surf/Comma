@@ -1,0 +1,29 @@
+{
+  "name": "@comma/native-bridge",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./web": {
+      "types": "./src/web.ts",
+      "default": "./src/web.ts"
+    }
+  },
+  "scripts": {
+    "generate:partners": "node --experimental-strip-types ./scripts/generate-native-partner-contracts.mjs",
+    "generate:partners:check": "node --experimental-strip-types ./scripts/generate-native-partner-contracts.mjs --check"
+  },
+  "dependencies": {
+    "@comma/chat-contract": "workspace:*",
+    "@comma/session-contract": "workspace:*",
+    "async-call-rpc": "^6.4.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "section": "CRS-09",
+  "name": "uid-encryption",
+  "description": "Deterministic encryption of a service ID (ACI or PNI) under a group's UID key pair; output is the 65-byte UUID ciphertext. Decryption returns the same service ID, including its kind. Service IDs are given in the 17-byte tagged form and the compact form of CRS-09a section 2.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "label": "sequence-00-1f/aci",
+      "inputs": {
+        "master_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "service_id_tagged": "0000000000000040008000000000000001",
+        "service_id_compact": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "uuid_ciphertext": "008e8ad28fb0150b29a0727278e5d805a50e47c5cdbd1a1021dc1bae9684eafd5cfe14ec2f1d7e0ee546b9681363bfbc3ae7ec527ed11935162f03276227ec8467",
+        "decrypted_service_id_tagged": "0000000000000040008000000000000001"
+      }
+    },
+    {
+      "label": "sequence-00-1f/aci",
+      "inputs": {
+        "master_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "service_id_tagged": "00c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a",
+        "service_id_compact": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "uuid_ciphertext": "000a5ec37142ca0f5654d2cf581a29597351fa3524c17785c191e08e44edf372205884eda864079e1988b95a53985415926a84746cc8c5ae85d9a0bb43bb20c32d",
+        "decrypted_service_id_tagged": "00c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      }
+    },
+    {
+      "label": "sequence-00-1f/aci",
+      "inputs": {
+        "master_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "service_id_tagged": "00ffffffffffff4fffbfffffffffffffff",
+        "service_id_compact": "ffffffffffff4fffbfffffffffffffff"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00ca5394a3cd03dd5cdf670b15379b52e1fae35a0d0d7be3ce9ff827b052fc69356e79da6878499369b54b0aac7503f07eb50df8c67a7e88fb39c041009f209728",
+        "decrypted_service_id_tagged": "00ffffffffffff4fffbfffffffffffffff"
+      }
+    },
+    {
+      "label": "sequence-00-1f/pni",
+      "inputs": {
+        "master_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "service_id_tagged": "0100000000000040008000000000000002",
+        "service_id_compact": "0100000000000040008000000000000002"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00702e5a836cbd833fd6307bbf89bc8feb4ed61ee3cd849985037b6b9270b911387e87c9c103471dd7c1b4ad2bb15babc42bd72e19bae362a619b81bf8db87456a",
+        "decrypted_service_id_tagged": "0100000000000040008000000000000002"
+      }
+    },
+    {
+      "label": "sequence-00-1f/pni",
+      "inputs": {
+        "master_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "service_id_tagged": "01000000000000400080000000000000c3",
+        "service_id_compact": "01000000000000400080000000000000c3"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00ecabd55ad438d0d47a7835a70aa057129935e94dbe9ef44697cc7782abe6886282650d1ada9788f4c35d500e0eae2cfc8eabf17d6943114927798cee14237d01",
+        "decrypted_service_id_tagged": "01000000000000400080000000000000c3"
+      }
+    },
+    {
+      "label": "seeded-a/aci",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "service_id_tagged": "0000000000000040008000000000000001",
+        "service_id_compact": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "uuid_ciphertext": "0094992a8d2688ad80a35717314f4d687fe61b6314938dd2e2f309ba717ccfd304ba07871b92f252a0d14bd1ee744a485edf3c77a5ca31196875bbf2dcf567e60a",
+        "decrypted_service_id_tagged": "0000000000000040008000000000000001"
+      }
+    },
+    {
+      "label": "seeded-a/aci",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "service_id_tagged": "00c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a",
+        "service_id_compact": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00c2e5a7cca818800db95d6884e4db6e8f0b618d465b9cb8006c2f5848b7e70b2ffabb93df88deb088bbcddf61479c47e55784e61e08ff2d3e12a8fe481ea56a40",
+        "decrypted_service_id_tagged": "00c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      }
+    },
+    {
+      "label": "seeded-a/aci",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "service_id_tagged": "00ffffffffffff4fffbfffffffffffffff",
+        "service_id_compact": "ffffffffffff4fffbfffffffffffffff"
+      },
+      "outputs": {
+        "uuid_ciphertext": "0060e85fc1f0f73ae75971bb3e7464ce4bb0a7dc4915847c493360f2ba337e7862b4fbec36827f04e730f6decab9c0956b0333ab8dabd9800e334eb7a572fb301d",
+        "decrypted_service_id_tagged": "00ffffffffffff4fffbfffffffffffffff"
+      }
+    },
+    {
+      "label": "seeded-a/pni",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "service_id_tagged": "0100000000000040008000000000000002",
+        "service_id_compact": "0100000000000040008000000000000002"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00ac07ba17ff788e60daa102356499db68aec3722aecb44619553aa1de8af07f1852f4ced15ebfa5ed3bd2aefb0e11801ac4e0e6004a68ec8998b1113e5b68d36d",
+        "decrypted_service_id_tagged": "0100000000000040008000000000000002"
+      }
+    },
+    {
+      "label": "seeded-a/pni",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "service_id_tagged": "01000000000000400080000000000000c3",
+        "service_id_compact": "01000000000000400080000000000000c3"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00b8c22e86e922c5ac5c35e391f592c337b85fe58ee0c57fc0f0795975729ac240b86459b108e6a45889fc9e757385e5505a6a207916829d67b6bba9b7622dd30a",
+        "decrypted_service_id_tagged": "01000000000000400080000000000000c3"
+      }
+    },
+    {
+      "label": "seeded-b/aci",
+      "inputs": {
+        "master_key": "3ac38acaed9602706bb8389ffe31206758e7ada35159198ea4466b01d8a03b11",
+        "service_id_tagged": "0000000000000040008000000000000001",
+        "service_id_compact": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00dc4a571d2e7cd921f0c435b82880ed561bfd139e717d95d224f0653b94588a72ac0905f2c85f1a170842ca08750577c35d9810ecc2557396c86490f3a876631b",
+        "decrypted_service_id_tagged": "0000000000000040008000000000000001"
+      }
+    },
+    {
+      "label": "seeded-b/aci",
+      "inputs": {
+        "master_key": "3ac38acaed9602706bb8389ffe31206758e7ada35159198ea4466b01d8a03b11",
+        "service_id_tagged": "00c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a",
+        "service_id_compact": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "uuid_ciphertext": "0068319522d8213810f8e888a4d644b475fbdfe96b7f7b27fb6571f09993450d1592ce29e93d5da71500cb9e6e82db84e2ec24de62928126bd52885340cb866612",
+        "decrypted_service_id_tagged": "00c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      }
+    },
+    {
+      "label": "seeded-b/aci",
+      "inputs": {
+        "master_key": "3ac38acaed9602706bb8389ffe31206758e7ada35159198ea4466b01d8a03b11",
+        "service_id_tagged": "00ffffffffffff4fffbfffffffffffffff",
+        "service_id_compact": "ffffffffffff4fffbfffffffffffffff"
+      },
+      "outputs": {
+        "uuid_ciphertext": "00e2225881a9230280e002459ed74613a05182538fe445741cc49c6d899a9e3a1e8aeac11ba407a50fdb9419cb72ad006a80e9d0bad9514cea745dabcd579e1133",
+        "decrypted_service_id_tagged": "00ffffffffffff4fffbfffffffffffffff"
+      }
+    },
+    {
+      "label": "seeded-b/pni",
+      "inputs": {
+        "master_key": "3ac38acaed9602706bb8389ffe31206758e7ada35159198ea4466b01d8a03b11",
+        "service_id_tagged": "0100000000000040008000000000000002",
+        "service_id_compact": "0100000000000040008000000000000002"
+      },
+      "outputs": {
+        "uuid_ciphertext": "005a44d3a654eec19ca33b5428f2350333ef56eb0faf77685354e9775aa6f803625e28b99d0204f787838aba890c8b22cfbce538a5776030bbe7adcb073f742906",
+        "decrypted_service_id_tagged": "0100000000000040008000000000000002"
+      }
+    },
+    {
+      "label": "seeded-b/pni",
+      "inputs": {
+        "master_key": "3ac38acaed9602706bb8389ffe31206758e7ada35159198ea4466b01d8a03b11",
+        "service_id_tagged": "01000000000000400080000000000000c3",
+        "service_id_compact": "01000000000000400080000000000000c3"
+      },
+      "outputs": {
+        "uuid_ciphertext": "0012c2238866c5e8c1b2ee7c0dcb136571d4e0e6e805810119fc241e21dfc1fd141a5650a9d6dc3c5d114bf41ed7adb5a460c652630786e715255b983991bd4241",
+        "decrypted_service_id_tagged": "01000000000000400080000000000000c3"
+      }
+    }
+  ]
+}

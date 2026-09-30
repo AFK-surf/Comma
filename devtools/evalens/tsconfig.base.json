@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@evalens/utils": ["./packages/utils/src/index.ts"],
+      "@evalens/utils/*": ["./packages/utils/src/*"],
+      "@evalens/core": ["./packages/core/src/index.ts"],
+      "@evalens/core/*": ["./packages/core/src/*"],
+      "@evalens/store": ["./packages/store/src/index.ts"],
+      "@evalens/store/*": ["./packages/store/src/*"],
+      "@evalens/adapters": ["./packages/adapters/src/index.ts"],
+      "@evalens/adapters/*": ["./packages/adapters/src/*"],
+      "@evalens/evaluators": ["./packages/evaluators/src/index.ts"],
+      "@evalens/evaluators/*": ["./packages/evaluators/src/*"],
+      "@evalens/cli": ["./packages/cli/src/index.ts"],
+      "@evalens/cli/*": ["./packages/cli/src/*"],
+      "@evalens/server": ["./packages/server/src/index.ts"],
+      "@evalens/server/*": ["./packages/server/src/*"],
+      "@evalens/dashboard": ["./packages/dashboard/src/main.tsx"],
+      "@evalens/dashboard/*": ["./packages/dashboard/src/*"]
+    }
+  }
+}

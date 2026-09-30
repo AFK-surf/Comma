@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "import", "jsx-a11y"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "options": {
+    "maxWarnings": 0
+  },
+  "rules": {
+    "import/no-unassigned-import": "off",
+    "react/react-in-jsx-scope": "off"
+  },
+  "ignorePatterns": [
+    "node_modules/**",
+    "apps/*/dist/**",
+    "apps/*/out/**",
+    "apps/*/.vite/**",
+    "apps/electron/dist-native/**",
+    "apps/electron/native/**/.build/**",
+    "apps/electron/native/**/.swiftpm/**"
+  ]
+}

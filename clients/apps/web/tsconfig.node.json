@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.web.node.tsbuildinfo",
+    "paths": {
+      "@comma/app": ["../../packages/app/src/index.tsx"],
+      "@comma/config": ["../../packages/config/src/index.ts"],
+      "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
+      "@comma/ui": ["../../packages/ui/src/index.ts"]
+    }
+  },
+  "include": [
+    "vite.config.ts",
+    "wrangler.worker.ts",
+    "../../vite/*.ts",
+    "../../packages/config/src/**/*.ts",
+    "../../packages/layout-inspector/src/source-location.ts",
+    "../../packages/layout-inspector/src/vite.ts"
+  ],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/**/*.test.*",
+    "../../packages/**/*.spec.*"
+  ]
+}

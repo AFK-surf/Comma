@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "version": "26.4.1.2212",
+  "rows": 4,
+  "engine": "SharedReplacingMergeTree(\\'/clickhouse/tables/{uuid}/{shard}\\', \\'{replica}\\', version) ORDER BY id SETTINGS index_granularity = 8192",
+  "zero_only": true,
+  "content_unchanged": true,
+  "stale_part_packet_ignored": true
+}

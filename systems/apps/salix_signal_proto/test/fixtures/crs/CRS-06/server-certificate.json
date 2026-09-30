@@ -1,0 +1,68 @@
+{
+  "section": "CRS-06",
+  "name": "server-certificate",
+  "description": "Server certificate parse and verify. Signatures are randomized XEdDSA, so re-signing gives different bytes: verify, do not compare. accepted_as_signer is the oracle result of validating a sender certificate signed by this server key (false for the revoked key id 0xDEADC357). Certificate bodies were encoded from the CRS-06 table; all results are oracle observations.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "key id 1",
+      "inputs": {
+        "trust_root_public": "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777",
+        "server_certificate": "0a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12400b3782eb1db80aead3a3dcf3db16d52696494211bfac8c7d6d4f54fff50fcf84eb7a7ffc48cb5c7a36fee688a1df0597817793db3f4420e8e9a770095465c38f"
+      },
+      "outputs": {
+        "key_id": 1,
+        "server_public": "05df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "certificate_data": "0801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "signature": "0b3782eb1db80aead3a3dcf3db16d52696494211bfac8c7d6d4f54fff50fcf84eb7a7ffc48cb5c7a36fee688a1df0597817793db3f4420e8e9a770095465c38f",
+        "signature_verifies": true,
+        "accepted_as_signer": true
+      }
+    },
+    {
+      "label": "key id 0x12345678",
+      "inputs": {
+        "trust_root_public": "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777",
+        "server_certificate": "0a2908f8acd19101122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12408d0ad3b8cc26078113864a76e650c487aabd7a797155c507bc94af48515bd60b29864d4bcac4525adc44a8562a96bca58a57ddd63976bf9f248ed5e0896ca281"
+      },
+      "outputs": {
+        "key_id": 305419896,
+        "server_public": "05df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "certificate_data": "08f8acd19101122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "signature": "8d0ad3b8cc26078113864a76e650c487aabd7a797155c507bc94af48515bd60b29864d4bcac4525adc44a8562a96bca58a57ddd63976bf9f248ed5e0896ca281",
+        "signature_verifies": true,
+        "accepted_as_signer": true
+      }
+    },
+    {
+      "label": "revoked key id 0xDEADC357",
+      "inputs": {
+        "trust_root_public": "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777",
+        "server_certificate": "0a2908d786b7f50d122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12403f6f74e3974fa1cde2ca51ca52a41a49997c370e79d54bfd37a06d1e2b4f229a761b3de0c80133de439d0ef6b4abfd1bbd6388e01d609c4e703996a010a2e885"
+      },
+      "outputs": {
+        "key_id": 3735929687,
+        "server_public": "05df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "certificate_data": "08d786b7f50d122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "signature": "3f6f74e3974fa1cde2ca51ca52a41a49997c370e79d54bfd37a06d1e2b4f229a761b3de0c80133de439d0ef6b4abfd1bbd6388e01d609c4e703996a010a2e885",
+        "signature_verifies": true,
+        "accepted_as_signer": false
+      }
+    },
+    {
+      "label": "certificate issued by the oracle",
+      "inputs": {
+        "trust_root_public": "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777",
+        "server_certificate": "0a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e1240f227e0d4ffe6db8eabdc60bf0b85419d3d7b38ae4cd9f706b86a6d64457a8e979da249009d2c8bd2ce9f94f7b4d91b6b97e61f961796ef5ad258bd8b0a6afb8f"
+      },
+      "outputs": {
+        "key_id": 1,
+        "server_public": "05df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "certificate_data": "0801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e",
+        "signature": "f227e0d4ffe6db8eabdc60bf0b85419d3d7b38ae4cd9f706b86a6d64457a8e979da249009d2c8bd2ce9f94f7b4d91b6b97e61f961796ef5ad258bd8b0a6afb8f",
+        "signature_verifies": true,
+        "accepted_as_signer": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,758 @@
+{
+  "section": "CRS-05",
+  "name": "content-encoding",
+  "description": "Derived from the stated rules; not oracle evidence. Protobuf encodings of representative content containers (before padding), computed from the CRS-05 field tables with fields in ascending field-number order and repeated scalars unpacked. Decoders must accept any field order and packed or unpacked repeated scalars.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "plain text message",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "string",
+                "value": "Hello from Ada"
+              },
+              {
+                "field": 6,
+                "type": "bytes",
+                "value": "e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400000"
+              },
+              {
+                "field": 23,
+                "type": "varint",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a3c0a0e48656c6c6f2066726f6d204164613220e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700388088e9b3a232b80101"
+      }
+    },
+    {
+      "label": "text with explicit expire timer and required protocol version 0",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "string",
+                "value": "Timer on"
+              },
+              {
+                "field": 5,
+                "type": "varint",
+                "value": 3600
+              },
+              {
+                "field": 6,
+                "type": "bytes",
+                "value": "e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400001"
+              },
+              {
+                "field": 12,
+                "type": "varint",
+                "value": 0
+              },
+              {
+                "field": 23,
+                "type": "varint",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a3b0a0854696d6572206f6e28901c3220e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700388188e9b3a2326000b80103"
+      }
+    },
+    {
+      "label": "mention and bold style body ranges (UTF-16 offsets)",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "string",
+                "value": "Hi ￼, read this"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400002"
+              },
+              {
+                "field": 12,
+                "type": "varint",
+                "value": 6
+              },
+              {
+                "field": 18,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "varint",
+                    "value": 3
+                  },
+                  {
+                    "field": 2,
+                    "type": "varint",
+                    "value": 1
+                  },
+                  {
+                    "field": 5,
+                    "type": "bytes",
+                    "value": "4fcfa7c82f6c4a5b8f3e1b2c3d4e5f60"
+                  }
+                ]
+              },
+              {
+                "field": 18,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "varint",
+                    "value": 6
+                  },
+                  {
+                    "field": 2,
+                    "type": "varint",
+                    "value": 4
+                  },
+                  {
+                    "field": 4,
+                    "type": "varint",
+                    "value": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a3e0a11486920efbfbc2c20726561642074686973388288e9b3a2326006920116080310012a104fcfa7c82f6c4a5b8f3e1b2c3d4e5f60920106080610042001"
+      }
+    },
+    {
+      "label": "quote reply",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "string",
+                "value": "Agreed"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400003"
+              },
+              {
+                "field": 8,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "varint",
+                    "value": "1727222400000"
+                  },
+                  {
+                    "field": 3,
+                    "type": "string",
+                    "value": "Hello from Ada"
+                  },
+                  {
+                    "field": 7,
+                    "type": "varint",
+                    "value": 0
+                  },
+                  {
+                    "field": 8,
+                    "type": "bytes",
+                    "value": "000000000000400080000000000000a1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a3c0a06416772656564388388e9b3a232422b088088e9b3a2321a0e48656c6c6f2066726f6d2041646138004210000000000000400080000000000000a1"
+      }
+    },
+    {
+      "label": "reaction add",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400004"
+              },
+              {
+                "field": 12,
+                "type": "varint",
+                "value": 4
+              },
+              {
+                "field": 16,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "string",
+                    "value": "👍"
+                  },
+                  {
+                    "field": 2,
+                    "type": "varint",
+                    "value": false
+                  },
+                  {
+                    "field": 5,
+                    "type": "varint",
+                    "value": "1727222400000"
+                  },
+                  {
+                    "field": 6,
+                    "type": "bytes",
+                    "value": "000000000000400080000000000000a1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a2d388488e9b3a23260048201210a04f09f918d1000288088e9b3a2323210000000000000400080000000000000a1"
+      }
+    },
+    {
+      "label": "reaction remove",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400005"
+              },
+              {
+                "field": 12,
+                "type": "varint",
+                "value": 4
+              },
+              {
+                "field": 16,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "string",
+                    "value": "👍"
+                  },
+                  {
+                    "field": 2,
+                    "type": "varint",
+                    "value": true
+                  },
+                  {
+                    "field": 5,
+                    "type": "varint",
+                    "value": "1727222400000"
+                  },
+                  {
+                    "field": 6,
+                    "type": "bytes",
+                    "value": "000000000000400080000000000000a1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a2d388588e9b3a23260048201210a04f09f918d1001288088e9b3a2323210000000000000400080000000000000a1"
+      }
+    },
+    {
+      "label": "remote delete",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400006"
+              },
+              {
+                "field": 17,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "varint",
+                    "value": "1727222400000"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a11388688e9b3a2328a0107088088e9b3a232"
+      }
+    },
+    {
+      "label": "edit of an earlier message",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 11,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "varint",
+                "value": "1727222400000"
+              },
+              {
+                "field": 2,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "string",
+                    "value": "Hello from Ada (edited)"
+                  },
+                  {
+                    "field": 7,
+                    "type": "varint",
+                    "value": "1727222400007"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "5a29088088e9b3a23212200a1748656c6c6f2066726f6d20416461202865646974656429388788e9b3a232"
+      }
+    },
+    {
+      "label": "expiration timer update (flags bit 2), one week, timer version 2",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 4,
+                "type": "varint",
+                "value": 2
+              },
+              {
+                "field": 5,
+                "type": "varint",
+                "value": 604800
+              },
+              {
+                "field": 6,
+                "type": "bytes",
+                "value": "e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400008"
+              },
+              {
+                "field": 23,
+                "type": "varint",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a3220022880f5243220e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700388888e9b3a232b80102"
+      }
+    },
+    {
+      "label": "expiration timer disabled (timer field omitted, flags bit 2)",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 4,
+                "type": "varint",
+                "value": 2
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400009"
+              },
+              {
+                "field": 23,
+                "type": "varint",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a0c2002388988e9b3a232b80103"
+      }
+    },
+    {
+      "label": "profile key update (flags bit 4)",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 4,
+                "type": "varint",
+                "value": 4
+              },
+              {
+                "field": 6,
+                "type": "bytes",
+                "value": "e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400010"
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a2b20043220e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700388a88e9b3a232"
+      }
+    },
+    {
+      "label": "group v2 text message",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "string",
+                "value": "Group hello"
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400011"
+              },
+              {
+                "field": 15,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 1,
+                    "type": "bytes",
+                    "value": "f4549610dab4f768fe09ea8a57763c1007c00576852f8c1efb0185c6931e70cc"
+                  },
+                  {
+                    "field": 2,
+                    "type": "varint",
+                    "value": 5
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0a3a0a0b47726f75702068656c6c6f388b88e9b3a2327a240a20f4549610dab4f768fe09ea8a57763c1007c00576852f8c1efb0185c6931e70cc1005"
+      }
+    },
+    {
+      "label": "voice note attachment pointer",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 1,
+            "type": "message",
+            "value": [
+              {
+                "field": 2,
+                "type": "message",
+                "value": [
+                  {
+                    "field": 2,
+                    "type": "string",
+                    "value": "audio/aac"
+                  },
+                  {
+                    "field": 3,
+                    "type": "bytes",
+                    "value": "07902a51c05cd3d8dad7c0387a8864c1e2b21270343c0550bf01b7a71971508a4d96b6ae25f35c66b7cbe9beb24bfb47677c3efbdd023e8a85f41fc79b215b30"
+                  },
+                  {
+                    "field": 4,
+                    "type": "varint",
+                    "value": 48213
+                  },
+                  {
+                    "field": 6,
+                    "type": "bytes",
+                    "value": "27784c0cc12bd4ad48265799d75057b092eb4e4d5459fc1099bb4b6588c83d32"
+                  },
+                  {
+                    "field": 8,
+                    "type": "varint",
+                    "value": 1
+                  },
+                  {
+                    "field": 13,
+                    "type": "varint",
+                    "value": "1727222399000"
+                  },
+                  {
+                    "field": 14,
+                    "type": "varint",
+                    "value": 3
+                  },
+                  {
+                    "field": 15,
+                    "type": "string",
+                    "value": "dGhlLXZlY3Rvci1jZG4ta2V5LTAwMDE"
+                  },
+                  {
+                    "field": 20,
+                    "type": "bytes",
+                    "value": "b135f0e7ef786e1f2211ee18c169cb3c"
+                  }
+                ]
+              },
+              {
+                "field": 7,
+                "type": "varint",
+                "value": "1727222400012"
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0abc0112b2011209617564696f2f6161631a4007902a51c05cd3d8dad7c0387a8864c1e2b21270343c0550bf01b7a71971508a4d96b6ae25f35c66b7cbe9beb24bfb47677c3efbdd023e8a85f41fc79b215b3020d5f802322027784c0cc12bd4ad48265799d75057b092eb4e4d5459fc1099bb4b6588c83d324001689880e9b3a23270037a1f6447686c4c585a6c593352766369316a5a473474613256354c5441774d4445a20110b135f0e7ef786e1f2211ee18c169cb3c388c88e9b3a232"
+      }
+    },
+    {
+      "label": "delivery receipt for two messages (type 0 encoded explicitly, repeated timestamps unpacked)",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 5,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "varint",
+                "value": 0
+              },
+              {
+                "field": 2,
+                "type": "varint",
+                "value": "1727222400000"
+              },
+              {
+                "field": 2,
+                "type": "varint",
+                "value": "1727222400003"
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "2a100800108088e9b3a232108388e9b3a232"
+      }
+    },
+    {
+      "label": "read receipt",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 5,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "varint",
+                "value": 1
+              },
+              {
+                "field": 2,
+                "type": "varint",
+                "value": "1727222400000"
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "2a090801108088e9b3a232"
+      }
+    },
+    {
+      "label": "typing started in a group (action 0 encoded explicitly)",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 6,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "varint",
+                "value": "1727222400013"
+              },
+              {
+                "field": 2,
+                "type": "varint",
+                "value": 0
+              },
+              {
+                "field": 3,
+                "type": "bytes",
+                "value": "cb90c6d6585cbcb70fab626e697bc9dc636214d80486b047bf794c0109b88a9f"
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "322b088d88e9b3a23210001a20cb90c6d6585cbcb70fab626e697bc9dc636214d80486b047bf794c0109b88a9f"
+      }
+    },
+    {
+      "label": "typing stopped, 1:1",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 6,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "varint",
+                "value": "1727222400014"
+              },
+              {
+                "field": 2,
+                "type": "varint",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "3209088e88e9b3a2321001"
+      }
+    },
+    {
+      "label": "null message",
+      "inputs": {
+        "message": "content container",
+        "fields": [
+          {
+            "field": 4,
+            "type": "message",
+            "value": [
+              {
+                "field": 1,
+                "type": "bytes",
+                "value": "52ac778bb0c32b878d3a33282dda80e580f1573add167357"
+              }
+            ]
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "221a0a1852ac778bb0c32b878d3a33282dda80e580f1573add167357"
+      }
+    }
+  ]
+}

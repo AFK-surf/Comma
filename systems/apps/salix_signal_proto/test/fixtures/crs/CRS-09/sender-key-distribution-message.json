@@ -1,0 +1,56 @@
+{
+  "section": "CRS-09",
+  "name": "sender-key-distribution-message",
+  "description": "Serialized sender key distribution message (version byte + protobuf) for fixed fields.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "label": "iteration-0",
+      "inputs": {
+        "message_version": 3,
+        "distribution_id": "d1b8e7c2-5f3a-4b6d-8e9f-0a1b2c3d4e5f",
+        "chain_id": 305419896,
+        "iteration": 0,
+        "chain_key": "8c08671f29f22bb9298883211483f40f01d33eca06730c2a700a219dde2b4202",
+        "signing_public_key": "055ba79c1bbca5ac8ef388508f200cab120d734de1e0b032163ca9c6bc0494e40e"
+      },
+      "outputs": {
+        "serialized": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd19101180022208c08671f29f22bb9298883211483f40f01d33eca06730c2a700a219dde2b42022a21055ba79c1bbca5ac8ef388508f200cab120d734de1e0b032163ca9c6bc0494e40e",
+        "parsed_chain_id": 305419896,
+        "parsed_iteration": 0
+      }
+    },
+    {
+      "label": "iteration-5",
+      "inputs": {
+        "message_version": 3,
+        "distribution_id": "00000000-0000-4000-8000-0000000000aa",
+        "chain_id": 1,
+        "iteration": 5,
+        "chain_key": "287c549a716cdf280de40684bb1ad792367fa82668851c6690c5dcec9e6eb00f",
+        "signing_public_key": "050a27ad48111f91db7e9129c55dc767b18c9a179c3d841fc1fdc4e84cabc5e66f"
+      },
+      "outputs": {
+        "serialized": "330a10000000000000400080000000000000aa100118052220287c549a716cdf280de40684bb1ad792367fa82668851c6690c5dcec9e6eb00f2a21050a27ad48111f91db7e9129c55dc767b18c9a179c3d841fc1fdc4e84cabc5e66f",
+        "parsed_chain_id": 1,
+        "parsed_iteration": 5
+      }
+    },
+    {
+      "label": "max-31-bit-chain-id",
+      "inputs": {
+        "message_version": 3,
+        "distribution_id": "ffffffff-ffff-4fff-bfff-fffffffffffe",
+        "chain_id": 2147483647,
+        "iteration": 1000,
+        "chain_key": "1111111111111111111111111111111111111111111111111111111111111111",
+        "signing_public_key": "05ce6f13e788efa151ccbb6abbba8a86d6395f700cb83941e356ce4b207265ca52"
+      },
+      "outputs": {
+        "serialized": "330a10ffffffffffff4fffbffffffffffffffe10ffffffff0718e807222011111111111111111111111111111111111111111111111111111111111111112a2105ce6f13e788efa151ccbb6abbba8a86d6395f700cb83941e356ce4b207265ca52",
+        "parsed_chain_id": 2147483647,
+        "parsed_iteration": 1000
+      }
+    }
+  ]
+}

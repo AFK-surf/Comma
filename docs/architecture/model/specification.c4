@@ -1,0 +1,91 @@
+specification {
+  element actor {
+    style {
+      shape person
+    }
+  }
+
+  element software_system {
+    style {
+      color primary
+    }
+  }
+  element application {
+    style {
+      color green
+    }
+  }
+  element component {
+    style {
+      color blue
+    }
+  }
+  element datastore {
+    style {
+      shape storage
+      color amber
+    }
+  }
+  element external_system {
+    style {
+      color gray
+    }
+  }
+  element deployment_node {
+    style {
+      color green
+    }
+  }
+  element concept {
+    style {
+      color indigo
+    }
+  }
+  element source_group {
+    style {
+      color gray
+    }
+  }
+  element code_module {
+    style {
+      color muted
+    }
+  }
+
+  relationship request
+  relationship command
+  relationship event
+  relationship local_call
+  relationship async {
+    line dotted
+    color amber
+  }
+  relationship read_write {
+    color amber
+  }
+  relationship maps_to {
+    line dashed
+    color indigo
+  }
+  relationship owns
+  relationship projects {
+    line dashed
+    color indigo
+  }
+  relationship generates {
+    line dotted
+    color amber
+  }
+  relationship deployed_on {
+    line dashed
+    color green
+  }
+  relationship depends_on
+
+  tag current
+  tag evidence
+  tag projection
+  tag external
+  tag cache
+  tag legacy
+}

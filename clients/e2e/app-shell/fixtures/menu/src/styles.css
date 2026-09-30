@@ -1,0 +1,24 @@
+[data-testid="button-feedback-fixture"] button {
+  width: 100px;
+  height: 40px;
+  transform-origin: center;
+}
+
+@layer components {
+  [data-testid="button-feedback-fixture"] .existing-transform-feedback {
+    transition: transform 120ms linear;
+  }
+
+  [data-testid="button-feedback-fixture"] .existing-transform-feedback:active {
+    transform: scale(0.94);
+  }
+}
+
+[data-testid="button-feedback-fixture"] .custom-action-feedback {
+  scale: 1;
+  transition: scale 120ms linear;
+}
+
+[data-testid="button-feedback-fixture"] .custom-action-feedback[data-action-pressed] {
+  scale: 0.94;
+}

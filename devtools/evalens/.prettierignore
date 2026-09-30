@@ -1,0 +1,10 @@
+node_modules/
+runs/
+.evalens/
+coverage/
+packages/dashboard/dist/
+packages/dashboard/src/routeTree.gen.ts
+packages/dashboard/project.inlang/.meta.json
+packages/dashboard/project.inlang/README.md
+packages/store/src/metadata/migrations/meta/
+.types/

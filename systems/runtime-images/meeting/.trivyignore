@@ -1,0 +1,13 @@
+# Temporary Debian Chromium 151 compatibility exception approved on 2026-08-21.
+# Remove these entries when bookworm-security publishes 151.0.7922.169 or later.
+CVE-2026-76033 exp:2026-09-04
+CVE-2026-76036 exp:2026-09-04
+CVE-2026-76037 exp:2026-09-04
+CVE-2026-76038 exp:2026-09-04
+CVE-2026-76039 exp:2026-09-04
+CVE-2026-76040 exp:2026-09-04
+CVE-2026-76041 exp:2026-09-04
+CVE-2026-76043 exp:2026-09-04
+CVE-2026-76044 exp:2026-09-04
+CVE-2026-76045 exp:2026-09-04
+CVE-2026-76047 exp:2026-09-04

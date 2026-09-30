@@ -1,0 +1,19 @@
+name = "verified_kernel"
+version = "0.1.0"
+defaultTargets = ["VerifiedKernel", "VerifiedKernelProofs"]
+moreLeanArgs = ["-j1", "-M2048"]
+
+[[lean_lib]]
+name = "VerifiedKernel"
+srcDir = "runtime"
+globs = ["VerifiedKernel.*"]
+
+[[lean_lib]]
+name = "VerifiedKernelProofs"
+srcDir = "proofs"
+globs = ["VerifiedKernelProofs.+"]
+
+[[lean_exe]]
+name = "profile"
+root = "profile.Main"
+moreLinkArgs = ["profile/sha256.o", "-lcrypto"]

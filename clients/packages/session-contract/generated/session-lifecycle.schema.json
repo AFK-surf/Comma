@@ -1,0 +1,342 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "type": "object",
+          "properties": {
+            "authorityInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+            }
+          },
+          "required": ["authorityInstanceId", "kind"],
+          "additionalProperties": false
+        },
+        "cleanup": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "idle" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "pendingCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "revocation": { "type": "string", "const": "pending" }
+              },
+              "required": ["pendingCount", "revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "unknown" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "contractVersion": { "type": "number", "const": 1 },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "phase": {
+          "type": "string",
+          "enum": ["initializing", "authenticating", "signing_out", "invalidating"]
+        },
+        "principal": { "type": "null" },
+        "session": { "type": "null" }
+      },
+      "required": [
+        "authority",
+        "cleanup",
+        "contractVersion",
+        "generation",
+        "revision",
+        "phase",
+        "principal",
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "type": "object",
+          "properties": {
+            "authorityInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+            }
+          },
+          "required": ["authorityInstanceId", "kind"],
+          "additionalProperties": false
+        },
+        "cleanup": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "idle" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "pendingCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "revocation": { "type": "string", "const": "pending" }
+              },
+              "required": ["pendingCount", "revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "unknown" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "contractVersion": { "type": "number", "const": 1 },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "phase": { "type": "string", "const": "signed_out" },
+        "principal": { "type": "null" },
+        "reason": {
+          "type": "string",
+          "enum": ["no_session", "user_signed_out", "unauthorized", "expired"]
+        },
+        "session": { "type": "null" }
+      },
+      "required": [
+        "authority",
+        "cleanup",
+        "contractVersion",
+        "generation",
+        "revision",
+        "phase",
+        "principal",
+        "reason",
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "type": "object",
+          "properties": {
+            "authorityInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+            }
+          },
+          "required": ["authorityInstanceId", "kind"],
+          "additionalProperties": false
+        },
+        "cleanup": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "idle" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "pendingCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "revocation": { "type": "string", "const": "pending" }
+              },
+              "required": ["pendingCount", "revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "unknown" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "contractVersion": { "type": "number", "const": 1 },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "phase": { "type": "string", "const": "signed_in" },
+        "principal": {
+          "type": "object",
+          "properties": {
+            "displayName": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "email": { "type": "string", "minLength": 1, "maxLength": 320 },
+            "userId": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          "required": ["email", "userId"],
+          "additionalProperties": false
+        },
+        "session": {
+          "type": "object",
+          "properties": {
+            "audience": { "type": "string", "minLength": 1, "maxLength": 2048 },
+            "expiresAtEpochSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          "required": ["audience", "expiresAtEpochSeconds", "sessionId"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "authority",
+        "cleanup",
+        "contractVersion",
+        "generation",
+        "revision",
+        "phase",
+        "principal",
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "type": "object",
+          "properties": {
+            "authorityInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+            }
+          },
+          "required": ["authorityInstanceId", "kind"],
+          "additionalProperties": false
+        },
+        "cleanup": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "idle" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "pendingCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "revocation": { "type": "string", "const": "pending" }
+              },
+              "required": ["pendingCount", "revocation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": { "revocation": { "type": "string", "const": "unknown" } },
+              "required": ["revocation"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "contractVersion": { "type": "number", "const": 1 },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "phase": { "type": "string", "const": "indeterminate" },
+        "principal": { "type": "null" },
+        "problem": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "session_probe_unavailable",
+                "credential_store_unavailable",
+                "credential_store_unreadable",
+                "credential_mutation_uncertain",
+                "protocol_mismatch"
+              ]
+            },
+            "operation": {
+              "type": "string",
+              "enum": [
+                "initialize",
+                "authenticate",
+                "reconcile",
+                "sign_out",
+                "invalidate"
+              ]
+            },
+            "recovery": {
+              "type": "string",
+              "enum": [
+                "none",
+                "retry_operation",
+                "reconcile",
+                "new_auth_attempt",
+                "after_host_change"
+              ]
+            },
+            "retryable": { "type": "boolean" }
+          },
+          "required": ["code", "operation", "recovery", "retryable"],
+          "additionalProperties": false
+        },
+        "session": { "type": "null" }
+      },
+      "required": [
+        "authority",
+        "cleanup",
+        "contractVersion",
+        "generation",
+        "revision",
+        "phase",
+        "principal",
+        "problem",
+        "session"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

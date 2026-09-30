@@ -1,0 +1,215 @@
+/*
+ * AI input trigger-menu panel states.
+ *
+ * "Searching..." sweeps the same soft highlight as the Home briefing's
+ * "Generating..." copy (.comma-recommendations-generating): a quaternary body
+ * with a primary shine gliding through on the shared loading-shine cadence.
+ */
+
+/*
+ * Panel enter/exit. A caret-anchored popover materializes from its trigger:
+ * It enters 2px toward the caret and scales from the editor-owned origin.
+ * The shared menu cadence is 120ms in and 80ms out, without blur.
+ * Transitions (not keyframes) so a close interrupted by reopening retargets;
+ * the global reduced-motion rule zeroes the durations.
+ */
+.comma-ai-input-menu {
+  opacity: 1;
+  transform: scale(1);
+  translate: 0 0;
+  transition:
+    opacity var(--motion-duration-menu-enter) var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-menu-enter) var(--motion-easing-surface-smooth-out),
+    transform var(--motion-duration-menu-enter) var(--motion-easing-surface-smooth-out);
+}
+
+@starting-style {
+  .comma-ai-input-menu[data-state="open"] {
+    opacity: 0;
+    transform: scale(var(--motion-scale-menu-enter));
+    translate: 0 var(--motion-distance-menu-enter);
+  }
+}
+
+.comma-ai-input-menu[data-state="closed"] {
+  opacity: 0;
+  transform: scale(var(--motion-scale-menu-exit));
+  pointer-events: none;
+  transition-duration: var(--motion-duration-menu-exit);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-ai-input-menu {
+    transform: none !important;
+    translate: none !important;
+    transition: none;
+  }
+}
+
+/* Menu levels fade in place so keyboard and pointer targets remain stable. */
+.comma-ai-input-menu-level {
+  transition: opacity var(--motion-duration-menu-enter)
+    var(--motion-easing-surface-smooth-out);
+}
+
+@starting-style {
+  .comma-ai-input-menu-level[data-level="browse"],
+  .comma-ai-input-menu-level[data-level="list"][data-returned="true"] {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-ai-input-menu-level {
+    transition: none;
+  }
+}
+
+/*
+ * The "View more" chevron nudges toward the level it opens while its row is
+ * the selection — the same 2px the nav icons travel on press, so the hint
+ * and the press read as one vocabulary.
+ */
+.comma-ai-input-menu-item-chevron {
+  translate: 0;
+  transition: translate var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+}
+
+[aria-selected="true"] > .comma-ai-input-menu-item-chevron {
+  translate: var(--motion-distance-nav-press-shift) 0;
+}
+
+/*
+ * A centered state (No files / No results found / Searching...) replaces
+ * rows, and rows replace it, on the feedback-in cadence so the swap reads
+ * as a change of state instead of a flash.
+ */
+.comma-ai-input-menu-browse-state {
+  transition: opacity var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+}
+
+@starting-style {
+  .comma-ai-input-menu-browse-state {
+    opacity: 0;
+  }
+}
+
+/*
+ * Composer token glyph: the pill's icon rides the token's text color. Solid
+ * brand fills and strokes are tinted to currentColor; fill="none" outlines,
+ * white knockouts, and mask/clipPath/defs internals keep their roles so
+ * multi-part marks stay legible as monochrome glyphs.
+ */
+.comma-ai-input-token-icon {
+  color: inherit;
+}
+
+.comma-ai-input-token-icon svg[fill]:not([fill="none"]),
+.comma-ai-input-token-icon
+  svg
+  [fill]:not([fill="none"]):not([fill="white" i]):not([fill="#fff" i]):not(
+    [fill="#ffffff" i]
+  ):not(mask *):not(clipPath *):not(defs *) {
+  fill: currentColor;
+}
+
+.comma-ai-input-token-icon
+  svg
+  [stroke]:not([stroke="none"]):not(mask *):not(clipPath *):not(defs *) {
+  stroke: currentColor;
+}
+
+/* Product marks sit on a constant-white tile so they keep their original
+   colors on both themes — the same treatment as the briefing's inline chips
+   (.comma-recommendation-inline-source). The xxs inset yields a 16px glyph on
+   the 20px slot, matching the Figma tile (1292:12621). */
+.comma-ai-input-menu-item-icon svg[data-provider-logo="github"],
+.comma-ai-input-menu-item-icon svg[data-provider-logo="linear"],
+.comma-ai-input-menu-item-icon svg[data-provider-logo="notion"],
+.comma-ai-input-menu-item-icon svg[data-provider-logo="slack"] {
+  box-sizing: border-box;
+  border-radius: var(--radius-xs);
+  background: var(--color-base-white);
+  padding: var(--spacing-xxs);
+}
+
+/* Monochrome marks draw with currentColor; pin them dark on the white tile. */
+.comma-ai-input-menu-item-icon svg[data-provider-logo="github"],
+.comma-ai-input-menu-item-icon svg[data-provider-logo="notion"] {
+  color: var(--color-alpha-black-90);
+}
+
+.comma-ai-input-menu-item-icon svg[data-provider-logo="google-calendar"] {
+  border-radius: var(--radius-xxs);
+  background: var(--color-base-white);
+}
+
+.comma-ai-input-menu-item-icon svg[data-provider-logo="google-drive"] {
+  box-sizing: border-box;
+  border-radius: var(--radius-xxs);
+  background: var(--color-base-white);
+  padding: var(--spacing-xxs);
+}
+
+.comma-ai-input-menu-searching-text {
+  color: var(--color-text-quaternary);
+}
+
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .comma-ai-input-menu-searching-text[data-shimmer="true"] {
+    display: inline-block;
+    background-image: linear-gradient(
+      90deg,
+      var(--color-text-quaternary) 0%,
+      var(--color-text-quaternary) 40%,
+      var(--color-text-primary) 50%,
+      var(--color-text-quaternary) 60%,
+      var(--color-text-quaternary) 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 400% 100%;
+    background-clip: text;
+    color: transparent;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: comma-ai-input-menu-shine var(--motion-duration-loading-shine) linear
+      infinite;
+  }
+}
+
+@keyframes comma-ai-input-menu-shine {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: 0% 0;
+  }
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-ai-input-menu-searching-text[data-shimmer="true"] {
+  background-image: none;
+  color: var(--color-text-quaternary);
+  animation: none !important;
+  -webkit-text-fill-color: currentcolor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-ai-input-menu-searching-text[data-shimmer="true"] {
+    background-image: none;
+    color: var(--color-text-quaternary);
+    animation: none !important;
+    -webkit-text-fill-color: currentcolor;
+  }
+}
+
+@media (forced-colors: active) {
+  .comma-ai-input-menu-searching-text[data-shimmer="true"] {
+    background-image: none;
+    color: CanvasText;
+    animation: none;
+    -webkit-text-fill-color: currentcolor;
+  }
+}

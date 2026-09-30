@@ -1,0 +1,72 @@
+{
+  "section": "CRS-06",
+  "name": "known-constants",
+  "description": "Trust roots (base64 as configured in clients, and 33-byte typed Curve25519 keys) and the server certificates a sender certificate may reference by key id instead of embedding. The constants are from source reading; the parse and verify results are oracle observations.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "production trust root A",
+      "inputs": {
+        "base64": "BXu6QIKVz5MA8gstzfOgRQGqyLqOwNKHL6INkv3IHWMF"
+      },
+      "outputs": {
+        "public_key": "057bba408295cf9300f20b2dcdf3a04501aac8ba8ec0d2872fa20d92fdc81d6305",
+        "parses": true
+      }
+    },
+    {
+      "label": "production trust root B",
+      "inputs": {
+        "base64": "BUkY0I+9+oPgDCn4+Ac6Iu813yvqkDr/ga8DzLxFxuk6"
+      },
+      "outputs": {
+        "public_key": "054918d08fbdfa83e00c29f8f8073a22ef35df2bea903aff81af03ccbc45c6e93a",
+        "parses": true
+      }
+    },
+    {
+      "label": "staging trust root A",
+      "inputs": {
+        "base64": "BbqY1DzohE4NUZoVF+L18oUPrK3kILllLEJh2UnPSsEx"
+      },
+      "outputs": {
+        "public_key": "05ba98d43ce8844e0d519a1517e2f5f2850facade420b9652c4261d949cf4ac131",
+        "parses": true
+      }
+    },
+    {
+      "label": "staging trust root B",
+      "inputs": {
+        "base64": "BYhU6tPjqP46KGZEzRs1OL4U39V5dlPJ/X09ha4rErkm"
+      },
+      "outputs": {
+        "public_key": "058854ead3e3a8fe3a286644cd1b3538be14dfd5797653c9fd7d3d85ae2b12b926",
+        "parses": true
+      }
+    },
+    {
+      "label": "referenced server certificate id 2 (staging)",
+      "inputs": {
+        "server_certificate": "0a25080212210539450d63ebd0752c0fd4038b9d07a916f5e174b756d409b5ca79f4c97400631e124064c5a38b1e927497d3d4786b101a623ab34a7da3954fae126b04dba9d7a3604ed88cdc8550950f0d4a9134ceb7e19b94139151d2c3d6e1c81e9d1128aafca806",
+        "trust_root": "staging trust root B"
+      },
+      "outputs": {
+        "key_id": 2,
+        "server_public": "0539450d63ebd0752c0fd4038b9d07a916f5e174b756d409b5ca79f4c97400631e",
+        "verifies": true
+      }
+    },
+    {
+      "label": "referenced server certificate id 3 (production)",
+      "inputs": {
+        "server_certificate": "0a250803122105bc9d1d290be964810dfa7e94856480a3f7060d004c9762c24c575a1522353a5a1240c11ec3c401eb0107ab38f8600e8720a63169e0e2eb8a3fae24f63099f85ea319c3c1c46d3454706ae2a679d1fee690a488adda98a2290b66c906bb60295ed781",
+        "trust_root": "production trust root B"
+      },
+      "outputs": {
+        "key_id": 3,
+        "server_public": "05bc9d1d290be964810dfa7e94856480a3f7060d004c9762c24c575a1522353a5a",
+        "verifies": true
+      }
+    }
+  ]
+}

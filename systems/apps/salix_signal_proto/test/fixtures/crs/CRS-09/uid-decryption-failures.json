@@ -1,0 +1,47 @@
+{
+  "section": "CRS-09",
+  "name": "uid-decryption-failures",
+  "description": "UUID ciphertexts that must be rejected (deserialization or decryption failure).",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "label": "wrong-group-key",
+      "inputs": {
+        "master_key": "3ac38acaed9602706bb8389ffe31206758e7ada35159198ea4466b01d8a03b11",
+        "uuid_ciphertext": "00c2e5a7cca818800db95d6884e4db6e8f0b618d465b9cb8006c2f5848b7e70b2ffabb93df88deb088bbcddf61479c47e55784e61e08ff2d3e12a8fe481ea56a40"
+      },
+      "outputs": {
+        "result": "error"
+      }
+    },
+    {
+      "label": "points-swapped",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "uuid_ciphertext": "00fabb93df88deb088bbcddf61479c47e55784e61e08ff2d3e12a8fe481ea56a40c2e5a7cca818800db95d6884e4db6e8f0b618d465b9cb8006c2f5848b7e70b2f"
+      },
+      "outputs": {
+        "result": "error"
+      }
+    },
+    {
+      "label": "first-point-is-basepoint",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "uuid_ciphertext": "00e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76fabb93df88deb088bbcddf61479c47e55784e61e08ff2d3e12a8fe481ea56a40"
+      },
+      "outputs": {
+        "result": "error"
+      }
+    },
+    {
+      "label": "nonzero-reserved-byte",
+      "inputs": {
+        "uuid_ciphertext": "01c2e5a7cca818800db95d6884e4db6e8f0b618d465b9cb8006c2f5848b7e70b2ffabb93df88deb088bbcddf61479c47e55784e61e08ff2d3e12a8fe481ea56a40"
+      },
+      "outputs": {
+        "result": "error"
+      }
+    }
+  ]
+}

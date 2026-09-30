@@ -1,0 +1,34 @@
+{
+  "section": "CRS-09",
+  "name": "sender-key-forward-jump-limit",
+  "description": "A receiver at iteration 0 accepts a message at most 25000 iterations ahead and rejects 25001. Chain key and signing key are those of sender-key-message case 0 (chain key at iteration 0).",
+  "pin": "libsignal 0.103.0",
+  "chain_key": "8c08671f29f22bb9298883211483f40f01d33eca06730c2a700a219dde2b4202",
+  "signing_public_key": "055ba79c1bbca5ac8ef388508f200cab120d734de1e0b032163ca9c6bc0494e40e",
+  "distribution_id": "d1b8e7c2-5f3a-4b6d-8e9f-0a1b2c3d4e5f",
+  "chain_id": 305419896,
+  "cases": [
+    {
+      "label": "jump-25000",
+      "inputs": {
+        "receiver_iteration": 0,
+        "message_iteration": 25000,
+        "sender_key_message": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd1910118a8c301221027b12a6527e9509654a799e6223813f4ac99ee3a2c99787c69dd23c539732ed289c8cd04d37663ff199f0dbfd0988e618ab7782a946ccccf7b9b8b71582df42a42cbd0687ebfa38bbdd15c2ac87abe8f"
+      },
+      "outputs": {
+        "result": "ok"
+      }
+    },
+    {
+      "label": "jump-25001",
+      "inputs": {
+        "receiver_iteration": 0,
+        "message_iteration": 25001,
+        "sender_key_message": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd1910118a9c3012210fac5275c41aba1b231caab7c3323846084098cde936639b463fa4a8abd4aa9412f3dc2aa84af768c94270b85131ec46a4907caecde6cb242b8b88902678daf6b000237879c77f58ee562a1da53b07a8f"
+      },
+      "outputs": {
+        "result": "error:too-far-ahead"
+      }
+    }
+  ]
+}

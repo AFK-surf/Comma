@@ -1,0 +1,411 @@
+/* Settings > General > Notch: a live preview of the compact Notch over a
+   menu bar, and the slider that sizes it. Preview geometry is NotchKit's, in
+   points, drawn at `--notch-pt` — one point of screen as a share of the stage
+   width — so the preview keeps its proportions at any column width without
+   measuring it. */
+.comma-notch-width {
+  --notch-height: 32;
+  --notch-physical-width: 185;
+  --notch-inset: 8;
+  --notch-shoulder: 6;
+  --notch-corner: 12;
+  --notch-ink: var(--color-base-black);
+  --notch-pill: var(--color-fg-disabled);
+  --notch-pill-strong: var(--color-fg-quaternary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  width: 100%;
+}
+
+.comma-notch-width[data-disabled="true"] {
+  opacity: var(--opacity-disabled);
+}
+
+/* The stage keeps its resting proportions; a wider Notch pulls the view back
+   inside it instead of growing the page. */
+.comma-notch-width__stage {
+  container-type: inline-size;
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--notch-stage-ratio);
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: linear-gradient(
+    to bottom,
+    var(--color-bg-tertiary),
+    var(--color-bg-secondary)
+  );
+  /* A 0.5px border rounds up to a full pixel; an inset ring stays a hairline. */
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-primary);
+  contain: layout paint;
+  isolation: isolate;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.comma-notch-width__screen {
+  --notch-view-points: 640;
+  --notch-pt: calc(100cqw / var(--notch-view-points));
+  position: absolute;
+  inset: 0;
+}
+
+/* An idle app window below the menu bar, so the stage reads as a screen. */
+.comma-notch-width__window {
+  position: absolute;
+  top: calc((var(--notch-height) + 30) * var(--notch-pt));
+  right: calc(50% - 230 * var(--notch-pt));
+  bottom: calc(-12 * var(--notch-pt));
+  left: calc(50% - 230 * var(--notch-pt));
+  border-radius: calc(10 * var(--notch-pt));
+  background: var(--color-bg-primary);
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-lg);
+}
+
+.comma-notch-width__lights {
+  position: absolute;
+  top: calc(10 * var(--notch-pt));
+  left: calc(11 * var(--notch-pt));
+  display: flex;
+  gap: calc(6 * var(--notch-pt));
+}
+
+.comma-notch-width__lights > span {
+  width: calc(9 * var(--notch-pt));
+  height: calc(9 * var(--notch-pt));
+  border-radius: var(--radius-full);
+  background: var(--color-border-primary);
+}
+
+.comma-notch-width__menubar {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: calc(var(--notch-height) * var(--notch-pt));
+  padding-inline: calc(18 * var(--notch-pt));
+  background: var(--color-bg-quaternary);
+  box-shadow: inset 0 calc(-1 * var(--border-width-0-5)) 0 var(--color-border-primary);
+}
+
+.comma-notch-width__menus,
+.comma-notch-width__status {
+  display: flex;
+  align-items: center;
+  gap: calc(14 * var(--notch-pt));
+}
+
+.comma-notch-width__menu {
+  width: calc(30 * var(--notch-pt));
+  height: calc(6 * var(--notch-pt));
+  border-radius: var(--radius-full);
+  background: var(--notch-pill);
+}
+
+.comma-notch-width__menu[data-app="true"] {
+  width: calc(34 * var(--notch-pt));
+  background: var(--notch-pill-strong);
+}
+
+.comma-notch-width__menu:nth-child(4) {
+  width: calc(24 * var(--notch-pt));
+}
+
+.comma-notch-width__menu:nth-child(5) {
+  width: calc(38 * var(--notch-pt));
+}
+
+.comma-notch-width__menu:nth-child(7) {
+  width: calc(26 * var(--notch-pt));
+}
+
+.comma-notch-width__menu[data-clock="true"] {
+  width: calc(44 * var(--notch-pt));
+  background: var(--notch-pill-strong);
+}
+
+.comma-notch-width__glyph {
+  width: calc(11 * var(--notch-pt));
+  height: calc(11 * var(--notch-pt));
+  border-radius: calc(3 * var(--notch-pt));
+  background: var(--notch-pill);
+}
+
+.comma-notch-width__menus > .comma-notch-width__glyph {
+  border-radius: var(--radius-full);
+  background: var(--notch-pill-strong);
+}
+
+.comma-notch-width__glyph[data-battery="true"] {
+  width: calc(20 * var(--notch-pt));
+  height: calc(9 * var(--notch-pt));
+  border-radius: calc(2.5 * var(--notch-pt));
+}
+
+.comma-notch-width__shell {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 1;
+  height: calc(var(--notch-height) * var(--notch-pt));
+  border-radius: 0 0 calc(var(--notch-corner) * var(--notch-pt))
+    calc(var(--notch-corner) * var(--notch-pt));
+  background: var(--notch-ink);
+  transform: translateX(-50%);
+}
+
+/* The flare where the shell meets the top of the screen, as NotchShellShape
+   draws it: a quarter circle cut out of each outer corner. */
+.comma-notch-width__shell::before,
+.comma-notch-width__shell::after {
+  --shoulder: calc(var(--notch-shoulder) * var(--notch-pt));
+  content: "";
+  position: absolute;
+  top: 0;
+  width: var(--shoulder);
+  height: var(--shoulder);
+}
+
+.comma-notch-width__shell::before {
+  right: 100%;
+  background: radial-gradient(
+    circle at 0 100%,
+    transparent var(--shoulder),
+    var(--notch-ink) calc(var(--shoulder) + var(--border-width-0-5))
+  );
+}
+
+.comma-notch-width__shell::after {
+  left: 100%;
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent var(--shoulder),
+    var(--notch-ink) calc(var(--shoulder) + var(--border-width-0-5))
+  );
+}
+
+/* The title side spans from the inset to the physical notch, so it follows
+   the shell's width without being written itself. */
+.comma-notch-width__leading {
+  position: absolute;
+  inset-block: 0;
+  left: calc(var(--notch-inset) * var(--notch-pt));
+  right: calc(50% + var(--notch-physical-width) / 2 * var(--notch-pt));
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--notch-pt));
+  overflow: hidden;
+}
+
+/* The logo's own clip path already bounds its zoom. With the SVG viewport
+   clip on top of it, Chromium paints the zooming ring unclipped in the
+   viewport's first pixel column: a white line left of the mark. */
+.comma-notch-width__mark {
+  flex: none;
+  width: calc(14 * var(--notch-pt));
+  height: calc(14 * var(--notch-pt));
+  margin-inline: calc(3 * var(--notch-pt));
+  overflow: visible;
+  color: var(--color-base-white);
+}
+
+.comma-notch-width__mark .comma-logo-animation__nested-aperture {
+  fill: var(--notch-ink);
+}
+
+/* The zoom swallows the outgoing ring into a crescent that closes about 1.04s
+   into the 3.4s cycle; at this size its last frames read as a stray line.
+   It fades out from 0.8s to 0.97s instead, as NotchHost's logo does. The
+   ring is hidden under the zoom by then, so the loop's frames are unchanged. */
+.comma-notch-width__mark .comma-logo-animation__outer {
+  animation: comma-notch-width-ring var(--comma-logo-cycle) linear infinite;
+  animation-delay: var(--comma-logo-delay, 0s);
+}
+
+@keyframes comma-notch-width-ring {
+  0%,
+  23.53% {
+    opacity: 1;
+  }
+
+  28.53%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-notch-width__mark .comma-logo-animation__outer {
+    animation: none;
+  }
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-notch-width__mark
+  .comma-logo-animation__outer {
+  animation: none;
+}
+
+.comma-notch-width__title {
+  --comma-shiny-text-base: var(--color-alpha-white-60);
+  --comma-shiny-text-highlight: var(--color-base-white);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--comma-shiny-text-base);
+  font-size: calc(12 * var(--notch-pt));
+  font-weight: var(--font-weight-semibold);
+  line-height: calc(18 * var(--notch-pt));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity var(--motion-duration-state-change) ease;
+}
+
+.comma-notch-width__shell[data-titled="false"] .comma-notch-width__title {
+  opacity: 0;
+}
+
+.comma-notch-width__camera {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(6 * var(--notch-pt));
+  height: calc(6 * var(--notch-pt));
+  border-radius: var(--radius-full);
+  background: var(--color-alpha-white-10);
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-alpha-white-10);
+  transform: translate(-50%, -50%);
+}
+
+.comma-notch-width__count {
+  position: absolute;
+  inset-block: 0;
+  right: calc(var(--notch-inset) * var(--notch-pt));
+  display: flex;
+  align-items: center;
+  color: var(--color-alpha-white-90);
+  font-size: calc(13 * var(--notch-pt));
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-semibold);
+}
+
+/* The slider is a field, as in an inspector: its name and value sit inside,
+   its fill is the width, and it can be taken anywhere along it. */
+.comma-notch-width__control {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.comma-notch-width__field {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  min-width: 0;
+  /* A small button's height, so the row lines up. */
+  height: calc(var(--spacing-4xl) + var(--spacing-xs));
+  padding-inline: var(--spacing-lg);
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  cursor: ew-resize;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: box-shadow var(--motion-duration-state-change) ease;
+}
+
+.comma-notch-width[data-disabled="true"] .comma-notch-width__field {
+  cursor: default;
+}
+
+.comma-notch-width__field:focus-visible {
+  box-shadow: var(--shadow-focus-brand);
+}
+
+/* The fill and the default mark measure the whole field, padding included. */
+.comma-notch-width__track {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.comma-notch-width__fill,
+.comma-notch-width__detent {
+  position: absolute;
+}
+
+.comma-notch-width__fill {
+  inset: 0;
+  background: color-mix(in oklab, var(--color-text-primary) 8%, transparent);
+  transform-origin: left center;
+  transition: background-color var(--motion-duration-state-change) ease;
+}
+
+.comma-notch-width__detent {
+  top: 50%;
+  left: calc(var(--notch-default-fraction) * 100%);
+  width: var(--spacing-xxs);
+  height: var(--spacing-lg);
+  margin-top: calc(var(--spacing-lg) / -2);
+  margin-left: calc(var(--spacing-xxs) / -2);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-disabled);
+  opacity: 0;
+  transition:
+    opacity var(--motion-duration-state-change) ease,
+    background-color var(--motion-duration-state-change) ease;
+}
+
+.comma-notch-width__label,
+.comma-notch-width__readout {
+  position: relative;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.comma-notch-width__label {
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  text-overflow: ellipsis;
+}
+
+.comma-notch-width__readout {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-notch-width:not([data-disabled="true"])
+    .comma-notch-width__field:hover
+    .comma-notch-width__fill {
+    background: color-mix(in oklab, var(--color-text-primary) 11%, transparent);
+  }
+}
+
+.comma-notch-width[data-dragging="true"] .comma-notch-width__fill {
+  background: color-mix(in oklab, var(--color-text-primary) 13%, transparent);
+}
+
+.comma-notch-width[data-dragging="true"] .comma-notch-width__detent {
+  opacity: 1;
+}
+
+.comma-notch-width[data-snapped="true"] .comma-notch-width__detent {
+  background: var(--color-fg-brand-primary);
+}
+
+.comma-notch-width__reset {
+  flex: none;
+}

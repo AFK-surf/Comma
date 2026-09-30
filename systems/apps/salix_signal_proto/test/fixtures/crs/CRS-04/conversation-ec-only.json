@@ -1,0 +1,910 @@
+{
+  "section": "CRS-04",
+  "name": "conversation-ec-only",
+  "description": "Out-of-order conversation in both directions produced by the oracle, with the post-quantum ratchet state removed from both parties after establishment so that message keys use no HKDF salt. Deployed peers never send or accept such messages (a missing post-quantum field is rejected); these vectors exist to test the EC Double Ratchet, message-key expansion, AES-256-CBC and MAC exactly. initial_state is read from oracle state. Each send event lists the sender state used and the derived keys; the generator checked each derived key by decrypting the body and recomputing the MAC. Deliver events list the oracle receiver outcome, in order.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "initiator_identity_private": "081b418992469275c8286373a88380c7205b2b6faa4960e2c6bf42b626ac6468",
+        "responder_identity_private": "e0668a113f82436a394920ec8bfb170fbd31e125f9c546c9e80f498a4ef6387f",
+        "initiator_address": {
+          "service_id": "00000000-0000-4000-8000-0000000000a1",
+          "device_id": 1
+        },
+        "responder_address": {
+          "service_id": "00000000-0000-4000-8000-0000000000b2",
+          "device_id": 1
+        },
+        "initial_state": {
+          "initiator": {
+            "root_key": "b6322b36679bd545171a0ca46b03829d3d6dd838969f03087492302012810f73",
+            "previous_chain_length": 0,
+            "sending_chain": {
+              "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+              "chain_index": 1,
+              "chain_key": "7de5df199a55c3d04bebcd3e3823c236d613a458704669f7d4045340e4c2e2ae",
+              "ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443"
+            },
+            "receiving_chains": [
+              {
+                "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                "chain_index": 0,
+                "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+              }
+            ]
+          },
+          "responder": {
+            "root_key": "43923138fca9c9baac8954578f89aa577e05ec273938abf9713392a2afabe14f",
+            "previous_chain_length": 0,
+            "sending_chain": {
+              "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+              "chain_index": 0,
+              "chain_key": "5a6ecf992006439ae1bc009dbf5e88e64b8f45170ddd1d9f30b32765556e94ed",
+              "ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72"
+            },
+            "receiving_chains": [
+              {
+                "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "chain_index": 1,
+                "chain_key": "7de5df199a55c3d04bebcd3e3823c236d613a458704669f7d4045340e4c2e2ae"
+              }
+            ]
+          }
+        }
+      },
+      "outputs": {
+        "events": [
+          {
+            "event": "send",
+            "name": "a1",
+            "sender": "initiator",
+            "message_type": 3,
+            "serialized": "44080712210504fd8d9ea1660159d05755d7e3a6ed7f7531ca503d5a6f0d75239a44b37c252f1a21050be5a3f3c6118b1b2135c37dcd0bea4e591500ab0a91fbd5702560ca349f3b7a2268440a21050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a6391001180022100549961b70d92d0f69ba0615be3307cd322400000000000000400080000000000000a10100000000000000400080000000000000b20192aad3f137444f9f28d209300b380d42a10c08c60bb0f91dd5bfa76cef5603a5b412b973b4c9e7b59f71f5a16b2ee6e9430d4f85d89e238d2068d09f7d2f1b008a97881a518c635f357506945b6dfb8a62cbcb189842e09ba1870e94e55767e432a9876ac9854bbc894f096a0c6c94dd9bb7dfcd8ecae7111d5070c7aa1387acea138decc4bc88368a267ba3691e38d056147b39414d30f48b0bc063007efef8993f2605f8082eac7a21806bb15d7a4a6086b6ce11ec2650c530dbca45d245a48d1dfcba6ce457961b486fda3bc16cc9b3208462c6151a18a1d240bf1357f94d9d7487894158631bd787140760a676a95259efeab9560222a93ec504fe4cc5b1abb22c5adb666c261946e70018b3e3458aa34bd4ac158b3d4afe53f5796092d777f98e22e9e5e2a786ff779dec9379580131d89088b406c8ddcb0e4438c67a0ec4e4f1fdee615c4c1fbe2c007c37c5686ead81903e2b7c071e4dc22ff757c1cfdc899d08974e4304fb256945f3abb3b7231e559a1e69963347b2c6791a7d581daa4c0ada0b18656854a1cfa62a3c7bf021bcb49e4d63d565bb83c59db782f92aab24d39e1d213bcf77e6b1dce2f307d633e81280797177264380306411f45a160684726ac97ca0f53229055075d84a860526c5f4053f7976a952f00b1dc91944254b564e7c155e513e1345f73a8bffba6f4657ced443c750869089850714b7130689c436be3f9d68e0b170144a5b3fba6c7040ebe8a3532c8ac79c464e1f801e8e91ed0260e8192769ec287046c4053d2fe7cb13edd245ff539917155afd9a1f0c210a6b1527c6fa6c6f6974b9d4f6262fd0c77923114c14b029efc13b7af9a0dbc9de5a42c5c14f8721cf84fce6d62c3f2345c5286380a8ae7babc56b6a81da6769f46816a1f3de7206483637bbf308427c38af19378a5e516af04668157a34e575e265f5f447184b868b5b055f8c59423a6005330bd992e9733daf7f663684841a450e611f2daaf9b17e291782638c95673c8842f8c57a972da0850572ce865e223c6fd8369583311d6b4ad52c6bff6b76d5ede9b3285425218c02c6a2d6c0b2d4a5847069f1aa4c0571eece4d3a15334ee72427bde85ab96cec4ee58077b622dbf72c3e54090a1c16a7b583c79ddc75b7aadb1500b5e549a420ae5c9894eb389abaaae0da12f07ec6a097822b71145dfd8b7f2ee4fb9c246c3af9ae231b3de76952f624c7613e1a1d915d0209e709e7225d7020e0897c7703dcc082dccb51f79114ca178b08b7ab43c152562868288eb220f730dec5413611aefa0c7fad6618c98dfd07700eaa1366a73ba36a9b0ce0fd674aaa2941c190bd22dca519bf82515be47add19fd064e8b4f0aef4c1d678eed1ac205f882a06b6c478a311c9a5fad065f78e98291eec6eae25d0c37bdf824d27ec14d9418db04f121195f7aba3dd7c5023af1231bded8d4f4dba48caa04d2430c1fcc533056f2237028b2d9d9879a55c97232f350aa63ffb95efe34e7f55b0cef742e26f9d76c4d38f4ee2162b12cd2c0a64fdd348a49ff77e6d6671ef7d7d7ec6b30fe0fba242faf1bd27f830eda0fa3d28f0a32d4d0c478b181a5c2faf4e90ac92028bb0209dc35ac3b92b55e9042625fa0c70b5db4aa736efe81b91866d9262df266659cdb06b310e22030801843c27fac73f79a83e119cc04988c338d9d50e8c9ca6ce92479d3f744040092af7a6b07e4c031139e1639994aede089789a9e170c176fdaa982cde6d70dc923c8ab3fb2a4c957397ff0224bfd4c2734ae939efed00952b2dabb1650a1b143ec6f69b5ef274842743fad4c4d64026cf0821c070bd4422b4aff352492d2ef9124b9ee8abc21610fa58b8186c6d4ce2022480a7bcbde9016d2f2debf15e91480c5780f1caac468b54df17afae7627f3664f2ffd38cc380af3761b454d5b54369aaad72736cbbf14b6d0421e69bd4bc2784646ddea13554233fc6bfaf4b2a23fee09cbb1601c88be44c5e8fd1aa456d61b2371413a7d836fab4b9f5257c36b94b640824e4e7b4bc4d8c4eb24e9cdf99f0468134f1d90a0babeb90733140e6960278d83effcc026b6629caf9b5646b50226311f16820bc0dda923b02576bf7575b9df40f182f55ad19a81adb4e290da575a5f9d450a160bdf78ec4744a138d37276acfd4732cb2ad6c9e7d6ad1ed07bb7876232cd554852211b6aaf0a65a2cee6c3e6dcef117fd2d13153168e3dee54d6e0472a712",
+            "plaintext": "6d7367206131",
+            "sender_chain_key_used": "7de5df199a55c3d04bebcd3e3823c236d613a458704669f7d4045340e4c2e2ae",
+            "sender_chain_index_used": 1,
+            "sender_ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443",
+            "ec_message_key_seed": "c693f0613d4981bc58df8c75de47276b2e6ac3612b5a458da342ac84bfaa48d7",
+            "cipher_key": "dde31f694f3c70af3a793d23693b0e8ab6d5271083eec69d45fb5eec746d8f81",
+            "mac_key": "30387c45e2e0cc6ec04a25495c4eafac97749460928b89af97974532fef6e37c",
+            "iv": "7099e30cf86caedc47add6f51adfc9c5",
+            "parsed": {
+              "version_byte": "44",
+              "field_order": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ],
+              "one_time_ec_pre_key_id": 7,
+              "initiator_ephemeral_public": "0504fd8d9ea1660159d05755d7e3a6ed7f7531ca503d5a6f0d75239a44b37c252f",
+              "initiator_identity_public": "050be5a3f3c6118b1b2135c37dcd0bea4e591500ab0a91fbd5702560ca349f3b7a",
+              "initiator_registration_id": 1234,
+              "signed_ec_pre_key_id": 11,
+              "kem_pre_key_id": 13,
+              "kem_ciphertext": "08c60bb0f91dd5bfa76cef5603a5b412b973b4c9e7b59f71f5a16b2ee6e9430d4f85d89e238d2068d09f7d2f1b008a97881a518c635f357506945b6dfb8a62cbcb189842e09ba1870e94e55767e432a9876ac9854bbc894f096a0c6c94dd9bb7dfcd8ecae7111d5070c7aa1387acea138decc4bc88368a267ba3691e38d056147b39414d30f48b0bc063007efef8993f2605f8082eac7a21806bb15d7a4a6086b6ce11ec2650c530dbca45d245a48d1dfcba6ce457961b486fda3bc16cc9b3208462c6151a18a1d240bf1357f94d9d7487894158631bd787140760a676a95259efeab9560222a93ec504fe4cc5b1abb22c5adb666c261946e70018b3e3458aa34bd4ac158b3d4afe53f5796092d777f98e22e9e5e2a786ff779dec9379580131d89088b406c8ddcb0e4438c67a0ec4e4f1fdee615c4c1fbe2c007c37c5686ead81903e2b7c071e4dc22ff757c1cfdc899d08974e4304fb256945f3abb3b7231e559a1e69963347b2c6791a7d581daa4c0ada0b18656854a1cfa62a3c7bf021bcb49e4d63d565bb83c59db782f92aab24d39e1d213bcf77e6b1dce2f307d633e81280797177264380306411f45a160684726ac97ca0f53229055075d84a860526c5f4053f7976a952f00b1dc91944254b564e7c155e513e1345f73a8bffba6f4657ced443c750869089850714b7130689c436be3f9d68e0b170144a5b3fba6c7040ebe8a3532c8ac79c464e1f801e8e91ed0260e8192769ec287046c4053d2fe7cb13edd245ff539917155afd9a1f0c210a6b1527c6fa6c6f6974b9d4f6262fd0c77923114c14b029efc13b7af9a0dbc9de5a42c5c14f8721cf84fce6d62c3f2345c5286380a8ae7babc56b6a81da6769f46816a1f3de7206483637bbf308427c38af19378a5e516af04668157a34e575e265f5f447184b868b5b055f8c59423a6005330bd992e9733daf7f663684841a450e611f2daaf9b17e291782638c95673c8842f8c57a972da0850572ce865e223c6fd8369583311d6b4ad52c6bff6b76d5ede9b3285425218c02c6a2d6c0b2d4a5847069f1aa4c0571eece4d3a15334ee72427bde85ab96cec4ee58077b622dbf72c3e54090a1c16a7b583c79ddc75b7aadb1500b5e549a420ae5c9894eb389abaaae0da12f07ec6a097822b71145dfd8b7f2ee4fb9c246c3af9ae231b3de76952f624c7613e1a1d915d0209e709e7225d7020e0897c7703dcc082dccb51f79114ca178b08b7ab43c152562868288eb220f730dec5413611aefa0c7fad6618c98dfd07700eaa1366a73ba36a9b0ce0fd674aaa2941c190bd22dca519bf82515be47add19fd064e8b4f0aef4c1d678eed1ac205f882a06b6c478a311c9a5fad065f78e98291eec6eae25d0c37bdf824d27ec14d9418db04f121195f7aba3dd7c5023af1231bded8d4f4dba48caa04d2430c1fcc533056f2237028b2d9d9879a55c97232f350aa63ffb95efe34e7f55b0cef742e26f9d76c4d38f4ee2162b12cd2c0a64fdd348a49ff77e6d6671ef7d7d7ec6b30fe0fba242faf1bd27f830eda0fa3d28f0a32d4d0c478b181a5c2faf4e90ac92028bb0209dc35ac3b92b55e9042625fa0c70b5db4aa736efe81b91866d9262df266659cdb06b310e22030801843c27fac73f79a83e119cc04988c338d9d50e8c9ca6ce92479d3f744040092af7a6b07e4c031139e1639994aede089789a9e170c176fdaa982cde6d70dc923c8ab3fb2a4c957397ff0224bfd4c2734ae939efed00952b2dabb1650a1b143ec6f69b5ef274842743fad4c4d64026cf0821c070bd4422b4aff352492d2ef9124b9ee8abc21610fa58b8186c6d4ce2022480a7bcbde9016d2f2debf15e91480c5780f1caac468b54df17afae7627f3664f2ffd38cc380af3761b454d5b54369aaad72736cbbf14b6d0421e69bd4bc2784646ddea13554233fc6bfaf4b2a23fee09cbb1601c88be44c5e8fd1aa456d61b2371413a7d836fab4b9f5257c36b94b640824e4e7b4bc4d8c4eb24e9cdf99f0468134f1d90a0babeb90733140e6960278d83effcc026b6629caf9b5646b50226311f16820bc0dda923b02576bf7575b9df40f182f55ad19a81adb4e290da575a5f9d450a160bdf78ec4744a138d37276acfd4732cb2ad6c9e7d6ad1ed07bb7876232cd554852211b6aaf0a65a2cee6c3e6dcef117fd2d13153168e3dee54d6e0472a712",
+              "inner_message": "440a21050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a6391001180022100549961b70d92d0f69ba0615be3307cd322400000000000000400080000000000000a10100000000000000400080000000000000b20192aad3f137444f9f",
+              "inner": {
+                "version_byte": "44",
+                "ratchet_public_key": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "message_number": 1,
+                "previous_chain_length": 0,
+                "encrypted_body": "0549961b70d92d0f69ba0615be3307cd",
+                "mac": "92aad3f137444f9f",
+                "address_binding": "00000000000000400080000000000000a10100000000000000400080000000000000b201",
+                "field_order": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  6
+                ]
+              }
+            },
+            "sender_state_after": {
+              "root_key": "b6322b36679bd545171a0ca46b03829d3d6dd838969f03087492302012810f73",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "chain_index": 2,
+                "chain_key": "9fadb31745a2c66a453d39f0acda9324428387786274a96f34073c3e0e254248",
+                "ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "a2",
+            "sender": "initiator",
+            "message_type": 3,
+            "serialized": "44080712210504fd8d9ea1660159d05755d7e3a6ed7f7531ca503d5a6f0d75239a44b37c252f1a21050be5a3f3c6118b1b2135c37dcd0bea4e591500ab0a91fbd5702560ca349f3b7a2268440a21050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639100218002210b1d80267bc68b28341a8b125f7a2b988322400000000000000400080000000000000a10100000000000000400080000000000000b201bcbfd317584c8d9328d209300b380d42a10c08c60bb0f91dd5bfa76cef5603a5b412b973b4c9e7b59f71f5a16b2ee6e9430d4f85d89e238d2068d09f7d2f1b008a97881a518c635f357506945b6dfb8a62cbcb189842e09ba1870e94e55767e432a9876ac9854bbc894f096a0c6c94dd9bb7dfcd8ecae7111d5070c7aa1387acea138decc4bc88368a267ba3691e38d056147b39414d30f48b0bc063007efef8993f2605f8082eac7a21806bb15d7a4a6086b6ce11ec2650c530dbca45d245a48d1dfcba6ce457961b486fda3bc16cc9b3208462c6151a18a1d240bf1357f94d9d7487894158631bd787140760a676a95259efeab9560222a93ec504fe4cc5b1abb22c5adb666c261946e70018b3e3458aa34bd4ac158b3d4afe53f5796092d777f98e22e9e5e2a786ff779dec9379580131d89088b406c8ddcb0e4438c67a0ec4e4f1fdee615c4c1fbe2c007c37c5686ead81903e2b7c071e4dc22ff757c1cfdc899d08974e4304fb256945f3abb3b7231e559a1e69963347b2c6791a7d581daa4c0ada0b18656854a1cfa62a3c7bf021bcb49e4d63d565bb83c59db782f92aab24d39e1d213bcf77e6b1dce2f307d633e81280797177264380306411f45a160684726ac97ca0f53229055075d84a860526c5f4053f7976a952f00b1dc91944254b564e7c155e513e1345f73a8bffba6f4657ced443c750869089850714b7130689c436be3f9d68e0b170144a5b3fba6c7040ebe8a3532c8ac79c464e1f801e8e91ed0260e8192769ec287046c4053d2fe7cb13edd245ff539917155afd9a1f0c210a6b1527c6fa6c6f6974b9d4f6262fd0c77923114c14b029efc13b7af9a0dbc9de5a42c5c14f8721cf84fce6d62c3f2345c5286380a8ae7babc56b6a81da6769f46816a1f3de7206483637bbf308427c38af19378a5e516af04668157a34e575e265f5f447184b868b5b055f8c59423a6005330bd992e9733daf7f663684841a450e611f2daaf9b17e291782638c95673c8842f8c57a972da0850572ce865e223c6fd8369583311d6b4ad52c6bff6b76d5ede9b3285425218c02c6a2d6c0b2d4a5847069f1aa4c0571eece4d3a15334ee72427bde85ab96cec4ee58077b622dbf72c3e54090a1c16a7b583c79ddc75b7aadb1500b5e549a420ae5c9894eb389abaaae0da12f07ec6a097822b71145dfd8b7f2ee4fb9c246c3af9ae231b3de76952f624c7613e1a1d915d0209e709e7225d7020e0897c7703dcc082dccb51f79114ca178b08b7ab43c152562868288eb220f730dec5413611aefa0c7fad6618c98dfd07700eaa1366a73ba36a9b0ce0fd674aaa2941c190bd22dca519bf82515be47add19fd064e8b4f0aef4c1d678eed1ac205f882a06b6c478a311c9a5fad065f78e98291eec6eae25d0c37bdf824d27ec14d9418db04f121195f7aba3dd7c5023af1231bded8d4f4dba48caa04d2430c1fcc533056f2237028b2d9d9879a55c97232f350aa63ffb95efe34e7f55b0cef742e26f9d76c4d38f4ee2162b12cd2c0a64fdd348a49ff77e6d6671ef7d7d7ec6b30fe0fba242faf1bd27f830eda0fa3d28f0a32d4d0c478b181a5c2faf4e90ac92028bb0209dc35ac3b92b55e9042625fa0c70b5db4aa736efe81b91866d9262df266659cdb06b310e22030801843c27fac73f79a83e119cc04988c338d9d50e8c9ca6ce92479d3f744040092af7a6b07e4c031139e1639994aede089789a9e170c176fdaa982cde6d70dc923c8ab3fb2a4c957397ff0224bfd4c2734ae939efed00952b2dabb1650a1b143ec6f69b5ef274842743fad4c4d64026cf0821c070bd4422b4aff352492d2ef9124b9ee8abc21610fa58b8186c6d4ce2022480a7bcbde9016d2f2debf15e91480c5780f1caac468b54df17afae7627f3664f2ffd38cc380af3761b454d5b54369aaad72736cbbf14b6d0421e69bd4bc2784646ddea13554233fc6bfaf4b2a23fee09cbb1601c88be44c5e8fd1aa456d61b2371413a7d836fab4b9f5257c36b94b640824e4e7b4bc4d8c4eb24e9cdf99f0468134f1d90a0babeb90733140e6960278d83effcc026b6629caf9b5646b50226311f16820bc0dda923b02576bf7575b9df40f182f55ad19a81adb4e290da575a5f9d450a160bdf78ec4744a138d37276acfd4732cb2ad6c9e7d6ad1ed07bb7876232cd554852211b6aaf0a65a2cee6c3e6dcef117fd2d13153168e3dee54d6e0472a712",
+            "plaintext": "6d7367206132",
+            "sender_chain_key_used": "9fadb31745a2c66a453d39f0acda9324428387786274a96f34073c3e0e254248",
+            "sender_chain_index_used": 2,
+            "sender_ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443",
+            "ec_message_key_seed": "d68c71b07fb225d006a88d0670f710c5a16baf7c75fa0de9682f67f0f6f8c2e6",
+            "cipher_key": "cb733084445717390d5e94ce158688a0605f823bff25c5783325c4f651df27a4",
+            "mac_key": "41b21170b974a68a27dea9e1f9f8a731d680521072904f5a3f02e335fd6b1e4a",
+            "iv": "945eaa0db72e38b095111c7583fd6907",
+            "parsed": {
+              "version_byte": "44",
+              "field_order": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ],
+              "one_time_ec_pre_key_id": 7,
+              "initiator_ephemeral_public": "0504fd8d9ea1660159d05755d7e3a6ed7f7531ca503d5a6f0d75239a44b37c252f",
+              "initiator_identity_public": "050be5a3f3c6118b1b2135c37dcd0bea4e591500ab0a91fbd5702560ca349f3b7a",
+              "initiator_registration_id": 1234,
+              "signed_ec_pre_key_id": 11,
+              "kem_pre_key_id": 13,
+              "kem_ciphertext": "08c60bb0f91dd5bfa76cef5603a5b412b973b4c9e7b59f71f5a16b2ee6e9430d4f85d89e238d2068d09f7d2f1b008a97881a518c635f357506945b6dfb8a62cbcb189842e09ba1870e94e55767e432a9876ac9854bbc894f096a0c6c94dd9bb7dfcd8ecae7111d5070c7aa1387acea138decc4bc88368a267ba3691e38d056147b39414d30f48b0bc063007efef8993f2605f8082eac7a21806bb15d7a4a6086b6ce11ec2650c530dbca45d245a48d1dfcba6ce457961b486fda3bc16cc9b3208462c6151a18a1d240bf1357f94d9d7487894158631bd787140760a676a95259efeab9560222a93ec504fe4cc5b1abb22c5adb666c261946e70018b3e3458aa34bd4ac158b3d4afe53f5796092d777f98e22e9e5e2a786ff779dec9379580131d89088b406c8ddcb0e4438c67a0ec4e4f1fdee615c4c1fbe2c007c37c5686ead81903e2b7c071e4dc22ff757c1cfdc899d08974e4304fb256945f3abb3b7231e559a1e69963347b2c6791a7d581daa4c0ada0b18656854a1cfa62a3c7bf021bcb49e4d63d565bb83c59db782f92aab24d39e1d213bcf77e6b1dce2f307d633e81280797177264380306411f45a160684726ac97ca0f53229055075d84a860526c5f4053f7976a952f00b1dc91944254b564e7c155e513e1345f73a8bffba6f4657ced443c750869089850714b7130689c436be3f9d68e0b170144a5b3fba6c7040ebe8a3532c8ac79c464e1f801e8e91ed0260e8192769ec287046c4053d2fe7cb13edd245ff539917155afd9a1f0c210a6b1527c6fa6c6f6974b9d4f6262fd0c77923114c14b029efc13b7af9a0dbc9de5a42c5c14f8721cf84fce6d62c3f2345c5286380a8ae7babc56b6a81da6769f46816a1f3de7206483637bbf308427c38af19378a5e516af04668157a34e575e265f5f447184b868b5b055f8c59423a6005330bd992e9733daf7f663684841a450e611f2daaf9b17e291782638c95673c8842f8c57a972da0850572ce865e223c6fd8369583311d6b4ad52c6bff6b76d5ede9b3285425218c02c6a2d6c0b2d4a5847069f1aa4c0571eece4d3a15334ee72427bde85ab96cec4ee58077b622dbf72c3e54090a1c16a7b583c79ddc75b7aadb1500b5e549a420ae5c9894eb389abaaae0da12f07ec6a097822b71145dfd8b7f2ee4fb9c246c3af9ae231b3de76952f624c7613e1a1d915d0209e709e7225d7020e0897c7703dcc082dccb51f79114ca178b08b7ab43c152562868288eb220f730dec5413611aefa0c7fad6618c98dfd07700eaa1366a73ba36a9b0ce0fd674aaa2941c190bd22dca519bf82515be47add19fd064e8b4f0aef4c1d678eed1ac205f882a06b6c478a311c9a5fad065f78e98291eec6eae25d0c37bdf824d27ec14d9418db04f121195f7aba3dd7c5023af1231bded8d4f4dba48caa04d2430c1fcc533056f2237028b2d9d9879a55c97232f350aa63ffb95efe34e7f55b0cef742e26f9d76c4d38f4ee2162b12cd2c0a64fdd348a49ff77e6d6671ef7d7d7ec6b30fe0fba242faf1bd27f830eda0fa3d28f0a32d4d0c478b181a5c2faf4e90ac92028bb0209dc35ac3b92b55e9042625fa0c70b5db4aa736efe81b91866d9262df266659cdb06b310e22030801843c27fac73f79a83e119cc04988c338d9d50e8c9ca6ce92479d3f744040092af7a6b07e4c031139e1639994aede089789a9e170c176fdaa982cde6d70dc923c8ab3fb2a4c957397ff0224bfd4c2734ae939efed00952b2dabb1650a1b143ec6f69b5ef274842743fad4c4d64026cf0821c070bd4422b4aff352492d2ef9124b9ee8abc21610fa58b8186c6d4ce2022480a7bcbde9016d2f2debf15e91480c5780f1caac468b54df17afae7627f3664f2ffd38cc380af3761b454d5b54369aaad72736cbbf14b6d0421e69bd4bc2784646ddea13554233fc6bfaf4b2a23fee09cbb1601c88be44c5e8fd1aa456d61b2371413a7d836fab4b9f5257c36b94b640824e4e7b4bc4d8c4eb24e9cdf99f0468134f1d90a0babeb90733140e6960278d83effcc026b6629caf9b5646b50226311f16820bc0dda923b02576bf7575b9df40f182f55ad19a81adb4e290da575a5f9d450a160bdf78ec4744a138d37276acfd4732cb2ad6c9e7d6ad1ed07bb7876232cd554852211b6aaf0a65a2cee6c3e6dcef117fd2d13153168e3dee54d6e0472a712",
+              "inner_message": "440a21050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639100218002210b1d80267bc68b28341a8b125f7a2b988322400000000000000400080000000000000a10100000000000000400080000000000000b201bcbfd317584c8d93",
+              "inner": {
+                "version_byte": "44",
+                "ratchet_public_key": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "message_number": 2,
+                "previous_chain_length": 0,
+                "encrypted_body": "b1d80267bc68b28341a8b125f7a2b988",
+                "mac": "bcbfd317584c8d93",
+                "address_binding": "00000000000000400080000000000000a10100000000000000400080000000000000b201",
+                "field_order": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  6
+                ]
+              }
+            },
+            "sender_state_after": {
+              "root_key": "b6322b36679bd545171a0ca46b03829d3d6dd838969f03087492302012810f73",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "chain_index": 3,
+                "chain_key": "3a8ea68e3b3cb39ecc04fa67014e5b624a8244400a3a64cf89150d79861a5930",
+                "ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "a3",
+            "sender": "initiator",
+            "message_type": 3,
+            "serialized": "44080712210504fd8d9ea1660159d05755d7e3a6ed7f7531ca503d5a6f0d75239a44b37c252f1a21050be5a3f3c6118b1b2135c37dcd0bea4e591500ab0a91fbd5702560ca349f3b7a2268440a21050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a63910031800221038b40bc60968a1c606b1e2834688e73e322400000000000000400080000000000000a10100000000000000400080000000000000b201f1fb6d4ffe0600f628d209300b380d42a10c08c60bb0f91dd5bfa76cef5603a5b412b973b4c9e7b59f71f5a16b2ee6e9430d4f85d89e238d2068d09f7d2f1b008a97881a518c635f357506945b6dfb8a62cbcb189842e09ba1870e94e55767e432a9876ac9854bbc894f096a0c6c94dd9bb7dfcd8ecae7111d5070c7aa1387acea138decc4bc88368a267ba3691e38d056147b39414d30f48b0bc063007efef8993f2605f8082eac7a21806bb15d7a4a6086b6ce11ec2650c530dbca45d245a48d1dfcba6ce457961b486fda3bc16cc9b3208462c6151a18a1d240bf1357f94d9d7487894158631bd787140760a676a95259efeab9560222a93ec504fe4cc5b1abb22c5adb666c261946e70018b3e3458aa34bd4ac158b3d4afe53f5796092d777f98e22e9e5e2a786ff779dec9379580131d89088b406c8ddcb0e4438c67a0ec4e4f1fdee615c4c1fbe2c007c37c5686ead81903e2b7c071e4dc22ff757c1cfdc899d08974e4304fb256945f3abb3b7231e559a1e69963347b2c6791a7d581daa4c0ada0b18656854a1cfa62a3c7bf021bcb49e4d63d565bb83c59db782f92aab24d39e1d213bcf77e6b1dce2f307d633e81280797177264380306411f45a160684726ac97ca0f53229055075d84a860526c5f4053f7976a952f00b1dc91944254b564e7c155e513e1345f73a8bffba6f4657ced443c750869089850714b7130689c436be3f9d68e0b170144a5b3fba6c7040ebe8a3532c8ac79c464e1f801e8e91ed0260e8192769ec287046c4053d2fe7cb13edd245ff539917155afd9a1f0c210a6b1527c6fa6c6f6974b9d4f6262fd0c77923114c14b029efc13b7af9a0dbc9de5a42c5c14f8721cf84fce6d62c3f2345c5286380a8ae7babc56b6a81da6769f46816a1f3de7206483637bbf308427c38af19378a5e516af04668157a34e575e265f5f447184b868b5b055f8c59423a6005330bd992e9733daf7f663684841a450e611f2daaf9b17e291782638c95673c8842f8c57a972da0850572ce865e223c6fd8369583311d6b4ad52c6bff6b76d5ede9b3285425218c02c6a2d6c0b2d4a5847069f1aa4c0571eece4d3a15334ee72427bde85ab96cec4ee58077b622dbf72c3e54090a1c16a7b583c79ddc75b7aadb1500b5e549a420ae5c9894eb389abaaae0da12f07ec6a097822b71145dfd8b7f2ee4fb9c246c3af9ae231b3de76952f624c7613e1a1d915d0209e709e7225d7020e0897c7703dcc082dccb51f79114ca178b08b7ab43c152562868288eb220f730dec5413611aefa0c7fad6618c98dfd07700eaa1366a73ba36a9b0ce0fd674aaa2941c190bd22dca519bf82515be47add19fd064e8b4f0aef4c1d678eed1ac205f882a06b6c478a311c9a5fad065f78e98291eec6eae25d0c37bdf824d27ec14d9418db04f121195f7aba3dd7c5023af1231bded8d4f4dba48caa04d2430c1fcc533056f2237028b2d9d9879a55c97232f350aa63ffb95efe34e7f55b0cef742e26f9d76c4d38f4ee2162b12cd2c0a64fdd348a49ff77e6d6671ef7d7d7ec6b30fe0fba242faf1bd27f830eda0fa3d28f0a32d4d0c478b181a5c2faf4e90ac92028bb0209dc35ac3b92b55e9042625fa0c70b5db4aa736efe81b91866d9262df266659cdb06b310e22030801843c27fac73f79a83e119cc04988c338d9d50e8c9ca6ce92479d3f744040092af7a6b07e4c031139e1639994aede089789a9e170c176fdaa982cde6d70dc923c8ab3fb2a4c957397ff0224bfd4c2734ae939efed00952b2dabb1650a1b143ec6f69b5ef274842743fad4c4d64026cf0821c070bd4422b4aff352492d2ef9124b9ee8abc21610fa58b8186c6d4ce2022480a7bcbde9016d2f2debf15e91480c5780f1caac468b54df17afae7627f3664f2ffd38cc380af3761b454d5b54369aaad72736cbbf14b6d0421e69bd4bc2784646ddea13554233fc6bfaf4b2a23fee09cbb1601c88be44c5e8fd1aa456d61b2371413a7d836fab4b9f5257c36b94b640824e4e7b4bc4d8c4eb24e9cdf99f0468134f1d90a0babeb90733140e6960278d83effcc026b6629caf9b5646b50226311f16820bc0dda923b02576bf7575b9df40f182f55ad19a81adb4e290da575a5f9d450a160bdf78ec4744a138d37276acfd4732cb2ad6c9e7d6ad1ed07bb7876232cd554852211b6aaf0a65a2cee6c3e6dcef117fd2d13153168e3dee54d6e0472a712",
+            "plaintext": "6d7367206133",
+            "sender_chain_key_used": "3a8ea68e3b3cb39ecc04fa67014e5b624a8244400a3a64cf89150d79861a5930",
+            "sender_chain_index_used": 3,
+            "sender_ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443",
+            "ec_message_key_seed": "563faab3e00bea8951a699db0151a8eb4233008ebcfe0fb1be6d7dc099c2c726",
+            "cipher_key": "adbe10c2a21f186478810d5e46cecb8cdd2b26ff8c9874755725996bb7f9c204",
+            "mac_key": "49f872e0ffd0b0e662916dfe8bc555a17567de16e1d148e36717a0627dabfa1a",
+            "iv": "4bd56c45fcc4c51bdb9928b1b7072733",
+            "parsed": {
+              "version_byte": "44",
+              "field_order": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ],
+              "one_time_ec_pre_key_id": 7,
+              "initiator_ephemeral_public": "0504fd8d9ea1660159d05755d7e3a6ed7f7531ca503d5a6f0d75239a44b37c252f",
+              "initiator_identity_public": "050be5a3f3c6118b1b2135c37dcd0bea4e591500ab0a91fbd5702560ca349f3b7a",
+              "initiator_registration_id": 1234,
+              "signed_ec_pre_key_id": 11,
+              "kem_pre_key_id": 13,
+              "kem_ciphertext": "08c60bb0f91dd5bfa76cef5603a5b412b973b4c9e7b59f71f5a16b2ee6e9430d4f85d89e238d2068d09f7d2f1b008a97881a518c635f357506945b6dfb8a62cbcb189842e09ba1870e94e55767e432a9876ac9854bbc894f096a0c6c94dd9bb7dfcd8ecae7111d5070c7aa1387acea138decc4bc88368a267ba3691e38d056147b39414d30f48b0bc063007efef8993f2605f8082eac7a21806bb15d7a4a6086b6ce11ec2650c530dbca45d245a48d1dfcba6ce457961b486fda3bc16cc9b3208462c6151a18a1d240bf1357f94d9d7487894158631bd787140760a676a95259efeab9560222a93ec504fe4cc5b1abb22c5adb666c261946e70018b3e3458aa34bd4ac158b3d4afe53f5796092d777f98e22e9e5e2a786ff779dec9379580131d89088b406c8ddcb0e4438c67a0ec4e4f1fdee615c4c1fbe2c007c37c5686ead81903e2b7c071e4dc22ff757c1cfdc899d08974e4304fb256945f3abb3b7231e559a1e69963347b2c6791a7d581daa4c0ada0b18656854a1cfa62a3c7bf021bcb49e4d63d565bb83c59db782f92aab24d39e1d213bcf77e6b1dce2f307d633e81280797177264380306411f45a160684726ac97ca0f53229055075d84a860526c5f4053f7976a952f00b1dc91944254b564e7c155e513e1345f73a8bffba6f4657ced443c750869089850714b7130689c436be3f9d68e0b170144a5b3fba6c7040ebe8a3532c8ac79c464e1f801e8e91ed0260e8192769ec287046c4053d2fe7cb13edd245ff539917155afd9a1f0c210a6b1527c6fa6c6f6974b9d4f6262fd0c77923114c14b029efc13b7af9a0dbc9de5a42c5c14f8721cf84fce6d62c3f2345c5286380a8ae7babc56b6a81da6769f46816a1f3de7206483637bbf308427c38af19378a5e516af04668157a34e575e265f5f447184b868b5b055f8c59423a6005330bd992e9733daf7f663684841a450e611f2daaf9b17e291782638c95673c8842f8c57a972da0850572ce865e223c6fd8369583311d6b4ad52c6bff6b76d5ede9b3285425218c02c6a2d6c0b2d4a5847069f1aa4c0571eece4d3a15334ee72427bde85ab96cec4ee58077b622dbf72c3e54090a1c16a7b583c79ddc75b7aadb1500b5e549a420ae5c9894eb389abaaae0da12f07ec6a097822b71145dfd8b7f2ee4fb9c246c3af9ae231b3de76952f624c7613e1a1d915d0209e709e7225d7020e0897c7703dcc082dccb51f79114ca178b08b7ab43c152562868288eb220f730dec5413611aefa0c7fad6618c98dfd07700eaa1366a73ba36a9b0ce0fd674aaa2941c190bd22dca519bf82515be47add19fd064e8b4f0aef4c1d678eed1ac205f882a06b6c478a311c9a5fad065f78e98291eec6eae25d0c37bdf824d27ec14d9418db04f121195f7aba3dd7c5023af1231bded8d4f4dba48caa04d2430c1fcc533056f2237028b2d9d9879a55c97232f350aa63ffb95efe34e7f55b0cef742e26f9d76c4d38f4ee2162b12cd2c0a64fdd348a49ff77e6d6671ef7d7d7ec6b30fe0fba242faf1bd27f830eda0fa3d28f0a32d4d0c478b181a5c2faf4e90ac92028bb0209dc35ac3b92b55e9042625fa0c70b5db4aa736efe81b91866d9262df266659cdb06b310e22030801843c27fac73f79a83e119cc04988c338d9d50e8c9ca6ce92479d3f744040092af7a6b07e4c031139e1639994aede089789a9e170c176fdaa982cde6d70dc923c8ab3fb2a4c957397ff0224bfd4c2734ae939efed00952b2dabb1650a1b143ec6f69b5ef274842743fad4c4d64026cf0821c070bd4422b4aff352492d2ef9124b9ee8abc21610fa58b8186c6d4ce2022480a7bcbde9016d2f2debf15e91480c5780f1caac468b54df17afae7627f3664f2ffd38cc380af3761b454d5b54369aaad72736cbbf14b6d0421e69bd4bc2784646ddea13554233fc6bfaf4b2a23fee09cbb1601c88be44c5e8fd1aa456d61b2371413a7d836fab4b9f5257c36b94b640824e4e7b4bc4d8c4eb24e9cdf99f0468134f1d90a0babeb90733140e6960278d83effcc026b6629caf9b5646b50226311f16820bc0dda923b02576bf7575b9df40f182f55ad19a81adb4e290da575a5f9d450a160bdf78ec4744a138d37276acfd4732cb2ad6c9e7d6ad1ed07bb7876232cd554852211b6aaf0a65a2cee6c3e6dcef117fd2d13153168e3dee54d6e0472a712",
+              "inner_message": "440a21050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a63910031800221038b40bc60968a1c606b1e2834688e73e322400000000000000400080000000000000a10100000000000000400080000000000000b201f1fb6d4ffe0600f6",
+              "inner": {
+                "version_byte": "44",
+                "ratchet_public_key": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "message_number": 3,
+                "previous_chain_length": 0,
+                "encrypted_body": "38b40bc60968a1c606b1e2834688e73e",
+                "mac": "f1fb6d4ffe0600f6",
+                "address_binding": "00000000000000400080000000000000a10100000000000000400080000000000000b201",
+                "field_order": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  6
+                ]
+              }
+            },
+            "sender_state_after": {
+              "root_key": "b6322b36679bd545171a0ca46b03829d3d6dd838969f03087492302012810f73",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                "chain_index": 4,
+                "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755",
+                "ratchet_private": "208e5b29e45fe7007f8762dd9e42a0722438425fbc4595b1ca870cdbb06f3443"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a3",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206133",
+            "receiver_state_after": {
+              "root_key": "43923138fca9c9baac8954578f89aa577e05ec273938abf9713392a2afabe14f",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                "chain_index": 0,
+                "chain_key": "5a6ecf992006439ae1bc009dbf5e88e64b8f45170ddd1d9f30b32765556e94ed",
+                "ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 2,
+                      "seed": "d68c71b07fb225d006a88d0670f710c5a16baf7c75fa0de9682f67f0f6f8c2e6"
+                    },
+                    {
+                      "index": 1,
+                      "seed": "c693f0613d4981bc58df8c75de47276b2e6ac3612b5a458da342ac84bfaa48d7"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a1",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206131",
+            "receiver_state_after": {
+              "root_key": "43923138fca9c9baac8954578f89aa577e05ec273938abf9713392a2afabe14f",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                "chain_index": 0,
+                "chain_key": "5a6ecf992006439ae1bc009dbf5e88e64b8f45170ddd1d9f30b32765556e94ed",
+                "ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 2,
+                      "seed": "d68c71b07fb225d006a88d0670f710c5a16baf7c75fa0de9682f67f0f6f8c2e6"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "b1",
+            "sender": "responder",
+            "message_type": 2,
+            "serialized": "440a210516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a1000180022107a42884f76c881d5c2e3fe485212109d3e5a790ada7bcb90",
+            "plaintext": "6d7367206231",
+            "sender_chain_key_used": "5a6ecf992006439ae1bc009dbf5e88e64b8f45170ddd1d9f30b32765556e94ed",
+            "sender_chain_index_used": 0,
+            "sender_ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72",
+            "ec_message_key_seed": "6363911345a709f928b1c136210aaa1146972392ab08179de892214b57698015",
+            "cipher_key": "223f5030b4c5bf90c91e3d74053c6b40d957ee4acada87a88be2b4ccc0c5fcc2",
+            "mac_key": "bc94567c291a16b323c776b00ba3ef841f593df605d1213d457fcf5decaa10af",
+            "iv": "cae81abccbc77c4431c1ab14d1d13d31",
+            "parsed": {
+              "version_byte": "44",
+              "ratchet_public_key": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+              "message_number": 0,
+              "previous_chain_length": 0,
+              "encrypted_body": "7a42884f76c881d5c2e3fe485212109d",
+              "mac": "3e5a790ada7bcb90",
+              "field_order": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "sender_state_after": {
+              "root_key": "43923138fca9c9baac8954578f89aa577e05ec273938abf9713392a2afabe14f",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                "chain_index": 1,
+                "chain_key": "4e811d5a6973323c2a8a614747f2b2552d299592fee8223ec5af9e86f721fc70",
+                "ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 2,
+                      "seed": "d68c71b07fb225d006a88d0670f710c5a16baf7c75fa0de9682f67f0f6f8c2e6"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "b2",
+            "sender": "responder",
+            "message_type": 2,
+            "serialized": "440a210516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a1001180022101f82181b45a5f8249094e1536b104ae7f7ee7e59bf583269",
+            "plaintext": "6d7367206232",
+            "sender_chain_key_used": "4e811d5a6973323c2a8a614747f2b2552d299592fee8223ec5af9e86f721fc70",
+            "sender_chain_index_used": 1,
+            "sender_ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72",
+            "ec_message_key_seed": "4c38373bed2caf7a73825553888f8df3a647145b5911ff77caa8888343395f71",
+            "cipher_key": "7742aa383c0e844add1d10d91607a47ef13154fa480d88d574842ace0d4d731f",
+            "mac_key": "4aa4f0a4809591b98eb6dae707c2951c20f0088cf7b16e944146b869828650ca",
+            "iv": "30ecc52bf7f6151a8b6dbe133d60dc14",
+            "parsed": {
+              "version_byte": "44",
+              "ratchet_public_key": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+              "message_number": 1,
+              "previous_chain_length": 0,
+              "encrypted_body": "1f82181b45a5f8249094e1536b104ae7",
+              "mac": "f7ee7e59bf583269",
+              "field_order": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "sender_state_after": {
+              "root_key": "43923138fca9c9baac8954578f89aa577e05ec273938abf9713392a2afabe14f",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                "chain_index": 2,
+                "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54",
+                "ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 2,
+                      "seed": "d68c71b07fb225d006a88d0670f710c5a16baf7c75fa0de9682f67f0f6f8c2e6"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "b2",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206232",
+            "receiver_state_after": {
+              "root_key": "a1043923480aff9c720e436a02cd9588a6d077324c528067837d0888b59d2e21",
+              "previous_chain_length": 3,
+              "sending_chain": {
+                "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                "chain_index": 0,
+                "chain_key": "7d79719c3ff289f87630ce7296b42b435115e49d5bc4ca4bcac8570dc15907fe",
+                "ratchet_private": "f89ed7befb27f9ae1b7b4e4db50119f9f23e1aeb5e3646505fdc57d28c2ebd53"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                },
+                {
+                  "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                  "chain_index": 2,
+                  "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 0,
+                      "seed": "6363911345a709f928b1c136210aaa1146972392ab08179de892214b57698015"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "a4",
+            "sender": "initiator",
+            "message_type": 2,
+            "serialized": "440a210534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b100018032210d812e4a0ff98815c38564839a4dd8f79ee5ab5f055c50330",
+            "plaintext": "6d7367206134",
+            "sender_chain_key_used": "7d79719c3ff289f87630ce7296b42b435115e49d5bc4ca4bcac8570dc15907fe",
+            "sender_chain_index_used": 0,
+            "sender_ratchet_private": "f89ed7befb27f9ae1b7b4e4db50119f9f23e1aeb5e3646505fdc57d28c2ebd53",
+            "ec_message_key_seed": "e30aab49d968a304102e49f0d4f7d857572f5a8fdbd3a052313d0b6118fbccd8",
+            "cipher_key": "27c11f1176aac91a33e73d1fe3451ace532ee8d4e663952e822aa4c39f0da4bf",
+            "mac_key": "e03c997e78b0d171be6ff2a9a65f29a91ac8d33396013aad18e06e65c989c9a4",
+            "iv": "62a4fd6a5f3f79b381628e438897218c",
+            "parsed": {
+              "version_byte": "44",
+              "ratchet_public_key": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+              "message_number": 0,
+              "previous_chain_length": 3,
+              "encrypted_body": "d812e4a0ff98815c38564839a4dd8f79",
+              "mac": "ee5ab5f055c50330",
+              "field_order": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "sender_state_after": {
+              "root_key": "a1043923480aff9c720e436a02cd9588a6d077324c528067837d0888b59d2e21",
+              "previous_chain_length": 3,
+              "sending_chain": {
+                "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                "chain_index": 1,
+                "chain_key": "d4f75d16c4d8110e9d698b7aa5a3e627b1492b38f038ae88b3361b175ad08059",
+                "ratchet_private": "f89ed7befb27f9ae1b7b4e4db50119f9f23e1aeb5e3646505fdc57d28c2ebd53"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                },
+                {
+                  "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                  "chain_index": 2,
+                  "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 0,
+                      "seed": "6363911345a709f928b1c136210aaa1146972392ab08179de892214b57698015"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "a5",
+            "sender": "initiator",
+            "message_type": 2,
+            "serialized": "440a210534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b10011803221018b5eaab3c3836c544bc750cd655421cbdd0abac7a41b204",
+            "plaintext": "6d7367206135",
+            "sender_chain_key_used": "d4f75d16c4d8110e9d698b7aa5a3e627b1492b38f038ae88b3361b175ad08059",
+            "sender_chain_index_used": 1,
+            "sender_ratchet_private": "f89ed7befb27f9ae1b7b4e4db50119f9f23e1aeb5e3646505fdc57d28c2ebd53",
+            "ec_message_key_seed": "950eee164e8dc6633d01f7c59b0b7253bc2c775a39d0ae11c71da669d1abbd20",
+            "cipher_key": "eb20cdac8568e57b4d63db39ef8cd89b995f250b8a1a67170a6b27fcaf081d07",
+            "mac_key": "e4e5d8afb5d07c323b20067526f2f9f2e7691048a55432e14aa136777be44819",
+            "iv": "25d227585e561f3a931c2d5494d1895c",
+            "parsed": {
+              "version_byte": "44",
+              "ratchet_public_key": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+              "message_number": 1,
+              "previous_chain_length": 3,
+              "encrypted_body": "18b5eaab3c3836c544bc750cd655421c",
+              "mac": "bdd0abac7a41b204",
+              "field_order": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "sender_state_after": {
+              "root_key": "a1043923480aff9c720e436a02cd9588a6d077324c528067837d0888b59d2e21",
+              "previous_chain_length": 3,
+              "sending_chain": {
+                "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                "chain_index": 2,
+                "chain_key": "dccf95bdb6d3ddeb6e08a37fefc93580c4db21a46a706377182793f7a9703ccf",
+                "ratchet_private": "f89ed7befb27f9ae1b7b4e4db50119f9f23e1aeb5e3646505fdc57d28c2ebd53"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                },
+                {
+                  "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                  "chain_index": 2,
+                  "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 0,
+                      "seed": "6363911345a709f928b1c136210aaa1146972392ab08179de892214b57698015"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a2",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206132",
+            "receiver_state_after": {
+              "root_key": "43923138fca9c9baac8954578f89aa577e05ec273938abf9713392a2afabe14f",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                "chain_index": 2,
+                "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54",
+                "ratchet_private": "881aac6664d6ee20bb3db5ae9656b6592051956cd5fddd5d28e8cf4b3e839a72"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755"
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a5",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206135",
+            "receiver_state_after": {
+              "root_key": "08e9d67c5c29c8756634de818ecbddadae5a4f8eb25cd76e0a2a6052c9c6f425",
+              "previous_chain_length": 1,
+              "sending_chain": {
+                "ratchet_public": "05a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622",
+                "chain_index": 0,
+                "chain_key": "92a9481424c632f4a2f533ee051a58caad3ccbd0c36b5107a15f2ccabebb7d6d",
+                "ratchet_private": "f0133d915682c8d10f6324d8962175885581236ea1902d3d8d835b8a8cc03d79"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755"
+                },
+                {
+                  "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                  "chain_index": 2,
+                  "chain_key": "dccf95bdb6d3ddeb6e08a37fefc93580c4db21a46a706377182793f7a9703ccf",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 0,
+                      "seed": "e30aab49d968a304102e49f0d4f7d857572f5a8fdbd3a052313d0b6118fbccd8"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "b1",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206231",
+            "receiver_state_after": {
+              "root_key": "a1043923480aff9c720e436a02cd9588a6d077324c528067837d0888b59d2e21",
+              "previous_chain_length": 3,
+              "sending_chain": {
+                "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                "chain_index": 2,
+                "chain_key": "dccf95bdb6d3ddeb6e08a37fefc93580c4db21a46a706377182793f7a9703ccf",
+                "ratchet_private": "f89ed7befb27f9ae1b7b4e4db50119f9f23e1aeb5e3646505fdc57d28c2ebd53"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                },
+                {
+                  "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                  "chain_index": 2,
+                  "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54"
+                }
+              ]
+            }
+          },
+          {
+            "event": "send",
+            "name": "b3",
+            "sender": "responder",
+            "message_type": 2,
+            "serialized": "440a2105a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622100018012210ba5b18cb49dceb9f02f559a0f44220252ca1956232724401",
+            "plaintext": "6d7367206233",
+            "sender_chain_key_used": "92a9481424c632f4a2f533ee051a58caad3ccbd0c36b5107a15f2ccabebb7d6d",
+            "sender_chain_index_used": 0,
+            "sender_ratchet_private": "f0133d915682c8d10f6324d8962175885581236ea1902d3d8d835b8a8cc03d79",
+            "ec_message_key_seed": "0e7098bb0cc6babf13f787bf7a69f522a1c81f59b2617c7b353792fb140c19ed",
+            "cipher_key": "07b8b8ce30c9222c7630d6214a5b74c6594430b18d341d133eeaf8d17c7c1a13",
+            "mac_key": "44c14eb65bd70f5196206579d07a73f305738f0ca8a9adee21db8221c6008265",
+            "iv": "9ced9339a1ea4389a3ed1c8489d19c6f",
+            "parsed": {
+              "version_byte": "44",
+              "ratchet_public_key": "05a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622",
+              "message_number": 0,
+              "previous_chain_length": 1,
+              "encrypted_body": "ba5b18cb49dceb9f02f559a0f4422025",
+              "mac": "2ca1956232724401",
+              "field_order": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "sender_state_after": {
+              "root_key": "08e9d67c5c29c8756634de818ecbddadae5a4f8eb25cd76e0a2a6052c9c6f425",
+              "previous_chain_length": 1,
+              "sending_chain": {
+                "ratchet_public": "05a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622",
+                "chain_index": 1,
+                "chain_key": "7e28f133e505f53aa24cd9ddb4494e89f6ddbd68ca47c5d71ab3b94c0834d9fe",
+                "ratchet_private": "f0133d915682c8d10f6324d8962175885581236ea1902d3d8d835b8a8cc03d79"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755"
+                },
+                {
+                  "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                  "chain_index": 2,
+                  "chain_key": "dccf95bdb6d3ddeb6e08a37fefc93580c4db21a46a706377182793f7a9703ccf",
+                  "stored_message_key_seeds": [
+                    {
+                      "index": 0,
+                      "seed": "e30aab49d968a304102e49f0d4f7d857572f5a8fdbd3a052313d0b6118fbccd8"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a4",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206134",
+            "receiver_state_after": {
+              "root_key": "08e9d67c5c29c8756634de818ecbddadae5a4f8eb25cd76e0a2a6052c9c6f425",
+              "previous_chain_length": 1,
+              "sending_chain": {
+                "ratchet_public": "05a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622",
+                "chain_index": 1,
+                "chain_key": "7e28f133e505f53aa24cd9ddb4494e89f6ddbd68ca47c5d71ab3b94c0834d9fe",
+                "ratchet_private": "f0133d915682c8d10f6324d8962175885581236ea1902d3d8d835b8a8cc03d79"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755"
+                },
+                {
+                  "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                  "chain_index": 2,
+                  "chain_key": "dccf95bdb6d3ddeb6e08a37fefc93580c4db21a46a706377182793f7a9703ccf"
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "b3",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206233",
+            "receiver_state_after": {
+              "root_key": "291569a244509046a518a0e725ee89931c57602253b491cd575f02a417b62bed",
+              "previous_chain_length": 1,
+              "sending_chain": {
+                "ratchet_public": "05e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d21",
+                "chain_index": 0,
+                "chain_key": "960b6b3e76d3a2985ca85aac353ea9b286e1903988a50f077c18b421934ef8a9",
+                "ratchet_private": "6860fc2c96be6824705e96ecc1af103f49160b77abf307063604da0372e7bf49"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                },
+                {
+                  "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                  "chain_index": 2,
+                  "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54"
+                },
+                {
+                  "ratchet_public": "05a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622",
+                  "chain_index": 1,
+                  "chain_key": "7e28f133e505f53aa24cd9ddb4494e89f6ddbd68ca47c5d71ab3b94c0834d9fe"
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a1",
+            "tamper": null,
+            "result": "duplicate"
+          },
+          {
+            "event": "send",
+            "name": "a6",
+            "sender": "initiator",
+            "message_type": 2,
+            "serialized": "440a2105e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d2110001801221065ada1d6ad23c3f09d4aa72c079c068c15858b66cf6a35a1",
+            "plaintext": "6d7367206136",
+            "sender_chain_key_used": "960b6b3e76d3a2985ca85aac353ea9b286e1903988a50f077c18b421934ef8a9",
+            "sender_chain_index_used": 0,
+            "sender_ratchet_private": "6860fc2c96be6824705e96ecc1af103f49160b77abf307063604da0372e7bf49",
+            "ec_message_key_seed": "10aee9992695f1a35f71c2ae588ca93f87b65c18a25d9efcf0642cf661ffccd2",
+            "cipher_key": "61d2d6d63fb4ac446daa19d2cd1eecf090c6fff08da711c3f357c1fa1470b32d",
+            "mac_key": "21a6a9ab059a5c6e95100d2932df98341b5e31762cb752376b6a5790b48f9452",
+            "iv": "e78e20c98147674b3bc9508174b95811",
+            "parsed": {
+              "version_byte": "44",
+              "ratchet_public_key": "05e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d21",
+              "message_number": 0,
+              "previous_chain_length": 1,
+              "encrypted_body": "65ada1d6ad23c3f09d4aa72c079c068c",
+              "mac": "15858b66cf6a35a1",
+              "field_order": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "sender_state_after": {
+              "root_key": "291569a244509046a518a0e725ee89931c57602253b491cd575f02a417b62bed",
+              "previous_chain_length": 1,
+              "sending_chain": {
+                "ratchet_public": "05e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d21",
+                "chain_index": 1,
+                "chain_key": "b6d490ef7fba1d100a2715efbcc815efbaa914b6a95555ecd74d8d966953f1d7",
+                "ratchet_private": "6860fc2c96be6824705e96ecc1af103f49160b77abf307063604da0372e7bf49"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "05a22ac5e327434d5cc72e61dafe8741111ff6d649313de352093cc08d0a245823",
+                  "chain_index": 0,
+                  "chain_key": "7539d1d2694f8de0b72ae66ccc3970036b247f44ab388394dfc14916870a8e20"
+                },
+                {
+                  "ratchet_public": "0516d4b1374f05f42cd3eef2761926d8306100a1be00533f834c4a9a14b348621a",
+                  "chain_index": 2,
+                  "chain_key": "17f5a6abe839eed2d55db491214373fd21b89e5fb4cd4feb0725a25deea5da54"
+                },
+                {
+                  "ratchet_public": "05a089a71a36c4899384871fcdf2fa81c9a3c322e67421b705e113fe3aa80ff622",
+                  "chain_index": 1,
+                  "chain_key": "7e28f133e505f53aa24cd9ddb4494e89f6ddbd68ca47c5d71ab3b94c0834d9fe"
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a6",
+            "tamper": "mac",
+            "input": "440a2105e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d2110001801221065ada1d6ad23c3f09d4aa72c079c068c15858b66cf6a35a0",
+            "result": "invalid"
+          },
+          {
+            "event": "deliver",
+            "name": "a6",
+            "tamper": "body",
+            "input": "440a2105e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d2110001801221065ada1d7ad23c3f09d4aa72c079c068c15858b66cf6a35a1",
+            "result": "invalid"
+          },
+          {
+            "event": "deliver",
+            "name": "a6",
+            "tamper": null,
+            "result": "plaintext",
+            "plaintext": "6d7367206136",
+            "receiver_state_after": {
+              "root_key": "32b4ac99e27823944b20bc55a435eeb18ff91a2b867bfe5c8fad106df57951e1",
+              "previous_chain_length": 0,
+              "sending_chain": {
+                "ratchet_public": "05f2ee97405dc8b54b04f08bc6460fd42aff662807100dc50d82aaf2d07cc2f762",
+                "chain_index": 0,
+                "chain_key": "c82a36ff5138f574ab54fb9b8011cfe3b90757d446c61cec0ebcdfb9a8b4ee80",
+                "ratchet_private": "3805ffca27946cb69d8a82215922eadd82f18fdf86404c47a504529157aad242"
+              },
+              "receiving_chains": [
+                {
+                  "ratchet_public": "050bf9149b78fc1d2c5cd412a23d4c729db9894bfb69d6f8d4bcbcb2293c73a639",
+                  "chain_index": 4,
+                  "chain_key": "96815178530f1c9ab23585d79b9f659f0688e50f211207b7681d2c156e1a8755"
+                },
+                {
+                  "ratchet_public": "0534d9f6e0cfc8873f6879bdd075a696f9cbec9f49d61dd7b8547398ffed92006b",
+                  "chain_index": 2,
+                  "chain_key": "dccf95bdb6d3ddeb6e08a37fefc93580c4db21a46a706377182793f7a9703ccf"
+                },
+                {
+                  "ratchet_public": "05e1fa67bbbd7ee440062f098b212b6f1153823493892c60117627370635714d21",
+                  "chain_index": 1,
+                  "chain_key": "b6d490ef7fba1d100a2715efbcc815efbaa914b6a95555ecd74d8d966953f1d7"
+                }
+              ]
+            }
+          },
+          {
+            "event": "deliver",
+            "name": "a6",
+            "tamper": null,
+            "result": "duplicate"
+          }
+        ]
+      }
+    }
+  ]
+}

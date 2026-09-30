@@ -1,0 +1,3 @@
+maintenance:
+  enabled: false
+image: registry.k8s.io/pause:3.10

@@ -1,0 +1,749 @@
+// 由 scripts/generate-inventory.mjs 生成。请修改源清单，不要修改本文件。
+model {
+  extend comma_platform.source_inventory {
+    client_modules = source_group '客户端 Workspace 模块' {
+      description 'package.json 声明的 @comma/* 源码依赖；不是运行时调用图'
+
+      comma_admin = code_module '@comma/admin' {
+        description '应用；3 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/apps/admin/package.json 'package.json'
+      }
+
+      comma_app = code_module '@comma/app' {
+        description '包；10 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/app/package.json 'package.json'
+      }
+
+      comma_chat-contract = code_module '@comma/chat-contract' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/chat-contract/package.json 'package.json'
+      }
+
+      comma_config = code_module '@comma/config' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/config/package.json 'package.json'
+      }
+
+      comma_electron = code_module '@comma/electron' {
+        description '应用；8 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/apps/electron/package.json 'package.json'
+      }
+
+      comma_i18n = code_module '@comma/i18n' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/i18n/package.json 'package.json'
+      }
+
+      comma_layout-inspector = code_module '@comma/layout-inspector' {
+        description '包；1 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/layout-inspector/package.json 'package.json'
+      }
+
+      comma_native-bridge = code_module '@comma/native-bridge' {
+        description '包；2 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/native-bridge/package.json 'package.json'
+      }
+
+      comma_product-inbox-runtime = code_module '@comma/product-inbox-runtime' {
+        description '包；2 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/product-inbox-runtime/package.json 'package.json'
+      }
+
+      comma_recommendation-contract = code_module '@comma/recommendation-contract' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/recommendation-contract/package.json 'package.json'
+      }
+
+      comma_session-contract = code_module '@comma/session-contract' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/session-contract/package.json 'package.json'
+      }
+
+      comma_session-history-runtime = code_module '@comma/session-history-runtime' {
+        description '包；2 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/session-history-runtime/package.json 'package.json'
+      }
+
+      comma_test-utils = code_module '@comma/test-utils' {
+        description '包；1 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/test-utils/package.json 'package.json'
+      }
+
+      comma_ui = code_module '@comma/ui' {
+        description '包；2 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/ui/package.json 'package.json'
+      }
+
+      comma_web = code_module '@comma/web' {
+        description '应用；8 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/apps/web/package.json 'package.json'
+      }
+
+      comma_admin .depends_on comma_app '产品/Peer 依赖'
+      comma_admin .depends_on comma_config '产品/Peer 依赖'
+      comma_admin .depends_on comma_ui '产品/Peer 依赖'
+      comma_app .depends_on comma_chat-contract '产品/Peer 依赖'
+      comma_app .depends_on comma_config '产品/Peer 依赖'
+      comma_app .depends_on comma_i18n '产品/Peer 依赖'
+      comma_app .depends_on comma_layout-inspector '产品/Peer 依赖'
+      comma_app .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_app .depends_on comma_product-inbox-runtime '产品/Peer 依赖'
+      comma_app .depends_on comma_recommendation-contract '产品/Peer 依赖'
+      comma_app .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_app .depends_on comma_session-history-runtime '产品/Peer 依赖'
+      comma_app .depends_on comma_ui '产品/Peer 依赖'
+      comma_electron .depends_on comma_app '产品/Peer 依赖'
+      comma_electron .depends_on comma_chat-contract '产品/Peer 依赖'
+      comma_electron .depends_on comma_config '产品/Peer 依赖'
+      comma_electron .depends_on comma_i18n '产品/Peer 依赖'
+      comma_electron .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_electron .depends_on comma_product-inbox-runtime '产品/Peer 依赖'
+      comma_electron .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_electron .depends_on comma_session-history-runtime '产品/Peer 依赖'
+      comma_layout-inspector .depends_on comma_test-utils '开发依赖'
+      comma_native-bridge .depends_on comma_chat-contract '产品/Peer 依赖'
+      comma_native-bridge .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_product-inbox-runtime .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_product-inbox-runtime .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_session-history-runtime .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_session-history-runtime .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_test-utils .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_ui .depends_on comma_i18n '产品/Peer 依赖'
+      comma_ui .depends_on comma_layout-inspector '开发依赖'
+      comma_web .depends_on comma_app '产品/Peer 依赖'
+      comma_web .depends_on comma_chat-contract '产品/Peer 依赖'
+      comma_web .depends_on comma_config '产品/Peer 依赖'
+      comma_web .depends_on comma_i18n '产品/Peer 依赖'
+      comma_web .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_web .depends_on comma_product-inbox-runtime '产品/Peer 依赖'
+      comma_web .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_web .depends_on comma_session-history-runtime '产品/Peer 依赖'
+    }
+
+    otp_apps = source_group 'OTP 应用清单' {
+      description 'mix.exs 中的 umbrella 源码依赖；subsystem 决定运行时启动集合'
+
+      alert_router = code_module 'alert_router' {
+        description '所属子系统：alert_router'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/alert_router/mix.exs 'mix.exs'
+      }
+
+      billing_commerce = code_module 'billing_commerce' {
+        description '所属子系统：salix, comma_product, bridge_for_teams'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/billing_commerce/mix.exs 'mix.exs'
+      }
+
+      billing_core = code_module 'billing_core' {
+        description '所属子系统：salix, comma_product, bridge_for_teams'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/billing_core/mix.exs 'mix.exs'
+      }
+
+      billing_stripe = code_module 'billing_stripe' {
+        description '所属子系统：salix, comma_product'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/billing_stripe/mix.exs 'mix.exs'
+      }
+
+      bridge_for_teams_core = code_module 'bridge_for_teams_core' {
+        description '所属子系统：bridge_for_teams'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/bridge_for_teams_core/mix.exs 'mix.exs'
+      }
+
+      bridge_for_teams_web = code_module 'bridge_for_teams_web' {
+        description '所属子系统：bridge_for_teams'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/bridge_for_teams_web/mix.exs 'mix.exs'
+      }
+
+      comma = code_module 'comma' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/comma/mix.exs 'mix.exs'
+      }
+
+      comma_core = code_module 'comma_core' {
+        description '所属子系统：comma_product'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/comma_core/mix.exs 'mix.exs'
+      }
+
+      comma_log = code_module 'comma_log' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/comma_log/mix.exs 'mix.exs'
+      }
+
+      comma_ssh = code_module 'comma_ssh' {
+        description '所属子系统：comma_product'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/comma_ssh/mix.exs 'mix.exs'
+      }
+
+      comma_tui = code_module 'comma_tui' {
+        description '所属子系统：comma_product'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/comma_tui/mix.exs 'mix.exs'
+      }
+
+      comma_web = code_module 'comma_web' {
+        description '所属子系统：comma_product'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/comma_web/mix.exs 'mix.exs'
+      }
+
+      salix_agent = code_module 'salix_agent' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_agent/mix.exs 'mix.exs'
+      }
+
+      salix_analytics = code_module 'salix_analytics' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_analytics/mix.exs 'mix.exs'
+      }
+
+      salix_calendar = code_module 'salix_calendar' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_calendar/mix.exs 'mix.exs'
+      }
+
+      salix_cluster = code_module 'salix_cluster' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_cluster/mix.exs 'mix.exs'
+      }
+
+      salix_env = code_module 'salix_env' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_env/mix.exs 'mix.exs'
+      }
+
+      salix_ifc = code_module 'salix_ifc' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_ifc/mix.exs 'mix.exs'
+      }
+
+      salix_im = code_module 'salix_im' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_im/mix.exs 'mix.exs'
+      }
+
+      salix_llm = code_module 'salix_llm' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_llm/mix.exs 'mix.exs'
+      }
+
+      salix_mcp = code_module 'salix_mcp' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_mcp/mix.exs 'mix.exs'
+      }
+
+      salix_media = code_module 'salix_media' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_media/mix.exs 'mix.exs'
+      }
+
+      salix_meet = code_module 'salix_meet' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_meet/mix.exs 'mix.exs'
+      }
+
+      salix_migrate = code_module 'salix_migrate' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_migrate/mix.exs 'mix.exs'
+      }
+
+      salix_signal = code_module 'salix_signal' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_signal/mix.exs 'mix.exs'
+      }
+
+      salix_signal_proto = code_module 'salix_signal_proto' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_signal_proto/mix.exs 'mix.exs'
+      }
+
+      salix_store = code_module 'salix_store' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_store/mix.exs 'mix.exs'
+      }
+
+      salix_voice = code_module 'salix_voice' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_voice/mix.exs 'mix.exs'
+      }
+
+      salix_web = code_module 'salix_web' {
+        description '所属子系统：salix'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/salix_web/mix.exs 'mix.exs'
+      }
+
+      systems_observability = code_module 'systems_observability' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/systems_observability/mix.exs 'mix.exs'
+      }
+
+      alert_router .depends_on systems_observability '生产 in_umbrella 依赖'
+      alert_router .depends_on salix_store '生产 in_umbrella 依赖'
+      billing_commerce .depends_on billing_core '生产 in_umbrella 依赖'
+      billing_commerce .depends_on salix_analytics '生产 in_umbrella 依赖'
+      billing_core .depends_on systems_observability '生产 in_umbrella 依赖'
+      billing_core .depends_on salix_analytics '生产 in_umbrella 依赖'
+      billing_stripe .depends_on billing_commerce '生产 in_umbrella 依赖'
+      billing_stripe .depends_on billing_core '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on systems_observability '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on billing_core '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on billing_commerce '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on salix_store '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on salix_calendar '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on comma_log '生产 in_umbrella 依赖'
+      bridge_for_teams_web .depends_on systems_observability '生产 in_umbrella 依赖'
+      bridge_for_teams_web .depends_on bridge_for_teams_core '生产 in_umbrella 依赖'
+      comma .depends_on systems_observability '生产 in_umbrella 依赖'
+      comma_core .depends_on systems_observability '生产 in_umbrella 依赖'
+      comma_core .depends_on billing_core '生产 in_umbrella 依赖'
+      comma_core .depends_on salix_store '生产 in_umbrella 依赖'
+      comma_core .depends_on salix_agent '生产 in_umbrella 依赖'
+      comma_log .depends_on systems_observability '生产 in_umbrella 依赖'
+      comma_ssh .depends_on comma_core '生产 in_umbrella 依赖'
+      comma_web .depends_on systems_observability '生产 in_umbrella 依赖'
+      comma_web .depends_on billing_core '生产 in_umbrella 依赖'
+      comma_web .depends_on billing_commerce '生产 in_umbrella 依赖'
+      comma_web .depends_on billing_stripe '生产 in_umbrella 依赖'
+      comma_web .depends_on comma_core '生产 in_umbrella 依赖'
+      comma_web .depends_on salix_agent '生产 in_umbrella 依赖'
+      comma_web .depends_on salix_cluster '生产 in_umbrella 依赖'
+      comma_web .depends_on salix_im '生产 in_umbrella 依赖'
+      comma_web .depends_on salix_mcp '生产 in_umbrella 依赖'
+      comma_web .depends_on salix_web '生产 in_umbrella 依赖'
+      salix_agent .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_agent .depends_on salix_ifc '生产 in_umbrella 依赖'
+      salix_agent .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_agent .depends_on salix_media '生产 in_umbrella 依赖'
+      salix_analytics .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_analytics .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_calendar .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_cluster .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_cluster .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_cluster .depends_on salix_calendar '生产 in_umbrella 依赖'
+      salix_cluster .depends_on salix_env '生产 in_umbrella 依赖'
+      salix_cluster .depends_on salix_im '生产 in_umbrella 依赖'
+      salix_env .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_env .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_im .depends_on salix_ifc '生产 in_umbrella 依赖'
+      salix_im .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_llm .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_llm .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_llm .depends_on salix_media '生产 in_umbrella 依赖'
+      salix_mcp .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_mcp .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_mcp .depends_on salix_env '生产 in_umbrella 依赖'
+      salix_meet .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_meet .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_meet .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_meet .depends_on salix_calendar '生产 in_umbrella 依赖'
+      salix_meet .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_meet .depends_on salix_im '生产 in_umbrella 依赖'
+      salix_migrate .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_migrate .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_signal .depends_on salix_signal_proto '生产 in_umbrella 依赖'
+      salix_signal .depends_on salix_voice '生产 in_umbrella 依赖'
+      salix_signal .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_signal .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_store .depends_on comma_log '生产 in_umbrella 依赖'
+      salix_store .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_voice .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_voice .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_voice .depends_on salix_im '生产 in_umbrella 依赖'
+      salix_voice .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_im '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_mcp '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_meet '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_calendar '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_env '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_voice '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_signal '生产 in_umbrella 依赖'
+      salix_web .depends_on bridge_for_teams_core '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_llm '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_analytics '生产 in_umbrella 依赖'
+      salix_web .depends_on systems_observability '生产 in_umbrella 依赖'
+    }
+
+    native_contracts = source_group 'Native Capability Namespace' {
+      description 'leaf-first registry 的 namespace 聚合，并显式列出冻结的 raw IPC 例外'
+
+      airDrop = code_module 'airDrop' {
+        description '3 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      appearance = code_module 'appearance' {
+        description '2 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      applicationMenu = code_module 'applicationMenu' {
+        description '1 个 command · 1 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      appPreferences = code_module 'appPreferences' {
+        description '4 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      audioCapture = code_module 'audioCapture' {
+        description '11 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      browserSidebar = code_module 'browserSidebar' {
+        description '7 个 command · 2 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      chat = code_module 'chat' {
+        description '23 个 command · 2 个 event · 2 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      clipboard = code_module 'clipboard' {
+        description '4 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      computeNode = code_module 'computeNode' {
+        description '6 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      computerUse = code_module 'computerUse' {
+        description '2 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      connectorRuntime = code_module 'connectorRuntime' {
+        description '4 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      driveCatalog = code_module 'driveCatalog' {
+        description '2 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      files = code_module 'files' {
+        description '5 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      localData = code_module 'localData' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      localFiles = code_module 'localFiles' {
+        description '2 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      meetingPresence = code_module 'meetingPresence' {
+        description '2 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      meetingRecorder = code_module 'meetingRecorder' {
+        description '8 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      messageNotifications = code_module 'messageNotifications' {
+        description '0 个 command · 1 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      native = code_module 'native' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      notch = code_module 'notch' {
+        description '10 个 command · 1 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      peers = code_module 'peers' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      productInbox = code_module 'productInbox' {
+        description '4 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      recommendationMedia = code_module 'recommendationMedia' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      session = code_module 'session' {
+        description '8 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      sessionHistory = code_module 'sessionHistory' {
+        description '4 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      shell = code_module 'shell' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      sideChat = code_module 'sideChat' {
+        description '12 个 command · 2 个 event · 2 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      sitePermissionMenu = code_module 'sitePermissionMenu' {
+        description '2 个 command · 1 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      subscriptionAuthorization = code_module 'subscriptionAuthorization' {
+        description '3 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      surfaces = code_module 'surfaces' {
+        description '2 个 command · 3 个 event · 2 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      synchronicity = code_module 'synchronicity' {
+        description '21 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      transport = code_module 'transport' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      windows = code_module 'windows' {
+        description '3 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      frozen_legacy_raw_ipc = code_module '冻结的 legacy raw IPC' {
+        description '10 个 allowlist channel：comma:connector:configure, comma:connector:restart, comma:connector:start, comma:connector:status, comma:connector:stop, comma:connector:uninstall, comma:updates:apply, comma:updates:check, comma:updates:download, comma:updates:status'
+        technology '手写 ipcMain.handle'
+        link ../../../clients/apps/electron/src/main/index.ts '当前例外'
+      }
+    }
+
+    deployment_surface = source_group '部署事实' {
+      description '当前 Helm template 的 workload、subsystem、container port 与 Service target'
+
+      workload = code_module 'StatefulSet: comma' {
+        description '启动 salix, bridge_for_teams, comma_product；端口 salix-http:4000, salix-transfer:4400, teams-http:4101, product-http:4200, epmd:4369, dist:9100, telemetry:9568, http:4300, telemetry:9568'
+        technology 'Kubernetes Workload'
+        link ../../../k8s/comma/chart/templates/application.yaml 'Helm Template'
+      }
+
+      service_comma-alert-router = code_module 'comma-alert-router' {
+        description 'ClusterIP :80 → http'
+        technology 'Kubernetes Service'
+        link ../../../k8s/comma/chart/templates/application.yaml 'Helm template'
+      }
+
+      service_comma-headless = code_module 'comma-headless' {
+        description 'ClusterIP :4400 → salix-transfer'
+        technology 'Kubernetes Service'
+        link ../../../k8s/comma/chart/templates/application.yaml 'Helm template'
+      }
+
+      service_comma-salix = code_module 'comma-salix' {
+        description 'ClusterIP :80 → salix-http'
+        technology 'Kubernetes Service'
+        link ../../../k8s/comma/chart/templates/application.yaml 'Helm template'
+      }
+
+      service_comma-teams = code_module 'comma-teams' {
+        description 'ClusterIP :80 → teams-http'
+        technology 'Kubernetes Service'
+        link ../../../k8s/comma/chart/templates/application.yaml 'Helm template'
+      }
+
+      service_comma-product = code_module 'comma-product' {
+        description 'ClusterIP :80 → product-http'
+        technology 'Kubernetes Service'
+        link ../../../k8s/comma/chart/templates/application.yaml 'Helm template'
+      }
+
+      service_comma-alert-router .depends_on workload '指向 http'
+      service_comma-headless .depends_on workload '指向 salix-transfer'
+      service_comma-salix .depends_on workload '指向 salix-http'
+      service_comma-teams .depends_on workload '指向 teams-http'
+      service_comma-product .depends_on workload '指向 product-http'
+    }
+  }
+}
+
+views '06 · 程序化证据' {
+  view evidence_client_modules of comma_platform.source_inventory.client_modules {
+    title '01E · 客户端 Workspace 依赖证据'
+    description '程序化证据视图：只回答源码 package 的依赖方向，不回答运行时权威。'
+    autoLayout LeftRight
+
+    include *
+  }
+
+  view evidence_otp_alert_router of comma_platform.source_inventory.otp_apps {
+    title '02E · alert_router 子系统的 OTP 应用'
+    description '直接来自 Comma.@subsystems；线只表示生产 in_umbrella 源码依赖，不表示网络调用。'
+    autoLayout LeftRight
+
+    include comma_platform.source_inventory.otp_apps.alert_router
+  }
+
+  view evidence_otp_salix of comma_platform.source_inventory.otp_apps {
+    title '03E · salix 子系统的 OTP 应用'
+    description '直接来自 Comma.@subsystems；线只表示生产 in_umbrella 源码依赖，不表示网络调用。'
+    autoLayout LeftRight
+
+    include comma_platform.source_inventory.otp_apps.salix_store
+    include comma_platform.source_inventory.otp_apps.salix_calendar
+    include comma_platform.source_inventory.otp_apps.salix_analytics
+    include comma_platform.source_inventory.otp_apps.billing_core
+    include comma_platform.source_inventory.otp_apps.billing_commerce
+    include comma_platform.source_inventory.otp_apps.billing_stripe
+    include comma_platform.source_inventory.otp_apps.salix_agent
+    include comma_platform.source_inventory.otp_apps.salix_cluster
+    include comma_platform.source_inventory.otp_apps.salix_llm
+    include comma_platform.source_inventory.otp_apps.salix_env
+    include comma_platform.source_inventory.otp_apps.salix_im
+    include comma_platform.source_inventory.otp_apps.salix_voice
+    include comma_platform.source_inventory.otp_apps.salix_signal_proto
+    include comma_platform.source_inventory.otp_apps.salix_signal
+    include comma_platform.source_inventory.otp_apps.salix_mcp
+    include comma_platform.source_inventory.otp_apps.salix_web
+    include comma_platform.source_inventory.otp_apps.salix_migrate
+    include comma_platform.source_inventory.otp_apps.salix_media
+    include comma_platform.source_inventory.otp_apps.salix_meet
+  }
+
+  view evidence_otp_comma_product of comma_platform.source_inventory.otp_apps {
+    title '04E · comma_product 子系统的 OTP 应用'
+    description '直接来自 Comma.@subsystems；线只表示生产 in_umbrella 源码依赖，不表示网络调用。'
+    autoLayout LeftRight
+
+    include comma_platform.source_inventory.otp_apps.billing_core
+    include comma_platform.source_inventory.otp_apps.billing_commerce
+    include comma_platform.source_inventory.otp_apps.billing_stripe
+    include comma_platform.source_inventory.otp_apps.comma_core
+    include comma_platform.source_inventory.otp_apps.comma_web
+    include comma_platform.source_inventory.otp_apps.comma_tui
+    include comma_platform.source_inventory.otp_apps.comma_ssh
+  }
+
+  view evidence_otp_bridge_for_teams of comma_platform.source_inventory.otp_apps {
+    title '05E · bridge_for_teams 子系统的 OTP 应用'
+    description '直接来自 Comma.@subsystems；线只表示生产 in_umbrella 源码依赖，不表示网络调用。'
+    autoLayout LeftRight
+
+    include comma_platform.source_inventory.otp_apps.billing_core
+    include comma_platform.source_inventory.otp_apps.billing_commerce
+    include comma_platform.source_inventory.otp_apps.bridge_for_teams_core
+    include comma_platform.source_inventory.otp_apps.bridge_for_teams_web
+  }
+
+  view evidence_native_contracts of comma_platform.source_inventory.native_contracts {
+    title '05E · Native Capability Namespace 证据'
+    description '按 namespace 聚合 command/event/state；详细 leaf 仍以 registry 为准。'
+    autoLayout LeftRight
+
+    include *
+  }
+
+  view evidence_deployment_surface of comma_platform.source_inventory.deployment_surface {
+    title '06E · 部署表面证据'
+    description '从当前 Helm template 提取；用于复核手工部署图中的 workload 与端口事实。'
+    autoLayout LeftRight
+
+    include *
+  }
+}

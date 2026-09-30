@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../../../node_modules/.cache/evalens/core-test.tsbuildinfo",
+    "types": ["bun"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./*.ts"],
+  "references": [{ "path": ".." }]
+}

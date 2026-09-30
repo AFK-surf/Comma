@@ -1,0 +1,25 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/utils" },
+    { "path": "./packages/core" },
+    { "path": "./packages/store" },
+    { "path": "./packages/adapters" },
+    { "path": "./packages/evaluators" },
+    { "path": "./packages/cli" },
+    { "path": "./packages/server" },
+    { "path": "./packages/dashboard" },
+    { "path": "./packages/dashboard/tsconfig.tools.json" },
+    { "path": "./packages/dashboard/test" },
+    { "path": "./packages/utils/test" },
+    { "path": "./packages/core/test" },
+    { "path": "./packages/store/test" },
+    { "path": "./packages/adapters/test" },
+    { "path": "./packages/cli/test" },
+    { "path": "./packages/server/test" },
+    { "path": "./examples" },
+    { "path": "./scripts" },
+    { "path": "./tsconfig.exp.json" },
+    { "path": "./tsconfig.drizzle.json" }
+  ]
+}

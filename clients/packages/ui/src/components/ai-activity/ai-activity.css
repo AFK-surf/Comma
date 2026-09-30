@@ -1,0 +1,633 @@
+.comma-ai-activity {
+  --ai-activity-text-duration: var(--motion-duration-state-change);
+  --ai-activity-text-duration-exit: var(--motion-duration-reveal-item);
+  --ai-activity-text-easing: var(--motion-easing-smooth-out);
+  --ai-activity-text-distance: var(--spacing-md);
+  --ai-activity-text-blur: var(--spacing-xxs);
+  --ai-activity-chevron-hidden-scale: var(--motion-scale-action-pressed);
+  --ai-activity-panel-duration-enter: var(--motion-duration-icon-swap);
+  --ai-activity-panel-duration-exit: var(--motion-duration-icon-swap);
+  --ai-activity-panel-easing: var(--motion-easing-surface-smooth-out);
+  --ai-activity-edge-surface: var(--color-bg-primary);
+  /* Eight type-scaled rows plus the seven gaps between them. */
+  --ai-activity-events-max-block-size: calc(
+    var(--text-sm--line-height) + var(--text-sm--line-height) +
+      var(--text-sm--line-height) + var(--text-sm--line-height) +
+      var(--text-sm--line-height) + var(--text-sm--line-height) +
+      var(--text-sm--line-height) + var(--text-sm--line-height) + var(--spacing-sm) +
+      var(--spacing-sm) + var(--spacing-sm) + var(--spacing-sm) + var(--spacing-sm) +
+      var(--spacing-sm) + var(--spacing-sm)
+  );
+
+  display: grid;
+  min-width: 0;
+  gap: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: var(--text-sm--letter-spacing);
+  line-height: var(--text-sm--line-height);
+}
+
+/* Failure renders as the shared chat notice card (`.comma-chat-notice-card`, the
+   Figma "chat input item" node 7798-28516) — the same card the thread's
+   send-failure row wears, so a model failure and a send failure read as one
+   component. The frame lives in styles/chat-notice.css; the shell only carries
+   the copy color here. */
+.comma-ai-activity[data-status="failed"] {
+  color: var(--color-text-primary);
+}
+
+/* Failed activity is a debugging entry point: keep the disclosure chevron
+   visible instead of hover-revealed. */
+.comma-ai-activity[data-status="failed"] .comma-ai-activity-chevron {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateX(var(--ai-activity-chevron-shift)) rotate(0deg) scale(1);
+}
+
+.comma-ai-activity[data-status="failed"]
+  .comma-ai-activity-summary[aria-expanded="true"]
+  .comma-ai-activity-chevron {
+  transform: translateX(var(--ai-activity-chevron-shift)) rotate(180deg) scale(1);
+}
+
+.comma-ai-activity-body {
+  display: grid;
+  min-width: 0;
+  gap: var(--spacing-md);
+}
+
+.comma-ai-activity-actor {
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-ai-activity-disclosure {
+  min-width: 0;
+}
+
+.comma-ai-activity-summary-shell {
+  --ai-activity-chevron-shift: 0px;
+
+  position: relative;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: inherit;
+  border-radius: var(--radius-xs);
+}
+
+.comma-ai-activity-summary {
+  display: flex;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.comma-ai-activity-summary::after {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  min-width: var(--spacing-5xl);
+  height: var(--spacing-5xl);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.comma-ai-activity-summary-shell:has(> .comma-ai-activity-summary[data-focus-visible]) {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-ai-activity-summary-static {
+  width: 100%;
+  min-inline-size: 0;
+  flex-wrap: nowrap;
+}
+
+/* Keep the icon beside the first line while the copy shrinks and wraps inside
+   the remaining inline space. */
+.comma-ai-activity-summary-static > span {
+  min-inline-size: 0;
+}
+
+.comma-ai-activity-summary-static .comma-ai-activity-text {
+  min-inline-size: 0;
+}
+
+.comma-ai-activity-text {
+  position: relative;
+  display: inline-grid;
+  min-width: 0;
+  overflow: clip;
+  vertical-align: top;
+}
+
+.comma-ai-activity-text-layer {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--spacing-md);
+  opacity: 1;
+  filter: none;
+  overflow-wrap: anywhere;
+  transform: translateY(0);
+  /* Match both opacity clocks so at least one layer stays readable mid-swap. */
+  transition:
+    transform var(--ai-activity-text-duration) var(--ai-activity-text-easing),
+    opacity var(--ai-activity-text-duration-exit) var(--ai-activity-text-easing);
+}
+
+.comma-ai-activity-text-layer[aria-hidden="true"] {
+  position: absolute;
+  inset: 0 auto auto 0;
+  white-space: nowrap;
+}
+
+.comma-ai-activity-text[data-swapping="true"] .comma-ai-activity-text-layer {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+
+.comma-ai-activity-summary-static
+  .comma-ai-activity-text
+  .comma-ai-activity-text-layer {
+  flex-wrap: wrap;
+  white-space: normal;
+  text-wrap: pretty;
+}
+
+.comma-ai-activity-text-layer[data-motion="enter"] {
+  opacity: 0;
+  filter: none;
+  transform: translateY(var(--ai-activity-text-distance));
+}
+
+.comma-ai-activity-text[data-playing="false"]
+  > .comma-ai-activity-text-layer[data-motion="enter"] {
+  transition: none;
+}
+
+.comma-ai-activity-text-layer[data-motion="exit"] {
+  opacity: 0;
+  filter: none;
+  transform: translateY(calc(var(--ai-activity-text-distance) * -1));
+  transition:
+    transform var(--ai-activity-text-duration-exit) var(--ai-activity-text-easing),
+    opacity var(--ai-activity-text-duration-exit) var(--ai-activity-text-easing);
+}
+
+.comma-ai-activity-text-summary[data-shimmer="true"] {
+  color: var(--color-text-quaternary);
+}
+
+@supports ((background-clip: text) or (-webkit-background-clip: text)) and
+  (color: color-mix(in oklab, black 50%, white)) {
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"] {
+    display: inline-block;
+    contain: paint;
+    background-color: currentcolor;
+    background-image: linear-gradient(
+      var(--ai-activity-shimmer-angle),
+      currentcolor calc(50% - var(--ai-activity-shimmer-spread)),
+      color-mix(in oklab, currentcolor 42%, var(--color-utility-brand-400))
+        calc(50% - var(--ai-activity-shimmer-spread-mid)),
+      var(--color-utility-brand-400) calc(50% - var(--ai-activity-shimmer-spread-core)),
+      var(--color-utility-brand-300) calc(50% - var(--ai-activity-shimmer-spread-inner)),
+      var(--color-utility-brand-200) calc(50% + var(--ai-activity-shimmer-spread-inner)),
+      var(--color-utility-brand-100) calc(50% + var(--ai-activity-shimmer-spread-core)),
+      color-mix(in oklab, currentcolor 42%, var(--color-utility-brand-100))
+        calc(50% + var(--ai-activity-shimmer-spread-mid)),
+      currentcolor calc(50% + var(--ai-activity-shimmer-spread))
+    );
+    background-repeat: no-repeat;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
+.comma-ai-activity-chevron {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+  opacity: 0;
+  filter: blur(var(--ai-activity-text-blur));
+  transform: translateX(var(--ai-activity-chevron-shift)) rotate(0deg)
+    scale(var(--ai-activity-chevron-hidden-scale));
+  transform-origin: center;
+  transition:
+    transform var(--motion-duration-icon-swap) var(--motion-easing-icon-swap),
+    filter var(--motion-duration-icon-swap) var(--motion-easing-icon-swap),
+    opacity var(--motion-duration-icon-swap) var(--motion-easing-icon-swap);
+}
+
+.comma-ai-activity-summary[aria-expanded="true"] .comma-ai-activity-chevron {
+  transform: translateX(var(--ai-activity-chevron-shift)) rotate(180deg)
+    scale(var(--ai-activity-chevron-hidden-scale));
+}
+
+.comma-ai-activity-summary:hover .comma-ai-activity-chevron,
+.comma-ai-activity-summary[data-focus-visible] .comma-ai-activity-chevron {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateX(var(--ai-activity-chevron-shift)) rotate(0deg) scale(1);
+}
+
+.comma-ai-activity-summary[aria-expanded="true"]:hover .comma-ai-activity-chevron,
+.comma-ai-activity-summary[aria-expanded="true"][data-focus-visible]
+  .comma-ai-activity-chevron {
+  transform: translateX(var(--ai-activity-chevron-shift)) rotate(180deg) scale(1);
+}
+
+.comma-ai-activity-elapsed {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-ai-activity-panel-shell {
+  height: 0;
+  overflow: clip;
+  transition: height var(--ai-activity-panel-duration-exit)
+    var(--ai-activity-panel-easing);
+}
+
+.comma-ai-activity-panel-shell[data-expanded="true"] {
+  transition-duration: var(--ai-activity-panel-duration-enter);
+}
+
+.comma-ai-activity-panel {
+  overflow: visible;
+  animation: none !important;
+}
+
+.comma-ai-activity-panel > .collapse-content-wrapper {
+  min-height: 0;
+  overflow: hidden;
+  opacity: 1;
+  filter: none;
+  transform: none;
+  animation: none !important;
+  transition: none;
+}
+
+.comma-ai-activity-panel .collapse-content {
+  transform: none !important;
+  animation: none !important;
+}
+
+.comma-ai-activity-details {
+  margin-block-start: var(--spacing-xl);
+}
+
+.comma-ai-activity-events {
+  display: grid;
+  margin: var(--spacing-md) 0 0;
+  padding: 0 0 0 var(--spacing-lg);
+  border-inline-start: var(--border-width-default) solid var(--color-border-tertiary);
+  gap: var(--spacing-sm);
+  color: var(--color-text-quaternary);
+  list-style: none;
+}
+
+.comma-ai-activity-events-scroll {
+  margin-block-start: var(--spacing-md);
+}
+
+.comma-ai-activity-events-scroll[data-capped="true"] {
+  block-size: var(--ai-activity-events-max-block-size);
+}
+
+.comma-ai-activity-events-scroll .comma-ai-activity-events {
+  margin-block-start: 0;
+}
+
+.comma-ai-activity-events-scroll .comma-scroll-area__edge-blur[data-edge="start"] {
+  background: linear-gradient(to bottom, var(--ai-activity-edge-surface), transparent);
+}
+
+.comma-ai-activity-events-scroll .comma-scroll-area__edge-blur[data-edge="end"] {
+  background: linear-gradient(to bottom, transparent, var(--ai-activity-edge-surface));
+}
+
+.comma-ai-activity-event {
+  height: 0;
+  min-width: 0;
+  overflow: clip;
+  opacity: 0;
+  filter: blur(var(--ai-activity-text-blur));
+  transition:
+    height var(--ai-activity-panel-duration-enter) var(--ai-activity-panel-easing),
+    filter var(--ai-activity-panel-duration-enter) var(--ai-activity-panel-easing),
+    opacity var(--ai-activity-panel-duration-enter) var(--ai-activity-panel-easing);
+}
+
+.comma-ai-activity-event[data-entered="true"] {
+  height: var(--ai-activity-event-height);
+  opacity: 1;
+  filter: blur(0);
+}
+
+.comma-ai-activity-event[data-settled="true"] {
+  height: auto;
+  overflow: visible;
+}
+
+.comma-ai-activity-event-content {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--spacing-md);
+}
+
+.comma-ai-activity-event[data-status="running"] {
+  color: var(--color-text-tertiary);
+}
+
+.comma-ai-activity-event[data-status="failed"] {
+  color: var(--color-text-error-primary);
+}
+
+.comma-ai-activity-tool-name {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  display: inline;
+  padding: calc(var(--spacing-xxs) / 2) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  background: var(--color-markdown-bg-inline-code);
+  color: var(--color-markdown-text-inline-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  line-height: inherit;
+}
+
+.comma-ai-activity-text .comma-ai-activity-tool-name {
+  padding-block: 0;
+}
+
+.comma-ai-activity-result {
+  min-width: 0;
+  color: var(--color-text-primary);
+}
+
+.comma-ai-activity-flow {
+  display: grid;
+  gap: var(--spacing-lg);
+}
+
+.comma-ai-activity-flow-turn {
+  display: grid;
+  min-width: 0;
+  gap: var(--spacing-md);
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+  transition:
+    transform var(--motion-duration-icon-swap) var(--motion-easing-surface-smooth-out),
+    filter var(--motion-duration-icon-swap) var(--motion-easing-surface-smooth-out),
+    opacity var(--motion-duration-icon-swap) var(--motion-easing-surface-smooth-out);
+}
+
+.comma-ai-activity-flow-summary {
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+@starting-style {
+  .comma-ai-activity-flow-turn[data-initial="false"] {
+    opacity: 0;
+    filter: blur(var(--spacing-xxs));
+    transform: translateY(calc(var(--spacing-xs) * -1));
+  }
+}
+
+.comma-ai-worker-activity {
+  --ai-activity-shimmer-duration: var(--motion-duration-loading-shine);
+  --ai-activity-shimmer-size: 400%;
+
+  width: fit-content;
+  max-width: 100%;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: var(--text-sm--letter-spacing);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-ai-worker-activity-trigger {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-secondary);
+  color: inherit;
+  cursor: default;
+  font: inherit;
+  text-align: start;
+  transform: scale(1);
+  transform-origin: left center;
+  transition:
+    color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    background-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    transform var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+.comma-ai-worker-activity-trigger[data-interactive="true"]:hover {
+  background: var(--color-bg-secondary-hover);
+  color: var(--color-text-secondary);
+}
+
+.comma-ai-worker-activity-trigger[data-interactive="true"]:active {
+  transform: scale(var(--motion-scale-pressed));
+  transition-duration: var(--motion-duration-feedback-in);
+}
+
+.comma-ai-worker-activity-trigger[data-interactive="true"]:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+  outline: none;
+}
+
+.comma-ai-worker-activity-copy {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {
+  contain: paint;
+  background-image: linear-gradient(
+    90deg,
+    var(--color-text-tertiary) 0%,
+    var(--color-text-tertiary) 40%,
+    var(--color-text-secondary) 50%,
+    var(--color-text-tertiary) 60%,
+    var(--color-text-tertiary) 100%
+  );
+  background-repeat: no-repeat;
+  background-size: var(--ai-activity-shimmer-size) 100%;
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: comma-ai-activity-shimmer var(--ai-activity-shimmer-duration) linear
+    infinite;
+}
+
+.comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy > * {
+  color: inherit;
+}
+
+.comma-ai-worker-activity-name {
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-ai-worker-activity-state {
+  color: var(--color-text-quaternary);
+}
+
+.comma-ai-worker-activity-chat {
+  display: grid;
+  width: calc(var(--spacing-5xl) * 7);
+  max-width: 100%;
+  gap: var(--spacing-lg);
+  color: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: var(--text-sm--letter-spacing);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-ai-worker-activity-chat-title {
+  color: var(--color-tooltip-supporting-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-ai-worker-activity-chat-messages {
+  display: grid;
+  gap: var(--spacing-md);
+}
+
+.comma-ai-worker-activity-chat-message {
+  display: grid;
+  width: fit-content;
+  max-width: calc(100% - var(--spacing-xl));
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-tooltip-supporting-text) 10%, transparent);
+  text-wrap: pretty;
+}
+
+.comma-ai-worker-activity-chat-message[data-sender="worker"] {
+  justify-self: end;
+  background: color-mix(in srgb, var(--color-bg-brand-solid) 28%, transparent);
+}
+
+.comma-ai-worker-activity-chat-sender {
+  color: var(--color-tooltip-supporting-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-ai-worker-activity-chat-content {
+  color: inherit;
+}
+
+@keyframes comma-ai-activity-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@media (forced-colors: active) {
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
+  .comma-ai-activity-text-summary[data-shimmer="true"]:not([data-shimmer-ready="true"]),
+  .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {
+    background-image: none;
+    color: CanvasText;
+    animation: none;
+    -webkit-text-fill-color: currentcolor;
+  }
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-ai-activity-text-summary[data-shimmer="true"] {
+  background-image: none;
+  color: var(--color-text-quaternary);
+  animation: none !important;
+  -webkit-text-fill-color: currentcolor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-ai-activity-text-layer {
+    filter: none;
+    transform: none;
+    transition: none !important;
+  }
+
+  .comma-ai-activity-panel-shell,
+  .comma-ai-activity-panel,
+  .comma-ai-activity-panel > .collapse-content-wrapper,
+  .comma-ai-activity-chevron,
+  .comma-ai-activity-summary,
+  .comma-ai-activity-flow-turn,
+  .comma-ai-worker-activity-trigger {
+    filter: none;
+    transform: none;
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .comma-ai-activity-event {
+    height: auto;
+    opacity: 1;
+    filter: none;
+    overflow: visible;
+    transition: none;
+  }
+
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
+  .comma-ai-activity-text-summary[data-shimmer="true"]:not(
+      [data-shimmer-ready="true"]
+    ) {
+    background-image: none;
+    color: var(--color-text-quaternary);
+    animation: none !important;
+    -webkit-text-fill-color: currentcolor;
+  }
+
+  .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {
+    background-image: none;
+    color: var(--color-text-tertiary);
+    animation: none !important;
+    -webkit-text-fill-color: currentcolor;
+  }
+}

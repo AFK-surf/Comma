@@ -1,0 +1,11 @@
+services:
+  comma-migrate:
+    env_file:
+      - ../.local/comma-real-llm.env
+    volumes:
+      - ../.local/compose-dev-real-llm.json:/etc/salix/config.json:ro
+  comma:
+    env_file:
+      - ../.local/comma-real-llm.env
+    volumes:
+      - ../.local/compose-dev-real-llm.json:/etc/salix/config.json:ro

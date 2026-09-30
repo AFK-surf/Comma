@@ -1,0 +1,103 @@
+/* Comma home Tasks rail motion (Figma Comma-App 1036:28913 / 1036:28957).
+
+   Spatial model: the five status buckets form a horizontal strip of pages,
+   matching the status-indicator's row of dots. Switching status slides the
+   strip — the outgoing page moves toward the travel direction WHILE the
+   incoming page arrives from the opposite side, both on screen at once, so
+   the motion reads as one surface moving rather than a blink. Everything is
+   a CSS transition, so rapid indicator scrubbing retargets panels from their
+   current position instead of replaying from zero.
+
+   `--comma-home-tasks-dir` is +1 (moving right) or -1 (moving left), set
+   inline on the viewport. Reduced motion is handled globally in
+   src/styles.css, which zeroes every duration below. */
+
+.comma-home-tasks-viewport {
+  --comma-home-tasks-dir: 1;
+  --comma-home-tasks-travel: calc(
+    var(--comma-home-tasks-dir) * 3 * var(--motion-distance-reveal-item)
+  );
+}
+
+/* Keep the status readable and resume its phase when the card returns. */
+.comma-home-tasks-item[data-motion-visible="false"] .comma-shiny-text {
+  animation-play-state: paused;
+}
+
+/* Incoming page: slides in from the travel side and decelerates hard. */
+.comma-home-tasks-panel[data-role="current"] {
+  transition:
+    transform var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+}
+
+@starting-style {
+  .comma-home-tasks-panel[data-role="current"][data-animate="true"] {
+    opacity: 0;
+    transform: translateX(var(--comma-home-tasks-travel));
+  }
+}
+
+/* Outgoing page: was the current panel a moment ago — the transition here
+   retargets it from wherever it currently is, mid-flight included. It exits
+   faster than the incoming page arrives. */
+.comma-home-tasks-panel[data-role="outgoing"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(var(--comma-home-tasks-travel) * -1));
+  transition:
+    transform var(--motion-duration-state-change) var(--motion-easing-soft-in-out),
+    opacity var(--motion-duration-state-change) var(--motion-easing-soft-in-out);
+}
+
+/* A task arriving live (e.g. created through the Comma Router) materializes
+   after an intent beat, while siblings glide aside via the FLIP pass in
+   HomeTasks.tsx. Cards arriving together cascade: each adds one
+   reveal-stagger beat on top of the shared intent delay
+   (`--comma-home-tasks-new-index` is the card's position within its batch, set
+   inline). The state settles back to "settled" once the pop is done so the
+   card rejoins the FLIP flow. */
+.comma-home-tasks-item[data-state="new"] {
+  transition:
+    opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
+    transform var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
+    filter var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+  transition-delay: calc(
+    var(--motion-duration-submenu-open-delay) + var(--comma-home-tasks-new-index, 0) *
+      var(--motion-duration-reveal-stagger)
+  );
+}
+
+@starting-style {
+  .comma-home-tasks-item[data-state="new"] {
+    opacity: 0;
+    transform: translateY(calc(var(--motion-distance-reveal-item) * -1))
+      scale(var(--motion-scale-reveal-item));
+    filter: blur(var(--motion-blur-menu-enter));
+  }
+}
+
+/* A task whose status moved on stays as a ghost for one beat, then the
+   remaining cards close the gap through the same FLIP pass. */
+.comma-home-tasks-item[data-state="leaving"] {
+  opacity: 0;
+  transform: scale(var(--motion-scale-reveal-item));
+  filter: blur(var(--motion-blur-menu-enter));
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-soft-in-out),
+    transform var(--motion-duration-state-change) var(--motion-easing-soft-in-out),
+    filter var(--motion-duration-state-change) var(--motion-easing-soft-in-out);
+}
+
+.comma-home-tasks-empty {
+  transition: opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+}
+
+@starting-style {
+  .comma-home-tasks-empty {
+    opacity: 0;
+  }
+}

@@ -1,0 +1,284 @@
+.comma-mascot {
+  display: block;
+  max-inline-size: 100%;
+  overflow: visible;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.comma-mascot[data-interactive="true"] {
+  cursor: grab;
+}
+
+.comma-mascot[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.comma-mascot__gaze,
+.comma-mascot__expression,
+.comma-mascot__eye-motion,
+.comma-mascot__eye {
+  pointer-events: none;
+}
+
+.comma-mascot__expression {
+  opacity: 1;
+  transform: scale(1);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity var(--motion-duration-icon-swap) var(--motion-easing-smooth-out),
+    transform var(--motion-duration-icon-swap) var(--motion-easing-smooth-out);
+}
+
+.comma-mascot[data-show-expression="false"] .comma-mascot__expression {
+  opacity: 0;
+  transform: scale(var(--motion-scale-login-stage));
+}
+
+@starting-style {
+  .comma-mascot__expression {
+    opacity: 0;
+    transform: scale(var(--motion-scale-login-stage));
+  }
+}
+
+.comma-mascot__eye-motion {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.comma-mascot[data-expression="neutral"] .comma-mascot__eye-motion {
+  animation: comma-mascot-neutral-eye var(--motion-duration-loading-shine)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+.comma-mascot[data-expression="happy"] .comma-mascot__eye-motion {
+  animation: comma-mascot-happy-eye var(--motion-duration-caret-blink)
+    var(--motion-easing-soft-in-out) infinite;
+}
+
+.comma-mascot[data-expression="squint"] .comma-mascot__eye-motion {
+  animation: comma-mascot-squint-eye var(--motion-duration-loading-shine)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+.comma-mascot[data-expression="squeezed"] .comma-mascot__eye-motion--1 {
+  animation: comma-mascot-squeezed-eye-left var(--motion-duration-caret-blink)
+    var(--motion-easing-soft-in-out) infinite;
+}
+
+.comma-mascot[data-expression="squeezed"] .comma-mascot__eye-motion--2 {
+  animation: comma-mascot-squeezed-eye-right var(--motion-duration-caret-blink)
+    var(--motion-easing-soft-in-out) infinite;
+}
+
+.comma-mascot[data-expression="surprised"] .comma-mascot__eye-motion {
+  animation: comma-mascot-surprised-eye var(--motion-duration-caret-blink)
+    var(--motion-easing-soft-in-out) infinite;
+}
+
+.comma-mascot[data-expression="sleepy"] .comma-mascot__eye-motion {
+  animation: comma-mascot-sleepy-eye var(--motion-duration-loading-shine)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+.comma-mascot[data-expression="curious"] .comma-mascot__eye-motion--1 {
+  animation: comma-mascot-curious-eye-small var(--motion-duration-loading-shine)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+.comma-mascot[data-expression="curious"] .comma-mascot__eye-motion--2 {
+  animation: comma-mascot-curious-eye-large var(--motion-duration-loading-shine)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+.comma-mascot[data-expression="determined"] .comma-mascot__eye-motion {
+  animation: comma-mascot-determined-eye var(--motion-duration-caret-blink)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+.comma-mascot[data-expression="dizzy"] .comma-mascot__eye-motion--1 {
+  animation: comma-mascot-dizzy-eye-left var(--motion-duration-loading-shine) linear
+    infinite;
+}
+
+.comma-mascot[data-expression="dizzy"] .comma-mascot__eye-motion--2 {
+  animation: comma-mascot-dizzy-eye-right var(--motion-duration-loading-shine) linear
+    infinite;
+}
+
+.comma-mascot[data-expression="wink"] .comma-mascot__eye-motion--1 {
+  animation: comma-mascot-wink-eye var(--motion-duration-caret-blink)
+    var(--motion-easing-soft-in-out) infinite;
+}
+
+.comma-mascot[data-expression="wink"] .comma-mascot__eye-motion--2 {
+  animation: comma-mascot-wink-open-eye var(--motion-duration-loading-shine)
+    var(--motion-easing-soft-in-out) infinite alternate;
+}
+
+@keyframes comma-mascot-neutral-eye {
+  from {
+    transform: translate3d(-1.25px, 0, 0);
+  }
+  to {
+    transform: translate3d(1.25px, 0, 0);
+  }
+}
+
+@keyframes comma-mascot-happy-eye {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+  50% {
+    transform: translate3d(0, -1px, 0) scaleY(1.08);
+  }
+}
+
+@keyframes comma-mascot-squint-eye {
+  from {
+    transform: translate3d(0, 1px, 0) scaleY(0.86);
+  }
+  to {
+    transform: translate3d(0, 0, 0) scaleY(0.96);
+  }
+}
+
+@keyframes comma-mascot-squeezed-eye-left {
+  0%,
+  40%,
+  60%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  46% {
+    transform: translate3d(-1px, 0, 0) rotate(-2deg);
+  }
+  54% {
+    transform: translate3d(1px, 0, 0) rotate(2deg);
+  }
+}
+
+@keyframes comma-mascot-squeezed-eye-right {
+  0%,
+  40%,
+  60%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  46% {
+    transform: translate3d(1px, 0, 0) rotate(2deg);
+  }
+  54% {
+    transform: translate3d(-1px, 0, 0) rotate(-2deg);
+  }
+}
+
+@keyframes comma-mascot-surprised-eye {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(1.1);
+  }
+}
+
+@keyframes comma-mascot-sleepy-eye {
+  from {
+    opacity: 0.82;
+    transform: translate3d(0, 1.5px, 0) scaleY(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+}
+
+@keyframes comma-mascot-curious-eye-small {
+  from {
+    transform: translate3d(0, 1px, 0) scaleY(0.94);
+  }
+  to {
+    transform: translate3d(0, 0, 0) scaleY(1.08);
+  }
+}
+
+@keyframes comma-mascot-curious-eye-large {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes comma-mascot-determined-eye {
+  from {
+    transform: translate3d(0, 1px, 0) scaleX(1.02);
+  }
+  to {
+    transform: translate3d(0, -1px, 0) scaleX(0.96);
+  }
+}
+
+@keyframes comma-mascot-dizzy-eye-left {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes comma-mascot-dizzy-eye-right {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes comma-mascot-wink-eye {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+  50% {
+    transform: translate3d(0, -1px, 0) scaleY(1.08);
+  }
+}
+
+@keyframes comma-mascot-wink-open-eye {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(1.5px, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-mascot__expression {
+    transform: none !important;
+    transition-property: opacity;
+  }
+
+  .comma-mascot__eye-motion {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+
+:root[data-comma-reduced-motion="true"] .comma-mascot__eye-motion {
+  animation: none !important;
+  transform: none !important;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-mascot__expression {
+  transform: none !important;
+  transition-property: opacity;
+}
+
+@media (forced-colors: active) {
+  .comma-mascot path {
+    fill: CanvasText;
+  }
+}

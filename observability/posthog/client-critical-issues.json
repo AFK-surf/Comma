@@ -1,0 +1,86 @@
+[
+  {
+    "type": "internal_destination",
+    "template_id": "template-webhook",
+    "name": "Comma critical client issue_created",
+    "enabled": false,
+    "filters": {
+      "events": [
+        {
+          "id": "$error_tracking_issue_created",
+          "type": "events"
+        }
+      ]
+    },
+    "inputs": {
+      "url": {
+        "value": "https://REPLACE_WITH_ROUTER_HOST/v1/events/posthog"
+      },
+      "method": {
+        "value": "POST"
+      },
+      "headers": {
+        "value": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer REPLACE_WITH_SERVER_ONLY_RANDOM_SECRET"
+        }
+      },
+      "body": {
+        "value": {
+          "schema_version": 1,
+          "project_id": "{toString(project.id)}",
+          "issue_id": "{event.distinct_id}",
+          "event": "issue_created",
+          "occurred_at": "{event.properties.exception_timestamp}",
+          "severity": "{event.properties.exception_props.severity}",
+          "error_kind": "{event.properties.exception_props.error_kind}"
+        }
+      },
+      "debug": {
+        "value": false
+      }
+    }
+  },
+  {
+    "type": "internal_destination",
+    "template_id": "template-webhook",
+    "name": "Comma critical client issue_reopened",
+    "enabled": false,
+    "filters": {
+      "events": [
+        {
+          "id": "$error_tracking_issue_reopened",
+          "type": "events"
+        }
+      ]
+    },
+    "inputs": {
+      "url": {
+        "value": "https://REPLACE_WITH_ROUTER_HOST/v1/events/posthog"
+      },
+      "method": {
+        "value": "POST"
+      },
+      "headers": {
+        "value": {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer REPLACE_WITH_SERVER_ONLY_RANDOM_SECRET"
+        }
+      },
+      "body": {
+        "value": {
+          "schema_version": 1,
+          "project_id": "{toString(project.id)}",
+          "issue_id": "{event.distinct_id}",
+          "event": "issue_reopened",
+          "occurred_at": "{event.properties.exception_timestamp}",
+          "severity": "{event.properties.exception_props.severity}",
+          "error_kind": "{event.properties.exception_props.error_kind}"
+        }
+      },
+      "debug": {
+        "value": false
+      }
+    }
+  }
+]

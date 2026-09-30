@@ -1,0 +1,18 @@
+{
+  "section": "CRS-09",
+  "name": "serialized-lengths",
+  "description": "Observed serialized lengths of group credential system objects (bytes).",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {},
+      "outputs": {
+        "group_master_key": 32,
+        "group_secret_params": 289,
+        "group_public_params": 97,
+        "server_secret_params": 2721,
+        "server_public_params": 673
+      }
+    }
+  ]
+}

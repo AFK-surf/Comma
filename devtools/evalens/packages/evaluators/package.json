@@ -1,0 +1,14 @@
+{
+  "name": "@evalens/evaluators",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./codex": "./src/codex.ts"
+  },
+  "dependencies": {
+    "@evalens/adapters": "workspace:*",
+    "@evalens/core": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

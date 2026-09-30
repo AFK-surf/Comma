@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "sshEnabled": true,
+  "environment": "staging",
+  "namespace": "comma",
+  "location": "us-west1",
+  "requireProvider": true,
+  "agentVmmGatewayEnabled": true,
+  "computeRuntimeBaseURL": "https://salix-staging.comma.surf",
+  "oauthIdp": "enabled",
+  "alertRouter": {
+    "enabled": true,
+    "mode": "live",
+    "slackChannelId": "C0BJ1699HSN"
+  },
+  "publicHosts": ["salix-staging.comma.surf", "teams-staging.bridge.surf"]
+}

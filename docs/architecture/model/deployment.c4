@@ -1,0 +1,74 @@
+model {
+  extend comma_platform {
+    production = component '当前生产部署' {
+      description '当前 Helm template 的部署形态；逻辑 subsystem 不等同于独立 Pod'
+
+      internet = deployment_node '公共客户端 / Internet'
+
+      cloudflare = deployment_node 'Cloudflare 边缘' {
+        web_assets = deployment_node 'Web/Admin 托管 Workers' {
+          description 'SPA hosting 与受控 proxy'
+        }
+      }
+
+      gke = deployment_node 'GKE cluster' {
+        gateway = deployment_node 'Gateway API' {
+          description '按 hostname/path 路由到 Comma Product、Salix 与 BFT surfaces'
+        }
+
+        comma_product_service = deployment_node 'comma-product Service :80→4200'
+        salix_service = deployment_node 'comma-salix Service :80→4000'
+        bft_service = deployment_node 'comma-teams Service :80→4101'
+        headless_service = deployment_node 'comma-headless :4400/:4369/:9100'
+
+        statefulset = deployment_node 'comma StatefulSet' {
+          description '当前启动 salix,bridge_for_teams,comma_product；ordinal 同时提供 Snowflake worker id'
+
+          comma_container = deployment_node 'comma container' {
+            description '一个 image / release，包含三个 subsystem 的 OTP apps'
+          }
+
+          cloud_sql_proxy = deployment_node 'Cloud SQL Auth Proxy sidecar'
+        }
+
+        otel = deployment_node 'OpenTelemetry Collector'
+      }
+
+      cloud_sql = deployment_node 'Cloud SQL PostgreSQL' {
+        description '承载产品拥有的独立 schema/Repo 边界以及 Salix control metadata'
+      }
+
+      object_storage = deployment_node 'S3 / GCS 兼容 Bucket' {
+        description 'Salix execution state、journal、snapshot、inbox、delivery 与 leases'
+      }
+
+      redis_service = deployment_node 'Redis'
+      clickhouse_service = deployment_node 'ClickHouse'
+
+      internet .request cloudflare.web_assets 'HTTPS Web/Admin 静态资源'
+      cloudflare.web_assets .request gke.gateway 'HTTPS API Proxy'
+      internet .request gke.gateway 'HTTPS Electron/BFT/Provider 回调'
+      gke.gateway .request gke.comma_product_service '/v1/comma/*'
+      gke.gateway .request gke.salix_service 'Salix API/SSE 与通配 Sites'
+      gke.gateway .request gke.bft_service 'BFT Host'
+      gke.comma_product_service .deployed_on gke.statefulset.comma_container '端口 4200'
+      gke.salix_service .deployed_on gke.statefulset.comma_container '端口 4000'
+      gke.bft_service .deployed_on gke.statefulset.comma_container '端口 4101'
+      gke.headless_service .deployed_on gke.statefulset.comma_container 'BEAM 发现与传输'
+      gke.statefulset.comma_container .request gke.otel 'OTLP/HTTP'
+      gke.statefulset.cloud_sql_proxy .request cloud_sql '私网数据库 Tunnel'
+      gke.statefulset.comma_container .request gke.statefulset.cloud_sql_proxy 'PostgreSQL :5432'
+      gke.statefulset.comma_container .read_write object_storage '条件对象操作'
+      gke.statefulset.comma_container .read_write redis_service '认证与限流协调'
+      gke.statefulset.comma_container .read_write clickhouse_service '分析镜像'
+    }
+  }
+
+  comma_platform.data.comma_db .deployed_on comma_platform.production.cloud_sql 'Comma 拥有的 Schema'
+  comma_platform.data.bft_db .deployed_on comma_platform.production.cloud_sql 'BFT 拥有的 Schema'
+  comma_platform.data.billing_db .deployed_on comma_platform.production.cloud_sql 'Billing 拥有的 Schema'
+  comma_platform.data.salix_control_db .deployed_on comma_platform.production.cloud_sql 'Salix 控制 Schema'
+  comma_platform.data.salix_s3 .deployed_on comma_platform.production.object_storage
+  comma_platform.data.redis .deployed_on comma_platform.production.redis_service
+  comma_platform.data.clickhouse .deployed_on comma_platform.production.clickhouse_service
+}

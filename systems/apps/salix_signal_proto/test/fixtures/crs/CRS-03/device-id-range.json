@@ -1,0 +1,51 @@
+{
+ "section": "CRS-03",
+ "name": "device-id-range",
+ "description": "Device IDs accepted by the oracle for a protocol address. The device ID is carried in one byte of the address binding (CRS-04 §7.4).",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "device_id": 0
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "device ID out of range"
+   }
+  },
+  {
+   "inputs": {
+    "device_id": 1
+   },
+   "outputs": {
+    "accepted": true
+   }
+  },
+  {
+   "inputs": {
+    "device_id": 127
+   },
+   "outputs": {
+    "accepted": true
+   }
+  },
+  {
+   "inputs": {
+    "device_id": 128
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "device ID out of range"
+   }
+  },
+  {
+   "inputs": {
+    "device_id": 255
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "device ID out of range"
+   }
+  }
+ ]
+}

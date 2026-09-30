@@ -1,0 +1,11 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "account_id": "0367b0648b476f564267fd6f4c2d515e",
+  "compatibility_date": "2026-06-17",
+  "preview_urls": true,
+  // PR builds upload versions for workers.dev preview URLs only.
+  "assets": {
+    "directory": "./storybook-static",
+    "not_found_handling": "single-page-application",
+  },
+}

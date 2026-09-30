@@ -1,0 +1,58 @@
+{
+ "section": "CRS-03",
+ "name": "x25519-agreement",
+ "description": "X25519 agreement (RFC 7748) over serialized keys; an all-zero result is rejected. Computed by the oracle.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "private_key": "c0e5976313a43f648e9a8b1869033df88b0a9e685f844e43b7733bbd140c8579",
+    "their_public_key": "052ab1e08d00b7b2f6ae911b23ef79922dc154e0f305794a44d9d0f30e6fff4416"
+   },
+   "outputs": {
+    "shared_secret": "8fda1941a6938b40619e6d8074325fdb714813496f582c0dd233f598add73b12",
+    "same_as_reverse": true
+   }
+  },
+  {
+   "inputs": {
+    "private_key": "281f6dcd9865eb8c71605b6c1c3141c2ddf2e0f197b9feda45f622b1518a0145",
+    "their_public_key": "052177b3fd7995db0ca31cd20a352a4cb2977a0b7e309f7410cd772be2b7152455"
+   },
+   "outputs": {
+    "shared_secret": "dc8a0eb42843da96691f1e2a1e804021be0eae2012a93529d2062cf90aa9d842",
+    "same_as_reverse": true
+   }
+  },
+  {
+   "inputs": {
+    "private_key": "28b6b567cf13509d9ee8c323d8c00a6cafe0557020acbf49dbba3162fdaf4b72",
+    "their_public_key": "05adbf8d51d0989343cf97f5b3b352526d62a5a999f488bd49be625a9aab66de79"
+   },
+   "outputs": {
+    "shared_secret": "5f046e9eb241b0e9e208c78d3ea9bb5afd0a52974968da7807567aec48849424",
+    "same_as_reverse": true
+   }
+  },
+  {
+   "inputs": {
+    "label": "low-order-u0",
+    "private_key": "c0e5976313a43f648e9a8b1869033df88b0a9e685f844e43b7733bbd140c8579",
+    "their_public_key": "050000000000000000000000000000000000000000000000000000000000000000"
+   },
+   "outputs": {
+    "reason": "all-zero X25519 result"
+   }
+  },
+  {
+   "inputs": {
+    "label": "low-order-u1",
+    "private_key": "c0e5976313a43f648e9a8b1869033df88b0a9e685f844e43b7733bbd140c8579",
+    "their_public_key": "050100000000000000000000000000000000000000000000000000000000000000"
+   },
+   "outputs": {
+    "reason": "all-zero X25519 result"
+   }
+  }
+ ]
+}

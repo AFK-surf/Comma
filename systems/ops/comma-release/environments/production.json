@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "sshEnabled": true,
+  "environment": "production",
+  "namespace": "comma",
+  "location": "us-west1",
+  "requireProvider": true,
+  "oauthIdp": "enabled",
+  "alertRouter": {
+    "enabled": false,
+    "mode": "disabled",
+    "slackChannelId": ""
+  },
+  "publicHosts": ["salix.comma.surf", "teams.bridge.surf"],
+  "agentVmmGatewayEnabled": true,
+  "computeRuntimeBaseURL": "https://salix.comma.surf"
+}

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <.live_title default="Salix Admin">
+      {assigns[:page_title]}
+    </.live_title>
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <link phx-track-static rel="stylesheet" href={dash_static("/assets/app.css")} />
+    <script defer phx-track-static type="text/javascript" src={dash_static("/assets/app.js")}>
+    </script>
+  </head>
+  <body class="h-full bg-white antialiased">
+    {@inner_content}
+  </body>
+</html>

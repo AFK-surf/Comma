@@ -1,0 +1,68 @@
+/*
+ * HoverCard enter/exit motion. CSS transitions (not keyframes) so rapid
+ * hover-in/hover-out retargets smoothly mid-flight; the card scales from the
+ * edge facing its trigger, with a light blur bridging the crossfade — the
+ * same motion language as menus. Exit is faster than enter and skips the
+ * blur so dismissal feels immediate.
+ */
+.comma-hover-card {
+  --comma-hover-card-origin: top left;
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: var(--comma-hover-card-origin);
+  filter: blur(0);
+  transition:
+    opacity var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    transform var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    filter var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out);
+  will-change: opacity, transform, filter;
+}
+
+.comma-hover-card[data-placement="top"] {
+  --comma-hover-card-origin: bottom left;
+}
+
+.comma-hover-card[data-placement="left"] {
+  --comma-hover-card-origin: top right;
+}
+
+.comma-hover-card[data-entering],
+.comma-hover-card[data-exiting] {
+  opacity: 0;
+  transform: scale(var(--motion-scale-menu-enter));
+  filter: blur(var(--motion-blur-menu-enter));
+}
+
+.comma-hover-card[data-exiting] {
+  filter: blur(0);
+  transition-duration: var(--motion-duration-hover-card-exit);
+}
+
+/* Card-to-card handoff: while another card was open, enter and exit both
+   skip their animations so adjacent hovers read as one card moving. */
+.comma-hover-card[data-instant="true"] {
+  transition-duration: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-hover-card {
+    transform: none;
+    filter: none;
+    transition-property: opacity;
+  }
+
+  .comma-hover-card[data-entering],
+  .comma-hover-card[data-exiting] {
+    transform: none;
+    filter: none;
+  }
+}
+
+@starting-style {
+  .comma-hover-card[data-bounded="true"]:not([data-instant="true"]) {
+    opacity: 0;
+  }
+}

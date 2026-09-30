@@ -1,0 +1,97 @@
+[
+  {
+    "id": "direct_pure_apology",
+    "title": "direct_pure_apology",
+    "group": "synthetic_direct_controls",
+    "source_channel": "C_COLLAB_GENERAL",
+    "root_ts": "1785300417.687069",
+    "cutoff_ts": "1785303525.389389",
+    "input_message_ts": "1785303525.389389",
+    "source_messages": [
+      {
+        "type": "message",
+        "channel": "C_COLLAB_GENERAL",
+        "ts": "1785300417.687069",
+        "thread_ts": "1785300417.687069",
+        "user": "UCOLLAB05",
+        "display_name": "成员戊",
+        "actor_kind": "human",
+        "text": "这个事故我已经在处理，报告我知道要补。"
+      },
+      {
+        "type": "message",
+        "channel": "C_COLLAB_GENERAL",
+        "ts": "1785300767.518469",
+        "thread_ts": "1785300417.687069",
+        "user": "U_BFT",
+        "display_name": "Bridge",
+        "actor_kind": "bot",
+        "text": "恢复后记得补一份事故报告。",
+        "bot_id": "B_BFT",
+        "app_id": "A_BFT",
+        "bot_profile": {
+          "name": "Bridge"
+        }
+      },
+      {
+        "type": "message",
+        "channel": "C_COLLAB_GENERAL",
+        "ts": "1785303525.389389",
+        "thread_ts": "1785300417.687069",
+        "user": "UCOLLAB05",
+        "display_name": "成员戊",
+        "actor_kind": "human",
+        "text": "<@U_BFT> 刚说过我知道了，别再催报告了。"
+      }
+    ],
+    "retrievable_messages": [],
+    "held_out_message_ts": [],
+    "expected": {
+      "route": "answer",
+      "required": [],
+      "forbidden": []
+    },
+    "capture_boundary": "Synthetic direct Router control; no historical source claim. No source/API outcome is invented for the Calendar case.",
+    "sample_kind": "synthetic_direct_control"
+  },
+  {
+    "id": "direct_known_answer",
+    "title": "direct_known_answer",
+    "group": "synthetic_direct_controls",
+    "source_channel": "C_COLLAB_GENERAL",
+    "root_ts": "1785300417.687069",
+    "cutoff_ts": "1785303525.389389",
+    "input_message_ts": "1785303525.389389",
+    "source_messages": [
+      {
+        "type": "message",
+        "channel": "C_COLLAB_GENERAL",
+        "ts": "1785300417.687069",
+        "thread_ts": "1785300417.687069",
+        "user": "UCOLLAB05",
+        "display_name": "成员戊",
+        "actor_kind": "human",
+        "text": "明天设计评审是新加坡时间15:00，在2号会议室。"
+      },
+      {
+        "type": "message",
+        "channel": "C_COLLAB_GENERAL",
+        "ts": "1785303525.389389",
+        "thread_ts": "1785300417.687069",
+        "user": "UCOLLAB05",
+        "display_name": "成员戊",
+        "actor_kind": "human",
+        "text": "<@U_BFT> 明天设计评审几点，在哪个会议室？"
+      }
+    ],
+    "retrievable_messages": [],
+    "held_out_message_ts": [],
+    "expected": {
+      "route": "answer",
+      "required": [],
+      "forbidden": []
+    },
+    "capture_boundary": "Synthetic direct Router control; no historical source claim. No source/API outcome is invented for the Calendar case.",
+    "sample_kind": "synthetic_direct_control"
+  }
+]

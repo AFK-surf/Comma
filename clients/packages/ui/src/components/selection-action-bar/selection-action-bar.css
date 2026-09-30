@@ -1,0 +1,63 @@
+/*
+ * Selection action bar motion. The bar is measured after mount to place
+ * itself, so it stays fully transparent until that first measurement lands —
+ * otherwise the initial paint would flash at the viewport origin. Once placed
+ * it scales up from the edge facing the selection, matching the menu and
+ * hover-card enter language.
+ *
+ * It also arrives along the path the selection was drawn: a left-to-right
+ * sweep hands the bar in from the left, a right-to-left sweep from the right.
+ * The travel is deliberately smaller than the gap to the text — enough to
+ * read as continuing the gesture, not as a separate slide. A double-click
+ * never travelled, so it gets no travel either.
+ */
+.comma-selection-action-bar {
+  /* Signed multiplier, not a length: one distance token, and the direction
+     supplies only its sign. */
+  --comma-selection-action-bar-travel: 0;
+
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(
+      calc(var(--comma-selection-action-bar-travel) * var(--spacing-md))
+    )
+    scale(var(--motion-scale-menu-enter));
+  transform-origin: center bottom;
+  /* Tooltip timing, not menu timing: the bar is a small anchored surface, and
+     the menu's 120ms front-loads so hard that the directional travel is spent
+     before the first painted frame. */
+  transition:
+    opacity var(--motion-duration-tooltip-enter) var(--motion-easing-surface-smooth-out),
+    transform var(--motion-duration-tooltip-enter)
+      var(--motion-easing-surface-smooth-out);
+  will-change: opacity, transform;
+}
+
+.comma-selection-action-bar[data-placement="bottom"] {
+  transform-origin: center top;
+}
+
+.comma-selection-action-bar[data-direction="forward"] {
+  --comma-selection-action-bar-travel: -1;
+}
+
+.comma-selection-action-bar[data-direction="backward"] {
+  --comma-selection-action-bar-travel: 1;
+}
+
+.comma-selection-action-bar[data-visible="true"] {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateX(0) scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-selection-action-bar {
+    transform: none;
+    transition-property: opacity;
+  }
+
+  .comma-selection-action-bar[data-visible="true"] {
+    transform: none;
+  }
+}

@@ -1,0 +1,146 @@
+x-salix-runtime: &salix-runtime
+  image: "${SALIX_DEV_IMAGE}"
+  environment:
+    COMMA_SUBSYSTEMS: salix
+    COMMA_ENVIRONMENT: local
+    RELEASE_COOKIE: "${SALIX_DEV_RELEASE_COOKIE}"
+    SALIX_SNOWFLAKE_WORKER_ID: "0"
+    COMMA_REDIS_URL: redis://redis:6379/0
+  volumes:
+    - "${SALIX_DEV_CONFIG_PATH}:/etc/salix/config.json:ro"
+
+services:
+  minio:
+    # Open-source MinIO is archived upstream (read-only since 2026-04-25, #757):
+    # pinned by digest to the final release (RELEASE.2025-09-07T16-13-09Z) so
+    # `latest` can never drift or vanish.
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          sleep 1
+        done
+        mc mb -p local/salix-dev || true
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: billing_core_dev
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d billing_core_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  llm-mock:
+    image: node:24-alpine
+    command: ["node", "/app/scripts/local-llm-mock.mjs"]
+    environment:
+      PORT: "43123"
+      LOG_PATH: /tmp/comma-local-llm-requests.jsonl
+    volumes:
+      - ./scripts:/app/scripts:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:43123/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  salix-migrate:
+    <<: *salix-runtime
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    command:
+      - eval
+      - |
+        case SalixAnalytics.Migrations.migrate() do
+          {:ok, _versions} -> Comma.Release.migrate()
+          {:error, reason} -> raise "local ClickHouse migration failed: #{inspect(reason)}"
+        end
+    restart: "no"
+
+  salix:
+    <<: *salix-runtime
+    build:
+      context: ..
+      dockerfile: systems/Dockerfile
+      target: runtime
+    depends_on:
+      salix-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      llm-mock:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SALIX_DEV_HTTP_PORT}:4000"
+      - "127.0.0.1:${SALIX_DEV_TRANSFER_PORT}:4400"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4000/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 20
+
+volumes:
+  clickhouse-data:
+  minio-data:
+  postgres-data:
+  redis-data:

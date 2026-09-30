@@ -1,0 +1,212 @@
+--- a/Sources/PermissionFlow/UI/PermissionFlowPanelView.swift
++++ b/Sources/PermissionFlow/UI/PermissionFlowPanelView.swift
+@@ -21,11 +21,11 @@
+         .frame(maxWidth: .infinity, alignment: .topLeading)
+         .fixedSize(horizontal: false, vertical: true)
+         .background(
+-            RoundedRectangle(cornerRadius: 18, style: .continuous)
++            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                 .fill(.ultraThinMaterial)
+                 .overlay(
+-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+-                        .stroke(.primary.opacity(0.14), lineWidth: 1)
++                    RoundedRectangle(cornerRadius: 28, style: .continuous)
++                        .strokeBorder(.primary.opacity(0.14), lineWidth: 1)
+                 )
+         )
+     }
+@@ -33,21 +33,58 @@
+     /// Keeps the header logic isolated from the drag card layout.
+     private var header: some View {
+         HStack(alignment: .top, spacing: 3) {
+-            HeaderDirectionIcon(isDragging: controller.isDraggingApp)
+-            Text(headerTitle).font(.system(size: 14))
+-            Spacer()
++            VStack(alignment: .leading, spacing: 7) {
++                if controller.guidanceSteps.isEmpty {
++                    Text(headerTitle).font(.system(size: 14)).lineLimit(1)
++                } else {
++                    ForEach(controller.guidanceSteps.indices, id: \.self) { index in
++                        let step = controller.guidanceSteps[index]
++                        let active = controller.currentPane == step.pane && !step.granted
++                        HStack(spacing: 7) {
++                            Group {
++                                if step.granted {
++                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
++                                } else if active {
++                                    HeaderDirectionIcon(isDragging: controller.isDraggingApp)
++                                } else {
++                                    Image(systemName: "circle").foregroundStyle(.secondary)
++                                }
++                            }
++                            .frame(width: 18, height: 18)
++                            Text(stepTitle(index + 1))
++                                .font(.system(size: 11, weight: .semibold))
++                                .foregroundStyle(.secondary)
++                                .fixedSize()
++                            Text(step.pane.localizedTitle(localeIdentifier: controller.localeIdentifier))
++                                .font(.system(size: 13, weight: active ? .semibold : .regular))
++                                .foregroundStyle(step.granted ? .secondary : .primary)
++                                .lineLimit(1)
++                                .minimumScaleFactor(0.85)
++                        }
++                    }
++                    Text(headerTitle)
++                        .font(.system(size: 11))
++                        .foregroundStyle(.secondary)
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.85)
++                        .help(String(headerTitle.characters))
++                }
++            }
++            .layoutPriority(1)
++            Spacer(minLength: 0)
+             HStack(alignment: .top, spacing: 3) {
+-                if controller.isSettingsFrontmost == false {
+-                    Button {
+-                        controller.reopenCurrentSettingsPane()
+-                    } label: {
+-                        Image(systemName: "gear")
+-                            .font(.system(size: 15, weight: .semibold))
+-                            .symbolRenderingMode(.palette)
+-                            .foregroundStyle(.primary, .secondary.opacity(0.35))
+-                    }
+-                    .buttonStyle(.borderless)
++                Button {
++                    controller.reopenCurrentSettingsPane()
++                } label: {
++                    Image(systemName: "gear")
++                        .font(.system(size: 15, weight: .semibold))
++                        .symbolRenderingMode(.palette)
++                        .foregroundStyle(.primary, .secondary.opacity(0.35))
+                 }
++                .buttonStyle(.borderless)
++                .opacity(controller.isSettingsFrontmost ? 0 : 1)
++                .allowsHitTesting(!controller.isSettingsFrontmost)
++                .accessibilityHidden(controller.isSettingsFrontmost)
+                 Button {
+                     controller.closePanel(returnToPreviousApp: true)
+                 } label: {
+@@ -61,12 +98,21 @@
+         }
+     }
+
++    private func stepTitle(_ step: Int) -> String {
++        let template = PermissionFlowLocalizer.string(
++            "permission_flow.panel.step",
++            defaultValue: "Step %d",
++            localeIdentifier: controller.localeIdentifier
++        )
++        return String(format: template, locale: localizationLocale, step)
++    }
++
+     /// Builds a markdown-backed localized title such as:
+     /// "Drag **Example** to the list above to allow **Accessibility**."
+     private var headerTitle: AttributedString {
+         let localizedTemplate = PermissionFlowLocalizer.string(
+             "permission_flow.panel.title",
+-            defaultValue: "Drag **%@** to the list above to allow **%@**.",
++            defaultValue: "Drag the app above to allow **%2$@**.",
+             localeIdentifier: controller.localeIdentifier
+         )
+
+@@ -118,6 +164,7 @@
+ private struct HeaderDirectionIcon: View {
+     let isDragging: Bool
+
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+     @State private var wigglePhase = false
+     @State private var scalePhase = false
+
+@@ -126,13 +173,13 @@
+             .font(.system(size: 14, weight: .bold))
+             .symbolRenderingMode(.hierarchical)
+             .foregroundStyle(.tint)
+-            .rotationEffect(.degrees(isDragging ? 0 : (wigglePhase ? 12 : -12)))
+-            .offset(y: isDragging ? 0 : (wigglePhase ? -2 : 1))
+-            .scaleEffect(isDragging ? (scalePhase ? 1.18 : 0.88) : 1)
++            .rotationEffect(.degrees(0))
++            .offset(y: reduceMotion || isDragging ? 0 : (wigglePhase ? -2 : 1))
++            .scaleEffect(!reduceMotion && isDragging ? (scalePhase ? 1.08 : 0.96) : 1)
+             .animation(
+-                isDragging
++                reduceMotion ? nil : isDragging
+                     ? .easeInOut(duration: 0.68).repeatForever(autoreverses: true)
+-                    : .easeInOut(duration: 0.22).repeatForever(autoreverses: true),
++                    : .easeInOut(duration: 0.65).repeatForever(autoreverses: true),
+                 value: isDragging ? scalePhase : wigglePhase
+             )
+             .onAppear {
+--- a/Sources/PermissionFlow/UI/FloatingDropPanel.swift
++++ b/Sources/PermissionFlow/UI/FloatingDropPanel.swift
+@@ -260,9 +260,15 @@
+     /// Measures the SwiftUI content at a specific width so the panel height can
+     /// fit its dynamic contents before being positioned or animated.
+     private func measuredPanelHeight(for width: CGFloat) -> CGFloat {
++        guard let panelController else { return minimumPanelHeight }
++        // Measure the same fixed width that the visible host receives. Its
++        // unconstrained fitting size can otherwise underestimate wrapped content.
++        sizingView.rootView = AnyView(Self.makePanelView(
++            controller: panelController, localeIdentifier: localeIdentifier
++        ).frame(width: width))
+         sizingView.setFrameSize(NSSize(width: width, height: sizingHeightLimit))
+         sizingView.layoutSubtreeIfNeeded()
+-        return max(minimumPanelHeight, sizingView.fittingSize.height)
++        return max(minimumPanelHeight, ceil(sizingView.fittingSize.height))
+     }
+
+     /// Advances the current launch animation frame-by-frame until the panel
+--- a/Sources/PermissionFlow/PermissionFlowController.swift
++++ b/Sources/PermissionFlow/PermissionFlowController.swift
+@@ -20,6 +20,9 @@
+
+     /// Drives the visibility of the "reopen settings" action.
+     @Published var isSettingsFrontmost = false
++
++    /// Read-only permission results supplied by the owning authorization window.
++    @Published public var guidanceSteps: [(pane: PermissionFlowPane, granted: Bool)] = []
+
+     /// Drives the header icon animation while the app card is being dragged.
+     @Published var isDraggingApp = false
+--- a/Sources/PermissionFlow/Resources/en.lproj/Localizable.strings
++++ b/Sources/PermissionFlow/Resources/en.lproj/Localizable.strings
+@@ -1,4 +1,4 @@
+-"permission_flow.panel.title" = "Drag **%@** to the list above to allow **%@**.";
++"permission_flow.panel.title" = "Drag the app above to allow **%2$@**.";
+ "permission_flow.app.this_app" = "This App";
+ "permission_flow.pane.permission" = "Permission";
+ "permission_flow.pane.app_management" = "App Management";
+@@ -15,3 +15,5 @@
+ "permission_flow.button.granted" = "Granted";
+ "permission_flow.button.open" = "Open";
+ "permission_flow.button.checking" = "Checking...";
++
++"permission_flow.panel.step" = "Step %d";
+--- a/Sources/PermissionFlow/Resources/zh-Hans.lproj/Localizable.strings
++++ b/Sources/PermissionFlow/Resources/zh-Hans.lproj/Localizable.strings
+@@ -1,4 +1,4 @@
+-"permission_flow.panel.title" = "将 **%@** 拖到上方列表中以允许 **%@**。";
++"permission_flow.panel.title" = "将下方应用拖入上方列表，开启**%2$@**。";
+ "permission_flow.app.this_app" = "此应用";
+ "permission_flow.pane.permission" = "权限";
+ "permission_flow.pane.app_management" = "App 管理";
+@@ -15,3 +15,5 @@
+ "permission_flow.button.granted" = "已授权";
+ "permission_flow.button.open" = "打开";
+ "permission_flow.button.checking" = "检查中...";
++
++"permission_flow.panel.step" = "第 %d 步";
+--- a/Sources/PermissionFlow/Resources/zh-Hant.lproj/Localizable.strings
++++ b/Sources/PermissionFlow/Resources/zh-Hant.lproj/Localizable.strings
+@@ -1,4 +1,4 @@
+-"permission_flow.panel.title" = "將 **%@** 拖到上方列表中以允許 **%@**。";
++"permission_flow.panel.title" = "將下方應用程式拖入上方列表，開啟**%2$@**。";
+ "permission_flow.app.this_app" = "此 App";
+ "permission_flow.pane.permission" = "權限";
+ "permission_flow.pane.app_management" = "App 管理";
+@@ -15,3 +15,5 @@
+ "permission_flow.button.granted" = "已授權";
+ "permission_flow.button.open" = "開啟";
+ "permission_flow.button.checking" = "檢查中...";
++
++"permission_flow.panel.step" = "第 %d 步";

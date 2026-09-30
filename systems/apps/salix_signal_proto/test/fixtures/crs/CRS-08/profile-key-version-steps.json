@@ -1,0 +1,44 @@
+{
+  "section": "CRS-08",
+  "name": "profile-key-version-steps",
+  "description": "Intermediate values of the profile key version derivation (see CRS-08 section 3.3). chain_value_1 = HMAC-SHA256(32 zero bytes, label || 0x00); chain_value_2 = HMAC-SHA256(chain_value_1, profile_key || aci_uuid_bytes || 0x00); version_bytes = HMAC-SHA256(chain_value_2, 8 zero bytes || 0x01). HMACs computed by the oracle (incremental-MAC operation); version_string cross-checked against the oracle profile key version operation.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci_uuid_bytes": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "chain_value_1": "0bd4b974505d938bbd5f13316b9d27a8a8d16e11f975babe07e6f661b6268a79",
+        "chain_value_2": "47a54a4e69fabce7ae06fe18f2c90f0158fe06eeee4e081f8c27c7d288b0b1b7",
+        "version_bytes": "fcd0715a47cd726483fb0ff70d03b3f4c7329fe444d21cd61e36723f971b3b32",
+        "version_string": "fcd0715a47cd726483fb0ff70d03b3f4c7329fe444d21cd61e36723f971b3b32"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "0101010101010101010101010101010101010101010101010101010101010101",
+        "aci_uuid_bytes": "000000000000400080000000000000a1"
+      },
+      "outputs": {
+        "chain_value_1": "0bd4b974505d938bbd5f13316b9d27a8a8d16e11f975babe07e6f661b6268a79",
+        "chain_value_2": "3e61e8f4f3efd0b31776174613ba3de0303efbaff19f6c839d962ffadbca0a5c",
+        "version_bytes": "40f4263cd67c6377351c044794d43ca8deb208c622155d66ac2f00d7d205e6cf",
+        "version_string": "40f4263cd67c6377351c044794d43ca8deb208c622155d66ac2f00d7d205e6cf"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "aci_uuid_bytes": "ffffffffffff4fffbfffffffffffffff"
+      },
+      "outputs": {
+        "chain_value_1": "0bd4b974505d938bbd5f13316b9d27a8a8d16e11f975babe07e6f661b6268a79",
+        "chain_value_2": "b7c205e5caca4bc8d46ee6b5cefbaa724b04b15f90de361559b70277f437d765",
+        "version_bytes": "261fa75c8c30d923d716e0e49d4d1abd4fd25127edaace0fdf8475a2d722dd94",
+        "version_string": "261fa75c8c30d923d716e0e49d4d1abd4fd25127edaace0fdf8475a2d722dd94"
+      }
+    }
+  ]
+}

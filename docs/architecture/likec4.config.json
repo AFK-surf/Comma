@@ -1,0 +1,9 @@
+{
+  "$schema": "https://likec4.dev/schemas/config.json",
+  "name": "comma-architecture",
+  "title": "Comma 架构导览",
+  "metadata": {
+    "audience": "新入职开发人员",
+    "status": "当前态可读性原型"
+  }
+}

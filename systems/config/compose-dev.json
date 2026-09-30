@@ -1,0 +1,67 @@
+{
+  "storage": {
+    "endpoint": "http://minio:9000",
+    "region": "us-east-1",
+    "bucket": "salix-dev",
+    "access_key_id": "minioadmin",
+    "secret_access_key": "minioadmin",
+    "atomic_operations": "s3",
+    "conditional_delete": "emulate"
+  },
+  "web": {
+    "port": 4000,
+    "api_token": "test-token",
+    "api_base_url": "http://127.0.0.1:4000",
+    "sites_domain": "salix.localhost",
+    "sites_port": 4000
+  },
+  "transfer": {
+    "port": 4400,
+    "advertise_host": "127.0.0.1"
+  },
+  "salix_dashboard": {
+    "secret_key_base": "dev_only_secret_key_base_for_local_systems_000000000000000000000000000000000000"
+  },
+  "salix": {
+    "database": {
+      "url": "ecto://postgres:postgres@postgres:5432/billing_core_dev",
+      "pool_size": 4
+    }
+  },
+  "comma": {
+    "database": {
+      "url": "ecto://postgres:postgres@postgres:5432/billing_core_dev",
+      "pool_size": 8
+    },
+    "auth": {
+      "secret": "comma-local-auth-secret-not-for-production-00000001",
+      "rate_limit_secret": "comma-local-rate-limit-secret-not-for-production-00000002"
+    }
+  },
+  "billing": {
+    "database": {
+      "url": "ecto://postgres:postgres@postgres:5432/billing_core_dev",
+      "pool_size": 10
+    }
+  },
+  "clickhouse": {
+    "url": "http://clickhouse:8123",
+    "table": "salix_analytics.events",
+    "user": null,
+    "password": null
+  },
+  "llm": {
+    "default_template": {
+      "template_id": "comma-local-dev",
+      "name": "Comma Local Dev Mock",
+      "model": "gpt-local-dev",
+      "max_tokens": 2048,
+      "context_tokens": 32768,
+      "provider_config": {
+        "protocol": "chat_completions",
+        "base_url": "http://llm-mock:43123",
+        "api_key": "local-dev-only"
+      }
+    }
+  }
+}

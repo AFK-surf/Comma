@@ -1,0 +1,7 @@
+{
+  "run": {
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium"
+  },
+  "eval": {}
+}

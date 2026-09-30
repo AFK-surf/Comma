@@ -1,0 +1,5 @@
+.lake/
+.native/
+_build/
+priv/
+erl_crash.dump

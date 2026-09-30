@@ -1,0 +1,15 @@
+{
+  "name": "@comma/session-history-runtime",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./records": "./src/records.ts"
+  },
+  "dependencies": {
+    "eventsource-parser": "4.1.0",
+    "@comma/native-bridge": "workspace:*",
+    "@comma/session-contract": "workspace:*"
+  }
+}

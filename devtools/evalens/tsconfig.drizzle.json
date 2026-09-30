@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "./node_modules/.cache/evalens/drizzle.tsbuildinfo",
+    "types": ["bun"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./drizzle.config.ts"]
+}

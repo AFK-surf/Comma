@@ -1,0 +1,203 @@
+{
+  "section": "CRS-06",
+  "name": "sender-certificate",
+  "description": "Sender certificate parse and validation against one or more trust roots at a validation time (ms). Valid if and only if (a) some trust root verifies the server certificate signature, (b) the server key id is not revoked, (c) the server key verifies the sender certificate signature, and (d) validation_time <= expiration. Signatures are randomized XEdDSA: verify, do not compare. Certificate bodies were encoded from the CRS-06 table and signed with oracle keys; all results are oracle observations. Rejection reasons (fields named reason or error_if_*) are neutral paraphrases of the oracle result, not its text. The two signer-by-reference cases name the built-in production (id 3) and staging (id 2) server certificates and use the matching configured trust root: the reference resolves and the server certificate verifies under the trust root, but Comma holds no private key for those server keys, so the sender signature (made with a Comma key) does not verify and the certificate is invalid. No valid by-reference certificate can be produced without such a key.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "server style: uuid bytes (field 7), no e164, embedded signer; validation_time 1700000000000",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0aab0110031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1124024a91a136c07ece78f6e55fa28dff0847b33855f4831fb1dc23816c4c54c6c80451fe0e26e50575e7e72035c07a3dc5662597bbc6a25d9e6bfcf84864e18038e"
+      },
+      "outputs": {
+        "valid": true,
+        "sender_uuid": "00000000-0000-4000-8000-0000000000a1",
+        "sender_e164": null,
+        "sender_device": 3,
+        "expiration": 1800000000000,
+        "identity_key": "05943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a",
+        "signer_key_id": 1,
+        "certificate_data": "10031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1",
+        "signature": "24a91a136c07ece78f6e55fa28dff0847b33855f4831fb1dc23816c4c54c6c80451fe0e26e50575e7e72035c07a3dc5662597bbc6a25d9e6bfcf84864e18038e"
+      }
+    },
+    {
+      "label": "server style: uuid bytes (field 7), no e164, embedded signer; validation_time 1800000000000",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1800000000000,
+        "sender_certificate": "0aab0110031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1124024a91a136c07ece78f6e55fa28dff0847b33855f4831fb1dc23816c4c54c6c80451fe0e26e50575e7e72035c07a3dc5662597bbc6a25d9e6bfcf84864e18038e"
+      },
+      "outputs": {
+        "valid": true,
+        "sender_uuid": "00000000-0000-4000-8000-0000000000a1",
+        "sender_e164": null,
+        "sender_device": 3,
+        "expiration": 1800000000000,
+        "identity_key": "05943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a",
+        "signer_key_id": 1,
+        "certificate_data": "10031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1",
+        "signature": "24a91a136c07ece78f6e55fa28dff0847b33855f4831fb1dc23816c4c54c6c80451fe0e26e50575e7e72035c07a3dc5662597bbc6a25d9e6bfcf84864e18038e"
+      }
+    },
+    {
+      "label": "server style: uuid bytes (field 7), no e164, embedded signer; validation_time 1800000000001",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1800000000001,
+        "sender_certificate": "0aab0110031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1124024a91a136c07ece78f6e55fa28dff0847b33855f4831fb1dc23816c4c54c6c80451fe0e26e50575e7e72035c07a3dc5662597bbc6a25d9e6bfcf84864e18038e"
+      },
+      "outputs": {
+        "valid": false,
+        "sender_uuid": "00000000-0000-4000-8000-0000000000a1",
+        "sender_e164": null,
+        "sender_device": 3,
+        "expiration": 1800000000000,
+        "identity_key": "05943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a",
+        "signer_key_id": 1,
+        "certificate_data": "10031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1",
+        "signature": "24a91a136c07ece78f6e55fa28dff0847b33855f4831fb1dc23816c4c54c6c80451fe0e26e50575e7e72035c07a3dc5662597bbc6a25d9e6bfcf84864e18038e"
+      }
+    },
+    {
+      "label": "uuid string (field 6) and e164; validation_time 1700000000000",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0acd010a0c2b313535353535353031323310031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a584322430303030303030302d303030302d343030302d383030302d303030303030303030306131124060021576e0d09e586f664679d14d04ecb63a76b8397991485eaa358663702cf2459dfda85ede5f8c31d0fc653ec1c75199d8fc93875dfcac3a9ffd1989d2f18d"
+      },
+      "outputs": {
+        "valid": true,
+        "sender_uuid": "00000000-0000-4000-8000-0000000000a1",
+        "sender_e164": "+15555550123",
+        "sender_device": 3,
+        "expiration": 1800000000000,
+        "identity_key": "05943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a",
+        "signer_key_id": 1,
+        "certificate_data": "0a0c2b313535353535353031323310031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a584322430303030303030302d303030302d343030302d383030302d303030303030303030306131",
+        "signature": "60021576e0d09e586f664679d14d04ecb63a76b8397991485eaa358663702cf2459dfda85ede5f8c31d0fc653ec1c75199d8fc93875dfcac3a9ffd1989d2f18d"
+      }
+    },
+    {
+      "label": "device id 127; validation_time 1700000000000",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0aab01107f1900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a11240520cd0ed8ad62819465b6457cdc57c0a56bd9fa929ff9f71270d96762682323351a0c4a963fddb7cd076539eb3296322bdb8d9fb9cfa3f41432fcaaca0b49c86"
+      },
+      "outputs": {
+        "valid": true,
+        "sender_uuid": "00000000-0000-4000-8000-0000000000a1",
+        "sender_e164": null,
+        "sender_device": 127,
+        "expiration": 1800000000000,
+        "identity_key": "05943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a",
+        "signer_key_id": 1,
+        "certificate_data": "107f1900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1",
+        "signature": "520cd0ed8ad62819465b6457cdc57c0a56bd9fa929ff9f71270d96762682323351a0c4a963fddb7cd076539eb3296322bdb8d9fb9cfa3f41432fcaaca0b49c86"
+      }
+    },
+    {
+      "label": "two trust roots, second one signed",
+      "inputs": {
+        "trust_roots": [
+          "054c55ab0f659611b30c40736d41032ede699493dbdb02d32804409116edb4807d",
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0aab0110031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a11240b0e8b31dd2d57ac30d974274db718529d3da453ec03f88315405402a0a54a4346f972f6a8c27d13799a82447878126c5e6b0ab778c7e089d0d58d22900ab558f"
+      },
+      "outputs": {
+        "valid": true
+      }
+    },
+    {
+      "label": "wrong trust root",
+      "inputs": {
+        "trust_roots": [
+          "054c55ab0f659611b30c40736d41032ede699493dbdb02d32804409116edb4807d"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0aab0110031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a11240b0e8b31dd2d57ac30d974274db718529d3da453ec03f88315405402a0a54a4346f972f6a8c27d13799a82447878126c5e6b0ab778c7e089d0d58d22900ab558f"
+      },
+      "outputs": {
+        "valid": false
+      }
+    },
+    {
+      "label": "negative: sender certificate signature not made by the embedded server key",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0aab0110031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a2a690a250801122105df561ef41ea359e72a22c9a62f557b2722b3fa82bd316d2533590f64e172763e12402ea115d1bb1062dd70af8497a95d62481b7c0f5637ce2665d09e74b711e44f8f56f9d6cb5eebf5fec28f2e1f2e899ff7aa548cbf62cb0e6d12bfadb11d01a5843a10000000000000400080000000000000a1124021f3e0543657a220e7470c34cddb0f7c6d3416369872a930eeb63137fe735b70ca345e8bf5f6a21c952d3c722322960eee6f4065b4af3993f10cf9fc76acfe8d"
+      },
+      "outputs": {
+        "valid": false
+      }
+    },
+    {
+      "label": "signer by reference id 3 (production server certificate), sender signature made with a Comma key",
+      "inputs": {
+        "trust_roots": [
+          "054918d08fbdfa83e00c29f8f8073a22ef35df2bea903aff81af03ccbc45c6e93a"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0a4210031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a40033a10000000000000400080000000000000a1124096c5b59b0594c2292c9acae3f87b7e58eb8b3f91af3ea99ecf81d8222648e456ec92910c4410a4a503cf5d1181eccd7e1e709afe9e8801d0fa3412845264188c"
+      },
+      "outputs": {
+        "valid": false,
+        "signer_key_id": 3,
+        "signer_server_public": "05bc9d1d290be964810dfa7e94856480a3f7060d004c9762c24c575a1522353a5a",
+        "signer_certificate": "0a250803122105bc9d1d290be964810dfa7e94856480a3f7060d004c9762c24c575a1522353a5a1240c11ec3c401eb0107ab38f8600e8720a63169e0e2eb8a3fae24f63099f85ea319c3c1c46d3454706ae2a679d1fee690a488adda98a2290b66c906bb60295ed781",
+        "signer_certificate_verifies_under_trust_root": true,
+        "sender_signature_verifies_under_signer_key": false
+      }
+    },
+    {
+      "label": "signer by reference id 2 (staging server certificate), sender signature made with a Comma key",
+      "inputs": {
+        "trust_roots": [
+          "058854ead3e3a8fe3a286644cd1b3538be14dfd5797653c9fd7d3d85ae2b12b926"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0a4210031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a40023a10000000000000400080000000000000a11240d2f607c11ca6a49549b0d146b95f453c579f1f36e34eb2db5c61c79b82496780389795d2f106f70c6ccbfcb6b4a170ca0e78e721614e19a9ce9b7f94ee504b8f"
+      },
+      "outputs": {
+        "valid": false,
+        "signer_key_id": 2,
+        "signer_server_public": "0539450d63ebd0752c0fd4038b9d07a916f5e174b756d409b5ca79f4c97400631e",
+        "signer_certificate": "0a25080212210539450d63ebd0752c0fd4038b9d07a916f5e174b756d409b5ca79f4c97400631e124064c5a38b1e927497d3d4786b101a623ab34a7da3954fae126b04dba9d7a3604ed88cdc8550950f0d4a9134ceb7e19b94139151d2c3d6e1c81e9d1128aafca806",
+        "signer_certificate_verifies_under_trust_root": true,
+        "sender_signature_verifies_under_signer_key": false
+      }
+    },
+    {
+      "label": "signer by unknown reference id 0x1234: parses, but has no resolvable signer and never validates",
+      "inputs": {
+        "trust_roots": [
+          "05662d0c3f6d8f66d0dff80064e4a1343afaeae79345a164f82f6b6b77c5344777"
+        ],
+        "validation_time": 1700000000000,
+        "sender_certificate": "0a4310031900505c18a3010000222105943a228ba025ac43a4db4be1fb239d69b765af1c2feba419ca6aa5640d87f94a40b4243a10000000000000400080000000000000a1124096f6cb32c0a1dc9d214cc648b11a2717ab35d3ecd06bd5b798b6157bea8c8c0318f960e26dbdfe54c80c7b8bbf20c2050108e51ed63876c99ab5486efaa7de85"
+      },
+      "outputs": {
+        "valid": false,
+        "reason": "rejected: no known server certificate with key id 0x1234"
+      }
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "section": "CRS-10",
+  "name": "incremental-mac-chunk-size",
+  "description": "Chunk size the sender chooses from the total stream size (the encrypted blob size), computed by the oracle.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "data_size": 0
+      },
+      "outputs": {
+        "chunk_size": 65536
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 1
+      },
+      "outputs": {
+        "chunk_size": 65536
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 65536
+      },
+      "outputs": {
+        "chunk_size": 65536
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 16777215
+      },
+      "outputs": {
+        "chunk_size": 65536
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 16777216
+      },
+      "outputs": {
+        "chunk_size": 65536
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 16777217
+      },
+      "outputs": {
+        "chunk_size": 65537
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 20000000
+      },
+      "outputs": {
+        "chunk_size": 78125
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 104857600
+      },
+      "outputs": {
+        "chunk_size": 409600
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 536870911
+      },
+      "outputs": {
+        "chunk_size": 2097152
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 536870912
+      },
+      "outputs": {
+        "chunk_size": 2097152
+      }
+    },
+    {
+      "inputs": {
+        "data_size": 600000000
+      },
+      "outputs": {
+        "chunk_size": 2097152
+      }
+    }
+  ]
+}

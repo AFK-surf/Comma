@@ -1,0 +1,147 @@
+{
+  "catalogVersion": 1,
+  "limits": {
+    "cards": 6,
+    "itemsPerCard": 4,
+    "payloadBytes": 65536,
+    "sources": 12,
+    "summaryCharacters": 1200,
+    "summaryTitleCharacters": 48,
+    "summaryParts": 24,
+    "totalItems": 18
+  },
+  "documentParts": {
+    "inline-link": {
+      "required": ["kind", "link.href", "link.label"],
+      "constraints": {
+        "href": "absolute http(s) URL",
+        "labelMaxCharacters": 120,
+        "sourceId": "optional:connection-or-app-id:max-128",
+        "promptId": "optional:reference-to-snapshot-prompts:max-128; sourceId must match; the client derives hover context and task prompt from this entry"
+      }
+    },
+    "inline-task": {
+      "required": ["kind", "task.conversationId", "task.label"],
+      "constraints": {
+        "labelMaxCharacters": 120,
+        "sourceId": "optional:connection-or-app-id:max-128"
+      }
+    },
+    "markdown": {
+      "required": ["kind", "text"],
+      "constraints": {
+        "maxCharacters": 1200,
+        "reservedCommaInlineTagsAreEscaped": true
+      }
+    }
+  },
+  "actions": {
+    "open_url": {
+      "required": [
+        "type=open_url",
+        "href",
+        "label",
+        "requiresConfirmation=false"
+      ],
+      "shape": "flat object; type is a required string field, never an object wrapper; no additional fields"
+    },
+    "open_task_form": {
+      "required": [
+        "type=open_task_form",
+        "label",
+        "prompt",
+        "requiresConfirmation"
+      ],
+      "shape": "flat object; type is a required string field, never an object wrapper; no additional fields"
+    },
+    "send_to_comma": {
+      "required": [
+        "type=send_to_comma",
+        "label",
+        "exactly one of prompt or promptId",
+        "requiresConfirmation=true"
+      ],
+      "shape": "flat object; type is a required string field, never an object wrapper; no additional fields"
+    }
+  },
+  "snapshot": {
+    "required": [
+      "protocolVersion",
+      "templateCatalogVersion",
+      "generatedAt",
+      "generation",
+      "sourceRevision",
+      "summary",
+      "cards",
+      "warnings"
+    ],
+    "fields": {
+      "protocolVersion": "integer:exactly-1",
+      "templateCatalogVersion": "integer:exactly-1",
+      "generatedAt": "nonnegative-integer:unix-milliseconds",
+      "generation": "positive-integer:copy-from-run",
+      "sourceRevision": "nonnegative-integer:copy-from-run",
+      "summary": "required:non-empty-array-of-document-parts; first markdown paragraph is a newly generated natural greeting-only title (max 48 characters, one line, no facts or links), followed by one to four short body paragraphs, one thought each in one or two plain sentences, the most pressing item first; target two to four when that many distinct threads are available; the cards carry the full item list, so the body covers only the few threads worth a paragraph, normally one inline-link per paragraph and at most four in all; every paragraph break is a blank line (two real newline characters, never a backslash-n spelled out as text) inside markdown text - begin each new paragraph's markdown text with it, including after an inline-link part, since parts without one continue the same paragraph; markdown text carries no HTML; every entity the body mentions that has a supplied stable http(s) URL must be an inline-link part using that exact URL and sourceId, never plain markdown, a markdown link, or an HTML anchor; never wrap in an object",
+      "cards": "array:max-6; cards are routines, not themes - one text-list card per connected source that supplied usable facts, id = that source's toolkit name (suffixed with the connection id only when the toolkit is connected more than once), title = that source's app name exactly as supplied (Linear, Notion, Gmail, Slack, Google Calendar, GitHub, Google Drive); distinct connections may share that app title, while sourceIds = that one connection; each card must match one listed template; card ids must be unique within the snapshot",
+      "warnings": "array:max-12; each warning requires code and message",
+      "prompts": "optional:map:max-18; key is an admitted source reference ID; each entry has sourceId (max 128), optional sourceUrl (canonical source URL; must match the referencing link; included intact in the composer), objective (max 100), context (max 601 UTF-16 units; hover only, not composer text), contextLabel (max 80); card, summary and action references share this content"
+    },
+    "warningFields": {
+      "code": "required:one-of(partial_sources,stale,source_changed,generation_failed)",
+      "message": "required:non-empty:max-240",
+      "sourceIds": "optional:array:max-12"
+    }
+  },
+  "templates": [
+    {
+      "template": "text-list@1",
+      "capabilities": [
+        "rich-text",
+        "inline-elements",
+        "required-item-action",
+        "footer-action"
+      ],
+      "requiredCardFields": [
+        "id",
+        "title",
+        "fallbackText",
+        "sourceIds",
+        "items"
+      ],
+      "itemFields": {
+        "action": "required",
+        "id": "required",
+        "parts": "required:one-line pre-task; an imperative Task-style line with its specific object, verb first, the entity as an inline-link inside it (GitHub PR items include owner/repository context followed by #<number>; Linear issue labels are their identifier), target under 60 visible characters including the chip label; the item's action is that task and its prompt opens with why now"
+      },
+      "maxItems": 4,
+      "allowedItemFields": ["action", "id", "parts"],
+      "additionalItemFields": false
+    },
+    {
+      "template": "media-list@1",
+      "capabilities": [
+        "thumbnail",
+        "title",
+        "description",
+        "required-item-action"
+      ],
+      "requiredCardFields": [
+        "id",
+        "title",
+        "fallbackText",
+        "sourceIds",
+        "items"
+      ],
+      "itemFields": {
+        "action": "required",
+        "description": "optional:max-240",
+        "id": "required",
+        "imageUrl": "required:absolute-credential-free-https-url",
+        "title": "required:max-160"
+      },
+      "maxItems": 4,
+      "allowedItemFields": ["action", "description", "id", "imageUrl", "title"],
+      "additionalItemFields": false
+    }
+  ]
+}

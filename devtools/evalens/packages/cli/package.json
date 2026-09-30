@@ -1,0 +1,22 @@
+{
+  "name": "@evalens/cli",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./command": "./src/commands/index.ts",
+    "./query": "./src/commands/query-client.ts",
+    "./store/remote": "./src/store/remote/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@elysia/eden": "^1.4.10",
+    "@evalens/adapters": "workspace:*",
+    "@evalens/core": "workspace:*",
+    "@evalens/server": "workspace:*",
+    "@evalens/store": "workspace:*",
+    "tar": "^7.5.7",
+    "yargs": "^18.0.0",
+    "zod": "^4.4.3"
+  }
+}

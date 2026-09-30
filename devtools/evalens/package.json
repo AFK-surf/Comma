@@ -1,0 +1,49 @@
+{
+  "name": "evalens",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "cli": "bun run packages/cli/src/index.ts",
+    "example": "bun run packages/cli/src/index.ts run examples/basic.exp.ts",
+    "format": "prettier --write . --ignore-unknown",
+    "format:check": "prettier --check . --ignore-unknown",
+    "lint": "oxlint .",
+    "test": "bun test ./packages ./scripts ./experiments",
+    "typecheck": "bun run --cwd packages/dashboard i18n:compile && tsgo -b",
+    "dashboard:build": "bun run --cwd packages/dashboard build",
+    "dashboard:dev": "bun run packages/server/src/local/server.ts",
+    "server:deploy": "bun run --cwd packages/server deploy",
+    "server:dev": "bun run --cwd packages/server dev",
+    "server:types": "bun run --cwd packages/server types",
+    "metadata:generate": "drizzle-kit generate --config drizzle.config.ts",
+    "config:generate": "bun run scripts/generate-config-schema.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260711.1",
+    "@evalens/adapters": "workspace:*",
+    "@evalens/cli": "workspace:*",
+    "@evalens/core": "workspace:*",
+    "@evalens/store": "workspace:*",
+    "@evalens/evaluators": "workspace:*",
+    "@evalens/server": "workspace:*",
+    "@evalens/utils": "workspace:*",
+    "@types/bun": "latest",
+    "@types/node": "^26.1.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@types/yargs": "^17.0.35",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
+    "js-tiktoken": "^1.0.21",
+    "oxlint": "^1.70.0",
+    "prettier": "^3.8.4",
+    "tar": "^7.5.7",
+    "typescript": "^6.0.3",
+    "zod": "^4.4.3"
+  },
+  "packageManager": "bun@1.3.14"
+}

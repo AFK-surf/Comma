@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: comma
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: comma
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: comma
+spec:
+  serviceName: comma
+  replicas: {{ if .Values.maintenance.enabled }}0{{ else }}1{{ end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: comma
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: comma
+    spec:
+      containers:
+        - name: comma
+          image: {{ .Values.image }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: comma-otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: comma-otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: comma-otel-collector
+    spec:
+      containers:
+        - name: comma-otel-collector
+          image: {{ .Values.image }}

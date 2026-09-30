@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "evalens-dashboard",
+  "main": "src/cloudflare/worker.ts",
+  "compatibility_date": "2026-07-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "../dashboard/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "evalens-dashboard",
+      "database_id": "0be421a9-bc86-4b33-b0d2-bc494b699aca",
+      "migrations_dir": "../store/src/metadata/migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "RESULTS",
+      "bucket_name": "evalens-results",
+    },
+  ],
+  "vars": {
+    "GITHUB_OWNER": "AFK-surf",
+    "GITHUB_REPO": "Comma",
+    "GITHUB_DEFAULT_REF": "main",
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+}

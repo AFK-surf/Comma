@@ -1,0 +1,37 @@
+:8080 {
+    handle /source.tar.gz {
+        root * /srv
+        file_server
+    }
+    handle /LICENSE {
+        root * /srv
+        file_server
+    }
+    handle {
+        root * /srv/web
+        try_files {path} /index.html
+        file_server
+    }
+}
+
+:8081 {
+    reverse_proxy comma:4200 {
+        flush_interval -1
+    }
+}
+
+:8082 {
+    @source path /source.tar.gz /LICENSE
+    handle @source {
+        root * /srv
+        file_server
+    }
+    handle /v1/* {
+        respond "Use the configured API origin" 404
+    }
+    handle {
+        root * /srv/admin
+        try_files {path} /index.html
+        file_server
+    }
+}

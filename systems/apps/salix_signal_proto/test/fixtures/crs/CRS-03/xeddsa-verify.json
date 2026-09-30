@@ -1,0 +1,260 @@
+{
+ "section": "CRS-03",
+ "name": "xeddsa-verify",
+ "description": "XEdDSA signatures as deployed: 64 bytes R || s, with the Edwards sign bit of the signer carried in bit 7 of byte 63. Signatures were produced by the oracle with internal randomness, so they are verification vectors only. valid is the oracle verification result. ed25519_public_key is the birational conversion of the u-coordinate with the carried sign bit, and ed25519_standard_verify is the result of verifying ed25519_signature (byte 63 bit 7 cleared) with an independent standard Ed25519 verifier. Cases labeled s-plus-group-order replace s by s + q (still below 2^253): the oracle accepts them, while a strict RFC 8032 verifier rejects them.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e407"
+   },
+   "outputs": {
+    "valid": true,
+    "sign_bit": 0,
+    "ed25519_public_key": "86568581fc2f602f1cb1a386b40a49e802fd56796671835fdd56a3a66195b10d",
+    "ed25519_signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e407",
+    "ed25519_standard_verify": true
+   }
+  },
+  {
+   "inputs": {
+    "label": "flip-sign-bit",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e487"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "flip-R-bit",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "",
+    "signature": "73bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e407"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "flip-s-low-bit",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb377cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e407"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "set-s-bit-253",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e427"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "truncated-63",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e4"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "wrong-message",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b0b",
+    "message": "00",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e407"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "public-key-u-bit-255-set",
+    "public_key": "05e9f5c9f5df1ecf5425d284e0a7c399453e17f9546c8a05846c6d00ee73273b8b",
+    "message": "",
+    "signature": "72bb784c39ce11b50d586783f4f02d0af189ff0f82ffdebc01cc992038a3ceb376cbf762e66ba976a077354650c23adbc4ffcb5d7ae4221b8b572cad0715e407"
+   },
+   "outputs": {
+    "valid": true
+   }
+  },
+  {
+   "inputs": {
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f8a"
+   },
+   "outputs": {
+    "valid": true,
+    "sign_bit": 1,
+    "ed25519_public_key": "857a7ef087bf09024c91ebf5ad8bdf0ef781d3279401c1a3501e322910992e8a",
+    "ed25519_signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f0a",
+    "ed25519_standard_verify": true
+   }
+  },
+  {
+   "inputs": {
+    "label": "flip-sign-bit",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f0a"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "flip-R-bit",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f9b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f8a"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "flip-s-low-bit",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e5964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f8a"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "set-s-bit-253",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563faa"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "truncated-63",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "wrong-message",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca77a",
+    "message": "746865207369676e616c20636c65616e20726f6f6d00",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f8a"
+   },
+   "outputs": {
+    "valid": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "public-key-u-bit-255-set",
+    "public_key": "055465f505ff395f4e29e6bf0ed33ec055bf5d274a16c997bc89f2109779cca7fa",
+    "message": "746865207369676e616c20636c65616e20726f6f6d",
+    "signature": "f8b7e40f5826fab4e322eede0955448175ad8b4d93108b67d1abd2691a1dedd7e4964d06bf53b24890c295fb7bf86189b598a6171effa5fd6036b208cb563f8a"
+   },
+   "outputs": {
+    "valid": true
+   }
+  },
+  {
+   "inputs": {
+    "public_key": "05ec6f5e066f4ad23b074491cf9745de106fa1520e6d4c08b098f2cb8d6dcb224b",
+    "message": "05c4ce3cb23e6662d0db3a7c7252dd1ce2b54bf82bcbf1f6bb9dc68310254a3f30",
+    "signature": "7916a92420a419bf6888bc433efa71a79d993442b8093fb4d1c0cdf6d730709b516d2a0d4d52e063fb1340a5c0f7a92813d5577a62446a6b5cbac7e7cb17ff85"
+   },
+   "outputs": {
+    "valid": true,
+    "sign_bit": 1,
+    "ed25519_public_key": "fc6e2b5ee0bff0f1b08cd57fd0c7c57c123707e1e060fa6c6b680ca631af1fc7",
+    "ed25519_signature": "7916a92420a419bf6888bc433efa71a79d993442b8093fb4d1c0cdf6d730709b516d2a0d4d52e063fb1340a5c0f7a92813d5577a62446a6b5cbac7e7cb17ff05",
+    "ed25519_standard_verify": true
+   }
+  },
+  {
+   "inputs": {
+    "public_key": "05733fd24175ff7fed64f42e27da01e6298e1dce9d6352526e10d1cc66edef6060",
+    "message": "81272eedec36d7d4ab9b6dcc8f3b84cca9f2383d545213ca0a6326983af7bb0c869f17dd06c95c89322122997144a32da80af27e8f976e97d2c5cf55e3ae8b37",
+    "signature": "ec8866b55e78eb818dedb680fb90005c91b404fa8c7d18c5da088a894c0f5ba2b85265ad1dae482e719d2835efee77f95fd73275f78ae8477f3f7540663c218a"
+   },
+   "outputs": {
+    "valid": true,
+    "sign_bit": 1,
+    "ed25519_public_key": "89b1c7a753e8ff74d9537d71d59f08bb70ac4903f30f3d10562e946d70a3c2ff",
+    "ed25519_signature": "ec8866b55e78eb818dedb680fb90005c91b404fa8c7d18c5da088a894c0f5ba2b85265ad1dae482e719d2835efee77f95fd73275f78ae8477f3f7540663c210a",
+    "ed25519_standard_verify": true
+   }
+  },
+  {
+   "inputs": {
+    "public_key": "053a9e9d8623e40becf45196441f5df3d4e529f9f9669e494e78d562dc25d28131",
+    "message": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "signature": "02e3baf397ae037f61f0f0c9371fb73f2450ade6bc5c2fb32bb317d772a5e93ea9ab0e170de66b7f158c2ee0e8286c69547dd104febf80dec78fc517e4775f80"
+   },
+   "outputs": {
+    "valid": true,
+    "sign_bit": 1,
+    "ed25519_public_key": "9696de681cb29bf129d472dba6bdcf26fe972a480b0f760daca47ac339ea1b8f",
+    "ed25519_signature": "02e3baf397ae037f61f0f0c9371fb73f2450ade6bc5c2fb32bb317d772a5e93ea9ab0e170de66b7f158c2ee0e8286c69547dd104febf80dec78fc517e4775f00",
+    "ed25519_standard_verify": true
+   }
+  },
+  {
+   "inputs": {
+    "label": "s-plus-group-order",
+    "public_key": "05fd076dc27db2a4a46ae5cbcb9f67c99e851d3d06dbecbe149300ed9111874809",
+    "message": "7320706c757320712031",
+    "signature": "a395bd6c8e540ee03662b6417c8ad0d4dd5ffa8300e025373a1b0c70e422a5d73f2a266a1ee709b01ca51930a5c82c6ae99727bcbed49f199fa21fc551eec59b"
+   },
+   "outputs": {
+    "valid": true,
+    "original_signature": "a395bd6c8e540ee03662b6417c8ad0d4dd5ffa8300e025373a1b0c70e422a5d75256300d0484f7574608228dc6ce4d55e99727bcbed49f199fa21fc551eec58b",
+    "original_valid": true,
+    "strict_rfc8032_verify_of_same_scalar_encoding": false
+   }
+  },
+  {
+   "inputs": {
+    "label": "s-plus-group-order",
+    "public_key": "05a77e3600d9fe2d2ade31dace66153331961359dee04026b749a5ceaaa33ea354",
+    "message": "7320706c757320712032",
+    "signature": "a4772dc4fa3782e38f02812c1504c6105699ff5778de3c468712503b8ada52499a01a681be8aa8e6e7396fdc0efbe3006cb50d7f1ea1eb7c50019b2be6f32811"
+   },
+   "outputs": {
+    "valid": true,
+    "original_signature": "a4772dc4fa3782e38f02812c1504c6105699ff5778de3c468712503b8ada5249ad2db024a427968e119d7739300105ec6bb50d7f1ea1eb7c50019b2be6f32801",
+    "original_valid": true,
+    "strict_rfc8032_verify_of_same_scalar_encoding": false
+   }
+  }
+ ]
+}

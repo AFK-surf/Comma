@@ -1,0 +1,43 @@
+{
+  "section": "CRS-06",
+  "name": "combined-access-key",
+  "description": "Derived from the stated rules; not oracle evidence. Legacy multi-recipient Unidentified-Access-Key value: byte-wise XOR of the 16-byte access keys of every recipient that does not have unrestricted access (16 zero bytes when there is none). The input access keys are oracle outputs; the XOR and base64 are computed from the CRS-06 rule.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "two recipients",
+      "inputs": {
+        "access_keys": [
+          "e50ce49398c41799a69acc8199033463",
+          "6929096a49bab098c199cda1f2b9617a"
+        ]
+      },
+      "outputs": {
+        "combined": "8c25edf9d17ea701670301206bba5519",
+        "header_value": "jCXt+dF+pwFnAwEga7pVGQ=="
+      }
+    },
+    {
+      "label": "one recipient",
+      "inputs": {
+        "access_keys": [
+          "e50ce49398c41799a69acc8199033463"
+        ]
+      },
+      "outputs": {
+        "combined": "e50ce49398c41799a69acc8199033463",
+        "header_value": "5Qzkk5jEF5mmmsyBmQM0Yw=="
+      }
+    },
+    {
+      "label": "no restricted recipients",
+      "inputs": {
+        "access_keys": []
+      },
+      "outputs": {
+        "combined": "00000000000000000000000000000000",
+        "header_value": "AAAAAAAAAAAAAAAAAAAAAA=="
+      }
+    }
+  ]
+}

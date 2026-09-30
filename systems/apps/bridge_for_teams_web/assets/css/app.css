@@ -1,0 +1,377 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Motion tokens (transitions.dev scale, tuned to the Linear DNA:
+   micro 80-120ms hover, 150-200ms panels, 250ms max; ease-out entrances,
+   faster ease-in exits). Referenced by the component transitions below. */
+:root {
+  --duration-stagger: 40ms;
+  --duration-micro: 80ms;
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-slow: 400ms;
+  --duration-very-slow: 500ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: ease-out;
+  --ease-in-out: ease-in-out;
+  --blur-small: 2px;
+  --blur-medium: 3px;
+  --distance-medium: 12px;
+  --dropdown-open-dur: 180ms;
+  --dropdown-close-dur: 120ms;
+  --dropdown-pre-scale: 0.97;
+  --panel-open-dur: 220ms;
+  --panel-close-dur: 150ms;
+  --panel-blur: 2px;
+  --modal-open-dur: 250ms;
+  --modal-close-dur: 150ms;
+  --modal-scale: 0.96;
+  /* The chat sheet stack moves Linear-fast: most of the travel lands in the
+     first frames (smooth-out is expo-flavored), done well under 200ms. */
+  --sheet-open-dur: 180ms;
+}
+
+/* Inter via system fallback; in dev/prod a self-hosted Inter could be added.
+   We keep dependency-light and rely on the Tailwind sans stack. */
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-neutral-100 text-neutral-900 text-sm;
+    font-feature-settings: "cv11", "ss01", "calt";
+    font-synthesis: none;
+    letter-spacing: -0.1px;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold tracking-tight text-neutral-900;
+    text-wrap: balance;
+  }
+}
+
+/* LiveView connection/loading affordances. */
+.phx-no-feedback.invalid-feedback,
+.phx-no-feedback .invalid-feedback {
+  display: none;
+}
+
+.phx-click-loading {
+  opacity: 0.7;
+  transition: opacity 0.2s ease-out;
+}
+
+.phx-loading {
+  cursor: wait;
+}
+
+/* Triage: while a tab or filter patch is in flight, the current content dims
+   at once, so the old tab does not look like the answer to the new click. */
+#triage-workbench:has(a[data-phx-link="patch"].phx-click-loading)
+  [data-role="workbench-content"] {
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity 0.15s ease-out;
+}
+
+/* topbar.js progress bar accent. */
+#nprogress .bar {
+  @apply bg-brand-500;
+}
+
+/* Onboarding guided tour: the spotlight dims everything around the target and
+   pulses; positions are set by the OnboardingTour JS hook. */
+.onboarding-spotlight {
+  box-shadow: 0 0 0 9999px rgba(24, 24, 27, 0.35);
+  transition:
+    left 0.25s ease,
+    top 0.25s ease,
+    width 0.25s ease,
+    height 0.25s ease;
+}
+
+.onboarding-pulse {
+  animation: onboarding-pulse 1.8s ease-out infinite;
+}
+
+@keyframes onboarding-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(32, 91, 255, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(32, 91, 255, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(32, 91, 255, 0);
+  }
+}
+
+[data-tour-candidate] {
+  transition:
+    left 0.25s ease,
+    top 0.25s ease;
+}
+
+@layer components {
+  /* The raised center work surface — sits above the gray chrome layer that
+     the sidebar and chat panel live on. Hairline ring + micro layered shadow
+     instead of stacked borders. */
+  .panel-raised {
+    @apply rounded-xl bg-neutral-50 shadow-raised;
+  }
+
+  /* Scrollable region without a visible scrollbar (New Home's split
+     columns — scrolling still works via wheel/trackpad/keys). */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* transitions.dev: menu dropdown — origin-aware scale+fade from trigger. */
+  .t-dropdown-enter {
+    animation: t-dropdown-in var(--dropdown-open-dur) var(--ease-smooth-out)
+      both;
+  }
+
+  @keyframes t-dropdown-in {
+    from {
+      opacity: 0;
+      transform: scale(var(--dropdown-pre-scale)) translateY(-2px);
+    }
+  }
+
+  /* transitions.dev: panel reveal — the side drawer slides in with a short
+     travel + cross-blur; exit is a faster fade (driven via phx-remove). */
+  .t-drawer-panel {
+    animation: t-drawer-in var(--panel-open-dur) var(--ease-smooth-out) both;
+  }
+
+  @keyframes t-drawer-in {
+    from {
+      opacity: 0;
+      transform: translateX(24px);
+      filter: blur(var(--panel-blur));
+    }
+  }
+
+  .t-drawer-overlay {
+    animation: t-fade-in var(--duration-quick) var(--ease-out) both;
+  }
+
+  @keyframes t-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  /* transitions.dev: skeleton pulse for the chat loading state. */
+  .t-skeleton {
+    animation: t-pulse 1000ms linear infinite alternate;
+  }
+
+  @keyframes t-pulse {
+    to {
+      opacity: 0.45;
+    }
+  }
+
+  /* Widget cards settle into place after a drag reorder. */
+  .t-settle {
+    transition: transform var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  /* transitions.dev: success check — a just-completed check draws itself.
+     26 = the vendored check path's length (getTotalLength + 1). */
+  .t-check-draw path {
+    stroke-dasharray: 26;
+    stroke-dashoffset: 26;
+    animation: t-check-draw var(--duration-fast) var(--ease-out) forwards;
+  }
+
+  @keyframes t-check-draw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* iOS-style sheet stack, scoped to the work panel: the chat card slides up
+     while the board card recedes upward (top-anchored scale), its top edge
+     peeking above the sheet. Compositor props only; exit runs faster ease-in
+     via phx-remove on the LiveView side. */
+  .t-sheet {
+    animation: t-sheet-in var(--sheet-open-dur) var(--ease-smooth-out) both;
+  }
+
+  @keyframes t-sheet-in {
+    from {
+      opacity: 0;
+      transform: translateY(24px) scale(0.98);
+    }
+  }
+
+  /* Toast entrance: a quiet rise from the corner, Linear-style. Exit runs
+     through phx-remove (ease-in 150ms) on the LiveView side. */
+  .t-toast {
+    animation: t-toast-in var(--duration-fast) var(--ease-smooth-out) both;
+  }
+
+  @keyframes t-toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+
+  .t-stack-base {
+    transform-origin: top center;
+    transition: transform var(--sheet-open-dur) var(--ease-smooth-out);
+  }
+
+  .t-stack-base.is-stacked {
+    transform: scale(0.98);
+  }
+
+  /* transitions.dev: tabs sliding (CSS-only 2-option variant) — the white
+     pill slides under the active segment; the server sets data-view. */
+  .t-seg {
+    position: relative;
+  }
+
+  .t-seg::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: calc(50% - 2px);
+    border-radius: 4px;
+    background: white;
+    box-shadow:
+      0px 1px 1px rgba(23, 24, 26, 0.04),
+      0px 3px 6px -2px rgba(23, 24, 26, 0.02);
+    transition: transform var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  .t-seg[data-view="markdown"]::before {
+    transform: translateX(100%);
+  }
+
+  /* /-skill mention composer: the contenteditable editor and its inline
+     skill chips. The menu/popover layers are built by the SkillComposer hook
+     (fixed-position on body — the composer lives inside clipped scroll
+     columns) and reuse t-dropdown-enter for their entrance. */
+  .skill-editor {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .skill-editor:empty::before {
+    content: attr(data-placeholder);
+    @apply pointer-events-none text-neutral-400;
+  }
+
+  .skill-editor--single {
+    white-space: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .skill-editor--single::-webkit-scrollbar {
+    display: none;
+  }
+
+  .skill-chip {
+    @apply mx-px inline-flex items-center gap-0.5 whitespace-nowrap rounded-md bg-brand-50 px-1 font-medium text-brand-600;
+  }
+
+  .skill-chip-remove {
+    @apply -mr-0.5 grid h-3.5 w-3.5 flex-none cursor-pointer place-items-center rounded leading-none text-brand-400 opacity-0 hover:bg-brand-100 hover:text-brand-600;
+    transition: opacity var(--duration-micro) var(--ease-out);
+  }
+
+  .skill-chip:hover .skill-chip-remove {
+    opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .t-dropdown-enter,
+    .t-drawer-panel,
+    .t-drawer-overlay,
+    .t-skeleton,
+    .t-sheet,
+    .t-toast {
+      animation: none !important;
+    }
+
+    .t-stack-base {
+      transition: none !important;
+    }
+
+    /* The check must still be visible — undo the draw setup, not just the
+       animation. */
+    .t-check-draw path {
+      animation: none !important;
+      stroke-dasharray: none;
+      stroke-dashoffset: 0;
+    }
+
+    .t-settle,
+    .t-seg::before {
+      transition: none !important;
+    }
+  }
+
+  .conversation-markdown {
+    @apply space-y-2 break-words leading-6;
+  }
+
+  .conversation-markdown :where(p) {
+    @apply m-0 whitespace-pre-wrap;
+  }
+
+  .conversation-markdown :where(strong) {
+    @apply font-semibold text-neutral-900;
+  }
+
+  .conversation-markdown :where(em) {
+    @apply italic;
+  }
+
+  .conversation-markdown :where(a) {
+    @apply text-brand-600 underline underline-offset-2 hover:text-brand-700;
+  }
+
+  .conversation-markdown :where(ul) {
+    @apply my-2 list-disc space-y-1 pl-5;
+  }
+
+  .conversation-markdown :where(ol) {
+    @apply my-2 list-decimal space-y-1 pl-5;
+  }
+
+  .conversation-markdown :where(blockquote) {
+    @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600;
+  }
+
+  .conversation-markdown :where(code) {
+    @apply rounded bg-neutral-100 px-1 py-0.5 font-mono text-[0.8125rem] text-neutral-900;
+  }
+
+  .conversation-markdown :where(pre) {
+    @apply my-2 overflow-x-auto rounded-md bg-neutral-950 p-3 text-neutral-100;
+  }
+
+  .conversation-markdown :where(pre code) {
+    @apply bg-transparent p-0 text-inherit;
+  }
+}

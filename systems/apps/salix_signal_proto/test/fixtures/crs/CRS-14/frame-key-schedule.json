@@ -1,0 +1,107 @@
+{
+  "section": "CRS-14",
+  "name": "frame-key-schedule",
+  "description": "Group-call media key schedule. For each ratchet step n: aes_key = HKDF-SHA256(salt absent i.e. 32 zero bytes, ikm = secret_n, info \"RingRTC AES Key\", 32 bytes); hmac_key = same with info \"RingRTC HMAC Key\"; secret_(n+1) = same with info \"RingRTC Ratchet\". The ratchet counter is an 8-bit value that wraps. All HKDF calls computed by the oracle.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "initial_secret": "c1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939a"
+      },
+      "outputs": {
+        "steps": [
+          {
+            "ratchet_counter": 0,
+            "secret": "c1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939a",
+            "aes_key": "e33622286b05ca857e0293f387f789ba7eb6169affe7dbd3f4ef125c920a0064",
+            "hmac_key": "ef285dd62c0237adf0d26dd0e4b87d3b04cf217dbb651ad3f9862d394022b52e"
+          },
+          {
+            "ratchet_counter": 1,
+            "secret": "e6c01a9d4e7e41ca861a7bcd03949d0b077aea73e2594875641af60dabb6b41e",
+            "aes_key": "7ccb3dbbe37f51a461029d87e5f55c12d444e2766e8f0e2de0628e85f42b74d3",
+            "hmac_key": "ec298db86f86d9f7212ef2a22fe9bd43a424a2b73ef91b96cc479bb8b2ab5535"
+          },
+          {
+            "ratchet_counter": 2,
+            "secret": "c671d822190288becf47375dfc7c741fa8aac94cc23d68584f051087b9832530",
+            "aes_key": "48a94bf8fe067b554e4f0c5cd3b7a95896c4e0951a16479627f20917d1afc30d",
+            "hmac_key": "d384513b7f203aa1cc52f73d2a62fc9e6048256ca9af7231e4396a079705c141"
+          },
+          {
+            "ratchet_counter": 3,
+            "secret": "ad86817b147b222f3bb04fda2c756fde97fd8c521aca96f72a01306fe3f865e0",
+            "aes_key": "9c144332133c47d3f30b9bf47f7206bcb9a2f4e1de78f8d3287a00bb462ceadc",
+            "hmac_key": "eb8d1121774b6cb04d2098776d1632c64a3adb8469947b5542c29ee0879f7f83"
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "initial_secret": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "steps": [
+          {
+            "ratchet_counter": 0,
+            "secret": "0000000000000000000000000000000000000000000000000000000000000000",
+            "aes_key": "40e367247626ce78a09a22b46eabcba91b0f2ef1f94d6823121773a61ba3f37e",
+            "hmac_key": "68e690fb89c5a390e61cba46dab5f1d55f3667321f0ac4b17e34a03961a9f64d"
+          },
+          {
+            "ratchet_counter": 1,
+            "secret": "09a9497ef71a2ce1aeee33298b097c4e70cd7b2eedda86f916f7e85058ffd4cc",
+            "aes_key": "f93e0aa653a72325016c4f550384795519b8feeae46ea25a55ab692d9f79cc1f",
+            "hmac_key": "e1d030d3de2fd9577995591f6044e25dd958ffcf72bae6f83147c1c3f6a93a32"
+          },
+          {
+            "ratchet_counter": 2,
+            "secret": "b66626aed865b4a47c1173370739c7982080113746c120e762d0a90390c4e641",
+            "aes_key": "91fc594fd50a1396146fd273c0c1fe951d964dfaf1fe63b650644814928dbbd5",
+            "hmac_key": "706c01b674958ab72b6bc2543b86ea82effe7f18184e4336d818f28881e3c20a"
+          },
+          {
+            "ratchet_counter": 3,
+            "secret": "cf06182857fcaea4931083820a357bc0707875af88cfdcb612ec670e2f20fbb0",
+            "aes_key": "0afd09b69c9cd96fa2e5c389004e5bce4c06fcf525c3c2f6f43e98db4610bda9",
+            "hmac_key": "e9b7cbe78d4f0c58c9b9d735179b08a0a178df9be762c1afb7594aae558b911a"
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "initial_secret": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "outputs": {
+        "steps": [
+          {
+            "ratchet_counter": 0,
+            "secret": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "aes_key": "f11faf245cf9dbb86a49b7c5b81d0eafc112c0d36d2276b5daa8e94f2588ca9f",
+            "hmac_key": "5c8badf6434ae3c493a1297fc161421c87ee7cec2eeeda2be748ebc68f94a01f"
+          },
+          {
+            "ratchet_counter": 1,
+            "secret": "d0e4edf342071781eaeacb9fd12592fe0beab2e14153bb67851866add42d4ab1",
+            "aes_key": "73350d50c18ae9757b840078c7f2d32f59821e912fcb16551be5ccf692bd84d7",
+            "hmac_key": "5a298f2186b37224b26046cc3eea4fc7f758220b0bc86f132223232e2f81ce2d"
+          },
+          {
+            "ratchet_counter": 2,
+            "secret": "c6bf1ba72e997166e682ccb80d818624d64e2b6c132f0a3a97e813cdf925d8d3",
+            "aes_key": "a58d5109578285625ebc699dace8b916b2f0a818b64859418e1847c332958ee5",
+            "hmac_key": "563a26912a2b418e8429a9dabd9d58d6c6c16b79abe605e14c35eb784c49dd98"
+          },
+          {
+            "ratchet_counter": 3,
+            "secret": "6f67f172fb66dead54bad7621951fd0831b7c54fee13e5eb74a829aaa26934f4",
+            "aes_key": "045c7c25135e8105e4667001e85cddaa84aa5242e4ef24a9d6b9455624a867e1",
+            "hmac_key": "5ed46abdf4212d1c2304f9a2011b56eb2db11da0b9dadd2af783955a3ecb3cb9"
+          }
+        ]
+      }
+    }
+  ]
+}

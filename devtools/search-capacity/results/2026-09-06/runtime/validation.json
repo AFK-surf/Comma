@@ -1,0 +1,16 @@
+{
+  "new_and_queue_ch264": "Result: 56 passed, 1 skipped",
+  "new_and_queue_ch268": "Result: 56 passed, 1 skipped",
+  "new_final_sql_ch268": "Result: 13 passed",
+  "ordinary_reads": "Result: 46 passed",
+  "im": "Result: 78 passed",
+  "store": "Result: 29 passed",
+  "tool_policy": "Result: 73 passed",
+  "release": "Result: 62 passed",
+  "policy": "Test policy passed.",
+  "models": {
+    "configurations": 54,
+    "expected_outcomes": 54
+  },
+  "notes": "Distinct tested cases total 344; repeat runs on both ClickHouse versions are not added twice. One opt-in live GPU experiment is skipped. Phase A compile/legacy validation is described separately in report.md."
+}

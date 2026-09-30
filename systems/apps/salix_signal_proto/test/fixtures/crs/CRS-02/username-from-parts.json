@@ -1,0 +1,113 @@
+{
+  "section": "CRS-02",
+  "name": "username-from-parts",
+  "description": "Username assembly from nickname and discriminator with nickname length limits (3..32 is the limit used by first-party clients). Output username is nickname + \".\" + discriminator; errors are neutral summaries of the rule the oracle rejected.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "nickname": "vectorbot",
+        "discriminator": "42",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "username": "vectorbot.42",
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "VectorBot",
+        "discriminator": "42",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "username": "VectorBot.42",
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "ab",
+        "discriminator": "42",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "error": "rejected: nickname too short"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "abc",
+        "discriminator": "42",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "username": "abc.42",
+        "hash": "0c977d87a902bd9d90d8a8fc762e23328ec7615efa87a7b47978a9ec602e3515"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "discriminator": "99",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.99",
+        "hash": "ee9a42dee6ca20f9f04276658c4e276d5eea12b3fa65acb26388d708e7bc8b13"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "discriminator": "99",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "error": "rejected: nickname too long"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "vectorbot",
+        "discriminator": "05",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "username": "vectorbot.05",
+        "hash": "2a03027ce8a0744a17679339a5351284de63f3762da985f5694959482b77116c"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "vectorbot",
+        "discriminator": "5",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "error": "rejected: discriminator has a single digit"
+      }
+    },
+    {
+      "inputs": {
+        "nickname": "vectorbot",
+        "discriminator": "123",
+        "min_nickname_length": 3,
+        "max_nickname_length": 32
+      },
+      "outputs": {
+        "username": "vectorbot.123",
+        "hash": "2aa820784e670ac8c88ed96f44610ff458db79412e6d1a7498731e364de1af65"
+      }
+    }
+  ]
+}

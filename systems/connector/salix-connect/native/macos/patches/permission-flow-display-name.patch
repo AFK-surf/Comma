@@ -1,0 +1,29 @@
+--- a/Sources/PermissionFlow/UI/AppDropArea.swift
++++ b/Sources/PermissionFlow/UI/AppDropArea.swift
+@@ -162,6 +162,17 @@
+ private struct AppDragCardContent: View {
+     let url: URL
+ 
++    private var appDisplayName: String {
++        let bundle = Bundle(url: url)
++        for key in ["CFBundleDisplayName", "CFBundleName"] {
++            if let name = bundle?.object(forInfoDictionaryKey: key) as? String,
++               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
++                return name
++            }
++        }
++        return url.deletingPathExtension().lastPathComponent
++    }
++
+     var body: some View {
+         HStack(spacing: 8) {
+             Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+@@ -170,7 +181,7 @@
+                 .cornerRadius(10)
+ 
+             VStack(alignment: .leading, spacing: 4) {
+-                Text(url.deletingPathExtension().lastPathComponent)
++                Text(appDisplayName)
+                     .font(.system(size: 16, weight: .regular))
+                     .foregroundStyle(.primary)
+             }

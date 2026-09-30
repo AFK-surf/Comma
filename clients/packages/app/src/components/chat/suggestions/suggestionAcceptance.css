@@ -1,0 +1,87 @@
+/* Tab acceptance is a single confirmation, not a looping loading indicator.
+   suggestionAcceptanceMotion.ts lays a decorative copy of each glyph over the
+   editor, hides the editable text meanwhile, and removes the copy when the
+   wave ends. The script owns the wave's shape and timing: it animates each
+   glyph's weight, size, color, and shift with the Web Animations API. */
+.comma-suggestion-acceptance {
+  overflow: clip;
+  /* Room for the enlarged glyphs and the text they push. */
+  overflow-clip-margin: 1em;
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+}
+
+/* Safari does not clip at the margin yet. There the copy is not clipped, so a
+   glyph pushed past the editor's right edge stays whole. */
+@supports not (overflow-clip-margin: 1px) {
+  .comma-suggestion-acceptance {
+    overflow: visible;
+  }
+}
+
+.comma-suggestion-acceptance-glyph {
+  position: absolute;
+  /* Grow from the baseline, as the line would. */
+  transform-origin: 50% 80%;
+}
+
+[data-suggestion-accepting="true"] {
+  -webkit-text-fill-color: transparent;
+  caret-color: currentColor;
+}
+
+/* Multi-line and longer text: one paint surface on the editor follows its own
+   wrapping and expansion. It cannot change the weight or size of each glyph,
+   so it draws only a blue band, sized in em like the glyph wave, that crosses the
+   text from left to right at the same pace.
+
+   The band image is twice the editor plus 20em, so it always covers the
+   editor. The band reaches 4em to each side of its center. The center moves
+   from 4em before the text to 4em after its end (--comma-suggestion-text-end,
+   from the editor's left edge), so the first and last frames are plain text.
+   The script starts the band on the glyph wave's schedule. */
+[data-suggestion-shimmer="true"] {
+  background-image: linear-gradient(
+    90deg,
+    currentColor calc(50% - 4em),
+    var(--color-utility-brand-400) 50%,
+    currentColor calc(50% + 4em)
+  );
+  background-origin: border-box;
+  background-size: calc(200% + 20em) 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  caret-color: currentColor;
+  /* The glyph wave's schedule: done 750ms after acceptance. */
+  animation: comma-suggestion-shimmer 725ms linear both;
+}
+
+/* A percentage here is the editor width minus the image width, -(100% + 20em)
+   of the editor, so 100% puts the band center 10em before the editor. */
+@keyframes comma-suggestion-shimmer {
+  from {
+    background-position: calc(100% + 6em) 0;
+  }
+  to {
+    background-position: calc(
+        100% + 14em + var(--comma-suggestion-text-end, -100% - 20em)
+      )
+      0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-suggestion-acceptance {
+    display: none;
+  }
+  [data-suggestion-shimmer="true"],
+  [data-suggestion-accepting="true"] {
+    animation: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}

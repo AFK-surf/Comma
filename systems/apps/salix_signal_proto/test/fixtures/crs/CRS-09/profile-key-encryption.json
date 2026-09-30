@@ -1,0 +1,147 @@
+{
+  "section": "CRS-09",
+  "name": "profile-key-encryption",
+  "description": "Deterministic encryption of a 32-byte profile key bound to an ACI under a group's profile-key key pair (65-byte ciphertext), and decryption back to all 32 bytes (including the bits that the curve encoding masks).",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "label": "all-zero",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "006845216810b2e18644151450f331533eaa2184624ff85fe1ae16de20340529461c3f28a033312a1941ba98ee3e7fa788e7b647d66f5cd071e711714c8844d327",
+        "decrypt_result": "error"
+      }
+    },
+    {
+      "label": "all-zero",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "00a091c724c531096a89908cf247fa924f1aac365c0b480be347d4639df54e9450c0cd2296434133722fc4bd6f72af1fc620f61ae90a873fae22c29d6541c17711",
+        "decrypt_result": "error"
+      }
+    },
+    {
+      "label": "all-ff",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "00d01e04f6352a9c0e2617b5962cdc53fb7e6642df679b4ca9370705990c3ea308ce1588363de6d4c782e764c30c68d09393aef6ae12bba83914fcf53083f31a05",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "label": "all-ff",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "0024aea615941a3239c96b92f2581c3523fdf2eba522034b10c9860a77731d297edc7987db074a736c14635b0ed799e6f03f096d7b49e2b9a4da12bceecf39360e",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "label": "low-bit-and-top-bits-set",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "fbf01f7c3ca1e066e37ebe716db38127d45ac8cacafaccbf5abf9de63bdfe0c2",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "004660cdbd07bca03daa41af5800e335505c27f05fac7c7162229a6f5bc534fe1890fa829889c54467a65d70d3533e31d281bc6f75bd2e24f3410cfd91f56a4f5a",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "fbf01f7c3ca1e066e37ebe716db38127d45ac8cacafaccbf5abf9de63bdfe0c2"
+      }
+    },
+    {
+      "label": "low-bit-and-top-bits-set",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "fbf01f7c3ca1e066e37ebe716db38127d45ac8cacafaccbf5abf9de63bdfe0c2",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "00fc8bbcf28a127e310590fd2779c0dfb21f79d95544a143e0cf8045f89b40645424a72c388286c1a0da385a7f98b26e6346a17be9ad89d886f13e2d36a54eb67e",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "fbf01f7c3ca1e066e37ebe716db38127d45ac8cacafaccbf5abf9de63bdfe0c2"
+      }
+    },
+    {
+      "label": "seeded",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "d278fa0e67f3dc444b51e0b2c7a3e2bbd712af2782cbd31f702e352e80474f8d",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "0026253a639f7c07f94b11625177c2e9f61c488913db64265cd27fa586ce8f686ebcc20edb9787c52abb4d4c012ab382a317ef1c20dc27ae9d636fbfe0f1fa8013",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "d278fa0e67f3dc444b51e0b2c7a3e2bbd712af2782cbd31f702e352e80474f8d"
+      }
+    },
+    {
+      "label": "seeded",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "d278fa0e67f3dc444b51e0b2c7a3e2bbd712af2782cbd31f702e352e80474f8d",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "00dcade1ae7f305b8ded6ee2ba61fab66e09d7955857f9b0705d4ac49e996b1d180e694940cbcd2b358461624cdb61630a21bc8c53f77938c1a4a5ea04235f6f43",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "d278fa0e67f3dc444b51e0b2c7a3e2bbd712af2782cbd31f702e352e80474f8d"
+      }
+    },
+    {
+      "label": "sequence",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "00c2c27d539f5453c4aaa2ee5fe8ef3de61bf51696a1871561be7cabe8868d364826d6fe7ed378437e9cc77e83870ef4cf664113dddad4a42eaf9bef6ea1f4f83f",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      }
+    },
+    {
+      "label": "sequence",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "profile_key_ciphertext": "005027b453bc87c8f79723cd95033afe7b952785d12c2cd44b2a260f4813012260706b82c203c893fe13619d742523dd535dbf094be504bd6e46f8d2dd33ca8e38",
+        "decrypt_result": "ok",
+        "decrypted_profile_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      }
+    },
+    {
+      "label": "decrypt-with-wrong-aci",
+      "inputs": {
+        "master_key": "12231f71224895df7f680e28538b7d732cbc382ad1616f191cfef2a17f6d6aad",
+        "profile_key_ciphertext": "0026253a639f7c07f94b11625177c2e9f61c488913db64265cd27fa586ce8f686ebcc20edb9787c52abb4d4c012ab382a317ef1c20dc27ae9d636fbfe0f1fa8013",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "result": "error"
+      }
+    }
+  ]
+}

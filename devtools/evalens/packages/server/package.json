@@ -1,0 +1,27 @@
+{
+  "name": "@evalens/server",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy --config wrangler.jsonc",
+    "dev": "wrangler dev --config wrangler.jsonc",
+    "local": "bun run src/local/server.ts",
+    "types": "wrangler types src/cloudflare/env.d.ts --config wrangler.jsonc --include-runtime false --strict-vars false"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "^5.20260711.1",
+    "@evalens/core": "workspace:*",
+    "@evalens/store": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "elysia": "^1.4.29",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "vite": "^8.0.16",
+    "wrangler": "^4.110.0"
+  }
+}

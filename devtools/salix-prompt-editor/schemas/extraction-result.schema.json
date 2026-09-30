@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "success",
+    "documents",
+    "lines",
+    "classifiedLines",
+    "warnings"
+  ],
+  "properties": {
+    "success": { "type": "boolean" },
+    "documents": { "type": "integer", "minimum": 0 },
+    "lines": { "type": "integer", "minimum": 0 },
+    "classifiedLines": { "type": "integer", "minimum": 0 },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

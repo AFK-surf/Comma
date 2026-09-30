@@ -1,0 +1,1167 @@
+{
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "schemaVersion": 42,
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "gcm_datasource",
+        "skipUrlSync": false,
+        "multi": false,
+        "allowCustomValue": true,
+        "includeAll": false,
+        "auto": false,
+        "auto_min": "10s",
+        "auto_count": 30,
+        "label": "Cloud Monitoring datasource",
+        "query": "stackdriver",
+        "hide": 2
+      },
+      {
+        "type": "query",
+        "name": "gcp_project",
+        "skipUrlSync": false,
+        "multi": false,
+        "allowCustomValue": true,
+        "includeAll": false,
+        "auto": false,
+        "auto_min": "10s",
+        "auto_count": 30,
+        "label": "Cloud Monitoring project",
+        "datasource": {
+          "type": "stackdriver",
+          "uid": "${gcm_datasource}"
+        },
+        "query": {
+          "selectedQueryType": "projects",
+          "projectName": ""
+        },
+        "refresh": 1,
+        "hide": 2
+      }
+    ]
+  },
+  "annotations": {},
+  "title": "Comma Platform Overview",
+  "uid": "comma-staging-platform-overview",
+  "description": "Staging platform health and shared runtime signals, published by read-only Git Sync. No data on required health panels is abnormal.",
+  "tags": [
+    "comma",
+    "generated",
+    "staging",
+    "platform"
+  ],
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 101,
+      "title": "Application scrape health",
+      "description": "Required health. Missing series is a collection failure and is never synthesized as zero.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "min by (workload) (up{namespace=\"comma\",job=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 102,
+      "title": "Workload ready / desired",
+      "description": "Required Kubernetes readiness. Compare ready and desired series; No data is abnormal.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} ready",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "label_replace(kube_statefulset_status_replicas_ready{namespace=\"comma\",statefulset=\"comma\"}, \"workload\", \"$1\", \"statefulset\", \"(.*)\")",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} desired",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "label_replace(kube_statefulset_replicas{namespace=\"comma\",statefulset=\"comma\"}, \"workload\", \"$1\", \"statefulset\", \"(.*)\")",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 103,
+      "title": "Active revision targets",
+      "description": "Rollout context grouped by bounded workload and revision labels.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{revision}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "count by (workload, revision) (up{namespace=\"comma\",job=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "reqps",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 110,
+      "title": "HTTP request rate",
+      "description": "Application request traffic by bounded endpoint and status class.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{endpoint}} {{status_class}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, endpoint, status_class) (rate(comma_system_http_requests_total{namespace=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "reqps",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 111,
+      "title": "HTTP error rate",
+      "description": "Event-driven error series is interpreted with the request-traffic panel; an empty error window is not proof of scrape health.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{endpoint}} {{status_class}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, endpoint, status_class) (rate(comma_system_http_requests_total{namespace=\"comma\",status_class=~\"4xx|5xx\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 112,
+      "title": "HTTP p95 latency",
+      "description": "Histogram latency computed from buckets with rate and histogram_quantile.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 5,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{endpoint}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, workload, endpoint) (rate(comma_system_http_duration_seconds_bucket{namespace=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "bytes",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 120,
+      "title": "BEAM memory",
+      "description": "Maximum BEAM memory by workload.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload) (comma_system_beam_memory_bytes{namespace=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 121,
+      "title": "BEAM run queue",
+      "description": "Scheduler pressure by workload.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 13,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload) (comma_system_beam_run_queue{namespace=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 122,
+      "title": "BEAM processes / ports",
+      "description": "Bounded runtime resource context.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} processes",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload) (comma_system_beam_processes{namespace=\"comma\"})",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} ports",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload) (comma_system_beam_ports{namespace=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 123,
+      "title": "Current exported series",
+      "description": "Required per-target cardinality signal. No data is abnormal.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 13,
+        "w": 6,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{pod}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (workload, pod) (comma_system_telemetry_series_current{namespace=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 130,
+      "title": "DB query traffic",
+      "description": "Database operations by bounded component, repository, and outcome.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{component}} {{repo}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, component, repo, outcome) (rate(comma_system_db_queries_total{namespace=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 131,
+      "title": "DB query p95",
+      "description": "Database latency from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 21,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{component}} {{repo}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, workload, component, repo) (rate(comma_system_db_duration_seconds_bucket{namespace=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 132,
+      "title": "DB pool wait p95",
+      "description": "Pool contention from histogram buckets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 21,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{component}} {{repo}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, workload, component, repo) (rate(comma_system_db_pool_wait_seconds_bucket{namespace=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "cores",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 140,
+      "title": "Container CPU",
+      "description": "GKE cAdvisor CPU usage for Comma application containers.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{pod}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"comma\",container=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "bytes",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 141,
+      "title": "Container working set",
+      "description": "GKE cAdvisor memory working set for Comma application containers.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 29,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{pod}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "max by (pod) (container_memory_working_set_bytes{namespace=\"comma\",container=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 142,
+      "title": "Container restarts",
+      "description": "Cloud Monitoring native restart counter normalized to pod labels and shown with increase to tolerate resets.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 29,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{pod}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (pod) (label_replace(increase({__name__=\"kubernetes.io/container/restart_count\",monitored_resource=\"k8s_container\",namespace_name=\"comma\",container_name=\"comma\"}[15m]), \"pod\", \"$1\", \"pod_name\", \"(.*)\"))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "mode": "markdown",
+        "content": "**Alert ownership moved on 2026-08-12: the Cloud Monitoring policy `comma_alerting:im_ingress_5xx` owns IM ingress alerting (attributed failure-ratio over the `im_ingress` operation metric). The repo manages no Grafana rule for this panel; the legacy `comma-stg-im-5xx` rule stays live only until the pending admin terraform apply removes it.**\n\nThis panel keeps the HTTP-layer view: `/v1/im/*` 5xx ratio above 5% with at least 20 requests in 15 minutes. 4xx is deliberately excluded here.\n\nA point shows the current 15-minute window breaching at the HTTP layer. The alerting contract, outcome classes, and recovery semantics live in docs/observability.md. Compare with scrape health and HTTP traffic before assigning impact."
+      },
+      "id": 150,
+      "title": "Staging P2 alert contract",
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "percentunit",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 151,
+      "title": "IM ingress 5xx breach",
+      "description": "HTTP-layer companion view for Cloud Monitoring policy comma_alerting:im_ingress_5xx (the alert itself evaluates the im_ingress operation metric). A point is the 15-minute 5xx ratio only when it exceeds 5% and the same window contains at least 20 requests. No data is not proof of health; check required scrape health and route traffic.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 37,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} candidate breach",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "(((((sum by (workload) (increase(comma_system_http_requests_total{namespace=\"comma\",workload=\"comma\",route=\"/v1/im/*\",status_class=\"5xx\"}[15m]))) or on(workload) (0 * (sum by (workload) (increase(comma_system_http_requests_total{namespace=\"comma\",workload=\"comma\",route=\"/v1/im/*\"}[15m]))))) / (sum by (workload) (increase(comma_system_http_requests_total{namespace=\"comma\",workload=\"comma\",route=\"/v1/im/*\"}[15m])))) > 0.05) and on(workload) ((sum by (workload) (increase(comma_system_http_requests_total{namespace=\"comma\",workload=\"comma\",route=\"/v1/im/*\"}[15m]))) >= 20)) or on(workload) (0 * (sum by (workload) (increase(comma_system_http_requests_total{namespace=\"comma\",workload=\"comma\",route=\"/v1/im/*\"}[15m]))))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    }
+  ]
+}

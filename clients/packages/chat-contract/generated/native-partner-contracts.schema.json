@@ -1,0 +1,2343 @@
+{
+  "$defs": {
+    "CommaChatMessage": {
+      "properties": {
+        "actorId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "actorRole": {
+          "enum": ["router", "worker"],
+          "type": "string"
+        },
+        "attachments": {
+          "items": {
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "attachmentIndex": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "blobRef": {
+                "additionalProperties": false,
+                "properties": {
+                  "hash": {
+                    "maxLength": 64,
+                    "minLength": 64,
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "blob",
+                    "type": "string"
+                  },
+                  "size": {
+                    "maximum": 536870912,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "uuid": {
+                    "maxLength": 32,
+                    "minLength": 32,
+                    "type": "string"
+                  }
+                },
+                "required": ["hash", "kind", "size", "uuid"],
+                "type": "object"
+              },
+              "blockType": {
+                "enum": ["file", "image"],
+                "type": "string"
+              },
+              "fileName": {
+                "type": "string"
+              },
+              "localFileRef": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "size": {
+                "type": "number"
+              },
+              "title": {
+                "type": "string"
+              },
+              "workspacePath": {
+                "type": "string"
+              }
+            },
+            "required": ["blockType"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "blocksKey": {
+          "type": "string"
+        },
+        "clientRequestId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "createdBy": {
+          "type": "string"
+        },
+        "delivery": {
+          "enum": ["sent", "sending", "failed"],
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "failureAction": {
+          "enum": ["billing"],
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "parts": {
+          "items": {
+            "oneOf": [
+              {
+                "properties": {
+                  "attachmentIndex": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "contentId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "conversationId": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "dynamic-ui",
+                    "type": "string"
+                  },
+                  "messageId": {
+                    "type": "string"
+                  },
+                  "originTaskId": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "uiRef": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "version": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "uiRef",
+                  "contentId",
+                  "summary",
+                  "version",
+                  "conversationId",
+                  "messageId",
+                  "attachmentIndex"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "markdown",
+                    "type": "string"
+                  },
+                  "task": {
+                    "not": {}
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "text"],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "inline-task",
+                    "type": "string"
+                  },
+                  "task": {
+                    "properties": {
+                      "activityStatus": {
+                        "type": "string"
+                      },
+                      "conversationId": {
+                        "type": "string"
+                      },
+                      "freshness": {
+                        "enum": ["fresh", "stale", "unknown"],
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "unavailable": {
+                        "type": "boolean"
+                      },
+                      "updatedAt": {
+                        "type": "number"
+                      }
+                    },
+                    "required": ["unavailable"],
+                    "type": "object"
+                  },
+                  "text": {
+                    "not": {}
+                  }
+                },
+                "required": ["kind", "task"],
+                "type": "object"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "refs": {
+          "items": {
+            "properties": {
+              "conversationId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["conversationId"],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "replyToMessageId": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "source": {
+          "enum": ["server", "pending"],
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadRootMessageId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attachments",
+        "delivery",
+        "messageId",
+        "refs",
+        "role",
+        "source",
+        "text"
+      ],
+      "type": "object"
+    },
+    "CommaChatSnapshotEnvelope": {
+      "properties": {
+        "kind": {
+          "const": "chat.snapshot",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": 3,
+          "type": "number"
+        },
+        "snapshot": {
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "retryAt": {
+              "type": "number"
+            },
+            "revision": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session": {
+              "properties": {
+                "conversationId": {
+                  "type": "string"
+                },
+                "groupId": {
+                  "type": "string"
+                },
+                "revision": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "state": {
+                  "properties": {
+                    "assistantDraft": {
+                      "properties": {
+                        "conversationId": {
+                          "type": "string"
+                        },
+                        "draftId": {
+                          "type": "string"
+                        },
+                        "responseKey": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "revision": {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "sourceMessageIds": {
+                          "items": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": ["streaming", "completed"],
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "conversationId",
+                        "draftId",
+                        "responseKey",
+                        "sourceMessageIds",
+                        "status",
+                        "text"
+                      ],
+                      "type": "object"
+                    },
+                    "awaitingReply": {
+                      "type": "boolean"
+                    },
+                    "errorKind": {
+                      "enum": ["network", "unauthorized", "not-found", "forbidden"],
+                      "type": "string"
+                    },
+                    "messages": {
+                      "items": {
+                        "$ref": "#/$defs/CommaChatMessage"
+                      },
+                      "maxItems": 200,
+                      "type": "array"
+                    }
+                  },
+                  "required": ["awaitingReply", "messages"],
+                  "type": "object"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "conversationId",
+                "groupId",
+                "revision",
+                "state",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status": {
+              "enum": ["signed-out", "resolving", "ready", "error", "unavailable"],
+              "type": "string"
+            }
+          },
+          "required": ["protocolVersion", "revision", "sessionEpoch", "status"],
+          "type": "object"
+        }
+      },
+      "required": ["kind", "protocolVersion", "snapshot"],
+      "type": "object"
+    },
+    "CommaNotchScenePayload": {
+      "properties": {
+        "airDrop": {
+          "properties": {
+            "transfer": {
+              "properties": {
+                "acceptLabel": {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "declineLabel": {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "phase": {
+                  "enum": ["offer", "receiving", "completed", "failed"],
+                  "type": "string"
+                },
+                "preview": {
+                  "maxLength": 700000,
+                  "type": "string"
+                },
+                "progress": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "requestId": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "subtitle": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "title": {
+                  "maxLength": 256,
+                  "type": "string"
+                }
+              },
+              "required": ["phase", "requestId", "title"],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "compactSideWidth": {
+          "maximum": 240,
+          "minimum": 32,
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "hasActivity": {
+          "type": "boolean"
+        },
+        "listSubtitle": {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        "listTitle": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "notify": {
+          "type": "boolean"
+        },
+        "openChatLabel": {
+          "maxLength": 128,
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "conversationId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "groupId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "const": "in_progress",
+                "type": "string"
+              },
+              "subtitle": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "number"
+              },
+              "workspaceId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversationId",
+              "groupId",
+              "id",
+              "status",
+              "subtitle",
+              "title",
+              "updatedAt",
+              "workspaceId"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CommaSideChatClientFrame": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.ready",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.retain",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "subscriberId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "subscriberId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.release",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "subscriberId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "subscriberId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "draft": {
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.set-draft",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "surfaceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "draft",
+            "surfaceId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "consumeDraft": {
+              "type": "boolean"
+            },
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.send",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "replyToMessageId": {
+              "type": "string"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sendIntentId": {
+              "maxLength": 128,
+              "minLength": 8,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skills": {
+              "items": {
+                "properties": {
+                  "location": {
+                    "type": "string"
+                  }
+                },
+                "required": ["location"],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "surfaceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "sendIntentId",
+            "surfaceId",
+            "text",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.refresh",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "clientRequestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.retry",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "clientRequestId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "clientRequestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.discard",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "clientRequestId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "availableContentHeight": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "contentFrame": {
+              "properties": {
+                "height": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "width": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": ["height", "width", "x", "y"],
+              "type": "object"
+            },
+            "displayId": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "side-chat.presentation",
+              "type": "string"
+            },
+            "offsetX": {
+              "type": "number"
+            },
+            "phase": {
+              "enum": ["closed", "opening", "interactive", "open", "closing"],
+              "type": "string"
+            },
+            "progress": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "revision": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "screenFrame": {
+              "properties": {
+                "height": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "width": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": ["height", "width", "x", "y"],
+              "type": "object"
+            },
+            "windowFrame": {
+              "properties": {
+                "height": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "width": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": ["height", "width", "x", "y"],
+              "type": "object"
+            }
+          },
+          "required": [
+            "availableContentHeight",
+            "contentFrame",
+            "displayId",
+            "kind",
+            "offsetX",
+            "phase",
+            "progress",
+            "protocolVersion",
+            "revision",
+            "screenFrame",
+            "windowFrame"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "command.result",
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "ok", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "expectedProtocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "frameKind": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "side-chat.protocol-error",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "receivedProtocolVersion": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            }
+          },
+          "required": ["error", "expectedProtocolVersion", "kind", "protocolVersion"],
+          "type": "object"
+        }
+      ]
+    },
+    "CommaSideChatCommand": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.ready",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.retain",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "subscriberId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "subscriberId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.release",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "subscriberId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "subscriberId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "draft": {
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.set-draft",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "surfaceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "draft",
+            "surfaceId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "consumeDraft": {
+              "type": "boolean"
+            },
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.send",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "replyToMessageId": {
+              "type": "string"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sendIntentId": {
+              "maxLength": 128,
+              "minLength": 8,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skills": {
+              "items": {
+                "properties": {
+                  "location": {
+                    "type": "string"
+                  }
+                },
+                "required": ["location"],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "surfaceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "sendIntentId",
+            "surfaceId",
+            "text",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.refresh",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "clientRequestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.retry",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "clientRequestId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "clientRequestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "conversationId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "groupId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "chat.discard",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "groupId",
+            "workspaceId",
+            "clientRequestId",
+            "kind",
+            "protocolVersion",
+            "requestId",
+            "sessionEpoch"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CommaSideChatCommandResult": {
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "command.result",
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "protocolVersion": {
+          "const": 3,
+          "type": "number"
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": ["kind", "ok", "protocolVersion", "requestId"],
+      "type": "object"
+    },
+    "CommaSideChatHostFrame": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "chat.snapshot",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "snapshot": {
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "protocolVersion": {
+                  "const": 3,
+                  "type": "number"
+                },
+                "retryAt": {
+                  "type": "number"
+                },
+                "revision": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "session": {
+                  "properties": {
+                    "conversationId": {
+                      "type": "string"
+                    },
+                    "groupId": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "state": {
+                      "properties": {
+                        "assistantDraft": {
+                          "properties": {
+                            "conversationId": {
+                              "type": "string"
+                            },
+                            "draftId": {
+                              "type": "string"
+                            },
+                            "responseKey": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "revision": {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "sourceMessageIds": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "minItems": 1,
+                              "type": "array"
+                            },
+                            "status": {
+                              "enum": ["streaming", "completed"],
+                              "type": "string"
+                            },
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "conversationId",
+                            "draftId",
+                            "responseKey",
+                            "sourceMessageIds",
+                            "status",
+                            "text"
+                          ],
+                          "type": "object"
+                        },
+                        "awaitingReply": {
+                          "type": "boolean"
+                        },
+                        "errorKind": {
+                          "enum": ["network", "unauthorized", "not-found", "forbidden"],
+                          "type": "string"
+                        },
+                        "messages": {
+                          "items": {
+                            "$ref": "#/$defs/CommaChatMessage"
+                          },
+                          "maxItems": 200,
+                          "type": "array"
+                        }
+                      },
+                      "required": ["awaitingReply", "messages"],
+                      "type": "object"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "conversationId",
+                    "groupId",
+                    "revision",
+                    "state",
+                    "workspaceId"
+                  ],
+                  "type": "object"
+                },
+                "sessionEpoch": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "status": {
+                  "enum": ["signed-out", "resolving", "ready", "error", "unavailable"],
+                  "type": "string"
+                }
+              },
+              "required": ["protocolVersion", "revision", "sessionEpoch", "status"],
+              "type": "object"
+            }
+          },
+          "required": ["kind", "protocolVersion", "snapshot"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.open",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.close",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.toggle",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.settings",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "debugSettings": {
+              "properties": {
+                "bottomFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "bottomOffset": {
+                  "maximum": 160,
+                  "minimum": -160,
+                  "type": "number"
+                },
+                "closedExtraOffset": {
+                  "maximum": 260,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "contentOffsetX": {
+                  "maximum": 160,
+                  "minimum": -160,
+                  "type": "number"
+                },
+                "contentOffsetY": {
+                  "maximum": 160,
+                  "minimum": -160,
+                  "type": "number"
+                },
+                "contentWidth": {
+                  "maximum": 620,
+                  "minimum": 260,
+                  "type": "number"
+                },
+                "leftFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "openXOffset": {
+                  "maximum": 120,
+                  "minimum": -220,
+                  "type": "number"
+                },
+                "rightFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "solidOutsetBottom": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "solidOutsetLeft": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "solidOutsetRight": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "solidOutsetTop": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "topFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "bottomFeather",
+                "bottomOffset",
+                "closedExtraOffset",
+                "contentOffsetX",
+                "contentOffsetY",
+                "contentWidth",
+                "leftFeather",
+                "openXOffset",
+                "rightFeather",
+                "solidOutsetBottom",
+                "solidOutsetLeft",
+                "solidOutsetRight",
+                "solidOutsetTop",
+                "topFeather"
+              ],
+              "type": "object"
+            },
+            "height": {
+              "maximum": 4096,
+              "minimum": 40,
+              "type": "number"
+            },
+            "kind": {
+              "const": "side-chat.layout",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "width": {
+              "maximum": 1024,
+              "minimum": 120,
+              "type": "number"
+            }
+          },
+          "required": [
+            "height",
+            "width",
+            "debugSettings",
+            "kind",
+            "protocolVersion",
+            "requestId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.interactive-progress",
+              "type": "string"
+            },
+            "progress": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["progress", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.interactive-complete",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "shouldOpen": {
+              "type": "boolean"
+            }
+          },
+          "required": ["shouldOpen", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "keyCode": {
+              "maximum": 127,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "side-chat.shortcut",
+              "type": "string"
+            },
+            "modifiers": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["modifiers", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.stop",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "command.result",
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "ok", "protocolVersion", "requestId"],
+          "type": "object"
+        }
+      ]
+    },
+    "CommaSideChatProtocolError": {
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "expectedProtocolVersion": {
+          "const": 3,
+          "type": "number"
+        },
+        "frameKind": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "side-chat.protocol-error",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": 3,
+          "type": "number"
+        },
+        "receivedProtocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": ["error", "expectedProtocolVersion", "kind", "protocolVersion"],
+      "type": "object"
+    },
+    "CommaSideChatSurfaceControl": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.open",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.close",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.toggle",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.settings",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "debugSettings": {
+              "properties": {
+                "bottomFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "bottomOffset": {
+                  "maximum": 160,
+                  "minimum": -160,
+                  "type": "number"
+                },
+                "closedExtraOffset": {
+                  "maximum": 260,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "contentOffsetX": {
+                  "maximum": 160,
+                  "minimum": -160,
+                  "type": "number"
+                },
+                "contentOffsetY": {
+                  "maximum": 160,
+                  "minimum": -160,
+                  "type": "number"
+                },
+                "contentWidth": {
+                  "maximum": 620,
+                  "minimum": 260,
+                  "type": "number"
+                },
+                "leftFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "openXOffset": {
+                  "maximum": 120,
+                  "minimum": -220,
+                  "type": "number"
+                },
+                "rightFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "solidOutsetBottom": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "solidOutsetLeft": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "solidOutsetRight": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "solidOutsetTop": {
+                  "maximum": 160,
+                  "minimum": -120,
+                  "type": "number"
+                },
+                "topFeather": {
+                  "maximum": 220,
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "bottomFeather",
+                "bottomOffset",
+                "closedExtraOffset",
+                "contentOffsetX",
+                "contentOffsetY",
+                "contentWidth",
+                "leftFeather",
+                "openXOffset",
+                "rightFeather",
+                "solidOutsetBottom",
+                "solidOutsetLeft",
+                "solidOutsetRight",
+                "solidOutsetTop",
+                "topFeather"
+              ],
+              "type": "object"
+            },
+            "height": {
+              "maximum": 4096,
+              "minimum": 40,
+              "type": "number"
+            },
+            "kind": {
+              "const": "side-chat.layout",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "width": {
+              "maximum": 1024,
+              "minimum": 120,
+              "type": "number"
+            }
+          },
+          "required": [
+            "height",
+            "width",
+            "debugSettings",
+            "kind",
+            "protocolVersion",
+            "requestId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.interactive-progress",
+              "type": "string"
+            },
+            "progress": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["progress", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.interactive-complete",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "shouldOpen": {
+              "type": "boolean"
+            }
+          },
+          "required": ["shouldOpen", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "keyCode": {
+              "maximum": 127,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "side-chat.shortcut",
+              "type": "string"
+            },
+            "modifiers": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["modifiers", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "side-chat.stop",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://comma.afk.surf/schemas/native-partner-contracts-v3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/CommaNotchScenePayload"
+    },
+    {
+      "$ref": "#/$defs/CommaSideChatClientFrame"
+    },
+    {
+      "$ref": "#/$defs/CommaSideChatCommand"
+    },
+    {
+      "$ref": "#/$defs/CommaSideChatCommandResult"
+    },
+    {
+      "$ref": "#/$defs/CommaSideChatHostFrame"
+    },
+    {
+      "$ref": "#/$defs/CommaSideChatProtocolError"
+    },
+    {
+      "$ref": "#/$defs/CommaChatSnapshotEnvelope"
+    },
+    {
+      "$ref": "#/$defs/CommaSideChatSurfaceControl"
+    }
+  ],
+  "title": "Comma native partner contracts",
+  "x-comma-native-protocols": [
+    {
+      "direction": "main-to-native",
+      "id": "notch.scene-payload",
+      "schema": "#/$defs/CommaNotchScenePayload",
+      "swiftType": "CommaNotchScenePayload"
+    },
+    {
+      "direction": "native-to-main",
+      "id": "side-chat.client-frame",
+      "schema": "#/$defs/CommaSideChatClientFrame",
+      "swiftType": "CommaSideChatClientFrame"
+    },
+    {
+      "direction": "native-to-main",
+      "id": "side-chat.command",
+      "schema": "#/$defs/CommaSideChatCommand",
+      "swiftType": "CommaSideChatCommand"
+    },
+    {
+      "direction": "bidirectional",
+      "id": "side-chat.command-result",
+      "schema": "#/$defs/CommaSideChatCommandResult",
+      "swiftType": "CommaSideChatCommandResult"
+    },
+    {
+      "direction": "main-to-native",
+      "id": "side-chat.host-frame",
+      "schema": "#/$defs/CommaSideChatHostFrame",
+      "swiftType": "CommaSideChatHostFrame"
+    },
+    {
+      "direction": "native-to-main",
+      "id": "side-chat.protocol-error",
+      "schema": "#/$defs/CommaSideChatProtocolError",
+      "swiftType": "CommaSideChatProtocolError"
+    },
+    {
+      "direction": "main-to-native",
+      "id": "side-chat.snapshot-envelope",
+      "schema": "#/$defs/CommaChatSnapshotEnvelope",
+      "swiftType": "CommaChatSnapshotEnvelope"
+    },
+    {
+      "direction": "main-to-native",
+      "id": "side-chat.surface-control",
+      "schema": "#/$defs/CommaSideChatSurfaceControl",
+      "swiftType": "CommaSideChatSurfaceControl"
+    }
+  ]
+}

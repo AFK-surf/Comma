@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-white text-neutral-900 text-sm tracking-tight;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold tracking-tight text-neutral-900;
+  }
+}
+
+/* LiveView connection/loading affordances. */
+.phx-no-feedback.invalid-feedback,
+.phx-no-feedback .invalid-feedback {
+  display: none;
+}
+
+.phx-click-loading {
+  opacity: 0.7;
+  transition: opacity 0.2s ease-out;
+}
+
+.phx-loading {
+  cursor: wait;
+}
+
+/* topbar.js progress bar accent. */
+#nprogress .bar {
+  @apply bg-brand-500;
+}
+
+@layer components {
+  .conversation-markdown {
+    @apply space-y-2 break-words leading-6;
+  }
+
+  .conversation-markdown :where(p) {
+    @apply m-0 whitespace-pre-wrap;
+  }
+
+  .conversation-markdown :where(strong) {
+    @apply font-semibold text-neutral-900;
+  }
+
+  .conversation-markdown :where(em) {
+    @apply italic;
+  }
+
+  .conversation-markdown :where(a) {
+    @apply text-brand-600 underline underline-offset-2 hover:text-brand-700;
+  }
+
+  .conversation-markdown :where(ul) {
+    @apply my-2 list-disc space-y-1 pl-5;
+  }
+
+  .conversation-markdown :where(ol) {
+    @apply my-2 list-decimal space-y-1 pl-5;
+  }
+
+  .conversation-markdown :where(blockquote) {
+    @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600;
+  }
+
+  .conversation-markdown :where(code) {
+    @apply rounded bg-neutral-100 px-1 py-0.5 font-mono text-[0.8125rem] text-neutral-900;
+  }
+
+  .conversation-markdown :where(pre) {
+    @apply my-2 overflow-x-auto rounded-md bg-neutral-950 p-3 text-neutral-100;
+  }
+
+  .conversation-markdown :where(pre code) {
+    @apply bg-transparent p-0 text-inherit;
+  }
+}

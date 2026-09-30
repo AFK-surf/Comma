@@ -1,0 +1,88 @@
+{
+ "section": "CRS-04",
+ "name": "signal-message-encode",
+ "description": "Double-ratchet message serialization and MAC for chosen field values, computed by the oracle. The address binding (field 6) could not be set through this oracle operation and is absent here.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "session_version": 4,
+    "mac_key": "2206711a7bfa087ebdb58b5a0e95e78a14e385da80cce85b4b06a6f4f61099a2",
+    "ratchet_public_key": "050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25",
+    "message_number": 0,
+    "previous_chain_length": 0,
+    "encrypted_body": "f84e2fbd73fdbf12ef00d0ffbe2438cd",
+    "post_quantum_message": "",
+    "sender_identity": "05a2e69d1b28e271a1e3314cb56c42d43f437acaf31a36adeb3049f99e8056fc40",
+    "receiver_identity": "0522b5fb967078e3cb01503e50a88b2f1c01e3c044306807b8145bf4f7baa8e511"
+   },
+   "outputs": {
+    "serialized": "440a21050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25100018002210f84e2fbd73fdbf12ef00d0ffbe2438cd36c3f5922f5c11f7"
+   }
+  },
+  {
+   "inputs": {
+    "session_version": 4,
+    "mac_key": "eb132045519ddf2eb7bd2e5f54b437e3e1441a64dab99ffdbfb349998fe38280",
+    "ratchet_public_key": "050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25",
+    "message_number": 1,
+    "previous_chain_length": 0,
+    "encrypted_body": "6d18c10b69e7975b958016583b47c9f72d0d16632ae48c7566ec16f4dec87b8f",
+    "post_quantum_message": "f2cfb68b02ade20e9a1f7c41dd174d3dce43d0008e69391aee0031849196a96514069036f0",
+    "sender_identity": "05a2e69d1b28e271a1e3314cb56c42d43f437acaf31a36adeb3049f99e8056fc40",
+    "receiver_identity": "0522b5fb967078e3cb01503e50a88b2f1c01e3c044306807b8145bf4f7baa8e511"
+   },
+   "outputs": {
+    "serialized": "440a21050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd251001180022206d18c10b69e7975b958016583b47c9f72d0d16632ae48c7566ec16f4dec87b8f2a25f2cfb68b02ade20e9a1f7c41dd174d3dce43d0008e69391aee0031849196a96514069036f0083a7edeed5d9792"
+   }
+  },
+  {
+   "inputs": {
+    "session_version": 4,
+    "mac_key": "9bda2e82b09d59b33497f97c028a43d8b93570c4154a3c8242ca20641ea51769",
+    "ratchet_public_key": "050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25",
+    "message_number": 300,
+    "previous_chain_length": 127,
+    "encrypted_body": "75660ca2402ca4793ed7071d311ebd4e18096e3c7e6fdd287d7ad6f9f13ff72b1892bb298cf211a56f5fcd4676aea1f7",
+    "post_quantum_message": "d25d77ff",
+    "sender_identity": "05a2e69d1b28e271a1e3314cb56c42d43f437acaf31a36adeb3049f99e8056fc40",
+    "receiver_identity": "0522b5fb967078e3cb01503e50a88b2f1c01e3c044306807b8145bf4f7baa8e511"
+   },
+   "outputs": {
+    "serialized": "440a21050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd2510ac02187f223075660ca2402ca4793ed7071d311ebd4e18096e3c7e6fdd287d7ad6f9f13ff72b1892bb298cf211a56f5fcd4676aea1f72a04d25d77ffc76dbe1660f0aacf"
+   }
+  },
+  {
+   "inputs": {
+    "session_version": 4,
+    "mac_key": "c4843ca874abd0571e0a2288b62d7e5943ac4d58e80fae1c350ae600dc9c91ac",
+    "ratchet_public_key": "050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25",
+    "message_number": 4294967295,
+    "previous_chain_length": 4294967295,
+    "encrypted_body": "5b65c627b093749badca0ac85b6bea63",
+    "post_quantum_message": "",
+    "sender_identity": "05a2e69d1b28e271a1e3314cb56c42d43f437acaf31a36adeb3049f99e8056fc40",
+    "receiver_identity": "0522b5fb967078e3cb01503e50a88b2f1c01e3c044306807b8145bf4f7baa8e511"
+   },
+   "outputs": {
+    "serialized": "440a21050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd2510ffffffff0f18ffffffff0f22105b65c627b093749badca0ac85b6bea63243e97370ea64cea"
+   }
+  },
+  {
+   "inputs": {
+    "session_version": 3,
+    "mac_key": "8e1d9c359b37445e4e668a071bf1835ad6860494a7bf80c0a696f8832230528f",
+    "ratchet_public_key": "050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25",
+    "message_number": 5,
+    "previous_chain_length": 2,
+    "encrypted_body": "305a75419fb3f5c1924cd0fc6c23da54",
+    "post_quantum_message": "",
+    "sender_identity": "05a2e69d1b28e271a1e3314cb56c42d43f437acaf31a36adeb3049f99e8056fc40",
+    "receiver_identity": "0522b5fb967078e3cb01503e50a88b2f1c01e3c044306807b8145bf4f7baa8e511"
+   },
+   "outputs": {
+    "serialized": "340a21050402c343c1dcc2564b6ffeb25b75e39fe65885098d839f67bc0515ab252ccd25100518022210305a75419fb3f5c1924cd0fc6c23da54f635d78df4bb9d0f"
+   }
+  }
+ ]
+}

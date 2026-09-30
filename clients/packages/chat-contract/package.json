@@ -1,0 +1,24 @@
+{
+  "name": "@comma/chat-contract",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./dynamic-ui-runtime": "./src/dynamic-ui/runtime.ts",
+    "./dynamic-ui-cards": "./src/dynamic-ui/cardsEntry.ts",
+    "./dynamic-ui-card-fixtures": "./src/dynamic-ui/cardFixtures.ts"
+  },
+  "scripts": {
+    "generate:card-contract": "node --experimental-strip-types ./scripts/generate-card-contract.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,96 @@
+// Opt in with SALIX_COMMAND_BROWSER=1. Run against ExUnit's isolated local
+// dashboard and fake Slack provider. No real Slack credentials or Apps are used.
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { mkdir } from 'node:fs/promises';
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.COMMAND_PLAYWRIGHT_MODULE || 'playwright');
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1360, height: 1050 } });
+const base = process.env.COMMAND_BROWSER_URL;
+const shots = process.env.COMMAND_SCREENSHOTS;
+if (shots) await mkdir(shots, { recursive: true });
+const screenshot = async (name) => {
+  if (shots) await page.screenshot({ path: `${shots}/${name}.png` });
+};
+const connected = () => page.waitForSelector('.phx-connected');
+const settled = () => page.waitForFunction(() => document.querySelector('#app-command-editor').dataset.busy === 'false');
+const dialogOpen = () => page.waitForFunction(() => document.querySelector('#command-dialog').open);
+const mockFailure = async mode => {
+  const url = new URL(process.env.COMMAND_BROWSER_SLACK);
+  assert.equal(url.hostname, '127.0.0.1');
+  const response = await fetch(`${url}/test.fail`, {method:'POST', body: new URLSearchParams({mode})});
+  assert.equal(response.ok, true);
+};
+try {
+  await page.goto(`${base}/dash/login`);
+  await page.locator('input[name=token]').fill('test-token');
+  await page.locator('button[type=submit]').click();
+  await page.waitForURL('**/dash');
+  await page.goto(`${base}/dash/tenant/select?tenant_id=${process.env.COMMAND_BROWSER_TENANT}`);
+  await page.goto(`${base}/dash/slack-commands`);
+  await connected();
+  await page.getByRole('button', {name:'Add command', exact:true}).waitFor();
+  await screenshot('01-command-home');
+  await page.locator('[phx-click=new]').click();
+  await dialogOpen();
+  await screenshot('02-preset-picker');
+  await page.locator('[phx-click=use-builtin]').first().click();
+  const command = page.locator('input[name="entry[command]"]');
+  await command.waitFor();
+  await command.fill('/mydraft');
+  await page.locator('input[name=sample]').fill('Check this PR');
+  await page.waitForFunction(() => document.querySelector('#command-request-preview').textContent.includes('Check this PR'));
+  assert.equal(await page.evaluate(()=>document.activeElement.name), 'sample');
+  await screenshot('03-command-editor');
+  assert.equal(await page.locator('#slack-command-list').count(), 0);
+  page.once('dialog', async dialog => { assert.match(dialog.message(), /Discard unsaved/); await dialog.dismiss(); });
+  await page.keyboard.press('Escape');
+  assert.equal(await command.inputValue(), '/mydraft');
+  assert.equal(await page.locator('#command-dialog').evaluate(el=>el.open), true);
+  // Missing credentials can be configured without leaving or losing the draft.
+  await page.getByRole('button', {name:'Set up credentials', exact:true}).click();
+  await page.locator('input[name=configuration_refresh_token]').fill('xoxe-browser-fixture');
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('#slack-command-credentials button[type=submit]').click();
+  await command.waitFor();
+  await settled();
+  assert.equal(await command.inputValue(), '/mydraft');
+  await page.locator('#slack-command-form button[type=submit]').click();
+  await page.waitForFunction(()=>!document.querySelector('#command-dialog').open);
+  await page.locator('#command-sync-status').filter({hasText:'Latest App configuration synchronized to Slack'}).waitFor();
+  await screenshot('04-publish-success');
+  await page.locator('[phx-click=edit]').click();
+  await page.locator('input[type=checkbox][name="entry[enabled]"]').uncheck();
+  await mockFailure('rate_limit');
+  await page.locator('#slack-command-form button[type=submit]').click();
+  await page.waitForFunction(()=>!document.querySelector('#command-dialog').open);
+  await page.locator('#command-sync-status').filter({hasText:'Slack rejected this update attempt'}).waitFor();
+  assert.equal(await page.getByText('Slack may already have received the update.', {exact:true}).count(), 0);
+  await screenshot('05a-publish-rejected');
+  await mockFailure('lost_response');
+  await page.locator('[phx-click=retry]').click();
+  await page.locator('#command-sync-status').filter({hasText:'Configuration saved; Slack synchronization not confirmed'}).waitFor();
+  await page.getByText('Slack may already have received the update.', {exact:true}).waitFor();
+  await page.getByText('Configured disabled', {exact:true}).waitFor();
+  await screenshot('05-publish-unconfirmed');
+  await mockFailure('');
+  await page.locator('[phx-click=retry]').click();
+  await page.locator('#command-sync-status').filter({hasText:'Latest App configuration synchronized to Slack'}).waitFor();
+  // Modal remains usable on a narrow viewport, including publish controls.
+  await page.setViewportSize({width:390,height:844});
+  await page.locator('[phx-click=edit]').click();
+  await dialogOpen();
+  await page.locator('#slack-command-form button[type=submit]').scrollIntoViewIfNeeded();
+  await screenshot('06-mobile-editor');
+  await page.locator('#slack-command-form [phx-click=cancel]').click();
+  await page.setViewportSize({width:1360,height:1050});
+  const other = page.locator(`a[href="/dash/tenant/select?tenant_id=${process.env.COMMAND_BROWSER_OTHER}"]`);
+  await other.evaluate(el=>el.click());
+  await page.waitForURL('**/dash/slack-commands');
+  await connected();
+  await page.getByText('No Slack Apps in this organization', {exact:true}).waitFor();
+  assert.equal(await page.locator('#slack-app-picker').count(), 0);
+  await screenshot('07-other-organization');
+  console.log('Single-page publish, App-level failure/retry, modal draft protection, credentials, mobile and organization isolation passed.');
+} finally { await browser.close(); }

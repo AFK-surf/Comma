@@ -1,0 +1,368 @@
+@layer components {
+  .chat-panel-image-group {
+    /* Stack geometry: 3:4 cards fanned clockwise behind the front card, each
+       depth adding rotation while a small shift and scale keep the fan
+       peeking out along the right edge only, like the reference stack. */
+    --chat-panel-image-group-card-width: 165px;
+    --chat-panel-image-group-card-expanded-width: 165px;
+    --chat-panel-image-group-stack-rotation-step: 3.5deg;
+    --chat-panel-image-group-stack-shift-step: 3px;
+    --chat-panel-image-group-stack-scale-step: 0.03;
+    /* Room reserved around the stack so rotated corners never overlap siblings. */
+    --chat-panel-image-group-fan-allowance-inline: 26px;
+    --chat-panel-image-group-fan-allowance-block: 8px;
+    /* The deck unfurl is a larger spatial move than a single-card slide. */
+    --chat-panel-image-group-flip-duration: 240ms;
+
+    position: relative;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--spacing-xs);
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .chat-panel-image-group-toggle {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    padding: var(--spacing-xs) var(--spacing-lg);
+    border: 0;
+    border-radius: var(--radius-full);
+    background: var(--color-bg-quaternary);
+    color: var(--color-text-primary);
+    font-size: var(--text-xs);
+    font-weight: var(--font-weight-medium);
+    line-height: var(--text-xs--line-height);
+    outline: none;
+    scale: 1;
+    transition:
+      background-color var(--motion-duration-state-change)
+        var(--motion-easing-smooth-out),
+      scale var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+  }
+
+  /* Both labels share one cell so the pill keeps its widest footprint and
+     never resizes underneath the pointer; a soft blur bridges the swap. */
+  .chat-panel-image-group-toggle-label {
+    display: inline-grid;
+    justify-items: center;
+  }
+
+  .chat-panel-image-group-toggle-text {
+    grid-area: 1 / 1;
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+    transition:
+      opacity var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+      filter var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+      transform var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+  }
+
+  .chat-panel-image-group-toggle[aria-expanded="true"]
+    .chat-panel-image-group-toggle-text[data-label="expand"],
+  .chat-panel-image-group-toggle[aria-expanded="false"]
+    .chat-panel-image-group-toggle-text[data-label="hide"] {
+    opacity: 0;
+    filter: blur(2px);
+    transform: scale(0.96);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .chat-panel-image-group-toggle:hover {
+      background: var(--color-bg-toggle);
+    }
+  }
+
+  .chat-panel-image-group-toggle[data-pointer-pressed="true"] {
+    scale: var(--motion-scale-pressed);
+    transition:
+      background-color var(--motion-duration-state-change)
+        var(--motion-easing-smooth-out),
+      scale var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+  }
+
+  .chat-panel-image-group-toggle:focus-visible {
+    box-shadow: var(--shadow-focus-gray-shadow-xs);
+  }
+
+  .chat-panel-image-group-cards {
+    position: relative;
+    min-width: 0;
+    max-width: 100%;
+    /* The fan allowance stays constant across both states so the deck's
+       top-right anchor never moves through expand/collapse — only the cards
+       travel, never the frame or the toggle above it. Both inline sides
+       reserve room: history fans out to the left, upcoming to the right. */
+    padding-block: var(--chat-panel-image-group-fan-allowance-block);
+    padding-inline: var(--chat-panel-image-group-fan-allowance-inline);
+  }
+
+  .chat-panel-image-group-cards[data-expanded="false"] {
+    display: inline-grid;
+  }
+
+  .chat-panel-image-group-cards[data-expanded="true"] {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--spacing-md);
+  }
+
+  /* The wrapper height is measured and driven inline while the deck expands or
+     collapses; the transition only exists during that window. */
+  .chat-panel-image-group-cards[data-height-animating="true"] {
+    transition: height var(--chat-panel-image-group-flip-duration)
+      var(--motion-easing-surface-smooth-out);
+  }
+
+  .chat-panel-image-group-card {
+    position: relative;
+    display: block;
+    width: var(--chat-panel-image-group-card-expanded-width);
+    aspect-ratio: 3 / 4;
+    overflow: hidden;
+    padding: 0;
+    /* A hairline keeps light or white-edged photos from dissolving into the
+       thread surface. The card is border-box, so the 165px width and the 3:4
+       ratio already account for it. */
+    border: 0.5px solid var(--color-border-primary);
+    border-radius: var(--radius-xl);
+    background: var(--color-bg-quaternary);
+    outline: none;
+    scale: 1;
+    transition:
+      transform var(--motion-duration-spatial-move)
+        var(--motion-easing-surface-smooth-out),
+      opacity var(--motion-duration-spatial-move)
+        var(--motion-easing-surface-smooth-out),
+      scale var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+  }
+
+  /* Cards travel further during the deck unfurl than during a deck rotation. */
+  .chat-panel-image-group-cards[data-height-animating="true"]
+    .chat-panel-image-group-card {
+    transition-duration:
+      var(--chat-panel-image-group-flip-duration),
+      var(--chat-panel-image-group-flip-duration), var(--motion-duration-state-change);
+  }
+
+  .chat-panel-image-group-cards[data-expanded="false"] .chat-panel-image-group-card {
+    width: var(--chat-panel-image-group-card-width);
+    grid-area: 1 / 1;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* Warm a layer only while a card is actually in flight. Standing
+     will-change on every stacked card in a long thread makes chat scroll
+     compositor-bound even when those bitmaps are opacity:0. */
+  .chat-panel-image-group-card[data-flying="true"],
+  .chat-panel-image-group-card[data-flip="true"] {
+    will-change: transform, opacity;
+  }
+
+  /* Expanded wrapping rows can grow taller than the scrollport. Skip paint
+     for cards that have left the visible band; the 3:4 box is reserved so
+     stick-to-bottom does not see height jumps as they enter. */
+  .chat-panel-image-group-cards[data-expanded="true"] .chat-panel-image-group-card {
+    content-visibility: auto;
+    contain-intrinsic-width: auto var(--chat-panel-image-group-card-expanded-width);
+    contain-intrinsic-height: auto
+      calc(var(--chat-panel-image-group-card-expanded-width) * 4 / 3);
+  }
+
+  /* Inline FLIP start values must apply without easing toward them. */
+  .chat-panel-image-group-card[data-flip="true"] {
+    transition: none;
+  }
+
+  /* The WAAPI throw owns the outgoing card; the underlying slot transition
+     would run the same properties in parallel for nothing. */
+  .chat-panel-image-group-card[data-flying="true"] {
+    transition: none;
+  }
+
+  .chat-panel-image-group-card[data-pointer-pressed="true"] {
+    scale: var(--motion-scale-pressed);
+    transition:
+      transform var(--motion-duration-spatial-move)
+        var(--motion-easing-surface-smooth-out),
+      opacity var(--motion-duration-spatial-move)
+        var(--motion-easing-surface-smooth-out),
+      scale var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+  }
+
+  .chat-panel-image-group-card:focus-visible {
+    box-shadow: var(--shadow-focus-gray-shadow-xs);
+  }
+
+  .chat-panel-image-group-card-content {
+    /* The card is only a clipped viewport. Keep source-resolution pixels in
+       the image resource and crop them at paint time instead of generating a
+       bitmap at this CSS box's dimensions. */
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* Depth dimming for cards tucked behind the front of the deck. */
+  .chat-panel-image-group-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--color-bg-overlay);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-duration-spatial-move)
+      var(--motion-easing-surface-smooth-out);
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="0"] {
+    z-index: 5;
+    transform: translateX(0) rotate(0deg);
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="r1"] {
+    z-index: 4;
+    transform: translateX(var(--chat-panel-image-group-stack-shift-step))
+      rotate(var(--chat-panel-image-group-stack-rotation-step))
+      scale(calc(1 - var(--chat-panel-image-group-stack-scale-step)));
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="r2"],
+  .chat-panel-image-group-card[data-stack-pos="hidden-right"] {
+    z-index: 3;
+    transform: translateX(calc(var(--chat-panel-image-group-stack-shift-step) * 2))
+      rotate(calc(var(--chat-panel-image-group-stack-rotation-step) * 2))
+      scale(calc(1 - var(--chat-panel-image-group-stack-scale-step) * 2));
+  }
+
+  /* The left history fan mirrors the right fan. */
+  .chat-panel-image-group-card[data-stack-pos="l1"] {
+    z-index: 4;
+    transform: translateX(calc(var(--chat-panel-image-group-stack-shift-step) * -1))
+      rotate(calc(var(--chat-panel-image-group-stack-rotation-step) * -1))
+      scale(calc(1 - var(--chat-panel-image-group-stack-scale-step)));
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="l2"],
+  .chat-panel-image-group-card[data-stack-pos="hidden-left"] {
+    z-index: 3;
+    transform: translateX(calc(var(--chat-panel-image-group-stack-shift-step) * -2))
+      rotate(calc(var(--chat-panel-image-group-stack-rotation-step) * -2))
+      scale(calc(1 - var(--chat-panel-image-group-stack-scale-step) * 2));
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="r1"]::after,
+  .chat-panel-image-group-card[data-stack-pos="l1"]::after {
+    opacity: 0.08;
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="r2"]::after,
+  .chat-panel-image-group-card[data-stack-pos="l2"]::after,
+  .chat-panel-image-group-card[data-stack-pos="hidden-right"]::after,
+  .chat-panel-image-group-card[data-stack-pos="hidden-left"]::after {
+    opacity: 0.16;
+  }
+
+  .chat-panel-image-group-card[data-stack-pos="hidden-right"],
+  .chat-panel-image-group-card[data-stack-pos="hidden-left"] {
+    z-index: 0;
+    opacity: 0;
+  }
+
+  .chat-panel-image-group-advance {
+    position: absolute;
+    z-index: 6;
+    top: 50%;
+    display: inline-flex;
+    width: var(--spacing-4xl);
+    height: var(--spacing-4xl);
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: var(--color-bg-popup-primary);
+    box-shadow:
+      inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+      var(--shadow-sm);
+    color: var(--color-text-secondary);
+    opacity: 0;
+    pointer-events: none;
+    outline: none;
+    scale: 0.9;
+    transition:
+      opacity var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out),
+      scale var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out);
+  }
+
+  /* Straddle the front card's edges: each chevron sends the front card
+     flying toward its own side. */
+  .chat-panel-image-group-advance[data-side="start"] {
+    inset-inline-start: var(--chat-panel-image-group-fan-allowance-inline);
+    translate: -50% -50%;
+  }
+
+  .chat-panel-image-group-advance[data-side="end"] {
+    inset-inline-end: var(--chat-panel-image-group-fan-allowance-inline);
+    translate: 50% -50%;
+  }
+
+  /* Keyboard focus keeps the chevrons up; pointer-click focus deliberately
+     does not, so they retreat with the hover once the mouse leaves. */
+  .chat-panel-image-group-cards:has(:focus-visible) .chat-panel-image-group-advance {
+    opacity: 1;
+    pointer-events: auto;
+    scale: 1;
+    transition: none !important;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .chat-panel-image-group-cards:hover .chat-panel-image-group-advance {
+      opacity: 1;
+      pointer-events: auto;
+      scale: 1;
+      transition-duration: var(--motion-duration-state-change);
+    }
+  }
+
+  @media (any-hover: none), (any-pointer: coarse) {
+    .chat-panel-image-group-advance {
+      opacity: 1;
+      pointer-events: auto;
+      scale: 1;
+    }
+  }
+
+  .chat-panel-image-group-cards[data-keyboard-focus-motion="instant"]
+    .chat-panel-image-group-advance {
+    transition: none !important;
+  }
+
+  .chat-panel-image-group-advance[data-pointer-pressed="true"] {
+    scale: var(--motion-scale-action-pressed);
+    transition:
+      opacity var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out),
+      scale var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+  }
+
+  .chat-panel-image-group-advance:focus-visible {
+    box-shadow:
+      inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+      var(--shadow-focus-gray-shadow-xs);
+  }
+
+  @media (forced-colors: active) {
+    .chat-panel-image-group-toggle:focus-visible,
+    .chat-panel-image-group-card:focus-visible,
+    .chat-panel-image-group-advance:focus-visible {
+      outline: 2px solid Highlight;
+      outline-offset: 2px;
+    }
+  }
+}

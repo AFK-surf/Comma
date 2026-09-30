@@ -1,0 +1,17 @@
+node_modules/
+dist/
+out/
+.vite/
+release/
+coverage/
+playwright-report/
+test-results/
+pnpm-lock.yaml
+packages/ui/storybook-static/
+packages/ui/src/styles/theme.css
+packages/i18n/project.inlang/
+packages/i18n/src/paraglide/
+apps/electron/.dev-electron/
+apps/electron/native/**/.build/
+apps/electron/native/**/.derived/
+apps/electron/native/**/.swiftpm/

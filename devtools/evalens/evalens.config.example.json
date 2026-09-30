@@ -1,0 +1,106 @@
+{
+  "$schema": "./evalens.config.schema.json",
+  "concurrency": 1,
+  "adapters": {
+    "salix": {
+      "baseUrl": "http://127.0.0.1:4000",
+      "token": "replace-with-tenant-api-key",
+      "tenantId": "evalens",
+      "templateId": "replace-with-local-template-id",
+      "integrations": [
+        {
+          "id": "slack",
+          "provider": "slack",
+          "credentials": {
+            "type": "app",
+            "appId": "A_REPLACE",
+            "clientId": "replace-with-slack-client-id",
+            "clientSecret": "replace-with-slack-client-secret",
+            "signingSecret": "replace-with-slack-signing-secret",
+            "botToken": "xoxb-replace-with-evalens-bot-token",
+            "appName": "evalens"
+          }
+        },
+        {
+          "id": "github",
+          "provider": "github",
+          "alias": "github",
+          "credentials": {
+            "type": "oauth",
+            "accessToken": "replace-with-pre-authorized-github-token"
+          },
+          "scopes": ["repo", "read:org", "read:user", "user:email"],
+          "plugin": {
+            "pluginId": "github",
+            "connectionId": "github-managed"
+          }
+        },
+        {
+          "id": "google",
+          "provider": "google",
+          "alias": "google",
+          "credentials": {
+            "type": "oauth",
+            "accessToken": "replace-with-pre-authorized-google-token"
+          },
+          "scopes": [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/chat.messages.readonly"
+          ],
+          "plugin": {
+            "pluginId": "google",
+            "connectionId": "google-managed"
+          }
+        },
+        {
+          "id": "linear",
+          "provider": "linear",
+          "alias": "linear",
+          "credentials": {
+            "type": "oauth",
+            "accessToken": "replace-with-pre-authorized-linear-token"
+          },
+          "scopes": ["read"],
+          "plugin": {
+            "pluginId": "linear",
+            "connectionId": "linear-managed"
+          }
+        },
+        {
+          "id": "notion",
+          "provider": "notion",
+          "alias": "notion",
+          "providerKey": "replace-with-stored-remote-mcp-provider-key",
+          "credentials": {
+            "type": "oauth",
+            "accessToken": "replace-with-pre-authorized-notion-mcp-token"
+          },
+          "plugin": {
+            "pluginId": "notion",
+            "connectionId": "notion-native"
+          }
+        }
+      ]
+    },
+    "codex": {
+      "env": {
+        "OPENCODE_GO_API_KEY": "replace-with-local-opencode-go-key"
+      }
+    },
+    "slack": {
+      "token": "xoxp-replace-with-eval-driver-user-token",
+      "workspaceId": "T_REPLACE",
+      "allowedChannelIds": ["C_EVAL_REPLACE"],
+      "expectedUserId": "U_DRIVER_REPLACE",
+      "otherAppDriver": {
+        "token": "xoxb-replace-with-second-bot-driver-token",
+        "expectedBotUserId": "U_BOT_DRIVER_REPLACE"
+      }
+    }
+  },
+  "local": {
+    "outputDir": "./runs"
+  }
+}

@@ -1,0 +1,234 @@
+{
+  "section": "CRS-10",
+  "name": "padded-size",
+  "description": "Padded plaintext size for an attachment of the given unpadded size, and the resulting encrypted blob size (16-byte IV + AES-CBC/PKCS#7 ciphertext of the padded plaintext + 32-byte MAC). Derived from the stated formula; not oracle evidence.",
+  "pin": "libsignal 0.103.0",
+  "evidence": "rule [source]; values derived from the stated formula, not oracle evidence",
+  "cases": [
+    {
+      "inputs": {
+        "plaintext_size": 0
+      },
+      "outputs": {
+        "padded_size": 541,
+        "encrypted_blob_size": 592
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 1
+      },
+      "outputs": {
+        "padded_size": 541,
+        "encrypted_blob_size": 592
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 100
+      },
+      "outputs": {
+        "padded_size": 541,
+        "encrypted_blob_size": 592
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 540
+      },
+      "outputs": {
+        "padded_size": 541,
+        "encrypted_blob_size": 592
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 541
+      },
+      "outputs": {
+        "padded_size": 541,
+        "encrypted_blob_size": 592
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 542
+      },
+      "outputs": {
+        "padded_size": 568,
+        "encrypted_blob_size": 624
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 568
+      },
+      "outputs": {
+        "padded_size": 568,
+        "encrypted_blob_size": 624
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 569
+      },
+      "outputs": {
+        "padded_size": 596,
+        "encrypted_blob_size": 656
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 570
+      },
+      "outputs": {
+        "padded_size": 596,
+        "encrypted_blob_size": 656
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 1000
+      },
+      "outputs": {
+        "padded_size": 1020,
+        "encrypted_blob_size": 1072
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 4096
+      },
+      "outputs": {
+        "padded_size": 4201,
+        "encrypted_blob_size": 4256
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 17292
+      },
+      "outputs": {
+        "padded_size": 17292,
+        "encrypted_blob_size": 17344
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 17293
+      },
+      "outputs": {
+        "padded_size": 18157,
+        "encrypted_blob_size": 18208
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 65536
+      },
+      "outputs": {
+        "padded_size": 67789,
+        "encrypted_blob_size": 67840
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 198300
+      },
+      "outputs": {
+        "padded_size": 198300,
+        "encrypted_blob_size": 198352
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 198301
+      },
+      "outputs": {
+        "padded_size": 208215,
+        "encrypted_blob_size": 208272
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 1048576
+      },
+      "outputs": {
+        "padded_size": 1093831,
+        "encrypted_blob_size": 1093888
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 2273996
+      },
+      "outputs": {
+        "padded_size": 2273996,
+        "encrypted_blob_size": 2274048
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 2273997
+      },
+      "outputs": {
+        "padded_size": 2387695,
+        "encrypted_blob_size": 2387744
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 5242880
+      },
+      "outputs": {
+        "padded_size": 5472642,
+        "encrypted_blob_size": 5472704
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 10485760
+      },
+      "outputs": {
+        "padded_size": 10835458,
+        "encrypted_blob_size": 10835520
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 26214400
+      },
+      "outputs": {
+        "padded_size": 27380663,
+        "encrypted_blob_size": 27380720
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 102224512
+      },
+      "outputs": {
+        "padded_size": 102224512,
+        "encrypted_blob_size": 102224576
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 102224513
+      },
+      "outputs": {
+        "padded_size": 107335738,
+        "encrypted_blob_size": 107335792
+      }
+    },
+    {
+      "inputs": {
+        "plaintext_size": 104857600
+      },
+      "outputs": {
+        "padded_size": 107335738,
+        "encrypted_blob_size": 107335792
+      }
+    }
+  ]
+}

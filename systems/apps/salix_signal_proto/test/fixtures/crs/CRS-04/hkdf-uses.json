@@ -1,0 +1,99 @@
+{
+ "section": "CRS-04",
+ "name": "hkdf-uses",
+ "description": "HKDF-SHA256 (RFC 5869) with the info labels the deployed protocol uses. salt null means no salt (equivalent to 32 zero bytes, and to an empty salt). Computed by the oracle.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "label": "pqxdh-with-one-time-pre-key",
+    "ikm": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5fd592a9e1f0d4053883081594107e596e919bc7df8b930eba4ec286657806691d9224f0de60d2f46a9a78c42a241769b30088011cd8342d58994f093877a5117326e155ed2bba999df546566e3f4e7e57dd638dd0afc926bbf5dbb0ab4c72b69177686521615696ededb00e7cb360a3ac66b3c9c1ca4b050482007ee816b9633fc907fd7500fa615e5aaae102d866365bc885216c28b6c3db23d685a9a28f64",
+    "info_ascii": "WhisperText_X25519_SHA-256_CRYSTALS-KYBER-1024",
+    "info": "57686973706572546578745f5832353531395f5348412d3235365f4352595354414c532d4b594245522d31303234",
+    "salt": null,
+    "length": 96
+   },
+   "outputs": {
+    "okm": "30563b43650342e2e57e6d30661e019b948ad1d1c1270bcceef17eb476616587a381dc6a903260b289ecb12a0cc7e80b17e8f231566eaa562a99169cd43cb23f0cd292d66f09fc3560449b45b60153763f903678326c575fc97f7ca7b7952af7"
+   }
+  },
+  {
+   "inputs": {
+    "label": "pqxdh-without-one-time-pre-key",
+    "ikm": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd070cac0304cf95c0ddc8256e3668cc67d61854486ee4ac895965b1c7e006710078fc813b349da5449b998f74dbda5f699fbab3fb4a2e982845a55c020848a2a26a8a34561adda5cef273addf97727d5898814c067ad27e6a0de9ad5c247a153c3fd845a668569515531b7e82b10c4d20ad2a2bc66c2ade8ea7a3f00c6d883fa",
+    "info_ascii": "WhisperText_X25519_SHA-256_CRYSTALS-KYBER-1024",
+    "info": "57686973706572546578745f5832353531395f5348412d3235365f4352595354414c532d4b594245522d31303234",
+    "salt": null,
+    "length": 96
+   },
+   "outputs": {
+    "okm": "4a6dba0ef8ad7fa38a4d423aab96bda1917e0916ac5f5b9205e2c27f96fa272bd1420cb43efcb93f75ea6649e2872671b2bb5b7b2cc1af7c6925f61955074562dfdc36dbb1bab7f9076862f1d5f01ee84ce702fdfa4e6e109ca67b7865252bbb"
+   }
+  },
+  {
+   "inputs": {
+    "label": "root-step",
+    "ikm": "e40213eadf6613f8ff11d794921dd87c9c62a6cfba540863b966af3f56b9ba84",
+    "info_ascii": "WhisperRatchet",
+    "info": "5768697370657252617463686574",
+    "salt": "3bdfa91d180b8953f0f3be0e30a6806dea6cf9f3dcd8c574d88cb74ecbcf2f74",
+    "length": 64
+   },
+   "outputs": {
+    "okm": "c2d0962613d07c502672556b4c7e2850296a20192dc6635b269600ba7f5149fe7326c6cdd15dc1ce740179b6997388f1cf93064c7ee6f29867690e277f629cea"
+   }
+  },
+  {
+   "inputs": {
+    "label": "message-keys-no-salt",
+    "ikm": "6883ef0277a5fba62afb2a732fa047ba02854733b343c273cb213c4ffa207d25",
+    "info_ascii": "WhisperMessageKeys",
+    "info": "576869737065724d6573736167654b657973",
+    "salt": null,
+    "length": 80
+   },
+   "outputs": {
+    "okm": "f6861a0d67ae57efae66fbafc461bedb73c6e3e7bff2abc3b607ea8d17b588fecba51b10de048de9c0ef2788414eb41ea6eea53a3bee6a726c1964d50954c48258ef7a7d7611fd198762024b7b99df1b"
+   }
+  },
+  {
+   "inputs": {
+    "label": "message-keys-with-pq-salt",
+    "ikm": "6883ef0277a5fba62afb2a732fa047ba02854733b343c273cb213c4ffa207d25",
+    "info_ascii": "WhisperMessageKeys",
+    "info": "576869737065724d6573736167654b657973",
+    "salt": "99a281ec30bdd9d8b536291a3be7e2ed2d7a2ad91b1a9e4640a37211801dbd4b",
+    "length": 80
+   },
+   "outputs": {
+    "okm": "acea464c90b3b4f0b63050331137ff3a3a73c16fd6ee7762d42ebec4d8f8c143c358868ba5e6a92497baa5b0e944c7af40a5626e4fd1cc0b3a481761f0642a0a47f8dc950ca8d96752a75ee8a8c7fb89"
+   }
+  },
+  {
+   "inputs": {
+    "label": "message-keys-zero-salt-equals-no-salt",
+    "ikm": "6883ef0277a5fba62afb2a732fa047ba02854733b343c273cb213c4ffa207d25",
+    "info_ascii": "WhisperMessageKeys",
+    "info": "576869737065724d6573736167654b657973",
+    "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+    "length": 80
+   },
+   "outputs": {
+    "okm": "f6861a0d67ae57efae66fbafc461bedb73c6e3e7bff2abc3b607ea8d17b588fecba51b10de048de9c0ef2788414eb41ea6eea53a3bee6a726c1964d50954c48258ef7a7d7611fd198762024b7b99df1b"
+   }
+  },
+  {
+   "inputs": {
+    "label": "message-keys-empty-salt-equals-no-salt",
+    "ikm": "6883ef0277a5fba62afb2a732fa047ba02854733b343c273cb213c4ffa207d25",
+    "info_ascii": "WhisperMessageKeys",
+    "info": "576869737065724d6573736167654b657973",
+    "salt": "",
+    "length": 80
+   },
+   "outputs": {
+    "okm": "f6861a0d67ae57efae66fbafc461bedb73c6e3e7bff2abc3b607ea8d17b588fecba51b10de048de9c0ef2788414eb41ea6eea53a3bee6a726c1964d50954c48258ef7a7d7611fd198762024b7b99df1b"
+   }
+  }
+ ]
+}

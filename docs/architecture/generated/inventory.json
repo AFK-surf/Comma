@@ -1,0 +1,2777 @@
+{
+  "schemaVersion": 4,
+  "clientPackages": [
+    {
+      "id": "comma_admin",
+      "kind": "app",
+      "name": "@comma/admin",
+      "path": "clients/apps/admin/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/app",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/config",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/ui",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_app",
+      "kind": "package",
+      "name": "@comma/app",
+      "path": "clients/packages/app/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/chat-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/config",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/layout-inspector",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/native-bridge",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/product-inbox-runtime",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/recommendation-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-history-runtime",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/ui",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_chat-contract",
+      "kind": "package",
+      "name": "@comma/chat-contract",
+      "path": "clients/packages/chat-contract/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_config",
+      "kind": "package",
+      "name": "@comma/config",
+      "path": "clients/packages/config/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_electron",
+      "kind": "app",
+      "name": "@comma/electron",
+      "path": "clients/apps/electron/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/app",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/chat-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/config",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/native-bridge",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/product-inbox-runtime",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-history-runtime",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_i18n",
+      "kind": "package",
+      "name": "@comma/i18n",
+      "path": "clients/packages/i18n/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_layout-inspector",
+      "kind": "package",
+      "name": "@comma/layout-inspector",
+      "path": "clients/packages/layout-inspector/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/test-utils",
+          "scope": "devDependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_native-bridge",
+      "kind": "package",
+      "name": "@comma/native-bridge",
+      "path": "clients/packages/native-bridge/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/chat-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_product-inbox-runtime",
+      "kind": "package",
+      "name": "@comma/product-inbox-runtime",
+      "path": "clients/packages/product-inbox-runtime/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/native-bridge",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_recommendation-contract",
+      "kind": "package",
+      "name": "@comma/recommendation-contract",
+      "path": "clients/packages/recommendation-contract/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_session-contract",
+      "kind": "package",
+      "name": "@comma/session-contract",
+      "path": "clients/packages/session-contract/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_session-history-runtime",
+      "kind": "package",
+      "name": "@comma/session-history-runtime",
+      "path": "clients/packages/session-history-runtime/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/native-bridge",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_test-utils",
+      "kind": "package",
+      "name": "@comma/test-utils",
+      "path": "clients/packages/test-utils/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/native-bridge",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_ui",
+      "kind": "package",
+      "name": "@comma/ui",
+      "path": "clients/packages/ui/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/layout-inspector",
+          "scope": "devDependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_web",
+      "kind": "app",
+      "name": "@comma/web",
+      "path": "clients/apps/web/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/app",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/chat-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/config",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/native-bridge",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/product-inbox-runtime",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-history-runtime",
+          "scope": "dependencies"
+        }
+      ]
+    }
+  ],
+  "otpApps": [
+    {
+      "id": "alert_router",
+      "name": "alert_router",
+      "path": "systems/apps/alert_router/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "billing_commerce",
+      "name": "billing_commerce",
+      "path": "systems/apps/billing_commerce/mix.exs",
+      "dependencies": [
+        {
+          "name": "billing_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_analytics",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "billing_core",
+      "name": "billing_core",
+      "path": "systems/apps/billing_core/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_analytics",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "billing_stripe",
+      "name": "billing_stripe",
+      "path": "systems/apps/billing_stripe/mix.exs",
+      "dependencies": [
+        {
+          "name": "billing_commerce",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_core",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "bridge_for_teams_core",
+      "name": "bridge_for_teams_core",
+      "path": "systems/apps/bridge_for_teams_core/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_commerce",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_calendar",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "development"
+        },
+        {
+          "name": "comma_log",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "bridge_for_teams_web",
+      "name": "bridge_for_teams_web",
+      "path": "systems/apps/bridge_for_teams_web/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "bridge_for_teams_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_web",
+          "scope": "development"
+        }
+      ]
+    },
+    {
+      "id": "comma",
+      "name": "comma",
+      "path": "systems/apps/comma/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "comma_core",
+      "name": "comma_core",
+      "path": "systems/apps/comma_core/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "comma_log",
+      "name": "comma_log",
+      "path": "systems/apps/comma_log/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "comma_ssh",
+      "name": "comma_ssh",
+      "path": "systems/apps/comma_ssh/mix.exs",
+      "dependencies": [
+        {
+          "name": "comma_core",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "comma_tui",
+      "name": "comma_tui",
+      "path": "systems/apps/comma_tui/mix.exs",
+      "dependencies": []
+    },
+    {
+      "id": "comma_web",
+      "name": "comma_web",
+      "path": "systems/apps/comma_web/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_commerce",
+          "scope": "runtime"
+        },
+        {
+          "name": "billing_stripe",
+          "scope": "runtime"
+        },
+        {
+          "name": "comma_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_cluster",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_im",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_mcp",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_web",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_agent",
+      "name": "salix_agent",
+      "path": "systems/apps/salix_agent/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_ifc",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_media",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_analytics",
+      "name": "salix_analytics",
+      "path": "systems/apps/salix_analytics/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_cluster",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_calendar",
+      "name": "salix_calendar",
+      "path": "systems/apps/salix_calendar/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_cluster",
+      "name": "salix_cluster",
+      "path": "systems/apps/salix_cluster/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_calendar",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_env",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_im",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_env",
+      "name": "salix_env",
+      "path": "systems/apps/salix_env/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_ifc",
+      "name": "salix_ifc",
+      "path": "systems/apps/salix_ifc/mix.exs",
+      "dependencies": []
+    },
+    {
+      "id": "salix_im",
+      "name": "salix_im",
+      "path": "systems/apps/salix_im/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_ifc",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "development"
+        }
+      ]
+    },
+    {
+      "id": "salix_llm",
+      "name": "salix_llm",
+      "path": "systems/apps/salix_llm/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_media",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_mcp",
+      "name": "salix_mcp",
+      "path": "systems/apps/salix_mcp/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_env",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_media",
+      "name": "salix_media",
+      "path": "systems/apps/salix_media/mix.exs",
+      "dependencies": []
+    },
+    {
+      "id": "salix_meet",
+      "name": "salix_meet",
+      "path": "systems/apps/salix_meet/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_calendar",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_cluster",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_im",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_migrate",
+      "name": "salix_migrate",
+      "path": "systems/apps/salix_migrate/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_signal",
+      "name": "salix_signal",
+      "path": "systems/apps/salix_signal/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_signal_proto",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_voice",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_cluster",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_signal_proto",
+      "name": "salix_signal_proto",
+      "path": "systems/apps/salix_signal_proto/mix.exs",
+      "dependencies": []
+    },
+    {
+      "id": "salix_store",
+      "name": "salix_store",
+      "path": "systems/apps/salix_store/mix.exs",
+      "dependencies": [
+        {
+          "name": "comma_log",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_voice",
+      "name": "salix_voice",
+      "path": "systems/apps/salix_voice/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_im",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_cluster",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "salix_web",
+      "name": "salix_web",
+      "path": "systems/apps/salix_web/mix.exs",
+      "dependencies": [
+        {
+          "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_agent",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_im",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_mcp",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_meet",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_calendar",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_env",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_cluster",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_voice",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_signal",
+          "scope": "runtime"
+        },
+        {
+          "name": "bridge_for_teams_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_llm",
+          "scope": "runtime"
+        },
+        {
+          "name": "salix_analytics",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_observability",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "systems_observability",
+      "name": "systems_observability",
+      "path": "systems/apps/systems_observability/mix.exs",
+      "dependencies": []
+    }
+  ],
+  "subsystemSource": "systems/apps/comma/lib/comma.ex",
+  "subsystems": [
+    {
+      "name": "alert_router",
+      "apps": [
+        "alert_router"
+      ]
+    },
+    {
+      "name": "salix",
+      "apps": [
+        "salix_store",
+        "salix_calendar",
+        "salix_analytics",
+        "billing_core",
+        "billing_commerce",
+        "billing_stripe",
+        "salix_agent",
+        "salix_cluster",
+        "salix_llm",
+        "salix_env",
+        "salix_im",
+        "salix_voice",
+        "salix_signal_proto",
+        "salix_signal",
+        "salix_mcp",
+        "salix_web",
+        "salix_migrate",
+        "salix_media",
+        "salix_meet"
+      ]
+    },
+    {
+      "name": "comma_product",
+      "apps": [
+        "billing_core",
+        "billing_commerce",
+        "billing_stripe",
+        "comma_core",
+        "comma_web",
+        "comma_tui",
+        "comma_ssh"
+      ]
+    },
+    {
+      "name": "bridge_for_teams",
+      "apps": [
+        "billing_core",
+        "billing_commerce",
+        "bridge_for_teams_core",
+        "bridge_for_teams_web"
+      ]
+    }
+  ],
+  "nativeCapabilities": {
+    "path": "clients/packages/native-bridge/src/capability-leaves.ts",
+    "leaves": [
+      {
+        "id": "native.info",
+        "kind": "capability",
+        "namespace": "native"
+      },
+      {
+        "id": "computerUse.getPermissions",
+        "kind": "capability",
+        "namespace": "computerUse"
+      },
+      {
+        "id": "computerUse.openPermissionFlow",
+        "kind": "capability",
+        "namespace": "computerUse"
+      },
+      {
+        "id": "appPreferences.state",
+        "kind": "capability",
+        "namespace": "appPreferences"
+      },
+      {
+        "id": "appPreferences.state.changed",
+        "kind": "event",
+        "namespace": "appPreferences"
+      },
+      {
+        "id": "appPreferences.state",
+        "kind": "state",
+        "namespace": "appPreferences"
+      },
+      {
+        "id": "appPreferences.update",
+        "kind": "capability",
+        "namespace": "appPreferences"
+      },
+      {
+        "id": "appPreferences.initializeClientSettings",
+        "kind": "capability",
+        "namespace": "appPreferences"
+      },
+      {
+        "id": "appPreferences.openNotificationSettings",
+        "kind": "capability",
+        "namespace": "appPreferences"
+      },
+      {
+        "id": "connectorRuntime.state",
+        "kind": "capability",
+        "namespace": "connectorRuntime"
+      },
+      {
+        "id": "connectorRuntime.state.changed",
+        "kind": "event",
+        "namespace": "connectorRuntime"
+      },
+      {
+        "id": "connectorRuntime.state",
+        "kind": "state",
+        "namespace": "connectorRuntime"
+      },
+      {
+        "id": "connectorRuntime.scope",
+        "kind": "capability",
+        "namespace": "connectorRuntime"
+      },
+      {
+        "id": "connectorRuntime.setScope",
+        "kind": "capability",
+        "namespace": "connectorRuntime"
+      },
+      {
+        "id": "connectorRuntime.copyConnectCommand",
+        "kind": "capability",
+        "namespace": "connectorRuntime"
+      },
+      {
+        "id": "appearance.setResolvedTheme",
+        "kind": "capability",
+        "namespace": "appearance"
+      },
+      {
+        "id": "appearance.fontFamilies",
+        "kind": "capability",
+        "namespace": "appearance"
+      },
+      {
+        "id": "notch.status",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.show",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.update",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.hide",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.open",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.close",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.toggle",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.pulse",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.preview",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "notch.stop",
+        "kind": "capability",
+        "namespace": "notch"
+      },
+      {
+        "id": "surfaces.state",
+        "kind": "capability",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "windows.create",
+        "kind": "capability",
+        "namespace": "windows"
+      },
+      {
+        "id": "windows.focus",
+        "kind": "capability",
+        "namespace": "windows"
+      },
+      {
+        "id": "windows.close",
+        "kind": "capability",
+        "namespace": "windows"
+      },
+      {
+        "id": "surfaces.windowResizeSettled",
+        "kind": "event",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.windowFullScreen",
+        "kind": "capability",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.windowFullScreen.changed",
+        "kind": "event",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.windowFullScreen",
+        "kind": "state",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "clipboard.readText",
+        "kind": "capability",
+        "namespace": "clipboard"
+      },
+      {
+        "id": "clipboard.writeText",
+        "kind": "capability",
+        "namespace": "clipboard"
+      },
+      {
+        "id": "clipboard.readImage",
+        "kind": "capability",
+        "namespace": "clipboard"
+      },
+      {
+        "id": "clipboard.writeImage",
+        "kind": "capability",
+        "namespace": "clipboard"
+      },
+      {
+        "id": "subscriptionAuthorization.start",
+        "kind": "capability",
+        "namespace": "subscriptionAuthorization"
+      },
+      {
+        "id": "subscriptionAuthorization.status",
+        "kind": "capability",
+        "namespace": "subscriptionAuthorization"
+      },
+      {
+        "id": "subscriptionAuthorization.cancel",
+        "kind": "capability",
+        "namespace": "subscriptionAuthorization"
+      },
+      {
+        "id": "shell.openExternal",
+        "kind": "capability",
+        "namespace": "shell"
+      },
+      {
+        "id": "files.saveDownload",
+        "kind": "capability",
+        "namespace": "files"
+      },
+      {
+        "id": "files.listOpenApplications",
+        "kind": "capability",
+        "namespace": "files"
+      },
+      {
+        "id": "files.copyDownload",
+        "kind": "capability",
+        "namespace": "files"
+      },
+      {
+        "id": "files.revealDownload",
+        "kind": "capability",
+        "namespace": "files"
+      },
+      {
+        "id": "files.openDownload",
+        "kind": "capability",
+        "namespace": "files"
+      },
+      {
+        "id": "recommendationMedia.load",
+        "kind": "capability",
+        "namespace": "recommendationMedia"
+      },
+      {
+        "id": "browserSidebar.open",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.update",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.capture",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.navigate",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.close",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.inspect",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "sitePermissionMenu.state",
+        "kind": "capability",
+        "namespace": "sitePermissionMenu"
+      },
+      {
+        "id": "sitePermissionMenu.changed",
+        "kind": "event",
+        "namespace": "sitePermissionMenu"
+      },
+      {
+        "id": "sitePermissionMenu.state",
+        "kind": "state",
+        "namespace": "sitePermissionMenu"
+      },
+      {
+        "id": "sitePermissionMenu.act",
+        "kind": "capability",
+        "namespace": "sitePermissionMenu"
+      },
+      {
+        "id": "browserSidebar.showPermissions",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.changed",
+        "kind": "event",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.openTabRequested",
+        "kind": "event",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "peers.connect",
+        "kind": "capability",
+        "namespace": "peers"
+      },
+      {
+        "id": "notch.event",
+        "kind": "event",
+        "namespace": "notch"
+      },
+      {
+        "id": "surfaces.changed",
+        "kind": "event",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.state",
+        "kind": "state",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "productInbox.state",
+        "kind": "capability",
+        "namespace": "productInbox"
+      },
+      {
+        "id": "productInbox.state.changed",
+        "kind": "event",
+        "namespace": "productInbox"
+      },
+      {
+        "id": "productInbox.state",
+        "kind": "state",
+        "namespace": "productInbox"
+      },
+      {
+        "id": "productInbox.retain",
+        "kind": "capability",
+        "namespace": "productInbox"
+      },
+      {
+        "id": "productInbox.release",
+        "kind": "capability",
+        "namespace": "productInbox"
+      },
+      {
+        "id": "productInbox.refresh",
+        "kind": "capability",
+        "namespace": "productInbox"
+      },
+      {
+        "id": "sessionHistory.state",
+        "kind": "capability",
+        "namespace": "sessionHistory"
+      },
+      {
+        "id": "sessionHistory.load",
+        "kind": "capability",
+        "namespace": "sessionHistory"
+      },
+      {
+        "id": "sessionHistory.retain",
+        "kind": "capability",
+        "namespace": "sessionHistory"
+      },
+      {
+        "id": "sessionHistory.release",
+        "kind": "capability",
+        "namespace": "sessionHistory"
+      },
+      {
+        "id": "sessionHistory.state.changed",
+        "kind": "event",
+        "namespace": "sessionHistory"
+      },
+      {
+        "id": "sessionHistory.state",
+        "kind": "state",
+        "namespace": "sessionHistory"
+      },
+      {
+        "id": "chat.state",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.state.changed",
+        "kind": "event",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.state",
+        "kind": "state",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.drafts",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.drafts.changed",
+        "kind": "event",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.drafts",
+        "kind": "state",
+        "namespace": "chat"
+      },
+      {
+        "id": "messageNotifications.event",
+        "kind": "event",
+        "namespace": "messageNotifications"
+      },
+      {
+        "id": "sideChat.presentation",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.presentation.changed",
+        "kind": "event",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.presentation",
+        "kind": "state",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.debugSettings",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.debugSettings.changed",
+        "kind": "event",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.debugSettings",
+        "kind": "state",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.updateDebugSettings",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.resetDebugSettings",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.setContentSize",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.setInteractiveProgress",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.finishInteractiveProgress",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.updateShortcut",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.close",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.openSettings",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.openTestWindow",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "sideChat.closeTestWindow",
+        "kind": "capability",
+        "namespace": "sideChat"
+      },
+      {
+        "id": "chat.retain",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.release",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.clearPresentation",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.setDraft",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.beginSendIntent",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.cancelSendIntent",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.send",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.retry",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.discard",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.acceptTaskReview",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.refresh",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.attach",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.attachLocalFiles",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.pickAttachments",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.presentInSideChat",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.resolveWorkspaceChat",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.listSkills",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.readGroupImage",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.acknowledgeIntakeFailures",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.removeAttachment",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "chat.retryAttachment",
+        "kind": "capability",
+        "namespace": "chat"
+      },
+      {
+        "id": "session.state",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.state.changed",
+        "kind": "event",
+        "namespace": "session"
+      },
+      {
+        "id": "session.state",
+        "kind": "state",
+        "namespace": "session"
+      },
+      {
+        "id": "session.requestEmailLogin",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.verifyEmailLogin",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.signInWithGoogle",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.verifyGoogleLink",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.cancelAuthAttempt",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.reconcile",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "session.signOut",
+        "kind": "capability",
+        "namespace": "session"
+      },
+      {
+        "id": "localFiles.pick",
+        "kind": "capability",
+        "namespace": "localFiles"
+      },
+      {
+        "id": "localFiles.preview",
+        "kind": "capability",
+        "namespace": "localFiles"
+      },
+      {
+        "id": "localData.status",
+        "kind": "capability",
+        "namespace": "localData"
+      },
+      {
+        "id": "computeNode.state",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.state.changed",
+        "kind": "event",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.state",
+        "kind": "state",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.configure",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.repair",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.rebuild",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.drain",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.remove",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "transport.status",
+        "kind": "capability",
+        "namespace": "transport"
+      },
+      {
+        "id": "audioCapture.state",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.state.changed",
+        "kind": "event",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.state",
+        "kind": "state",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.sources",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.microphones",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.selectMicrophone",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.start",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.cancel",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.pause",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.resume",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.openPermissionSettings",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.stop",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "audioCapture.openSaved",
+        "kind": "capability",
+        "namespace": "audioCapture"
+      },
+      {
+        "id": "meetingPresence.icon",
+        "kind": "capability",
+        "namespace": "meetingPresence"
+      },
+      {
+        "id": "meetingPresence.state",
+        "kind": "capability",
+        "namespace": "meetingPresence"
+      },
+      {
+        "id": "meetingPresence.state.changed",
+        "kind": "event",
+        "namespace": "meetingPresence"
+      },
+      {
+        "id": "meetingPresence.state",
+        "kind": "state",
+        "namespace": "meetingPresence"
+      },
+      {
+        "id": "meetingRecorder.state",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.retryTaskSync",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.action",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.selectMicrophone",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.acknowledgeSaved",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.setInteractive",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.layoutWindow",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.dragWindow",
+        "kind": "capability",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.state.changed",
+        "kind": "event",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "meetingRecorder.state",
+        "kind": "state",
+        "namespace": "meetingRecorder"
+      },
+      {
+        "id": "airDrop.state",
+        "kind": "capability",
+        "namespace": "airDrop"
+      },
+      {
+        "id": "airDrop.act",
+        "kind": "capability",
+        "namespace": "airDrop"
+      },
+      {
+        "id": "airDrop.preview",
+        "kind": "capability",
+        "namespace": "airDrop"
+      },
+      {
+        "id": "airDrop.state.changed",
+        "kind": "event",
+        "namespace": "airDrop"
+      },
+      {
+        "id": "airDrop.state",
+        "kind": "state",
+        "namespace": "airDrop"
+      },
+      {
+        "id": "synchronicity.state",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.list",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "driveCatalog.query",
+        "kind": "capability",
+        "namespace": "driveCatalog"
+      },
+      {
+        "id": "driveCatalog.state",
+        "kind": "capability",
+        "namespace": "driveCatalog"
+      },
+      {
+        "id": "driveCatalog.state.changed",
+        "kind": "event",
+        "namespace": "driveCatalog"
+      },
+      {
+        "id": "driveCatalog.state",
+        "kind": "state",
+        "namespace": "driveCatalog"
+      },
+      {
+        "id": "synchronicity.read",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.saveDownload",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.openLocalRoot",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.versions",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.write",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.importFile",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.delete",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.adopt",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.scan",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.setDomain",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.sourceAdd",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.sourceRemove",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.replicaSet",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.replicaSync",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.pin",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.adoptTree",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.restart",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.pickFolder",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.setSpaceSettings",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "applicationMenu.update",
+        "kind": "capability",
+        "namespace": "applicationMenu"
+      },
+      {
+        "id": "applicationMenu.command",
+        "kind": "event",
+        "namespace": "applicationMenu"
+      }
+    ],
+    "namespaces": [
+      {
+        "name": "airDrop",
+        "commands": 3,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "airDrop.act",
+          "airDrop.preview",
+          "airDrop.state",
+          "airDrop.state.changed"
+        ]
+      },
+      {
+        "name": "appearance",
+        "commands": 2,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "appearance.fontFamilies",
+          "appearance.setResolvedTheme"
+        ]
+      },
+      {
+        "name": "applicationMenu",
+        "commands": 1,
+        "events": 1,
+        "states": 0,
+        "leafIds": [
+          "applicationMenu.command",
+          "applicationMenu.update"
+        ]
+      },
+      {
+        "name": "appPreferences",
+        "commands": 4,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "appPreferences.initializeClientSettings",
+          "appPreferences.openNotificationSettings",
+          "appPreferences.state",
+          "appPreferences.state.changed",
+          "appPreferences.update"
+        ]
+      },
+      {
+        "name": "audioCapture",
+        "commands": 11,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "audioCapture.cancel",
+          "audioCapture.microphones",
+          "audioCapture.openPermissionSettings",
+          "audioCapture.openSaved",
+          "audioCapture.pause",
+          "audioCapture.resume",
+          "audioCapture.selectMicrophone",
+          "audioCapture.sources",
+          "audioCapture.start",
+          "audioCapture.state",
+          "audioCapture.state.changed",
+          "audioCapture.stop"
+        ]
+      },
+      {
+        "name": "browserSidebar",
+        "commands": 7,
+        "events": 2,
+        "states": 0,
+        "leafIds": [
+          "browserSidebar.capture",
+          "browserSidebar.changed",
+          "browserSidebar.close",
+          "browserSidebar.inspect",
+          "browserSidebar.navigate",
+          "browserSidebar.open",
+          "browserSidebar.openTabRequested",
+          "browserSidebar.showPermissions",
+          "browserSidebar.update"
+        ]
+      },
+      {
+        "name": "chat",
+        "commands": 23,
+        "events": 2,
+        "states": 2,
+        "leafIds": [
+          "chat.acceptTaskReview",
+          "chat.acknowledgeIntakeFailures",
+          "chat.attach",
+          "chat.attachLocalFiles",
+          "chat.beginSendIntent",
+          "chat.cancelSendIntent",
+          "chat.clearPresentation",
+          "chat.discard",
+          "chat.drafts",
+          "chat.drafts.changed",
+          "chat.listSkills",
+          "chat.pickAttachments",
+          "chat.presentInSideChat",
+          "chat.readGroupImage",
+          "chat.refresh",
+          "chat.release",
+          "chat.removeAttachment",
+          "chat.resolveWorkspaceChat",
+          "chat.retain",
+          "chat.retry",
+          "chat.retryAttachment",
+          "chat.send",
+          "chat.setDraft",
+          "chat.state",
+          "chat.state.changed"
+        ]
+      },
+      {
+        "name": "clipboard",
+        "commands": 4,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "clipboard.readImage",
+          "clipboard.readText",
+          "clipboard.writeImage",
+          "clipboard.writeText"
+        ]
+      },
+      {
+        "name": "computeNode",
+        "commands": 6,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "computeNode.configure",
+          "computeNode.drain",
+          "computeNode.rebuild",
+          "computeNode.remove",
+          "computeNode.repair",
+          "computeNode.state",
+          "computeNode.state.changed"
+        ]
+      },
+      {
+        "name": "computerUse",
+        "commands": 2,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "computerUse.getPermissions",
+          "computerUse.openPermissionFlow"
+        ]
+      },
+      {
+        "name": "connectorRuntime",
+        "commands": 4,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "connectorRuntime.copyConnectCommand",
+          "connectorRuntime.scope",
+          "connectorRuntime.setScope",
+          "connectorRuntime.state",
+          "connectorRuntime.state.changed"
+        ]
+      },
+      {
+        "name": "driveCatalog",
+        "commands": 2,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "driveCatalog.query",
+          "driveCatalog.state",
+          "driveCatalog.state.changed"
+        ]
+      },
+      {
+        "name": "files",
+        "commands": 5,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "files.copyDownload",
+          "files.listOpenApplications",
+          "files.openDownload",
+          "files.revealDownload",
+          "files.saveDownload"
+        ]
+      },
+      {
+        "name": "localData",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "localData.status"
+        ]
+      },
+      {
+        "name": "localFiles",
+        "commands": 2,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "localFiles.pick",
+          "localFiles.preview"
+        ]
+      },
+      {
+        "name": "meetingPresence",
+        "commands": 2,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "meetingPresence.icon",
+          "meetingPresence.state",
+          "meetingPresence.state.changed"
+        ]
+      },
+      {
+        "name": "meetingRecorder",
+        "commands": 8,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "meetingRecorder.acknowledgeSaved",
+          "meetingRecorder.action",
+          "meetingRecorder.dragWindow",
+          "meetingRecorder.layoutWindow",
+          "meetingRecorder.retryTaskSync",
+          "meetingRecorder.selectMicrophone",
+          "meetingRecorder.setInteractive",
+          "meetingRecorder.state",
+          "meetingRecorder.state.changed"
+        ]
+      },
+      {
+        "name": "messageNotifications",
+        "commands": 0,
+        "events": 1,
+        "states": 0,
+        "leafIds": [
+          "messageNotifications.event"
+        ]
+      },
+      {
+        "name": "native",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "native.info"
+        ]
+      },
+      {
+        "name": "notch",
+        "commands": 10,
+        "events": 1,
+        "states": 0,
+        "leafIds": [
+          "notch.close",
+          "notch.event",
+          "notch.hide",
+          "notch.open",
+          "notch.preview",
+          "notch.pulse",
+          "notch.show",
+          "notch.status",
+          "notch.stop",
+          "notch.toggle",
+          "notch.update"
+        ]
+      },
+      {
+        "name": "peers",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "peers.connect"
+        ]
+      },
+      {
+        "name": "productInbox",
+        "commands": 4,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "productInbox.refresh",
+          "productInbox.release",
+          "productInbox.retain",
+          "productInbox.state",
+          "productInbox.state.changed"
+        ]
+      },
+      {
+        "name": "recommendationMedia",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "recommendationMedia.load"
+        ]
+      },
+      {
+        "name": "session",
+        "commands": 8,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "session.cancelAuthAttempt",
+          "session.reconcile",
+          "session.requestEmailLogin",
+          "session.signInWithGoogle",
+          "session.signOut",
+          "session.state",
+          "session.state.changed",
+          "session.verifyEmailLogin",
+          "session.verifyGoogleLink"
+        ]
+      },
+      {
+        "name": "sessionHistory",
+        "commands": 4,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "sessionHistory.load",
+          "sessionHistory.release",
+          "sessionHistory.retain",
+          "sessionHistory.state",
+          "sessionHistory.state.changed"
+        ]
+      },
+      {
+        "name": "shell",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "shell.openExternal"
+        ]
+      },
+      {
+        "name": "sideChat",
+        "commands": 12,
+        "events": 2,
+        "states": 2,
+        "leafIds": [
+          "sideChat.close",
+          "sideChat.closeTestWindow",
+          "sideChat.debugSettings",
+          "sideChat.debugSettings.changed",
+          "sideChat.finishInteractiveProgress",
+          "sideChat.openSettings",
+          "sideChat.openTestWindow",
+          "sideChat.presentation",
+          "sideChat.presentation.changed",
+          "sideChat.resetDebugSettings",
+          "sideChat.setContentSize",
+          "sideChat.setInteractiveProgress",
+          "sideChat.updateDebugSettings",
+          "sideChat.updateShortcut"
+        ]
+      },
+      {
+        "name": "sitePermissionMenu",
+        "commands": 2,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "sitePermissionMenu.act",
+          "sitePermissionMenu.changed",
+          "sitePermissionMenu.state"
+        ]
+      },
+      {
+        "name": "subscriptionAuthorization",
+        "commands": 3,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "subscriptionAuthorization.cancel",
+          "subscriptionAuthorization.start",
+          "subscriptionAuthorization.status"
+        ]
+      },
+      {
+        "name": "surfaces",
+        "commands": 2,
+        "events": 3,
+        "states": 2,
+        "leafIds": [
+          "surfaces.changed",
+          "surfaces.state",
+          "surfaces.windowFullScreen",
+          "surfaces.windowFullScreen.changed",
+          "surfaces.windowResizeSettled"
+        ]
+      },
+      {
+        "name": "synchronicity",
+        "commands": 21,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "synchronicity.adopt",
+          "synchronicity.adoptTree",
+          "synchronicity.delete",
+          "synchronicity.importFile",
+          "synchronicity.list",
+          "synchronicity.openLocalRoot",
+          "synchronicity.pickFolder",
+          "synchronicity.pin",
+          "synchronicity.read",
+          "synchronicity.replicaSet",
+          "synchronicity.replicaSync",
+          "synchronicity.restart",
+          "synchronicity.saveDownload",
+          "synchronicity.scan",
+          "synchronicity.setDomain",
+          "synchronicity.setSpaceSettings",
+          "synchronicity.sourceAdd",
+          "synchronicity.sourceRemove",
+          "synchronicity.state",
+          "synchronicity.versions",
+          "synchronicity.write"
+        ]
+      },
+      {
+        "name": "transport",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "transport.status"
+        ]
+      },
+      {
+        "name": "windows",
+        "commands": 3,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "windows.close",
+          "windows.create",
+          "windows.focus"
+        ]
+      }
+    ],
+    "legacyRawIpc": {
+      "path": "clients/apps/electron/src/main/index.ts",
+      "channels": [
+        "comma:connector:configure",
+        "comma:connector:restart",
+        "comma:connector:start",
+        "comma:connector:status",
+        "comma:connector:stop",
+        "comma:connector:uninstall",
+        "comma:updates:apply",
+        "comma:updates:check",
+        "comma:updates:download",
+        "comma:updates:status"
+      ]
+    }
+  },
+  "deployment": {
+    "path": "k8s/comma/chart/templates/application.yaml",
+    "workload": "StatefulSet",
+    "enabledSubsystems": [
+      "salix",
+      "bridge_for_teams",
+      "comma_product"
+    ],
+    "ports": [
+      {
+        "name": "salix-http",
+        "port": 4000
+      },
+      {
+        "name": "salix-transfer",
+        "port": 4400
+      },
+      {
+        "name": "teams-http",
+        "port": 4101
+      },
+      {
+        "name": "product-http",
+        "port": 4200
+      },
+      {
+        "name": "epmd",
+        "port": 4369
+      },
+      {
+        "name": "dist",
+        "port": 9100
+      },
+      {
+        "name": "telemetry",
+        "port": 9568
+      },
+      {
+        "name": "http",
+        "port": 4300
+      },
+      {
+        "name": "telemetry",
+        "port": 9568
+      }
+    ],
+    "services": [
+      {
+        "name": "comma-alert-router",
+        "port": 80,
+        "targetPort": "http"
+      },
+      {
+        "name": "comma-headless",
+        "port": 4400,
+        "targetPort": "salix-transfer"
+      },
+      {
+        "name": "comma-salix",
+        "port": 80,
+        "targetPort": "salix-http"
+      },
+      {
+        "name": "comma-teams",
+        "port": 80,
+        "targetPort": "teams-http"
+      },
+      {
+        "name": "comma-product",
+        "port": 80,
+        "targetPort": "product-http"
+      }
+    ]
+  },
+  "productConceptAnchors": [
+    {
+      "concept": "Comma 用户",
+      "layer": "产品身份",
+      "implementation": "Comma.Accounts.User",
+      "path": "systems/apps/comma_core/lib/comma/accounts/user.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Comma Workspace",
+      "layer": "产品范围",
+      "implementation": "Comma.Data.Workspace",
+      "path": "systems/apps/comma_core/lib/comma/data/schemas.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Comma 当前 Assistant Chat",
+      "layer": "产品入口",
+      "implementation": "Comma.AssistantChats",
+      "path": "systems/apps/comma_core/lib/comma/assistant_chats.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/comma_core/test/comma_core_test.exs",
+          "name": "assistant ensure resolves and reuses the Group fixed Router Conversation"
+        }
+      ],
+      "supportingSources": [
+        {
+          "label": "SalixIM.RouterConversationInput",
+          "path": "systems/apps/salix_im/lib/salix_im/router_conversation_input.ex"
+        }
+      ]
+    },
+    {
+      "concept": "BFT 用户",
+      "layer": "产品身份",
+      "implementation": "BridgeForTeams.Schema.User",
+      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user.ex",
+      "directTests": []
+    },
+    {
+      "concept": "BFT Organization",
+      "layer": "产品范围",
+      "implementation": "BridgeForTeams.Schema.Organization",
+      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/organization.ex",
+      "directTests": []
+    },
+    {
+      "concept": "BFT Agent Swarm",
+      "layer": "产品范围",
+      "implementation": "BridgeForTeams.Schema.Project",
+      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/project.ex",
+      "directTests": []
+    },
+    {
+      "concept": "BFT 当前 Assistant Chat",
+      "layer": "产品绑定",
+      "implementation": "BridgeForTeams.Schema.UserAssistantChat",
+      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user_assistant_chat.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Agent 工作范围的 Chat-ready 条件",
+      "layer": "产品生命周期",
+      "implementation": "BridgeForTeams.AssistantChats.ensure_chat/4",
+      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs",
+          "name": "invalid router config creates no chat"
+        }
+      ]
+    },
+    {
+      "concept": "Conversation",
+      "layer": "协作事实",
+      "implementation": "SalixIM.ConversationActor",
+      "path": "systems/apps/salix_im/lib/salix_im/conversation_actor.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Participant 接收目标",
+      "layer": "协作事实",
+      "implementation": "SalixIM.ConversationParticipantActor",
+      "path": "systems/apps/salix_im/lib/salix_im/conversation_participant_actor.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Message",
+      "layer": "协作事实",
+      "implementation": "SalixIM.ConversationMessage",
+      "path": "systems/apps/salix_im/lib/salix_im/conversation_message.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Router Single Session",
+      "layer": "执行上下文",
+      "implementation": "SalixAgent.AgentRoleActor",
+      "path": "systems/apps/salix_agent/lib/salix_agent/agent_role_actor.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/salix_agent/test/deliver_ingress_test.exs",
+          "name": "a session-less delivery to a router resolves its session at deliver time"
+        }
+      ]
+    },
+    {
+      "concept": "Worker Multi Session",
+      "layer": "执行上下文",
+      "implementation": "SalixIM.AgentDeliveryPayload",
+      "path": "systems/apps/salix_im/lib/salix_im/agent_delivery_payload.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/salix_im/test/agent_actor_role_routing_test.exs",
+          "name": "worker participant payload uses origin session only when it is the delegator"
+        }
+      ]
+    },
+    {
+      "concept": "Task 创建与持久化边界",
+      "layer": "Task creation input",
+      "implementation": "SalixIM.Provider.Internal.internal.task.create",
+      "path": "systems/apps/salix_im/lib/salix_im/provider/internal.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/salix_im/test/provider_test.exs",
+          "name": "im_api.internal.task.create owns command preparation and calls only the TaskSchedules port"
+        }
+      ],
+      "supportingSources": [
+        {
+          "label": "SalixIM.Provider.Manuals.internal.task.create",
+          "path": "systems/apps/salix_im/lib/salix_im/provider/manuals.ex"
+        },
+        {
+          "label": "SalixIM.Ports.TaskCreate",
+          "path": "systems/apps/salix_im/lib/salix_im/ports/task_create.ex"
+        },
+        {
+          "label": "Salix.Bindings.AgentConversations",
+          "path": "systems/apps/salix_web/lib/salix/bindings/agent_conversations.ex"
+        },
+        {
+          "label": "SalixCluster.TaskSchedules",
+          "path": "systems/apps/salix_cluster/lib/salix_cluster/task_schedules.ex"
+        },
+        {
+          "label": "SalixIM.TaskConversationInput",
+          "path": "systems/apps/salix_im/lib/salix_im/task_conversation_input.ex"
+        }
+      ]
+    },
+    {
+      "concept": "普通 Task Worker 停机监督",
+      "layer": "Task owner",
+      "implementation": "SalixIM.TaskWorkerWatch",
+      "path": "systems/apps/salix_im/lib/salix_im/task_worker_watch.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/salix_im/test/conversations_test.exs",
+          "name": "TaskWorkerWatch reminds a silent stopped Worker once, then tells the Router"
+        },
+        {
+          "path": "systems/apps/salix_im/test/conversations_test.exs",
+          "name": "TaskWorkerWatch does not escalate the stop it already reminded for after a restart"
+        },
+        {
+          "path": "systems/apps/salix_im/test/conversations_test.exs",
+          "name": "TaskWorkerWatch retries a reminder whose append failed"
+        }
+      ]
+    },
+    {
+      "concept": "Participant 实时状态与显式 Message 边界",
+      "layer": "可见输出",
+      "implementation": "SalixAgent.ToolPolicy",
+      "path": "systems/apps/salix_agent/lib/salix_agent/tool_policy.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/salix_im/test/conversations_test.exs",
+          "name": "participant direct reads recover a missed realtime draft clear invalidation"
+        },
+        {
+          "path": "systems/apps/salix_im/test/conversations_test.exs",
+          "name": "participant status keeps display text separate from its exact presentation on a shared session"
+        },
+        {
+          "path": "systems/apps/salix_agent/test/server_test.exs",
+          "name": "an internal conversation gains an agent Message only from explicit send_message"
+        },
+        {
+          "path": "systems/apps/salix_agent/test/server_test.exs",
+          "name": "explicit Feishu dynamic IM operation is the visible reply path"
+        }
+      ]
+    },
+    {
+      "concept": "Comma Workspace → Group scope revision",
+      "layer": "产品授权",
+      "implementation": "Comma.WorkspaceGroupBinding",
+      "path": "systems/apps/comma_core/lib/comma/workspace_group_binding.ex",
+      "directTests": []
+    },
+    {
+      "concept": "Comma 控制面显式重新指定 Group Router：固定 Conversation 发送",
+      "layer": "产品生命周期",
+      "implementation": "Comma.Conversations.send_message/5",
+      "path": "systems/apps/comma_core/lib/comma/conversations.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/comma_web/test/comma_api_test.exs",
+          "name": "the next Comma Chat send follows an explicitly reassigned Group Router"
+        }
+      ]
+    },
+    {
+      "concept": "Group 固定 Router Conversation 显式重新指定收敛",
+      "layer": "Salix 产品编排",
+      "implementation": "SalixIM.RouterConversationInput",
+      "path": "systems/apps/salix_im/lib/salix_im/router_conversation_input.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/salix_im/test/conversations_test.exs",
+          "name": "concurrent Router reassignment cannot deactivate both desired Router participants"
+        }
+      ]
+    },
+    {
+      "concept": "BFT 控制面显式重新指定 Group Router",
+      "layer": "产品生命周期",
+      "implementation": "BridgeForTeams.AssistantChats",
+      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs",
+          "name": "revalidates canonical kind, current Router, and BFT provider before reuse"
+        }
+      ]
+    },
+    {
+      "concept": "Comma Center Recommendation 产品 Projection SSOT",
+      "layer": "产品 Projection",
+      "implementation": "Comma.Recommendations",
+      "path": "systems/apps/comma_core/lib/comma/recommendations.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/comma_core/test/comma/recommendations_test.exs",
+          "name": "a repeated manual refresh atomically supersedes the active run and clears its evidence"
+        },
+        {
+          "path": "systems/apps/comma_core/test/comma/recommendations_test.exs",
+          "name": "source changes supersede an active run and stop exposing refreshing state"
+        }
+      ],
+      "supportingSources": [
+        {
+          "label": "RecommendationProfile",
+          "path": "systems/apps/comma_core/lib/comma/data/recommendation_profile.ex"
+        },
+        {
+          "label": "RecommendationRun",
+          "path": "systems/apps/comma_core/lib/comma/data/recommendation_run.ex"
+        }
+      ]
+    },
+    {
+      "concept": "Recommendation 有界 Source Collector 与受限 Renderer",
+      "layer": "产品 Runtime",
+      "implementation": "CommaWeb.RecommendationSourceCollector",
+      "path": "systems/apps/comma_web/lib/comma_web/recommendation_source_collector.ex",
+      "directTests": [
+        {
+          "path": "systems/apps/comma_web/test/local_recommendation_flow_test.exs",
+          "name": "HTTP refresh durably queues work before collection and publishes one stateless model response"
+        }
+      ],
+      "supportingSources": [
+        {
+          "label": "RecommendationRuntime",
+          "path": "systems/apps/comma_web/lib/comma_web/recommendation_runtime.ex"
+        }
+      ]
+    },
+    {
+      "concept": "Recommendation 版本化 Contract 与 Electron Media Intake",
+      "layer": "客户端边界",
+      "implementation": "@comma/recommendation-contract",
+      "path": "clients/packages/recommendation-contract/src/index.ts",
+      "directTests": [
+        {
+          "path": "clients/apps/electron/src/main/test/recommendation-media.test.ts",
+          "name": "rejects a hostname if any returned address is private"
+        }
+      ],
+      "supportingSources": [
+        {
+          "label": "recommendationMedia.load",
+          "path": "clients/packages/native-bridge/src/capability-leaves.ts"
+        },
+        {
+          "label": "Electron Recommendation Media",
+          "path": "clients/apps/electron/src/main/modules/recommendation-media/index.ts"
+        }
+      ]
+    },
+    {
+      "concept": "Internal Runtime Session",
+      "layer": "执行 Owner",
+      "implementation": "SalixAgent.InternalSessionActor",
+      "path": "systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex",
+      "directTests": []
+    },
+    {
+      "concept": "External Runtime Session",
+      "layer": "执行 Owner",
+      "implementation": "SalixAgent.ExternalSessionActor",
+      "path": "systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex",
+      "directTests": []
+    }
+  ]
+}

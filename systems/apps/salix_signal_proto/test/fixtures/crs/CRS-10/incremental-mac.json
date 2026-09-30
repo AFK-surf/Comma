@@ -1,0 +1,85 @@
+{
+  "section": "CRS-10",
+  "name": "incremental-mac",
+  "description": "Incremental MAC over a byte stream (for attachments the stream is the whole encrypted blob) with the given mac_key and chunk size, computed by the oracle. Each case was also recomputed from the CRS-10 rule (HMAC-SHA256 of each chunk-aligned prefix, then of the whole stream, concatenated) and matched.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "mac_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "data_size": 0,
+        "data_rule": "byte i = (7*i + 3) mod 256",
+        "chunk_size": 16,
+        "data": ""
+      },
+      "outputs": {
+        "incremental_mac": "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad",
+        "digest_count": 1
+      }
+    },
+    {
+      "inputs": {
+        "mac_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "data_size": 15,
+        "data_rule": "byte i = (7*i + 3) mod 256",
+        "chunk_size": 16,
+        "data": "030a11181f262d343b424950575e65"
+      },
+      "outputs": {
+        "incremental_mac": "b5191625c722a528ae54c99e8c02b0086facb3a92a6a5f7adfc2d41d851e7ef1",
+        "digest_count": 1
+      }
+    },
+    {
+      "inputs": {
+        "mac_key": "1111111111111111111111111111111111111111111111111111111111111111",
+        "data_size": 16,
+        "data_rule": "byte i = (7*i + 3) mod 256",
+        "chunk_size": 16,
+        "data": "030a11181f262d343b424950575e656c"
+      },
+      "outputs": {
+        "incremental_mac": "a860a12ea3a159eb35fa0115d553344c32ac2130d9b4384014f58b1ef966deb8a860a12ea3a159eb35fa0115d553344c32ac2130d9b4384014f58b1ef966deb8",
+        "digest_count": 2
+      }
+    },
+    {
+      "inputs": {
+        "mac_key": "2222222222222222222222222222222222222222222222222222222222222222",
+        "data_size": 50,
+        "data_rule": "byte i = (7*i + 3) mod 256",
+        "chunk_size": 16,
+        "data": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a"
+      },
+      "outputs": {
+        "incremental_mac": "ddc58a29bda2b79ded58221ed51609c27cfd5f5735c1ee75c93f6f94fc87f7cdd343e9a674a69eeb0a2aa6e27db74af30a4677331014ce9113707d121dbaf23cd8d344e70c30a25fb403f5340b9e7c3d6ad974511da51aa88b158c108ecbf0539fa17cd755430d45ed54b0285ab77d0d3489121af814cd0229d18f4de4af7e5d",
+        "digest_count": 4
+      }
+    },
+    {
+      "inputs": {
+        "mac_key": "3333333333333333333333333333333333333333333333333333333333333333",
+        "data_size": 64,
+        "data_rule": "byte i = (7*i + 3) mod 256",
+        "chunk_size": 32,
+        "data": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc"
+      },
+      "outputs": {
+        "incremental_mac": "ea7027d680bcbe3223b56caeb63a2cf13e5c876905c8a5ba9aac0e1307f8c0bb72b3f9a5097932fa25f7c9f68d6da116b2f52ff3c49170ea6fb69861fd76448c72b3f9a5097932fa25f7c9f68d6da116b2f52ff3c49170ea6fb69861fd76448c",
+        "digest_count": 3
+      }
+    },
+    {
+      "inputs": {
+        "mac_key": "4444444444444444444444444444444444444444444444444444444444444444",
+        "data_size": 200000,
+        "data_rule": "byte i = (7*i + 3) mod 256",
+        "chunk_size": 65536
+      },
+      "outputs": {
+        "incremental_mac": "f1e49b9c4f2dc594ccb6cca3f6881179827c467d551ea8b0adf599e689c0eae5a4b6b33e56aeee7427a92a1f80d18d7205b541b09eddf1868ba63bea63763dbbf3a8d50bc3372cfd399a737509cfa7582339d697eb4c08f84ccc4fc021796c030efd4ce024f7c18280b96f41615a5793af12a181c27a9c23ed6d806841112f33",
+        "digest_count": 4
+      }
+    }
+  ]
+}

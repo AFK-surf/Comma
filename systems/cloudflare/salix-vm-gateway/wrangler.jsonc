@@ -1,0 +1,221 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "salix-vm-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+  "vars": {
+    "SANDBOX_TRANSPORT": "rpc",
+    "GATEWAY_BUILD_ID": "dev",
+    "CONNECTOR_IMAGE_VERSION": "dev",
+  },
+  "version_metadata": {
+    "binding": "VERSION_METADATA",
+  },
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 5,
+    },
+    {
+      "class_name": "SandboxStandard1",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 5,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox",
+      },
+      {
+        "class_name": "SandboxStandard1",
+        "name": "SandboxStandard1",
+      },
+      {
+        "class_name": "ReplayGuard",
+        "name": "ReplayGuard",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Sandbox", "ReplayGuard"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SandboxStandard1"],
+    },
+  ],
+  "env": {
+    "staging": {
+      "name": "salix-vm-gateway-staging",
+      "workers_dev": true,
+      "routes": [
+        {
+          "pattern": "salix-vm-gateway-staging.afk.surf",
+          "custom_domain": true,
+        },
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+      },
+      "vars": {
+        "SANDBOX_TRANSPORT": "rpc",
+        "SALIX_ENV": "staging",
+        "GATEWAY_BUILD_ID": "dev",
+        "CONNECTOR_IMAGE_VERSION": "dev",
+      },
+      "version_metadata": {
+        "binding": "VERSION_METADATA",
+      },
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "./Dockerfile",
+          "instance_type": "standard-2",
+          "max_instances": 32,
+          "ssh": { "enabled": true },
+          "authorized_keys": [
+            {
+              "name": "salix-vm-staging-2026-09",
+              "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvqGsOvtIJdSji4MlL/mpoGcaha6JzAKn2HGrfFw/Jl salix-vm-staging-2026-09"
+            }
+          ],
+        },
+        {
+          "class_name": "SandboxStandard1",
+          "image": "./Dockerfile",
+          "instance_type": "standard-1",
+          "max_instances": 512,
+        },
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "class_name": "Sandbox",
+            "name": "Sandbox",
+          },
+          {
+            "class_name": "SandboxStandard1",
+            "name": "SandboxStandard1",
+          },
+          {
+            "class_name": "ReplayGuard",
+            "name": "ReplayGuard",
+          },
+        ],
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": ["Sandbox", "ReplayGuard"],
+        },
+        {
+          "tag": "v3",
+          "new_sqlite_classes": [
+            "OperationLedger",
+            "PortableTransferSession",
+          ],
+        },
+        {
+          "tag": "v4",
+          "new_sqlite_classes": ["MutationGate"],
+        },
+        {
+          // Retire the obsolete classes left by staging's applied v4 lifecycle.
+          "tag": "v5",
+          "deleted_classes": [
+            "MutationGate",
+            "OperationLedger",
+            "PortableTransferSession",
+          ],
+        },
+        {
+          "tag": "v6",
+          "new_sqlite_classes": ["SandboxStandard1"],
+        },
+      ],
+    },
+    "stable": {
+      "name": "salix-vm-gateway-stable",
+      "workers_dev": true,
+      "routes": [
+        {
+          "pattern": "salix-vm-gateway-prod.afk.surf",
+          "custom_domain": true,
+        },
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+      },
+      "vars": {
+        "SANDBOX_TRANSPORT": "rpc",
+        "SALIX_ENV": "stable",
+        "GATEWAY_BUILD_ID": "dev",
+        "CONNECTOR_IMAGE_VERSION": "dev",
+      },
+      "version_metadata": {
+        "binding": "VERSION_METADATA",
+      },
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "./Dockerfile",
+          "instance_type": "standard-2",
+          "max_instances": 32,
+          "ssh": { "enabled": true },
+          "authorized_keys": [
+            {
+              "name": "salix-vm-prod-2026-09",
+              "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC/cGBlClWyo65Wwab0BzQs7D/TQ/9Ssz97XyG/stu1X salix-vm-prod-2026-09"
+            }
+          ],
+        },
+        {
+          "class_name": "SandboxStandard1",
+          "image": "./Dockerfile",
+          "instance_type": "standard-1",
+          "max_instances": 512,
+        },
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "class_name": "Sandbox",
+            "name": "Sandbox",
+          },
+          {
+            "class_name": "SandboxStandard1",
+            "name": "SandboxStandard1",
+          },
+          {
+            "class_name": "ReplayGuard",
+            "name": "ReplayGuard",
+          },
+        ],
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": ["Sandbox", "ReplayGuard"],
+        },
+        {
+          "tag": "v2",
+          "new_sqlite_classes": ["SandboxStandard1"],
+        },
+      ],
+    },
+  },
+}

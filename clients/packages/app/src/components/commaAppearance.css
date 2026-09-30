@@ -1,0 +1,103 @@
+:root[data-comma-font-size="small"] {
+  font-size: 90%;
+}
+
+:root,
+:root[data-comma-font-size="default"] {
+  font-size: 100%;
+}
+
+:root[data-comma-font-size="large"] {
+  font-size: 110%;
+}
+
+/* 450 is Inter Variable's optical regular. Installed families with static
+   faces match 450 to Medium, so a chosen family sets body text in Regular. */
+:root[data-comma-font-family] {
+  --font-weight-normal: 400;
+  --font-weight-regular: 400;
+}
+
+:root[data-comma-pointer-cursors="false"] {
+  --comma-interactive-cursor: default;
+}
+
+:root[data-comma-pointer-cursors="true"] {
+  --comma-interactive-cursor: pointer;
+}
+
+/* React Aria puts switch/radio/checkbox semantics on a hidden input. Include
+   the clickable label and explicit pointer surfaces (tracks, menu content),
+   so the preference reaches the visible hit area in both states. */
+:root[data-comma-pointer-cursors]
+  :is(
+    a[href],
+    area[href],
+    button,
+    select,
+    summary,
+    input[type="button"],
+    input[type="checkbox"],
+    input[type="radio"],
+    input[type="range"],
+    input[type="reset"],
+    input[type="submit"],
+    label:has(
+      input:is([type="checkbox"], [type="radio"], [type="range"]):enabled,
+      select:enabled
+    ),
+    [role="button"],
+    [role="checkbox"],
+    [role="combobox"]:not(input),
+    [role="link"],
+    [role="menuitem"],
+    [role="menuitemcheckbox"],
+    [role="menuitemradio"],
+    [role="option"],
+    [role="radio"],
+    [role="switch"],
+    [role="tab"],
+    [role="treeitem"],
+    .cursor-pointer
+  ) {
+  &,
+  & * {
+    &:not(
+      :is(
+        :disabled,
+        [aria-disabled="true"],
+        [data-disabled]:not([data-disabled="false"]),
+        [data-comma-functional-cursor],
+        input:not(
+          [type="button"],
+          [type="checkbox"],
+          [type="radio"],
+          [type="range"],
+          [type="reset"],
+          [type="submit"]
+        ),
+        textarea,
+        [contenteditable]:not([contenteditable="false"])
+      ),
+      :is(
+          :disabled,
+          [aria-disabled="true"],
+          [data-disabled]:not([data-disabled="false"]),
+          [data-comma-functional-cursor],
+          input:not(
+            [type="button"],
+            [type="checkbox"],
+            [type="radio"],
+            [type="range"],
+            [type="reset"],
+            [type="submit"]
+          ),
+          textarea,
+          [contenteditable]:not([contenteditable="false"])
+        )
+        *
+    ) {
+      cursor: var(--comma-interactive-cursor) !important;
+    }
+  }
+}

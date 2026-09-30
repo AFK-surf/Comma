@@ -1,0 +1,96 @@
+{
+  "section": "CRS-09",
+  "name": "profile-key-derived",
+  "description": "Values derived from a profile key and ACI: the 97-byte profile key commitment, the 64-character profile key version string, and the 16-byte access key.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "commitment": "0096763e6a327bb375976e66bcc36daea89efdc8a997ca07116a77c7b4f8d09c1eec47ab525034ea5f809e9981ff1711757e44b8a8a883a8543fa197a30a5a6f53ea1e758f4733eaf73fa8da2c579cbe4a004db75f46e6d9930ceff23945ec0803",
+        "profile_key_version": "fcd0715a47cd726483fb0ff70d03b3f4c7329fe444d21cd61e36723f971b3b32",
+        "access_key": "cea7403d4d606b6e074ec5d3baf39d18"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "commitment": "008e51c1f6ed2b4d038e80e7a8b9b2d30849ab360c961a8ed416724d91f7df171e02855b6087c7d631ced9367eef706376ed522429be38ad0026bb9628d0ae310e2cf1a53168ab0e094362f42aea48ab720296fb37895441308aed60a5d73bf847",
+        "profile_key_version": "ef69c9705e919e61cbcbaeaefed6feed010434d54cc9427b8b48de80af0fafe2",
+        "access_key": "cea7403d4d606b6e074ec5d3baf39d18"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "commitment": "007a516e2ca3d126e022678d7c405a231e04ac8803d49a8fa764e3cc2acfadec52f0104271f21742ac1e0cb9921ac3da60525fa2c4e1aa6b4500ffb6b7c0a66f5b4421e080cc4a8286360bbf194639ffde15ba2c9d5ec7eb814b09068fb556ff65",
+        "profile_key_version": "1bc7aecd2a1b5dd6da696accba4eb74a7b7487f3da50d9eaade8d263086daded",
+        "access_key": "c7c96dffcd9cc01f120645ccfc24d400"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "commitment": "0006be953943769f6096a4d1892cb98bff1ca4a0f8ec00bea17b99ede54549575c1c5322aa3c85a408c755c4f36c5c72d5620e38312f04aa35cac9f6182e7d010442800fa8c25faf45e7b24bde534d4b35ad0444f658fb903021e6cce76fb7221e",
+        "profile_key_version": "4fd14e64d108f1d6df3c1d838f077e679757eef2f52ab254d5ebccba285f3ff1",
+        "access_key": "c7c96dffcd9cc01f120645ccfc24d400"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "d278fa0e67f3dc444b51e0b2c7a3e2bbd712af2782cbd31f702e352e80474f8d",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "commitment": "00c03b7a83c960ccafaf457fdd61d795af27cf8d9848c0a72f7b3c25152a01ee66245f8c8193aba0615a4e4d3cc468d2094f6e9a8d4cc16384c1ac25a74d78ff74f2d1cbbc4d1e9b26b2a04764fec55a6aceeca1a79b693789f774dccef7180f34",
+        "profile_key_version": "d636e7ebf040994f27279145a3107b44dae18c7c4329804b48ce35778a004aaf",
+        "access_key": "2f60f14427162d8710da9cebc8f25a91"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "d278fa0e67f3dc444b51e0b2c7a3e2bbd712af2782cbd31f702e352e80474f8d",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "commitment": "00e621e279c1fb6d5b2a1c5e31761519fcb467717b7e839c6ef541924418e8c711ae1406385f5227ac433cebef3f856c1d0d35b8dcfc18a2faafd0269334f1a20eba0f97b2e22863d323dbf351c94cae185bb977665051625ae44d799df4d8a64a",
+        "profile_key_version": "b2df0701f307715e9ce276122a1adeb51d8a05895936e33ae1881049ba06d708",
+        "access_key": "2f60f14427162d8710da9cebc8f25a91"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "aci_uuid": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "commitment": "00b20cebbd65cc6ead0930562544fed672d9b3a0354381941b27426c9694e18d20ae8c9791a9f1b2eb3198821da7f8f66652708a0fd8af71550a9563590e35af3cc2ffe97edf3ded2f01ef6572ffbed45d84b926a62d4c1c5e6ce5216ba3a5c43a",
+        "profile_key_version": "2ab79d4dedab512840f212d1d96b4626fabaaa2ca0411640a3f5a5bd7a88dd05",
+        "access_key": "5a3430789468d2abd88b98f33ffd6246"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "aci_uuid": "c0e5a9b13d2f4c6e9a7b1f2e3d4c5b6a"
+      },
+      "outputs": {
+        "commitment": "00d4a6e7c51c6a351c1032c767f94846763e05bb4f61a239ba6ecf0ae4c522640a7e06d7311b914ee82f74dd0f2cce07199614b0ecb54d49c3bad36ce2012d443aa0c72338e7f78c62b8466f1fd8c7bbac3cffa7dfdad6651d01c2bf35412cb15d",
+        "profile_key_version": "91fb99645c12820744204a2e9f910e459fb0c584c4314980ae17848c852001c3",
+        "access_key": "5a3430789468d2abd88b98f33ffd6246"
+      }
+    }
+  ]
+}

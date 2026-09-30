@@ -1,0 +1,24 @@
+{
+  "name": "@evalens/store",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./metadata": "./src/metadata/index.ts",
+    "./metadata/*": "./src/metadata/*.ts",
+    "./local": "./src/local/index.ts",
+    "./cloudflare": "./src/cloudflare/index.ts",
+    "./*": "./src/*.ts",
+    "./local/*": "./src/local/*.ts",
+    "./cloudflare/*": "./src/cloudflare/*.ts"
+  },
+  "dependencies": {
+    "@evalens/core": "workspace:*",
+    "@evalens/utils": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260711.1"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@comma/product-inbox-runtime",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts.ts"
+  },
+  "dependencies": {
+    "@comma/native-bridge": "workspace:*",
+    "@comma/session-contract": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

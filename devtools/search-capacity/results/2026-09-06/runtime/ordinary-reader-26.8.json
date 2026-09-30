@@ -1,0 +1,30 @@
+{
+  "search": {
+    "requests": 20,
+    "errors": 0,
+    "p50_ms": 319.302,
+    "p95_ms": 459.67,
+    "max_ms": 461.146,
+    "min_hits": 20
+  },
+  "method": "Same 20-message ordinary Reader.history page; bounded overlap with hybrid search and immutable component retries. No GPU, production traffic, or zero-interference claim.",
+  "baseline": {
+    "requests": 40,
+    "errors": 0,
+    "p50_ms": 23.37,
+    "p95_ms": 25.831,
+    "max_ms": 26.969,
+    "min_hits": 20
+  },
+  "overlap": {
+    "requests": 40,
+    "errors": 0,
+    "p50_ms": 26.718,
+    "p95_ms": 49.605,
+    "max_ms": 52.846,
+    "min_hits": 20
+  },
+  "identical_history": true,
+  "writes": 40,
+  "rows_per_write": 20
+}

@@ -1,0 +1,39 @@
+{
+  "extends": "../../tsconfig.react.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.electron.renderer.tsbuildinfo",
+    "types": ["vite/client"],
+    "paths": {
+      "@comma/app": ["../../packages/app/src/index.tsx"],
+      "@comma/config": ["../../packages/config/src/index.ts"],
+      "@comma/i18n": ["../../packages/i18n/src/index.ts"],
+      "@comma/i18n/react": ["../../packages/i18n/src/react.tsx"],
+      "@comma/layout-inspector": ["../../packages/layout-inspector/src/index.ts"],
+      "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
+      "@comma/session-contract": ["../../packages/session-contract/src/index.ts"],
+      "@comma/ui": ["../../packages/ui/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "../../packages/app/src/**/*.ts",
+    "../../packages/app/src/**/*.tsx",
+    "../../packages/config/src/**/*.ts",
+    "../../packages/i18n/src/**/*.ts",
+    "../../packages/i18n/src/**/*.tsx",
+    "../../packages/layout-inspector/src/**/*.ts",
+    "../../packages/layout-inspector/src/**/*.tsx",
+    "../../packages/native-bridge/src/**/*.ts",
+    "../../packages/session-contract/src/**/*.ts",
+    "../../packages/ui/src/**/*.ts",
+    "../../packages/ui/src/**/*.tsx",
+    "../../packages/ui/src/**/*.json"
+  ],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/**/*.test.*",
+    "../../packages/**/*.spec.*"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "@comma/repository",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@10.25.0",
+  "scripts": {
+    "architecture": "pnpm architecture:inventory && likec4 start docs/architecture --title \"Comma 架构导览\" --use-hash-history",
+    "architecture:inventory": "node docs/architecture/scripts/generate-inventory.mjs",
+    "architecture:validate": "pnpm architecture:inventory && likec4 validate docs/architecture",
+    "architecture:prepare-preview": "node docs/architecture/scripts/prepare-preview.mjs",
+    "architecture:build": "pnpm architecture:validate && pnpm architecture:prepare-preview && likec4 build docs/architecture --output docs/architecture/.preview/site --use-hash-history --output-single-file --title \"Comma 架构导览\" && likec4 export png docs/architecture --output docs/architecture/.preview/png --flat --seq --notation --description",
+    "typecheck:pi": "tsc --project tsconfig.pi.json",
+    "docs:check": "node scripts/check-docs.mjs",
+    "dev:website": "pnpm --filter @comma/website dev",
+    "build:website": "pnpm --filter @comma/website build",
+    "build:website:cloudflare": "pnpm --filter @comma/website build:cloudflare",
+    "deploy:website": "pnpm --filter @comma/website run deploy",
+    "deploy:website:preview": "pnpm --filter @comma/website run deploy:preview",
+    "smoke:website": "pnpm --filter @comma/website smoke",
+    "typecheck:website": "pnpm --filter @comma/website typecheck"
+  },
+  "devDependencies": {
+    "vite": "8.0.16",
+    "typescript": "6.0.3",
+    "@types/node": "25.9.3",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "typebox": "1.3.7",
+    "sharp": "0.35.4",
+    "likec4": "1.59.2"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "section": "CRS-06",
+  "name": "access-key",
+  "description": "Unidentified access key: the 16-byte value derived from a 32-byte profile key (CRS-06 section 4.1). header_value is its standard base64 (with padding) as used in the Unidentified-Access-Key header. Access keys computed by the oracle; they also equal AES-256(profile_key, 0x00*15 || 0x02) and the first 16 bytes of AES-256-GCM(profile_key, nonce = 12 zero bytes, plaintext = 16 zero bytes).",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "all-zero profile key",
+      "inputs": {
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "access_key": "cea7403d4d606b6e074ec5d3baf39d18",
+        "header_value": "zqdAPU1ga24HTsXTuvOdGA=="
+      }
+    },
+    {
+      "label": "all-0xff profile key",
+      "inputs": {
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "outputs": {
+        "access_key": "c7c96dffcd9cc01f120645ccfc24d400",
+        "header_value": "x8lt/82cwB8SBkXM/CTUAA=="
+      }
+    },
+    {
+      "label": "counting bytes 0x00..0x1f",
+      "inputs": {
+        "profile_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "outputs": {
+        "access_key": "0ebcb5deb52c83bd08a8a935182c9199",
+        "header_value": "Dry13rUsg70IqKk1GCyRmQ=="
+      }
+    },
+    {
+      "label": "seeded A",
+      "inputs": {
+        "profile_key": "e6c7c1cccf077fb7fbc8e4b2df418c78dcc0af37d8d75fe2c5a2b707d0838700"
+      },
+      "outputs": {
+        "access_key": "e50ce49398c41799a69acc8199033463",
+        "header_value": "5Qzkk5jEF5mmmsyBmQM0Yw=="
+      }
+    },
+    {
+      "label": "seeded B",
+      "inputs": {
+        "profile_key": "3593eed1fefabf4ab4ca90bb3c5516cdec8e75ee6abd06ad9199368609c8735f"
+      },
+      "outputs": {
+        "access_key": "6929096a49bab098c199cda1f2b9617a",
+        "header_value": "aSkJakm6sJjBmc2h8rlheg=="
+      }
+    }
+  ]
+}

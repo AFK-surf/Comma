@@ -1,0 +1,76 @@
+/**
+ * Directional press feedback for navigation icons.
+ *
+ * A pressed control normally shrinks — a generic "I heard you". These glyphs
+ * can say more, because each one already draws its own action: back slides the
+ * way it points, forward the other way, reload sweeps along its own
+ * arrowhead. The press previews the verb instead of acknowledging the click.
+ *
+ * Travel and recoil are asymmetric on purpose. Going down is a 50ms push at an
+ * almost even pace, over well inside a normal click. Coming back is 150ms: it
+ * starts from a standstill, so it starts slow, crosses rest just past halfway
+ * and overshoots ~6% before settling. That slow start is not decoration —
+ * colour rides the same curve, and a colour that dumps half its change into
+ * the first frame reads as a flicker, not a fade.
+ *
+ * These are transitions, not keyframes: a real click is shorter than the
+ * travel, so the release almost always interrupts it and has to retarget from
+ * wherever the glyph got to. Keyframes would restart from zero and stutter.
+ *
+ * `[data-press-held]` is the pointer-owned refresh state. It keeps the pressed
+ * state past a fast pointerup so the turn can finish before something replaces
+ * it, without letting a keyboard-generated `:active` state start rotation.
+ *
+ * Colour shares the transform's curve and duration on both phases, which is
+ * what makes a press read as one physical event instead of two.
+ *
+ * `translate` / `rotate` are used rather than `transform` because
+ * `[data-comma-icon]` pins `scale: 1 !important` and owns the transform slot.
+ */
+.comma-icon-press-back,
+.comma-icon-press-forward,
+.comma-icon-press-refresh {
+  translate: 0;
+  rotate: 0deg;
+  transition:
+    translate var(--motion-duration-press-recoil) var(--motion-easing-press-recoil),
+    rotate var(--motion-duration-press-recoil) var(--motion-easing-press-recoil),
+    color var(--motion-duration-press-recoil) var(--motion-easing-press-recoil);
+}
+
+.comma-icon-press:not(:disabled):is(:active, [data-pressed])
+  :is(.comma-icon-press-back, .comma-icon-press-forward),
+.comma-icon-press:not(:disabled)[data-press-held] .comma-icon-press-refresh {
+  color: var(--color-fg-primary);
+  transition-duration: var(--motion-duration-press-travel);
+  transition-timing-function: var(--motion-easing-press-travel);
+}
+
+.comma-icon-press:not(:disabled):is(:active, [data-pressed]) .comma-icon-press-back {
+  translate: calc(-1 * var(--motion-distance-nav-press-shift));
+}
+
+.comma-icon-press:not(:disabled):is(:active, [data-pressed]) .comma-icon-press-forward {
+  translate: var(--motion-distance-nav-press-shift);
+}
+
+.comma-icon-press:not(:disabled)[data-press-held] .comma-icon-press-refresh {
+  rotate: var(--motion-rotate-refresh-press);
+}
+
+/* Reduced motion keeps the colour comma, which carries the feedback, and drops
+   the travel, which carries the delight. */
+:root[data-comma-reduced-motion="true"]
+  :is(.comma-icon-press-back, .comma-icon-press-forward, .comma-icon-press-refresh) {
+  translate: none !important;
+  rotate: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-icon-press-back,
+  .comma-icon-press-forward,
+  .comma-icon-press-refresh {
+    translate: none !important;
+    rotate: none !important;
+  }
+}

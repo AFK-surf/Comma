@@ -1,0 +1,16 @@
+{
+  "name": "@evalens/core",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./store": "./src/store/index.ts",
+    "./store/*": "./src/store/*.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@evalens/utils": "workspace:*",
+    "pino": "^10.3.1",
+    "zod": "^4.4.3"
+  }
+}

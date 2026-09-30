@@ -1,0 +1,18 @@
+{
+  "video_units": 500,
+  "other_messages": 40,
+  "candidate_k": 200,
+  "flat_collapse_messages": 1,
+  "flat_latency_ms": 140.41504124179482,
+  "nested_messages": 20,
+  "nested_latency_ms": 15.805957838892937,
+  "window_messages": 41,
+  "page_sizes": [
+    20,
+    20,
+    1
+  ],
+  "duplicates_across_pages": 0,
+  "scope_change_applied_after_refresh": true,
+  "limitations": "Static in-memory window; refreshed index scope change, not production owner revocation protocol."
+}

@@ -1,0 +1,426 @@
+{
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 0,
+  "fiscalYearStartMonth": 0,
+  "schemaVersion": 42,
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "gcm_datasource",
+        "skipUrlSync": false,
+        "multi": false,
+        "allowCustomValue": true,
+        "includeAll": false,
+        "auto": false,
+        "auto_min": "10s",
+        "auto_count": 30,
+        "label": "Cloud Monitoring datasource",
+        "query": "stackdriver",
+        "hide": 2
+      },
+      {
+        "type": "query",
+        "name": "gcp_project",
+        "skipUrlSync": false,
+        "multi": false,
+        "allowCustomValue": true,
+        "includeAll": false,
+        "auto": false,
+        "auto_min": "10s",
+        "auto_count": 30,
+        "label": "Cloud Monitoring project",
+        "datasource": {
+          "type": "stackdriver",
+          "uid": "${gcm_datasource}"
+        },
+        "query": {
+          "selectedQueryType": "projects",
+          "projectName": ""
+        },
+        "refresh": 1,
+        "hide": 2
+      }
+    ]
+  },
+  "annotations": {},
+  "title": "Billing Operations",
+  "uid": "comma-staging-billing",
+  "description": "Billing traffic, outcomes, latency, and Stripe rate limits. All billing metrics are lazy event series.",
+  "tags": [
+    "comma",
+    "generated",
+    "staging",
+    "billing"
+  ],
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "percentChangeColorMode": "standard",
+        "orientation": "auto"
+      },
+      "id": 601,
+      "title": "Workload scrape health",
+      "description": "Required context for both billing surfaces. No data is abnormal.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "min by (workload) (up{namespace=\"comma\",workload=\"comma\"})",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 610,
+      "title": "Billing operation traffic",
+      "description": "Lazy operation traffic by bounded surface and outcome.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{operation}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, operation, provider, outcome) (rate(billing_operations_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 611,
+      "title": "Non-ok billing rate",
+      "description": "Lazy non-ok outcomes shown with scrape context.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{operation}} {{outcome}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface, operation, provider, outcome) (rate(billing_operations_total{namespace=\"comma\",workload=\"comma\",outcome!=\"ok\"}[5m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} scrape up",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "up{namespace=\"comma\",workload=\"comma\"}",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 612,
+      "title": "Billing p95 latency",
+      "description": "Histogram p95 for billing operations that occurred.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}} {{operation}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (le, workload, surface, operation) (rate(billing_operations_duration_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[5m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "ops",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 620,
+      "title": "Stripe rate limits",
+      "description": "Lazy saturation signal. Empty means no observed rate-limit event only when scrape context is healthy.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{surface}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, surface) (rate(billing_stripe_rate_limits_total{namespace=\"comma\",workload=\"comma\"}[5m]))",
+            "step": "$__interval"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} scrape up",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "up{namespace=\"comma\",workload=\"comma\"}",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "mode": "markdown",
+        "content": "[Platform Overview](/d/comma-staging-platform-overview) owns shared runtime/dependency root cause. [Salix Runtime](/d/comma-staging-salix-runtime) owns downstream VM/LLM context."
+      },
+      "id": 630,
+      "title": "Context",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 4
+      }
+    }
+  ]
+}

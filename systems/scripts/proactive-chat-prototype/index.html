@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Comma 主动提醒 · 本地流程模拟器</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif;background:light-dark(#f5f5f3,#161817);color:light-dark(#252824,#e6e9e3)}
+body{max-width:1080px;margin:auto;padding:32px 24px}h1{font-size:25px;font-weight:600}h2{font-size:16px;font-weight:600;margin:0 0 12px}p{line-height:1.6;color:light-dark(#62665e,#aeb5ab)}
+button,select{font:inherit;padding:10px 14px;border:1px solid light-dark(#cbd0c5,#4b5347);border-radius:7px;background:light-dark(#fff,#262b23);color:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin:24px 0}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.panel{padding:20px;background:light-dark(#fff,#20241e);border-radius:10px;min-width:0}.wide{grid-column:1/-1}.status{font-weight:600}.steps{display:flex;flex-wrap:wrap;gap:8px;padding:0;list-style:none}.steps li{padding:8px 10px;border-bottom:3px solid light-dark(#d9ddd4,#46503e)}.steps .done{border-color:light-dark(#467b40,#8ab77e)}.steps .failed{border-color:light-dark(#b66b2d,#d89d60)}
+pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}article{padding:15px;margin:12px 0;border-left:3px solid light-dark(#6e8862,#91b980);background:light-dark(#f2f5ef,#283022);white-space:pre-wrap;overflow-wrap:anywhere}.small{font-size:12px}.empty{padding:24px 0;color:light-dark(#6d7467,#a0aa99)}details{margin:18px 0}summary{cursor:pointer}.history{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:700px){body{padding:20px 14px}.layout{grid-template-columns:1fr}}
+</style>
+<h1>Comma 主动提醒</h1>
+<p>本地流程模拟器 · 使用真实 Loop、工具调用、Session 和 Conversation。邮件与模型响应来自本地桩。</p>
+<div class="controls">
+<select id="scenario" aria-label="模拟场景">
+<option value="important">重要邮件：今天 17:00 前需确认</option>
+<option value="quiet">同标题，正文说不需要行动</option>
+<option value="missing_body">正文缺失</option>
+<option value="model_error">判断模型返回错误</option>
+<option value="uncertain">信息不足，暂不判断</option>
+<option value="duplicate">同一事件重复到达</option>
+<option value="foreign_account">其他 Group 的邮箱</option>
+<option value="restart">接收后重启：自动恢复，重送不重复提醒</option>
+<option value="model_redelivery">判断失败后重送：观察去重阻止重试</option>
+<option value="model_retry">判断失败后，由 Loop 保留事件并重试一次</option>
+</select>
+<button id="run">运行场景</button>
+<span id="status" class="status" role="status" aria-live="polite">等待运行</span>
+</div>
+<ol class="steps" id="steps"><li>事件入口</li><li>读取正文</li><li>判断是否提醒</li><li>唤醒 Session</li><li>消息可见</li></ol>
+<div class="layout">
+<section class="panel"><h2>源邮件 → 实际判断输入</h2><pre id="source">选择一个场景，查看送入判断接口的正文。</pre></section>
+<section class="panel"><h2>Router Conversation · 实际写入的消息</h2><div id="chat" class="empty">尚无提醒</div><p class="small">隔离的 Salix Router Conversation。尚未覆盖 Comma 登录、Workspace 绑定和客户端订阅。</p></section>
+<section class="panel wide"><h2>运行记录</h2><div class="history" id="history"></div><details><summary>证据：HTTP 调用、检查点、Session 唤醒和消息</summary><pre id="evidence">尚无记录</pre></details><p class="small">判断桩读取正文中的 “before 17:00” / “No action”；其他正文返回 defer。它验证数据传递和分支，不衡量真实模型质量。只有消息已经写入 Conversation 才显示“消息可见”。</p></section>
+</div>
+<script>
+const labels={visible_reply:'提醒已写入',quiet:'无需提醒',source_error:'正文不可用',decision_error:'判断失败',defer:'需要更多信息',rejected:'入口拒绝',retry_suppressed:'复现：重送被去重',error:'运行失败'};
+const byId=id=>document.getElementById(id);
+let shown=-1,timer,latest=[];
+function show(report){
+  byId('status').textContent=(report.verified?'场景验证通过 · ':'场景验证失败 · ')+(labels[report.outcome]||report.outcome);
+  const request=report.trace?.find(x=>x.path==='/v1/systemone');
+  byId('source').textContent=request?JSON.stringify(request.body.state,null,2):'未调用判断模型。\n'+JSON.stringify(report.checkpoint?.details||report.ingress||{},null,2);
+  const chat=byId('chat');chat.replaceChildren();chat.className='';
+  for(const msg of report.messages||[]){const article=document.createElement('article');article.textContent=Array.isArray(msg.content)?msg.content.map(x=>x.text||'').join('\n'):String(msg.content||'');chat.append(article);}
+  if(!chat.childNodes.length){chat.textContent='没有可见提醒';chat.className='empty';}
+  const passed=[report.ingress_status===202,!!request,!!report.checkpoint?.details?.answers,(report.session_wakes||[]).length>0,(report.messages||[]).length>0];
+  if(report.outcome==='visible_reply')passed[2]=true;
+  [...byId('steps').children].forEach((e,i)=>e.className=passed[i]?'done':'');
+  byId('evidence').textContent=JSON.stringify(report,null,2);
+}
+async function refresh(){
+  const state=await fetch('/state').then(x=>x.json());latest=state.reports;
+  byId('run').disabled=state.busy;
+  if(state.busy)byId('status').textContent='运行中：'+(state.stage||'准备场景');
+  if(latest.length && shown!==latest.length-1){shown=latest.length-1;show(latest[shown]);}
+  const history=byId('history');history.replaceChildren();
+  latest.forEach((r,i)=>{const b=document.createElement('button');b.textContent=r.scenario+' · '+(labels[r.outcome]||r.outcome);b.onclick=()=>{shown=i;show(r);};history.append(b);});
+  if(state.busy)timer=setTimeout(refresh,700);
+}
+byId('run').onclick=async()=>{
+  clearTimeout(timer);byId('run').disabled=true;byId('status').textContent='准备运行…';
+  try{const r=await fetch('/run',{method:'POST',headers:{'content-type':'application/json','x-prototype':'1'},body:JSON.stringify({scenario:byId('scenario').value})});if(!r.ok)throw Error(await r.text());await refresh();}
+  catch(e){byId('status').textContent=String(e);byId('run').disabled=false;}
+};
+refresh().catch(e=>byId('status').textContent=String(e));
+</script>
+</html>

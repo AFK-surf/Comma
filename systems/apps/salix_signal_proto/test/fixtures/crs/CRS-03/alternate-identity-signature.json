@@ -1,0 +1,44 @@
+{
+ "section": "CRS-03",
+ "name": "alternate-identity-signature",
+ "description": "Signature by one identity key over another identity key (used between the phone-number identity and the account identity). The signed message is 32 bytes 0xFF, the ASCII string Signal_PNI_Signature, then the 33-byte serialized other key. Produced and verified by the oracle.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "signer_identity_public": "055814f2e36222c40e25fb139ba9ed1c1560965f9425309cf58e6d78a1f144c476",
+    "other_identity_public": "053c90e37865b69329f0893e67b6d4f2ab6d6ef81eb5f0161f5523133f1186c631",
+    "signature": "e3d5be5c5b61036cc3f0ea203ab9416af925c91ad7fc80f11ccd87aaaa12bb7284ce6c28b55c9cef4f9de70f2d811962149e30496bef1d11828dd4754fa25383"
+   },
+   "outputs": {
+    "valid": true,
+    "signed_message": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5369676e616c5f504e495f5369676e6174757265053c90e37865b69329f0893e67b6d4f2ab6d6ef81eb5f0161f5523133f1186c631",
+    "plain_xeddsa_verify_over_signed_message": true
+   }
+  },
+  {
+   "inputs": {
+    "signer_identity_public": "05b1d6798e7126a89156c885e37976a62223cbd2dadaf90364fd6c3bc3914d9649",
+    "other_identity_public": "0515364bfa86bb394ebd79c5865557f7c207652c49fee830ae519960f179c36128",
+    "signature": "8293331c0d8340d8177cbc3e6200bac31559da8c2804f67f5ca70a41b94c8747ea6d22bff4be82fc899a42717c5affed59dc41d3b789d26c2b7628d767cd5a0f"
+   },
+   "outputs": {
+    "valid": true,
+    "signed_message": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5369676e616c5f504e495f5369676e61747572650515364bfa86bb394ebd79c5865557f7c207652c49fee830ae519960f179c36128",
+    "plain_xeddsa_verify_over_signed_message": true
+   }
+  },
+  {
+   "inputs": {
+    "signer_identity_public": "05986d5e67c6c233874491d8b81c8d1143abdd5f134b82cb2dc7dd0f7272497817",
+    "other_identity_public": "055281cdade3bef7c7f0459298bc83789866c260c065aca860cae71f417dd7cf23",
+    "signature": "46e33bf25d58cc8ea15b69dd1a154f77f6863c196f9644531934b8b342081a38ef3b944903bf8a8586831d39110bf399e2925b5e5260785bf8f16cb9e7428e87"
+   },
+   "outputs": {
+    "valid": true,
+    "signed_message": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5369676e616c5f504e495f5369676e6174757265055281cdade3bef7c7f0459298bc83789866c260c065aca860cae71f417dd7cf23",
+    "plain_xeddsa_verify_over_signed_message": true
+   }
+  }
+ ]
+}

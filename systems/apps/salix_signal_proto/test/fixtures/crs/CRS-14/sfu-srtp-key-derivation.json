@@ -1,0 +1,76 @@
+{
+  "section": "CRS-14",
+  "name": "sfu-srtp-key-derivation",
+  "description": "X25519 between the client join key (dhePublicKey in the join request) and the SFU key (dhePublicKey in the join response), then HKDF-SHA256 with a 32-byte zero salt and info = label || hkdf_extra_info (empty for Signal group calls), 56 bytes split into two AEAD_AES_128_GCM master key/salt pairs. Agreement and HKDF computed by the oracle; the split is [source].",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "client_private": "8b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d64",
+        "server_private_for_test": "aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c83",
+        "hkdf_extra_info": ""
+      },
+      "outputs": {
+        "client_dhe_public_key": "6a487380822ca77cdf42a3f2af3e445b48f6646b5fa50beb39c3f5c6b7060f65",
+        "server_dhe_public_key": "bbad68987e0c2907180ca644ac44b8a760dcd10eb5bd942982cb4c831d59d235",
+        "shared_secret": "4c54d0cd2c03d7d7561990d8b441ca33e6ebdda0e324014abb1337db3793f70d",
+        "okm_56": "958b483760bda2d02c3430ed3e9eb6671099d47e8b1cd6678928100a79ad08e9ba53fc7e247b3e68f3999dcd029e32c04cc5e35df3c201aa",
+        "client_to_sfu_srtp_key": "958b483760bda2d02c3430ed3e9eb667",
+        "client_to_sfu_srtp_salt": "1099d47e8b1cd6678928100a",
+        "sfu_to_client_srtp_key": "79ad08e9ba53fc7e247b3e68f3999dcd",
+        "sfu_to_client_srtp_salt": "029e32c04cc5e35df3c201aa"
+      }
+    },
+    {
+      "inputs": {
+        "client_private": "4242424242424242424242424242424242424242424242424242424242424242",
+        "server_private_for_test": "2424242424242424242424242424242424242424242424242424242424242424",
+        "hkdf_extra_info": ""
+      },
+      "outputs": {
+        "client_dhe_public_key": "132c442be010fbd57e72603328aa76e71fccc1503aae219327d14d9c9993f472",
+        "server_dhe_public_key": "04bcd2e0d00f2cce5fe8f1c6c2fbec5c07fa56e3aa5c88a5689975d88b3fce05",
+        "shared_secret": "07911fea3785e6cd6763e1fd5dab461fc08a6841af21db4a8ac7b7f99b64103a",
+        "okm_56": "03394ccc5305e9c0fedc719199cc6aa2e5e5741a1d1bca2b47a860ce9b54fa503c2c56f845d4da0bb97b10e6312db44a9fdf88e5c0cedd5c",
+        "client_to_sfu_srtp_key": "03394ccc5305e9c0fedc719199cc6aa2",
+        "client_to_sfu_srtp_salt": "e5e5741a1d1bca2b47a860ce",
+        "sfu_to_client_srtp_key": "9b54fa503c2c56f845d4da0bb97b10e6",
+        "sfu_to_client_srtp_salt": "312db44a9fdf88e5c0cedd5c"
+      }
+    },
+    {
+      "inputs": {
+        "client_private": "c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2",
+        "server_private_for_test": "e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1",
+        "hkdf_extra_info": "00112233"
+      },
+      "outputs": {
+        "client_dhe_public_key": "957ada7c98d2f25141741f6cc63148f5ab5a603bb679398c7a2147a8f8605f50",
+        "server_dhe_public_key": "7a8d4b4e9fb48b582c9147795033a09392c67e0d8983607fd158f53c0bf98e09",
+        "shared_secret": "9f2092e81443e6832962dec300d24e4b764f90d21d62e54e1f54415470476b28",
+        "okm_56": "f5c6c3f89db6421212bf816db8dfa5d255f5cba657a331fa03b76d7b4672428151d082081c3227b128b2a48393a8928775a399a3c98ca304",
+        "client_to_sfu_srtp_key": "f5c6c3f89db6421212bf816db8dfa5d2",
+        "client_to_sfu_srtp_salt": "55f5cba657a331fa03b76d7b",
+        "sfu_to_client_srtp_key": "4672428151d082081c3227b128b2a483",
+        "sfu_to_client_srtp_salt": "93a8928775a399a3c98ca304"
+      }
+    },
+    {
+      "inputs": {
+        "client_private": "070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0",
+        "server_private_for_test": "262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff",
+        "hkdf_extra_info": "454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f56"
+      },
+      "outputs": {
+        "client_dhe_public_key": "ae9d5a093df22f27409be49f96cc0d3598dc677d6a0f51ad1d2b124e7c13597e",
+        "server_dhe_public_key": "8b5a76f92bd45d2fda03985afa219d49ef8ab1f13999fa1fb66867c22a485470",
+        "shared_secret": "d9ca0fe70d5d8d1d6b42975e4042a150b5e7277733bf63d29b6521c8a72c082f",
+        "okm_56": "ab61be1ca962b24132206b9cd7fadbd7c9a915122350e27ac96e7c841e513d900ccb63a87bef47a844881ed6159ab322af0dd2e6ca86c5aa",
+        "client_to_sfu_srtp_key": "ab61be1ca962b24132206b9cd7fadbd7",
+        "client_to_sfu_srtp_salt": "c9a915122350e27ac96e7c84",
+        "sfu_to_client_srtp_key": "1e513d900ccb63a87bef47a844881ed6",
+        "sfu_to_client_srtp_salt": "159ab322af0dd2e6ca86c5aa"
+      }
+    }
+  ]
+}

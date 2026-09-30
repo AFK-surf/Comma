@@ -1,0 +1,83 @@
+.DS_Store
+
+# Dependency installs
+**/node_modules/
+
+# Husky generates hook shims here during local installs.
+clients/.husky/_/
+
+# Build outputs and caches
+**/dist/
+# Release archives build:native fetches and verifies (synchronicity).
+**/.native-cache/
+**/out/
+**/.vite/
+**/storybook-static/
+**/release/
+!systems/apps/comma/priv/release/
+!systems/apps/comma/priv/release/migration-manifest-v2.json
+!systems/apps/comma/priv/release/migration-v2-shadow-baseline.json
+!systems/ops/comma-release/release/
+!systems/ops/comma-release/release/**
+**/coverage/
+**/playwright-report/
+**/test-results/
+clients/packages/i18n/src/paraglide/
+# Electron release packaging output (electron-release-*.yml stages files in
+# clients/artifacts/). Keep this path-scoped: bare "artifacts/" would also
+# swallow Elixir source under systems/**/artifacts/.
+clients/artifacts/
+dist-electron/
+*.tsbuildinfo
+.context
+
+# Terraform local working data and plans. Provider locks and source remain tracked.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Local Codex/private runbooks and hand-test notes.
+.3720/
+.local/
+.wrangler/
+
+# Local deployment configs can contain production/staging secrets. In CI, prefer
+# the SALIX_CONFIG_JSON environment secret unless intentionally committing a
+# sanitized config file.
+systems/config.json
+config.*.json
+config.json
+!config.example.json
+
+# Electron / native client outputs
+clients/apps/electron/.dev-electron/
+clients/apps/electron/native/**/.build/
+systems/connector/salix-connect/native/**/.build/
+clients/apps/electron/native/**/.swiftpm/
+
+# Backend systems (Elixir/Mix umbrella). See systems/.gitignore for the
+# canonical, path-scoped rules; these mirror them at the repo root.
+systems/_build/
+systems/deps/
+systems/cover/
+systems/doc/
+systems/tmp/
+systems/priv_build/
+erl_crash.dump
+*.ez
+# Bundled subscription worker built from systems/account-proxy.
+systems/apps/salix_agent/priv/subscription_worker
+# Tailcat gateway and its test peer, built from systems/tailcat-gateway.
+systems/apps/salix_agent/priv/tailcat_gateway
+systems/apps/salix_agent/priv/tailcat_testpeer
+systems/apps/salix_web/priv/cloud_vm_connector.tar.gz
+
+# Self-hosted instance credentials.
+/.env
+/selfhost/backups/
+
+/selfhost/__pycache__/
+__pycache__/

@@ -1,0 +1,41 @@
+{
+  "name": "@evalens/dashboard",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "i18n:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --strategy globalVariable baseLocale",
+    "i18n:check": "bun run scripts/check-i18n.ts",
+    "build": "bun run i18n:compile && vite build --config vite.config.ts",
+    "dev": "bun run i18n:compile && bun run ../server/src/local/server.ts",
+    "test": "bun run i18n:compile && vitest run"
+  },
+  "dependencies": {
+    "@elysia/eden": "^1.4.10",
+    "@evalens/core": "workspace:*",
+    "@evalens/server": "workspace:*",
+    "@tanstack/react-router": "^1.170.17",
+    "echarts": "^6.0.0",
+    "echarts-for-react": "^3.0.6",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-json-tree": "^0.20.0",
+    "react-markdown": "^10.1.0",
+    "rehype-external-links": "^3.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@inlang/paraglide-js": "2.21.0",
+    "@tailwindcss/vite": "^4.3.2",
+    "@tanstack/router-plugin": "^1.168.19",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react-json-tree": "^0.13.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.3.2",
+    "vite": "^8.0.16",
+    "vitest": "^3.2.4"
+  }
+}

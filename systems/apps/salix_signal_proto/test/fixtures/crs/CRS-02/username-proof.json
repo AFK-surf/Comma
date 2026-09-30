@@ -1,0 +1,70 @@
+{
+  "section": "CRS-02",
+  "name": "username-proof",
+  "description": "Username hash proof (sent as zkProof when confirming a reserved hash): deterministic given the 32-byte randomness. Proof is 128 bytes: challenge scalar then three response scalars. verify is the oracle verification result; the last two cases are negative (wrong hash; one flipped bit).",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "username": "vectorbot.42",
+        "randomness": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c",
+        "proof": "7a3cfb73983c84f6ea6873093fd3f8e2fe0433bc775d9088b5d7b85578cf1700e4a1cc65cc11e362154ed57d595b53bc256c913ed70885b3de0464280442b80bd689a92d34964ca36bea113e4086ed9ebcc4fc7dd17f71d6913936df2336610aa2797aab08e9af140faffa3701c5e4387715dbce20ded719f2c46443db178c0a",
+        "verify": "valid"
+      }
+    },
+    {
+      "inputs": {
+        "username": "VectorBot.42",
+        "randomness": "0101010101010101010101010101010101010101010101010101010101010101"
+      },
+      "outputs": {
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c",
+        "proof": "efc98a12bb30ef3683dacfdb744f23c2a07906cfd0795191cd1e897245057601e4f10df6acffa95f975f84e417d4333e81215351932ddb86f4f9a05ec93db80345cd99a4a70982145041f18325eb236d69d0bc121235f432d73bc078c70b31050e85ad8dbcd24b9b6e2ca1de079b25ed1efffca282409450a1659e87d38d270b",
+        "verify": "valid"
+      }
+    },
+    {
+      "inputs": {
+        "username": "signal_ai.987654321",
+        "randomness": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"
+      },
+      "outputs": {
+        "hash": "b0ee165c991340c5062b0bc123f3aed2e1a9a7365d99d3f69c747fd37136b34d",
+        "proof": "ef2533db5781a3af01cfdc0955de243eaf033b5ecae828910aec0437870e100be3768fa531ac292b5bb6abf326d34cfe088900b574f1ca0b63e5dee2b45f0204441b226ce1a77e06b41f1cf38da21c67d577594b4cf5f4ed996ebc795081e00fccb13f67d317af9f9057229b361a53e687b3a73ef8162514f1004e65adb87904",
+        "verify": "valid"
+      }
+    },
+    {
+      "inputs": {
+        "username": "abc.99",
+        "randomness": "0f2ab8bd84314ef879d53749836787856ecac5226274a0256ca98b05050f4abd"
+      },
+      "outputs": {
+        "hash": "249ca2ea7b11f55fe4dcd2fe1396fadf575ce105bb2b4b3b8896760092707751",
+        "proof": "c806792880c5af52f74a8c69071c4804713bfd66eed08782d162170a13cc4701bf857f9d9061946360adc22b121d4bd9bbe610846e4a74ed4c8642b935b77f066a35310ad2ab7aca9bbe2ffe7af3984c288ff05b4d4df1db16a423a66b557904b70c131d24fcdd25650b67924b4c17d849bfd7c6089caf00ae0ad3c9ae05ae0f",
+        "verify": "valid"
+      }
+    },
+    {
+      "inputs": {
+        "proof": "7a3cfb73983c84f6ea6873093fd3f8e2fe0433bc775d9088b5d7b85578cf1700e4a1cc65cc11e362154ed57d595b53bc256c913ed70885b3de0464280442b80bd689a92d34964ca36bea113e4086ed9ebcc4fc7dd17f71d6913936df2336610aa2797aab08e9af140faffa3701c5e4387715dbce20ded719f2c46443db178c0a",
+        "hash": "3856f4e977e2a464d8cddccc7e2158af16cc067b71a9f26bf77b281bf9979f6b"
+      },
+      "outputs": {
+        "verify": "invalid"
+      }
+    },
+    {
+      "inputs": {
+        "proof": "7a3cfb73983c84f6ea6873093fd3f8e2fe0433bc775d9088b5d7b85578cf1700e4a1cc65cc11e362144ed57d595b53bc256c913ed70885b3de0464280442b80bd689a92d34964ca36bea113e4086ed9ebcc4fc7dd17f71d6913936df2336610aa2797aab08e9af140faffa3701c5e4387715dbce20ded719f2c46443db178c0a",
+        "hash": "48aa20b3a6e34d584ab85df992284d53d17279cf63e2a40ec92c3269aeb6601c"
+      },
+      "outputs": {
+        "verify": "invalid"
+      }
+    }
+  ]
+}

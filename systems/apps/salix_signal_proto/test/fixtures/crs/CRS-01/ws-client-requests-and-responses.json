@@ -1,0 +1,131 @@
+{
+  "section": "CRS-01",
+  "name": "ws-client-requests-and-responses",
+  "description": "A client request (the application-level keepalive GET /v1/keepalive as the oracle emits it; first request id 0) and the parsing of server responses. websocket_response_message is the inner response message; outer_websocket_message wraps it as a type-2 frame (derived from the framing table in CRS-01; not oracle evidence). Header lines are \"name:value\"; the client lowercases names and trims values.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "client_request": {
+          "id": 0,
+          "verb": "GET",
+          "path": "/v1/keepalive",
+          "headers": []
+        },
+        "websocket_response_message": "080010c8011a024f4b2a10436f6e74656e742d4c656e6774683a302a20582d5369676e616c2d54696d657374616d703a31373538373930303030373839",
+        "outer_websocket_message": "08021a3d080010c8011a024f4b2a10436f6e74656e742d4c656e6774683a302a20582d5369676e616c2d54696d657374616d703a31373538373930303030373839"
+      },
+      "outputs": {
+        "client_result": {
+          "status": 200,
+          "message": "OK",
+          "headers": [
+            [
+              "content-length",
+              "0"
+            ],
+            [
+              "x-signal-timestamp",
+              "1758790000789"
+            ]
+          ],
+          "body": null
+        }
+      }
+    },
+    {
+      "inputs": {
+        "client_request": {
+          "id": 0,
+          "verb": "GET",
+          "path": "/v1/keepalive",
+          "headers": []
+        },
+        "websocket_response_message": "080010cc011a0a4e6f20436f6e74656e74",
+        "outer_websocket_message": "08021a11080010cc011a0a4e6f20436f6e74656e74"
+      },
+      "outputs": {
+        "client_result": {
+          "status": 204,
+          "message": "No Content",
+          "headers": [],
+          "body": null
+        }
+      }
+    },
+    {
+      "inputs": {
+        "client_request": {
+          "id": 0,
+          "verb": "GET",
+          "path": "/v1/keepalive",
+          "headers": []
+        },
+        "websocket_response_message": "080010ad031a11546f6f204d616e792052657175657374732a0e52657472792d41667465723a31372a10436f6e74656e742d4c656e6774683a30",
+        "outer_websocket_message": "08021a3a080010ad031a11546f6f204d616e792052657175657374732a0e52657472792d41667465723a31372a10436f6e74656e742d4c656e6774683a30"
+      },
+      "outputs": {
+        "client_result": {
+          "status": 429,
+          "message": "Too Many Requests",
+          "headers": [
+            [
+              "retry-after",
+              "17"
+            ],
+            [
+              "content-length",
+              "0"
+            ]
+          ],
+          "body": null
+        }
+      }
+    },
+    {
+      "inputs": {
+        "client_request": {
+          "id": 0,
+          "verb": "GET",
+          "path": "/v1/keepalive",
+          "headers": []
+        },
+        "websocket_response_message": "080010c8011a024f4b22077b2261223a317d2a1e636f6e74656e742d747970653a206170706c69636174696f6e2f6a736f6e",
+        "outer_websocket_message": "08021a32080010c8011a024f4b22077b2261223a317d2a1e636f6e74656e742d747970653a206170706c69636174696f6e2f6a736f6e"
+      },
+      "outputs": {
+        "client_result": {
+          "status": 200,
+          "message": "OK",
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "7b2261223a317d"
+        }
+      }
+    },
+    {
+      "inputs": {
+        "client_request": {
+          "id": 0,
+          "verb": "GET",
+          "path": "/v1/keepalive",
+          "headers": []
+        },
+        "websocket_response_message": "080010f303",
+        "outer_websocket_message": "08021a05080010f303"
+      },
+      "outputs": {
+        "client_result": {
+          "status": 499,
+          "message": null,
+          "headers": [],
+          "body": null
+        }
+      }
+    }
+  ]
+}

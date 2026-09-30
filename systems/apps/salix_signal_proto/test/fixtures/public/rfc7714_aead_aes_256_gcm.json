@@ -1,0 +1,14 @@
+{
+  "name": "rfc7714-aead-aes-256-gcm",
+  "description": "RFC 7714 section 16.2.1 (SRTP AEAD_AES_256_GCM encryption) and section 17.2 (SRTCP AEAD_AES_256_GCM verification and decryption). The key and salt are session keys, not master keys. The SRTP example has ROC 0.",
+  "session_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "session_salt": "517569642070726f2071756f",
+  "srtp": {
+    "plain": "8040f17b8041f8d35501a0b247616c6c696120657374206f6d6e69732064697669736120696e207061727465732074726573",
+    "protected": "8040f17b8041f8d35501a0b232b1de78a822fe12ef9f78fa332e33aab18012389a58e2f3b50b2a0276ffae0f1ba63799b87b7aa3db36dfffd6b0f9bb7878d7a76c13"
+  },
+  "srtcp": {
+    "protected": "81c8000d4d617273d50ae4d1f5ce5d304ba297e47d470c282c3ece5dbffe0a50a2eaa5c1110555be8415f658c61de0476f1b6fad1d1eb30c4446839f57ff6f6cb26ac3be800005d4",
+    "plain": "81c8000d4d6172734e5450314e545032525450200000042a0000e9304c756e61deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  }
+}

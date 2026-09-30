@@ -1,0 +1,76 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM"],
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.electron.main.tsbuildinfo",
+    "types": ["node", "@electron-forge/plugin-vite/forge-vite-env"],
+    "paths": {
+      "@comma/config": ["../../packages/config/src/index.ts"],
+      "@comma/i18n": ["../../packages/i18n/src/index.ts"],
+      "@comma/app/api": ["../../packages/app/src/api/index.ts"],
+      "@comma/app/chat-core": ["../../packages/app/src/chat-core.ts"],
+      "@comma/app/chat-coordinator": [
+        "../../packages/app/src/runtime-chat/coordinator/ChatCoordinator.ts"
+      ],
+      "@comma/app/host-runtime": [
+        "../../packages/app/src/runtime-chat/CommaAppRuntime.ts"
+      ],
+      "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
+      "@comma/product-inbox-runtime": [
+        "../../packages/product-inbox-runtime/src/index.ts"
+      ],
+      "@comma/product-inbox-runtime/contracts": [
+        "../../packages/product-inbox-runtime/src/contracts.ts"
+      ],
+      "@comma/session-contract": ["../../packages/session-contract/src/index.ts"],
+      "@comma/session-history-runtime": [
+        "../../packages/session-history-runtime/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/main.ts",
+    "src/main/**/*.ts",
+    "src/main/**/*.tsx",
+    "src/app-version.ts",
+    "src/shared/**/*.ts",
+    "src/utility/**/*.ts",
+    "src/release-config.ts",
+    "native/macos/SideChatBackdrop/index.ts",
+    "native/macos/NotificationAuthorization/index.ts",
+    "native/macos/FileApplications/index.ts",
+    "native/macos/FontFamilies/index.ts",
+    "../../packages/config/src/**/*.ts",
+    "../../packages/ui/src/components/login/BrandMarks.tsx",
+    "../../packages/ui/src/tokens/typography.ts",
+    "../../packages/ui/src/tokens/colors/base.ts",
+    "../../packages/ui/src/tokens/colors/brand.ts",
+    "../../packages/ui/src/tokens/colors/grays.ts",
+    "../../packages/ui/src/tokens/colors/semantic.ts",
+    "../../packages/ui/src/tokens/colors/semantic-dark.ts",
+    "../../packages/i18n/src/index.ts",
+    "../../packages/i18n/src/format.ts",
+    "../../packages/i18n/src/locale.ts",
+    "../../packages/i18n/src/runtime.ts",
+    "../../packages/i18n/src/task-status.ts",
+    "../../packages/i18n/src/freshness.ts",
+    "../../packages/i18n/src/paraglide/**/*.d.ts",
+    "../../packages/app/src/api/**/*.ts",
+    "../../packages/app/src/chat-core.ts",
+    "../../packages/app/src/chat-runtime.ts",
+    "../../packages/app/src/runtime-chat/CommaAppRuntime.ts",
+    "../../packages/app/src/runtime-chat/coordinator/**/*.ts",
+    "../../packages/app/src/components/chat/model/*.ts",
+    "../../packages/native-bridge/src/**/*.ts",
+    "../../packages/product-inbox-runtime/src/**/*.ts",
+    "../../packages/session-contract/src/**/*.ts",
+    "../../packages/session-history-runtime/src/**/*.ts"
+  ],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/**/*.test.*",
+    "../../packages/**/*.spec.*"
+  ]
+}

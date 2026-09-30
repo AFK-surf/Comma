@@ -1,0 +1,229 @@
+@layer components {
+  .settings-shortcut-field {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--spacing-sm);
+  }
+
+  .settings-shortcut__control {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .settings-shortcut,
+  .settings-shortcut-keycaps {
+    --settings-shortcut-keycap-background: var(--color-bg-popup-secondary);
+    --settings-shortcut-keycap-border: var(--color-border-primary);
+    --settings-shortcut-keycap-foreground: var(--color-text-tertiary);
+    --settings-shortcut-keycap-ridge: var(--color-border-primary);
+    --settings-shortcut-keycap-ridge-offset: var(--spacing-xxs);
+    --settings-shortcut-keycap-size: calc(
+      (var(--spacing-5xl) + var(--spacing-xs)) * 0.9
+    );
+    --settings-shortcut-keycap-font-size: calc(var(--text-md) * 0.9);
+    --settings-shortcut-editing-rotation: 1.6deg;
+  }
+
+  .settings-shortcut {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-md);
+    color: inherit;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .settings-shortcut:focus-visible {
+    box-shadow: var(--shadow-focus-gray);
+  }
+
+  .settings-shortcut[data-state="editing"] {
+    --settings-shortcut-keycap-border: var(--color-border-brand);
+    --settings-shortcut-keycap-foreground: var(--color-fg-brand-primary);
+    --settings-shortcut-keycap-ridge: var(--color-border-brand-solid);
+  }
+
+  :where(.dark, [data-theme="Dark mode"]) .settings-shortcut[data-state="editing"] {
+    --settings-shortcut-keycap-border: var(--color-bg-brand-secondary);
+    --settings-shortcut-keycap-foreground: var(--color-text-brand-primary);
+    --settings-shortcut-keycap-ridge: var(--color-bg-brand-secondary);
+  }
+
+  .settings-shortcut[data-state="recording"] {
+    --settings-shortcut-keycap-background: var(--color-success-700);
+    --settings-shortcut-keycap-border: var(--color-bg-success-solid);
+    --settings-shortcut-keycap-foreground: var(--color-text-white);
+    --settings-shortcut-keycap-ridge: var(--color-bg-success-solid);
+    --settings-shortcut-keycap-ridge-offset: var(--border-width-default);
+  }
+
+  .settings-shortcut:is(
+      [data-state="editing"],
+      [data-state="recording"]
+    ):focus-visible {
+    box-shadow: var(--shadow-focus-brand);
+  }
+
+  .settings-shortcut[data-state="error"] {
+    --settings-shortcut-keycap-background: var(--color-bg-error-solid);
+    --settings-shortcut-keycap-border: var(--color-border-error-solid);
+    --settings-shortcut-keycap-foreground: var(--color-text-white);
+    --settings-shortcut-keycap-ridge: var(--color-border-error-solid);
+    --settings-shortcut-keycap-ridge-offset: var(--spacing-none);
+  }
+
+  .settings-shortcut[data-state="disabled"] {
+    --settings-shortcut-keycap-background: var(--color-bg-disabled);
+    --settings-shortcut-keycap-border: var(--color-border-disabled);
+    --settings-shortcut-keycap-foreground: var(--color-text-disabled);
+    --settings-shortcut-keycap-ridge: var(--color-border-disabled);
+
+    cursor: not-allowed;
+  }
+
+  .settings-shortcut__keycaps {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-xs);
+    padding-block-end: var(--spacing-xxs);
+  }
+
+  .settings-shortcut[data-state="editing"] .settings-shortcut__keycaps {
+    animation: settings-shortcut-editing-wiggle var(--motion-duration-state-change)
+      var(--motion-easing-icon-swap) infinite alternate;
+    will-change: transform;
+  }
+
+  .settings-shortcut__clear {
+    position: absolute;
+    z-index: 2;
+    inset-block-start: calc(var(--spacing-lg) * -1);
+    inset-inline-end: calc(var(--spacing-lg) * -1);
+    display: grid;
+    place-items: center;
+    inline-size: var(--spacing-3xl);
+    block-size: var(--spacing-3xl);
+    margin: 0;
+    padding: 0;
+    appearance: none;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--color-fg-primary);
+    cursor: pointer;
+    outline: none;
+  }
+
+  .settings-shortcut__clear:focus-visible {
+    box-shadow: var(--shadow-focus-gray);
+  }
+
+  .settings-shortcut__clear-icon {
+    inline-size: calc(var(--spacing-lg) + var(--spacing-xxs));
+    block-size: calc(var(--spacing-lg) + var(--spacing-xxs));
+  }
+
+  .settings-shortcut-keycaps {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .settings-shortcut__keycap-shell {
+    position: relative;
+    display: block;
+    inline-size: var(--settings-shortcut-keycap-size);
+    block-size: var(--settings-shortcut-keycap-size);
+  }
+
+  .settings-shortcut__keycap-shell[data-wide="true"] {
+    inline-size: max-content;
+    min-inline-size: var(--settings-shortcut-keycap-size);
+  }
+
+  .settings-shortcut__keycap-shell::before {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius-md);
+    background: var(--settings-shortcut-keycap-ridge);
+    content: "";
+    transform: translateY(var(--settings-shortcut-keycap-ridge-offset));
+  }
+
+  .settings-shortcut__keycap-shell[data-wide="true"] .settings-shortcut__keycap {
+    inline-size: auto;
+    min-inline-size: var(--settings-shortcut-keycap-size);
+    padding-inline: var(--spacing-xs);
+  }
+
+  .settings-shortcut__keycap {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    inline-size: 100%;
+    min-inline-size: 100%;
+    block-size: 100%;
+    margin: 0;
+    padding: 0;
+    border: var(--border-width-default) solid var(--settings-shortcut-keycap-border);
+    border-radius: var(--radius-md);
+    background: var(--settings-shortcut-keycap-background);
+    box-shadow: var(--shadow-xs);
+    color: var(--settings-shortcut-keycap-foreground);
+    font-family: var(--font-sans);
+    font-size: var(--settings-shortcut-keycap-font-size);
+    font-weight: var(--font-weight-medium);
+    line-height: 1;
+    letter-spacing: var(--text-md--letter-spacing);
+    transform: translateY(0);
+    transition: transform var(--motion-duration-feedback-out)
+      var(--motion-easing-smooth-out);
+    user-select: none;
+  }
+
+  .settings-shortcut[data-state="idle"]:active:not(:disabled)
+    .settings-shortcut__keycap {
+    transform: translateY(var(--border-width-default));
+    transition-duration: var(--motion-duration-feedback-in);
+  }
+
+  .settings-shortcut__error {
+    max-inline-size: calc(var(--spacing-11xl) + var(--spacing-7xl));
+    margin: 0;
+    color: var(--color-text-error-primary);
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
+    text-align: end;
+  }
+
+  @keyframes settings-shortcut-editing-wiggle {
+    from {
+      transform: rotate(calc(var(--settings-shortcut-editing-rotation) * -1));
+    }
+
+    to {
+      transform: rotate(var(--settings-shortcut-editing-rotation));
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @layer components {
+    .settings-shortcut[data-state="editing"] .settings-shortcut__keycaps {
+      animation: none;
+    }
+
+    .settings-shortcut__keycap,
+    .settings-shortcut[data-state="idle"]:active:not(:disabled)
+      .settings-shortcut__keycap {
+      transform: none;
+      transition: none;
+    }
+  }
+}

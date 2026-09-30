@@ -1,0 +1,1116 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "0f785678-0c55-4045-bdd1-a2ba3c405880",
+  "prevId": "70e12f2b-0401-4983-a401-fc274e0d62d6",
+  "tables": {
+    "aggregate_scores": {
+      "name": "aggregate_scores",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "score_key": {
+          "name": "score_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "score_value": {
+          "name": "score_value",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "aggregate_scores_metric_idx": {
+          "name": "aggregate_scores_metric_idx",
+          "columns": ["score_key", "eval_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "aggregate_scores_eval_id_evals_eval_id_fk": {
+          "name": "aggregate_scores_eval_id_evals_eval_id_fk",
+          "tableFrom": "aggregate_scores",
+          "tableTo": "evals",
+          "columnsFrom": ["eval_id"],
+          "columnsTo": ["eval_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "aggregate_scores_eval_id_score_key_pk": {
+          "columns": ["eval_id", "score_key"],
+          "name": "aggregate_scores_eval_id_score_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "eval_adapters": {
+      "name": "eval_adapters",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "adapter_name": {
+          "name": "adapter_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "adapter_version": {
+          "name": "adapter_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "eval_adapters_identity_idx": {
+          "name": "eval_adapters_identity_idx",
+          "columns": ["adapter_name", "adapter_version", "eval_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "eval_adapters_eval_id_evals_eval_id_fk": {
+          "name": "eval_adapters_eval_id_evals_eval_id_fk",
+          "tableFrom": "eval_adapters",
+          "tableTo": "evals",
+          "columnsFrom": ["eval_id"],
+          "columnsTo": ["eval_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "eval_adapters_eval_id_adapter_name_pk": {
+          "columns": ["eval_id", "adapter_name"],
+          "name": "eval_adapters_eval_id_adapter_name_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "eval_evaluators": {
+      "name": "eval_evaluators",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "evaluator_name": {
+          "name": "evaluator_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "evaluator_version": {
+          "name": "evaluator_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "eval_evaluators_identity_idx": {
+          "name": "eval_evaluators_identity_idx",
+          "columns": ["evaluator_name", "evaluator_version", "eval_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "eval_evaluators_eval_id_evals_eval_id_fk": {
+          "name": "eval_evaluators_eval_id_evals_eval_id_fk",
+          "tableFrom": "eval_evaluators",
+          "tableTo": "evals",
+          "columnsFrom": ["eval_id"],
+          "columnsTo": ["eval_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "eval_evaluators_eval_id_evaluator_name_pk": {
+          "columns": ["eval_id", "evaluator_name"],
+          "name": "eval_evaluators_eval_id_evaluator_name_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "eval_params": {
+      "name": "eval_params",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value_type": {
+          "name": "value_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value_json": {
+          "name": "value_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "text_value": {
+          "name": "text_value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "number_value": {
+          "name": "number_value",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "boolean_value": {
+          "name": "boolean_value",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "eval_params_text_idx": {
+          "name": "eval_params_text_idx",
+          "columns": ["key", "text_value", "eval_id"],
+          "isUnique": false
+        },
+        "eval_params_number_idx": {
+          "name": "eval_params_number_idx",
+          "columns": ["key", "number_value", "eval_id"],
+          "isUnique": false
+        },
+        "eval_params_boolean_idx": {
+          "name": "eval_params_boolean_idx",
+          "columns": ["key", "boolean_value", "eval_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "eval_params_eval_id_evals_eval_id_fk": {
+          "name": "eval_params_eval_id_evals_eval_id_fk",
+          "tableFrom": "eval_params",
+          "tableTo": "evals",
+          "columnsFrom": ["eval_id"],
+          "columnsTo": ["eval_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "eval_params_eval_id_key_pk": {
+          "columns": ["eval_id", "key"],
+          "name": "eval_params_eval_id_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "eval_score_identities": {
+      "name": "eval_score_identities",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "evaluator_name": {
+          "name": "evaluator_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "evaluator_version": {
+          "name": "evaluator_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "score_key": {
+          "name": "score_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "eval_score_identities_metric_idx": {
+          "name": "eval_score_identities_metric_idx",
+          "columns": ["evaluator_name", "evaluator_version", "score_key", "eval_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "eval_score_identities_eval_id_evaluator_name_eval_evaluators_eval_id_evaluator_name_fk": {
+          "name": "eval_score_identities_eval_id_evaluator_name_eval_evaluators_eval_id_evaluator_name_fk",
+          "tableFrom": "eval_score_identities",
+          "tableTo": "eval_evaluators",
+          "columnsFrom": ["eval_id", "evaluator_name"],
+          "columnsTo": ["eval_id", "evaluator_name"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "eval_score_identities_eval_id_evaluator_name_score_key_pk": {
+          "columns": ["eval_id", "evaluator_name", "score_key"],
+          "name": "eval_score_identities_eval_id_evaluator_name_score_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "eval_scores": {
+      "name": "eval_scores",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "evaluator_name": {
+          "name": "evaluator_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "score_key": {
+          "name": "score_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "score_value": {
+          "name": "score_value",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "eval_scores_sort_idx": {
+          "name": "eval_scores_sort_idx",
+          "columns": [
+            "eval_id",
+            "evaluator_name",
+            "score_key",
+            "score_value",
+            "item_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "eval_scores_eval_id_item_id_evaluator_name_evaluator_results_eval_id_item_id_evaluator_name_fk": {
+          "name": "eval_scores_eval_id_item_id_evaluator_name_evaluator_results_eval_id_item_id_evaluator_name_fk",
+          "tableFrom": "eval_scores",
+          "tableTo": "evaluator_results",
+          "columnsFrom": ["eval_id", "item_id", "evaluator_name"],
+          "columnsTo": ["eval_id", "item_id", "evaluator_name"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "eval_scores_eval_id_item_id_evaluator_name_score_key_pk": {
+          "columns": ["eval_id", "item_id", "evaluator_name", "score_key"],
+          "name": "eval_scores_eval_id_item_id_evaluator_name_score_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "evals": {
+      "name": "evals",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "format_version": {
+          "name": "format_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "params_json": {
+          "name": "params_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "params_digest": {
+          "name": "params_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "aggregator_version": {
+          "name": "aggregator_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "evals_id_run_unique": {
+          "name": "evals_id_run_unique",
+          "columns": ["eval_id", "run_id"],
+          "isUnique": true
+        },
+        "evals_run_created_idx": {
+          "name": "evals_run_created_idx",
+          "columns": ["run_id", "created_at", "eval_id"],
+          "isUnique": false
+        },
+        "evals_run_status_created_idx": {
+          "name": "evals_run_status_created_idx",
+          "columns": ["run_id", "status", "created_at", "eval_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "evals_run_id_runs_run_id_fk": {
+          "name": "evals_run_id_runs_run_id_fk",
+          "tableFrom": "evals",
+          "tableTo": "runs",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["run_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "evaluator_results": {
+      "name": "evaluator_results",
+      "columns": {
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "evaluator_name": {
+          "name": "evaluator_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "evaluator_results_status_idx": {
+          "name": "evaluator_results_status_idx",
+          "columns": ["eval_id", "evaluator_name", "status", "item_id"],
+          "isUnique": false
+        },
+        "evaluator_results_duration_idx": {
+          "name": "evaluator_results_duration_idx",
+          "columns": ["eval_id", "evaluator_name", "duration_ms", "item_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "evaluator_results_eval_id_run_id_evals_eval_id_run_id_fk": {
+          "name": "evaluator_results_eval_id_run_id_evals_eval_id_run_id_fk",
+          "tableFrom": "evaluator_results",
+          "tableTo": "evals",
+          "columnsFrom": ["eval_id", "run_id"],
+          "columnsTo": ["eval_id", "run_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "evaluator_results_run_id_item_id_run_items_run_id_item_id_fk": {
+          "name": "evaluator_results_run_id_item_id_run_items_run_id_item_id_fk",
+          "tableFrom": "evaluator_results",
+          "tableTo": "run_items",
+          "columnsFrom": ["run_id", "item_id"],
+          "columnsTo": ["run_id", "item_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "evaluator_results_eval_id_evaluator_name_eval_evaluators_eval_id_evaluator_name_fk": {
+          "name": "evaluator_results_eval_id_evaluator_name_eval_evaluators_eval_id_evaluator_name_fk",
+          "tableFrom": "evaluator_results",
+          "tableTo": "eval_evaluators",
+          "columnsFrom": ["eval_id", "evaluator_name"],
+          "columnsTo": ["eval_id", "evaluator_name"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "evaluator_results_eval_id_item_id_evaluator_name_pk": {
+          "columns": ["eval_id", "item_id", "evaluator_name"],
+          "name": "evaluator_results_eval_id_item_id_evaluator_name_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "index_metadata": {
+      "name": "index_metadata",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "reindex_fences": {
+      "name": "reindex_fences",
+      "columns": {
+        "scope_key": {
+          "name": "scope_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope_type": {
+          "name": "scope_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "experiment_name": {
+          "name": "experiment_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "eval_id": {
+          "name": "eval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "lease_id": {
+          "name": "lease_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "run_adapters": {
+      "name": "run_adapters",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "adapter_name": {
+          "name": "adapter_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "adapter_version": {
+          "name": "adapter_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "run_adapters_identity_idx": {
+          "name": "run_adapters_identity_idx",
+          "columns": ["adapter_name", "adapter_version", "run_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "run_adapters_run_id_runs_run_id_fk": {
+          "name": "run_adapters_run_id_runs_run_id_fk",
+          "tableFrom": "run_adapters",
+          "tableTo": "runs",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["run_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "run_adapters_run_id_adapter_name_pk": {
+          "columns": ["run_id", "adapter_name"],
+          "name": "run_adapters_run_id_adapter_name_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "run_items": {
+      "name": "run_items",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_digest": {
+          "name": "item_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "run_items_status_idx": {
+          "name": "run_items_status_idx",
+          "columns": ["run_id", "status", "item_id"],
+          "isUnique": false
+        },
+        "run_items_identity_idx": {
+          "name": "run_items_identity_idx",
+          "columns": ["item_id", "item_digest", "run_id"],
+          "isUnique": false
+        },
+        "run_items_duration_idx": {
+          "name": "run_items_duration_idx",
+          "columns": ["run_id", "duration_ms", "item_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "run_items_run_id_runs_run_id_fk": {
+          "name": "run_items_run_id_runs_run_id_fk",
+          "tableFrom": "run_items",
+          "tableTo": "runs",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["run_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "run_items_run_id_item_id_pk": {
+          "columns": ["run_id", "item_id"],
+          "name": "run_items_run_id_item_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "run_params": {
+      "name": "run_params",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value_type": {
+          "name": "value_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value_json": {
+          "name": "value_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "text_value": {
+          "name": "text_value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "number_value": {
+          "name": "number_value",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "boolean_value": {
+          "name": "boolean_value",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "run_params_text_idx": {
+          "name": "run_params_text_idx",
+          "columns": ["key", "text_value", "run_id"],
+          "isUnique": false
+        },
+        "run_params_number_idx": {
+          "name": "run_params_number_idx",
+          "columns": ["key", "number_value", "run_id"],
+          "isUnique": false
+        },
+        "run_params_boolean_idx": {
+          "name": "run_params_boolean_idx",
+          "columns": ["key", "boolean_value", "run_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "run_params_run_id_runs_run_id_fk": {
+          "name": "run_params_run_id_runs_run_id_fk",
+          "tableFrom": "run_params",
+          "tableTo": "runs",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["run_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "run_params_run_id_key_pk": {
+          "columns": ["run_id", "key"],
+          "name": "run_params_run_id_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "run_tags": {
+      "name": "run_tags",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tag": {
+          "name": "tag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "run_tags_tag_idx": {
+          "name": "run_tags_tag_idx",
+          "columns": ["tag", "run_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "run_tags_run_id_runs_run_id_fk": {
+          "name": "run_tags_run_id_runs_run_id_fk",
+          "tableFrom": "run_tags",
+          "tableTo": "runs",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["run_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "run_tags_run_id_tag_pk": {
+          "columns": ["run_id", "tag"],
+          "name": "run_tags_run_id_tag_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "runs": {
+      "name": "runs",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "format_version": {
+          "name": "format_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "experiment_name": {
+          "name": "experiment_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "dataset_name": {
+          "name": "dataset_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dataset_digest": {
+          "name": "dataset_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dataset_selection_digest": {
+          "name": "dataset_selection_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_item_count": {
+          "name": "target_item_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "params_json": {
+          "name": "params_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "params_digest": {
+          "name": "params_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "runs_experiment_created_idx": {
+          "name": "runs_experiment_created_idx",
+          "columns": ["experiment_name", "created_at", "run_id"],
+          "isUnique": false
+        },
+        "runs_experiment_status_created_idx": {
+          "name": "runs_experiment_status_created_idx",
+          "columns": ["experiment_name", "status", "created_at", "run_id"],
+          "isUnique": false
+        },
+        "runs_dataset_idx": {
+          "name": "runs_dataset_idx",
+          "columns": ["dataset_name", "dataset_selection_digest", "run_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

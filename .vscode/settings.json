@@ -1,0 +1,10 @@
+{
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "tsconfig.json": "tsconfig.*.json",
+    "package.json": "pnpm-lock.yaml,pnpm-workspace.yaml,.npmrc,bun.lock",
+    ".prettierrc.json": ".prettierignore",
+    ".oxlintrc.json": ".oxlintrc.*.json",
+    "evalens.config.json": "evalens.config.*.json"
+  }
+}

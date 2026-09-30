@@ -1,0 +1,17 @@
+{
+  "data": {
+    "location": "上海",
+    "observed_at": "2026-09-16T08:00:00+08:00",
+    "oneLiner": "未来三天上海以阴到多云为主，中间一天有小雨，气温大致在21–29°C之间，整体风力较弱（<3级）；降水概率数据未提供。",
+    "rows": [
+      ["09/16", "阴", "28/22°C", "<3级", "未知"],
+      ["09/17", "小雨", "26/21°C", "<3级", "未知"],
+      ["09/18", "多云", "29/22°C", "<3级", "未知"]
+    ],
+    "source": "Evaluation weather fixture"
+  },
+  "html": "<section class=\"stack\">\n  <h2>上海未来三天（评估数据）</h2>\n  <small class=\"muted\">观测时间：2026-09-16 08:00（+08:00）；来源：Evaluation weather fixture。降水概率未提供。</small>\n  <table id=\"forecast\" aria-label=\"逐日天气\"></table>\n  <div class=\"card stack\">\n    <h3>一句话总结</h3>\n    <p id=\"summary\"></p>\n  </div>\n  <small class=\"muted\">缺失字段：逐日降水概率（PoP）未知；风仅给出“均小于3级”，未给出风向/阵风等细项。</small>\n</section>",
+  "script": "const rows = comma.data.rows;\ncomma.table('forecast', {\n  columns: ['日期', '天气', '最高/最低', '风', '降水概率'],\n  rows\n});\ncomma.text('summary', comma.data.oneLiner);\n",
+  "summary": "上海未来三天（评估数据，非实时）\n- 09/16：阴，28/22°C，风<3级，降水概率未知\n- 09/17：小雨，26/21°C，风<3级，降水概率未知\n- 09/18：多云，29/22°C，风<3级，降水概率未知\n一句话总结：未来三天上海以阴到多云为主，中间一天有小雨，21–29°C，风弱（<3级）；降水概率未提供。\n来源：Evaluation weather fixture；观测时间：2026-09-16 08:00 +08:00。",
+  "version": 1
+}

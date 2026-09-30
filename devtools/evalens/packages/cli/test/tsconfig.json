@@ -1,0 +1,17 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../../../node_modules/.cache/evalens/cli-test.tsbuildinfo",
+    "types": ["bun", "@cloudflare/workers-types"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./*.ts"],
+  "references": [
+    { "path": ".." },
+    { "path": "../../core" },
+    { "path": "../../store" },
+    { "path": "../../server" }
+  ]
+}

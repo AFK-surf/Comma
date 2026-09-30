@@ -1,0 +1,185 @@
+{
+  "section": "CRS-09",
+  "name": "sender-key-message",
+  "description": "Sender key messages produced by the sender chain from a fixed chain key and iteration. The ciphertext field is deterministic; the trailing 64-byte XEdDSA signature uses internal randomness, so verifiers must check it with signing_public_key rather than compare bytes. Decryption uses a receiver that processed the matching distribution message; out-of-order delivery works, a replay fails, and a corrupted signature fails.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "label": "iteration-0",
+      "inputs": {
+        "distribution_id": "d1b8e7c2-5f3a-4b6d-8e9f-0a1b2c3d4e5f",
+        "chain_id": 305419896,
+        "starting_iteration": 0,
+        "chain_key": "8c08671f29f22bb9298883211483f40f01d33eca06730c2a700a219dde2b4202",
+        "signing_private_key": "b8c8b3759e72914d0966f6687b423381dc6cad418f805998c38cb18ee8f83b65",
+        "signing_public_key": "055ba79c1bbca5ac8ef388508f200cab120d734de1e0b032163ca9c6bc0494e40e"
+      },
+      "outputs": {
+        "messages": [
+          {
+            "iteration": 0,
+            "plaintext": "",
+            "sender_key_message": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd1910118002210e16f699696a03fc612178ee4beaeb585c5404b10d4a1f8fc72c626faa45a3a3993022c3318d2ce1323cceeded0fe483b99587fad41ba6917a7e598bfebe36beff71a66cb84cfc7c1e9844982e713aa8e",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 1,
+            "plaintext": "68656c6c6f2067726f7570",
+            "sender_key_message": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd191011801221065cd71be32fbeba866b0764e9041040860bb8be93e4588458b80fc2b99d682febc10e8b71d083cc064ff567d722b1ce5b4ba78b93b63c9d88b6390ac47ec2d274b8fa2dd488b5d74b63ef89b3d8f868c",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 2,
+            "plaintext": "328150f2e37ce6e66dae07990d5bf391",
+            "sender_key_message": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd191011802222043692857129210b287b6ab1c4052399a7dd6bb2849b6377d4d6fe5b67d936e50ac45c38d2d3d348dae088394f7c7988e860a78b39b03a2572476c78da8f86764e2220d381c2911a2dd46c863a81f5c7709f683375dec638a9db1e1d14be9d880",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 3,
+            "plaintext": "80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080",
+            "sender_key_message": "330a10d1b8e7c25f3a4b6d8e9f0a1b2c3d4e5f10f8acd19101180322b00197e5b7019733ac275cdf1987f06d4d886d6e343b663f4f81a30e17b6323dceaf2355e2ea9789bc91b3874bf439a8d1b5137e83621390a9d058e44452c522452ad5aad0383f174395a7b128ff934d4656e52faa0160ce734883ed95e77b56444d5ee1c4c7669d09275305a69723a4b78613bb2876fb6812d17daa6727702970fe621eb8080946a869d575b12b9245e11857d03291622388c963435dca8311657d8d20cb86f069a740a56b40b7e3b2975da435ad4235983824d1a8713d06f1e378d61e9f7d9402e3fd5e7d5d193ddd7d2c47e8f155d19dc0bb8a71367c3bdef788535ac1d70321995a751ed5b67abb2b84",
+            "ciphertext_type": 7
+          }
+        ],
+        "decrypt_order_results": [
+          {
+            "index": 3,
+            "plaintext": "80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080"
+          },
+          {
+            "index": 0,
+            "plaintext": ""
+          },
+          {
+            "index": 1,
+            "plaintext": "68656c6c6f2067726f7570"
+          },
+          {
+            "index": 2,
+            "plaintext": "328150f2e37ce6e66dae07990d5bf391"
+          }
+        ],
+        "redecrypt_first_message": "error:duplicate",
+        "decrypt_with_flipped_signature_bit": "error:bad-signature"
+      }
+    },
+    {
+      "label": "iteration-5",
+      "inputs": {
+        "distribution_id": "00000000-0000-4000-8000-0000000000aa",
+        "chain_id": 1,
+        "starting_iteration": 5,
+        "chain_key": "287c549a716cdf280de40684bb1ad792367fa82668851c6690c5dcec9e6eb00f",
+        "signing_private_key": "683b9898b0c89eab97b45b24661bbf5098baade242c92afd68e53c7dc7469b5e",
+        "signing_public_key": "050a27ad48111f91db7e9129c55dc767b18c9a179c3d841fc1fdc4e84cabc5e66f"
+      },
+      "outputs": {
+        "messages": [
+          {
+            "iteration": 5,
+            "plaintext": "",
+            "sender_key_message": "330a10000000000000400080000000000000aa100118052210691be24c61a650e47a225dad49055b72eca165e7f9375c8df0684a660368843fe0de8c70b991f4f1253f9e6ea29a05064785b71d422bbaeb77b6622d70190323dd6a572f753bc3a18b6aa1bdf62b2687",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 6,
+            "plaintext": "68656c6c6f2067726f7570",
+            "sender_key_message": "330a10000000000000400080000000000000aa100118062210abb70a69f139a7217d5cbd96e72a84e25183cd35f61dece3c796e1d5c7e8b42905f44d4cbb00d65e5491e4a999f0688e4b422dbe40b43c5109cd15cc155f9745f8a5eca03352b620b36ff4fba3c35b84",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 7,
+            "plaintext": "328150f2e37ce6e66dae07990d5bf391",
+            "sender_key_message": "330a10000000000000400080000000000000aa1001180722205d21ca43b9d66a3dba12448aeb74e625e6a89b8e3f9b48f9e692db6bf7760c164343a11d284a0c257d8f339111ef416b8dae59d64c0c397053d7a9a5552f9c2f33b99fd735d8d8179b08b10610da76f9976214294b40b86644f3cb79c624068f",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 8,
+            "plaintext": "80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080",
+            "sender_key_message": "330a10000000000000400080000000000000aa1001180822b001403e3d93146764a0868872233c2f66aefce5bcefc37d5d7a516288cf46aa303f49271f191b9d94439fe008f940a27f95993cfdff561e6c220406586b1795dd410ff7863aac0f3257f76fef6f58fed2b1288dffafda44cf8a5f384302e2687b9088311a5aaff48a947b29877d5ca18a8fdab673cd738b3668bc03d5195271dd9fd07c366aee97f1f588533d01952f4574619fa4a7c10470cc025e204e10f702bd7e212bf09ad2ccf48ea97ff24afbdecfb9e9bd657b299deb0e310b322adde7b45dcfce62b0be13511ed26286a2f53dd88bd94124e3e46930460e2f14c29ebf7a5fe9453d0ab63a0ac3d832c4f7e9d588",
+            "ciphertext_type": 7
+          }
+        ],
+        "decrypt_order_results": [
+          {
+            "index": 3,
+            "plaintext": "80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080"
+          },
+          {
+            "index": 0,
+            "plaintext": ""
+          },
+          {
+            "index": 1,
+            "plaintext": "68656c6c6f2067726f7570"
+          },
+          {
+            "index": 2,
+            "plaintext": "328150f2e37ce6e66dae07990d5bf391"
+          }
+        ],
+        "redecrypt_first_message": "error:duplicate",
+        "decrypt_with_flipped_signature_bit": "error:bad-signature"
+      }
+    },
+    {
+      "label": "max-31-bit-chain-id",
+      "inputs": {
+        "distribution_id": "ffffffff-ffff-4fff-bfff-fffffffffffe",
+        "chain_id": 2147483647,
+        "starting_iteration": 1000,
+        "chain_key": "1111111111111111111111111111111111111111111111111111111111111111",
+        "signing_private_key": "70773ef11445ff48110e4c699e14366838feacf778f0823a43bd140d84ebb04d",
+        "signing_public_key": "05ce6f13e788efa151ccbb6abbba8a86d6395f700cb83941e356ce4b207265ca52"
+      },
+      "outputs": {
+        "messages": [
+          {
+            "iteration": 1000,
+            "plaintext": "",
+            "sender_key_message": "330a10ffffffffffff4fffbffffffffffffffe10ffffffff0718e8072210cb40badc68d78344f8408d72aae0b69254257049d2837d7a8a6486c85a9e8afa67db7dd8be51d3ad7dcbd4ed5cfa1c09511f88ed90e5e1cb25a94cfa76973a531c0d2c5b2ace6476f234527748642e0e",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 1001,
+            "plaintext": "68656c6c6f2067726f7570",
+            "sender_key_message": "330a10ffffffffffff4fffbffffffffffffffe10ffffffff0718e907221080a58e02627909a3b579fc67132e8ec3754d216d84e17f8ff8a072157d327cf7173f047d7a12218c1f0a03c863dd567b9ef09d7d1a29b262d27026582e35aa08ed167db46ff5046c5787ef6a9cde5204",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 1002,
+            "plaintext": "328150f2e37ce6e66dae07990d5bf391",
+            "sender_key_message": "330a10ffffffffffff4fffbffffffffffffffe10ffffffff0718ea072220e9502c9370338d93ad152ee54afb9e40b189f2cf9ddac6b655906d757534a46a252b74112840ddf3213e24ca653a3802b6f5c14fceba8d4690593cb59d8ef409d230641f677049ee2c9b88468e06a8af7394c4b8ff21b758081f04398aadb907",
+            "ciphertext_type": 7
+          },
+          {
+            "iteration": 1003,
+            "plaintext": "80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080",
+            "sender_key_message": "330a10ffffffffffff4fffbffffffffffffffe10ffffffff0718eb0722b00129ca70c51725134d238332b633e907d5d07480f868c595719a414e63939de46c729f94ef7efd3c5dc5920b6512129db42704e2ab00abe7e5be475b3e7131d986a5f2874f045d61828e6b2482ead42502c5298d74f0ba1239b699122f7ab2e555af07a321f042773e814ce81626848c9167f383df7a92aeebb8fc65e415fc76af8131295353a18612cca046a35e96d4c5c80e9f47fe428f88515832b4869c18c778605b1a0c8a149ad7220123cde19ff605565cb3f5dcdd05aaa29e6010b7f934e8d729f26d5f77ae2a2726e132ff4ffc036e2ac6a4e96b732f45522ee8a3c592edf2836031b8abe547121072042aea0c",
+            "ciphertext_type": 7
+          }
+        ],
+        "decrypt_order_results": [
+          {
+            "index": 3,
+            "plaintext": "80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080"
+          },
+          {
+            "index": 0,
+            "plaintext": ""
+          },
+          {
+            "index": 1,
+            "plaintext": "68656c6c6f2067726f7570"
+          },
+          {
+            "index": 2,
+            "plaintext": "328150f2e37ce6e66dae07990d5bf391"
+          }
+        ],
+        "redecrypt_first_message": "error:duplicate",
+        "decrypt_with_flipped_signature_bit": "error:bad-signature"
+      }
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+.comma-logo-animation {
+  --comma-logo-cycle: 3.6s;
+
+  block-size: auto;
+  color: var(--color-text-primary);
+  display: block;
+  max-inline-size: min(80vw, 35rem);
+  overflow: hidden;
+}
+
+.comma-logo-animation__outer,
+.comma-logo-animation__comma,
+.comma-logo-animation__nested-comma-path {
+  fill: currentColor;
+}
+
+.comma-logo-animation__nested-aperture {
+  fill: var(--color-bg-primary);
+}
+
+.comma-logo-animation__scene,
+.comma-logo-animation__nested-comma {
+  transform-box: view-box;
+}
+
+.comma-logo-animation__scene {
+  animation: var(--comma-logo-zoom-animation) var(--comma-logo-cycle) linear infinite;
+  transform: matrix(1, 0, 0, 1, 0, 0);
+  transform-origin: 0 0;
+}
+
+.comma-logo-animation__nested-comma {
+  animation: var(--comma-logo-nested-animation) var(--comma-logo-cycle) linear infinite;
+  transform: scale(0);
+  transform-origin: 606.44863px 595.56644px;
+}
+
+.comma-logo-animation__scene,
+.comma-logo-animation__nested-comma {
+  animation-delay: var(--comma-logo-delay, 0s);
+}
+
+.comma-logo-animation[data-paused="true"] .comma-logo-animation__scene,
+.comma-logo-animation[data-paused="true"] .comma-logo-animation__nested-comma {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-logo-animation__scene,
+  .comma-logo-animation__nested-comma {
+    animation: none;
+  }
+
+  .comma-logo-animation__nested-comma {
+    transform: scale(0);
+  }
+}
+
+:root[data-comma-reduced-motion="true"] .comma-logo-animation__scene,
+:root[data-comma-reduced-motion="true"] .comma-logo-animation__nested-comma {
+  animation: none;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-logo-animation__nested-comma {
+  transform: scale(0);
+}

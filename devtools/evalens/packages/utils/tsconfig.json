@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "../../.types/utils",
+    "tsBuildInfoFile": "../../node_modules/.cache/evalens/utils.tsbuildinfo",
+    "rootDir": "./src",
+    "types": ["bun"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./src"]
+}

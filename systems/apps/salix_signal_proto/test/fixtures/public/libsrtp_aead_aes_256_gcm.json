@@ -1,0 +1,48 @@
+{
+  "name": "libsrtp-aead-aes-256-gcm",
+  "description": "AEAD_AES_256_GCM SRTP and SRTCP (RFC 7714) with a 32-byte master key and 12-byte master salt, session keys from AES_256_CM_PRF (RFC 6188). Protected output made with libsrtp through pylibsrtp 1.0.0; an independent public implementation of the RFCs, not Signal material. The RTP run crosses the sequence-number wrap.",
+  "master_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "master_salt": "a0a1a2a3a4a5a6a7a8a9aaab",
+  "cases": [
+    {
+      "kind": "rtp",
+      "plain": "8066fffd00000000000007d20000000000000000000000000000000000000000",
+      "protected": "8066fffd00000000000007d2232285f45d095987f4bdf6fc7bb8be3bd1b26622c6852ee47673c92a21aecb8b4ac3afcf",
+      "roc": 0
+    },
+    {
+      "kind": "rtp",
+      "plain": "8066fffe00000b40000007d2010101010101010101010101010101010101010101",
+      "protected": "8066fffe00000b40000007d253108db15c736db2e783150d93fca8dec0bb0e3065c3fcd7fbde0025d4f348cab596f2e3ee",
+      "roc": 0
+    },
+    {
+      "kind": "rtp",
+      "plain": "8066ffff00001680000007d202020202020202020202020202020202020202020202",
+      "protected": "8066ffff00001680000007d2bb656dbf4f879af42acdb194fa1a95ad18d5c97b1699e57d27052572b340f1f4a9df49bbaf52",
+      "roc": 0
+    },
+    {
+      "kind": "rtp",
+      "plain": "80660000000021c0000007d20303030303030303030303030303030303030303030303",
+      "protected": "80660000000021c0000007d246222ae950b41781f23ad8502a90f2dba86f02c834e5a4c701c1dad380b6214b4470ba53e8f31d",
+      "roc": 1
+    },
+    {
+      "kind": "rtp",
+      "plain": "8066000100002d00000007d2040404040404040404040404040404040404040404040404",
+      "protected": "8066000100002d00000007d26b3098430ddae0019fd540a3b26bcaf2c56dfad658e76adfd713e993d4c52e9ddccfbf30ffcf2ecf",
+      "roc": 1
+    },
+    {
+      "kind": "rtcp",
+      "plain": "80c90001000007d281ca0006000007d20110434e414d45434e414d45434e414d45210000",
+      "protected": "80c90001000007d22355737f4836e005205707bc2cf9ec2075e53fac8dbf7bc20dcc5c50f6f430f1b635ab973e8fea1eadb4a09180000001"
+    },
+    {
+      "kind": "rtcp",
+      "plain": "80c90001000007d281ca0006000007d20110434e414d45434e414d45434e414d45210000",
+      "protected": "80c90001000007d2f3b875d3693a84b755b6346de41e9edbe519e714494a71380bc8c3fcd5646ab2478c2450c09c261d42c8073e80000002"
+    }
+  ]
+}

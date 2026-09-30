@@ -1,0 +1,99 @@
+{
+  "section": "CRS-08",
+  "name": "profile-key-version-and-commitment",
+  "description": "Profile key version (64 lowercase hex ASCII characters, used in URL paths and the \"version\" JSON field) and profile key commitment (97 bytes, sent base64 in the \"commitment\" JSON field) for a (profile key, ACI) pair, computed by the oracle. Both are deterministic.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci": "00000000-0000-4000-8000-000000000001",
+        "aci_uuid_bytes": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "version_string": "fcd0715a47cd726483fb0ff70d03b3f4c7329fe444d21cd61e36723f971b3b32",
+        "commitment": "0096763e6a327bb375976e66bcc36daea89efdc8a997ca07116a77c7b4f8d09c1eec47ab525034ea5f809e9981ff1711757e44b8a8a883a8543fa197a30a5a6f53ea1e758f4733eaf73fa8da2c579cbe4a004db75f46e6d9930ceff23945ec0803",
+        "commitment_base64": "AJZ2Pmoye7N1l25mvMNtrqie/cipl8oHEWp3x7T40Jwe7EerUlA06l+AnpmB/xcRdX5EuKiog6hUP6GXowpab1PqHnWPRzPq9z+o2ixXnL5KAE23X0bm2ZMM7/I5RewIAw==",
+        "commitment_length": 97
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "0101010101010101010101010101010101010101010101010101010101010101",
+        "aci": "00000000-0000-4000-8000-0000000000a1",
+        "aci_uuid_bytes": "000000000000400080000000000000a1"
+      },
+      "outputs": {
+        "version_string": "40f4263cd67c6377351c044794d43ca8deb208c622155d66ac2f00d7d205e6cf",
+        "commitment": "0052ec728ba3791c93effc571fa20140030b27ba97bd1f2785f842a8330aed930c3a49f2a3af3f1ff215646e57b8c6248db3feea438b5e89fcf4560200a0e5db1600a19e9b33542e5cf506e8406f61eb279dab47a1ce4002c179f92bc48a1d7143",
+        "commitment_base64": "AFLscoujeRyT7/xXH6IBQAMLJ7qXvR8nhfhCqDMK7ZMMOknyo68/H/IVZG5XuMYkjbP+6kOLXon89FYCAKDl2xYAoZ6bM1QuXPUG6EBvYesnnatHoc5AAsF5+SvEih1xQw==",
+        "commitment_length": 97
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "aci": "ffffffff-ffff-4fff-bfff-ffffffffffff",
+        "aci_uuid_bytes": "ffffffffffff4fffbfffffffffffffff"
+      },
+      "outputs": {
+        "version_string": "261fa75c8c30d923d716e0e49d4d1abd4fd25127edaace0fdf8475a2d722dd94",
+        "commitment": "0028a995a933f5d219f2bf53371280772ce7398c753040c795a352a851a53d973a1c4a33b6632c23ee69d47e1c615432722ddabe77194d2f363fdc316fbe4065504c18bfc8ca86c25d798da12ed77c865b0a454f5b1b104196767cff5f0d24a537",
+        "commitment_base64": "ACiplakz9dIZ8r9TNxKAdyznOYx1MEDHlaNSqFGlPZc6HEoztmMsI+5p1H4cYVQyci3avncZTS82P9wxb75AZVBMGL/IyobCXXmNoS7XfIZbCkVPWxsQQZZ2fP9fDSSlNw==",
+        "commitment_length": 97
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+        "aci": "11111111-2222-4333-8444-555555555555",
+        "aci_uuid_bytes": "11111111222243338444555555555555"
+      },
+      "outputs": {
+        "version_string": "bb4f4029e4ca6723d4f345795c81e2867fc964a5ee0ac8d06f2ffc43a0bef466",
+        "commitment": "000a8a5f96df6764ccbe5f9e6275a2b39708ab51781460bb3bf2e492fa6d14ca7f82c15b9e91e223754b8468eddf9dd557c5580f00fae4cee6af189f2c6514f01a8071a443e9167b255419bcf5741ddb8ea7a98682ac6ee5f480ad384ebda09112",
+        "commitment_base64": "AAqKX5bfZ2TMvl+eYnWis5cIq1F4FGC7O/LkkvptFMp/gsFbnpHiI3VLhGjt353VV8VYDwD65M7mrxifLGUU8BqAcaRD6RZ7JVQZvPV0HduOp6mGgqxu5fSArThOvaCREg==",
+        "commitment_length": 97
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "aci": "c0dec0de-0000-4000-8000-0000c0dec0de",
+        "aci_uuid_bytes": "c0dec0de0000400080000000c0dec0de"
+      },
+      "outputs": {
+        "version_string": "158abdb3190e0508db75dd8359940927f44eec5beb3c49252c06825439b8e931",
+        "commitment": "00e4e39dbdea4ea76dd772d81090ae6d60f16f4d275025102788c4ebc664bcd0377a4a484b5b17d563511d845639fec56e1ab3a26bb81f23c8258f861f073bc83bf2fd990be076888a4b1ce4aa4a4bdabd3b36b1e5e717e65a5e61e757295be32a",
+        "commitment_base64": "AOTjnb3qTqdt13LYEJCubWDxb00nUCUQJ4jE68ZkvNA3ekpIS1sX1WNRHYRWOf7Fbhqzomu4HyPIJY+GHwc7yDvy/ZkL4HaIiksc5KpKS9q9Ozax5ecX5lpeYedXKVvjKg==",
+        "commitment_length": 97
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "aci": "00000000-0000-4000-8000-000000000001",
+        "aci_uuid_bytes": "00000000000040008000000000000001"
+      },
+      "outputs": {
+        "version_string": "18c1bddb3a795bececcc0e462e99b77144b22f0151147777231f2fb44944a173",
+        "commitment": "00a84fdcce28f9e052929149740d4ff6544b80a692bb46128797904df63b59db181e630ca960a7a06b5ad120b2772a1a16a6237b1f39837726c9f24e710287fd4efadd6b60bc0a604f8344f3dab583df04ba1915e5c7a4ae5be63f5af54f5f9f1b",
+        "commitment_base64": "AKhP3M4o+eBSkpFJdA1P9lRLgKaSu0YSh5eQTfY7WdsYHmMMqWCnoGta0SCydyoaFqYjex85g3cmyfJOcQKH/U763WtgvApgT4NE89q1g98EuhkV5cekrlvmP1r1T1+fGw==",
+        "commitment_length": 97
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "aci": "00000000-0000-4000-8000-0000000000a1",
+        "aci_uuid_bytes": "000000000000400080000000000000a1"
+      },
+      "outputs": {
+        "version_string": "52c000d3e2f514251367b78b590921eb3393da6a20483ff140dd922632db31bb",
+        "commitment": "007a813a25b490e4cf063b9ceaddc7c887a435d714c5a1afe6cc7864cf4c12123812ea8e8e516b0d817e22e29083cddb636277c64ebc39b6bf4dc31b450dfb6e49aaedd451705da5739a8e3e0a8dd0a8c4b55a564041fe866d9046ff9ff5a60c19",
+        "commitment_base64": "AHqBOiW0kOTPBjuc6t3HyIekNdcUxaGv5sx4ZM9MEhI4EuqOjlFrDYF+IuKQg83bY2J3xk68Oba/TcMbRQ37bkmq7dRRcF2lc5qOPgqN0KjEtVpWQEH+hm2QRv+f9aYMGQ==",
+        "commitment_length": 97
+      }
+    }
+  ]
+}

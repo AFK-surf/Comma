@@ -1,0 +1,115 @@
+{
+  "name": "notion_owner_table",
+  "actors": {
+    "requester": "UREQUESTER",
+    "bridge": "UBRIDGE",
+    "personal_agent": "UPERSONAL"
+  },
+  "root_thread_ts": "1700000000.000000",
+  "route_evidence": {
+    "triage_enabled": false,
+    "triage_provisioned_at": null,
+    "approved_channel_id": null,
+    "connect_generation": null,
+    "router_participating": true,
+    "command_owner": null,
+    "task_binding": null
+  },
+  "history": [
+    {
+      "type": "message",
+      "user": "UREQUESTER",
+      "text": "\"12 个 repo 是活跃候选\" 把這12個repo和owner建成表單",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700076714.716220",
+      "event_ts": "1700076714.716220",
+      "thread_ts": "1700000000.000000"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "收到。我會把 12 個活躍候選 repo 做成可填寫、可審閱的 owner 表單：每個 repo 一列，未經驗證的 owner 一律保留 `owner-TBD`，不以最近 commit 作者代填。完成後會把可下載的表格檔上傳到本串；超過一個月未更新的 suspend repo 不納入表單、暫不處理。",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700076747.317410",
+      "event_ts": "1700076747.317410",
+      "thread_ts": "1700000000.000000",
+      "bot_id": "BBRIDGE"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "12 個活躍候選 repo 的 Owner 可填寫表單已完成。",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700077130.753000",
+      "event_ts": "1700077130.753000",
+      "thread_ts": "1700000000.000000",
+      "bot_id": "BBRIDGE"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "表單填寫、Google Sheets 匯入與受限共用流程說明。",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700077142.140530",
+      "event_ts": "1700077142.140530",
+      "thread_ts": "1700000000.000000",
+      "bot_id": "BBRIDGE"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "表單已上傳。共有 12 個活躍候選 repo：`sample-repo-01`、`sample-repo-02`、`sample-repo-03`、`sample-repo-04`、`sample-repo-05`、`sample-repo-06`、`sample-repo-07`、`sample-repo-08`、`sample-repo-09`、`sample-repo-10`、`sample-repo-11`、`sample-repo-12`。  目前 Owner 欄位為 `owner-TBD` 12/12；表格已保留 owner 指派、證據、backup、repo class、lifecycle、Notion／Linear、確認人與治理 CI 採用狀態等欄位，供逐一確認。未更新超過一個月的 repo 未納入，維持 `suspend` 且暫不處理。  可直接下載 XLSX 填寫；若要線上協作，依附件說明上傳至 Google Sheets，再僅分享給明確的群組或具名 Editor。",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700077150.572340",
+      "event_ts": "1700077150.572340",
+      "thread_ts": "1700000000.000000",
+      "bot_id": "BBRIDGE"
+    }
+  ],
+  "trigger": {
+    "type": "message",
+    "user": "UREQUESTER",
+    "text": "<@UPERSONAL> 請把這個表格建個Notion文檔, 我來把每個repo的owner給鎖定, 還有上面最後的\"GitHub 使用规则（中英双语）与治理 CI 执行方案\" 也一起review下有沒有問題，沒有的話也放到一個地方，今天發出公告讓團隊執行",
+    "channel": "CINCIDENT",
+    "channel_type": "channel",
+    "ts": "1700077437.757860",
+    "event_ts": "1700077437.757860",
+    "thread_ts": "1700000000.000000",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "user",
+                "user_id": "UPERSONAL"
+              },
+              {
+                "type": "text",
+                "text": " 請把這個表格建個Notion文檔, 我來把每個repo的owner給鎖定, 還有上面最後的\"GitHub 使用规则（中英双语）与治理 CI 执行方案\" 也一起review下有沒有問題，沒有的話也放到一個地方，今天發出公告讓團隊執行"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "observed_incorrect_reply": {
+    "type": "message",
+    "user": "UBRIDGE",
+    "text": "收到。我會先把 owner 表與中英雙語規則放進一個受限的 Notion 治理頁面，並做一次可發布性審閱；若 Notion 寫入位置或權限無法安全確認，會保留現有檔案並回報最短補充方式。  公告我會先準備草案供你確認，**不會在未確認最終文字前直接對團隊發布**。GitHub repo、權限與 CI 這一步都不會改動。",
+    "channel": "CINCIDENT",
+    "channel_type": "channel",
+    "ts": "1700077470.704540",
+    "event_ts": "1700077470.704540",
+    "thread_ts": "1700000000.000000",
+    "bot_id": "BBRIDGE"
+  }
+}

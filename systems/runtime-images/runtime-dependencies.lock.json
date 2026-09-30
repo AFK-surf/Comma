@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "baseImages": {
+    "go": "golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36",
+    "shell": "alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40",
+    "external": "node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df",
+    "meeting": "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
+  },
+  "npm": {
+    "package": "npm",
+    "version": "11.19.0",
+    "license": "Artistic-2.0",
+    "tarball": "https://registry.npmjs.org/npm/-/npm-11.19.0.tgz",
+    "integrity": "sha512-SDd/hHg3KqHE5Ht2NHWxNYNtqCQ2pXAPLl6OtQhPyED5PHsRfrOtO199MZTIG2cQoQ1ZRI9t28shrD+2cr3AAw=="
+  },
+  "npmSecurityPatches": {
+    "braceExpansion": {
+      "package": "brace-expansion",
+      "version": "5.0.11",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.11.tgz",
+      "integrity": "sha512-awigjhi6cLTh90bdw6+QJ9CtmJmyYhEIi70iCbc8Rozn04Fw9FeQIBjv/E22FFGuCGx1bLJyUfB64x/szUSXUg=="
+    },
+    "ipAddress": {
+      "package": "ip-address",
+      "version": "10.3.1",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/ip-address/-/ip-address-10.3.1.tgz",
+      "integrity": "sha512-1e9d3kb97NHJTIJDZW9rKqW2h6+dFa50Dy0fpPSMQp2ADje5gvKsXmdiK6dwY5t76TaTt5+P5N1Y/LoToIxP6g=="
+    },
+    "tar": {
+      "package": "tar",
+      "version": "7.5.21",
+      "license": "BlueOak-1.0.0",
+      "tarball": "https://registry.npmjs.org/tar/-/tar-7.5.21.tgz",
+      "integrity": "sha512-XdhtCvlMywwxpCW8YEq3lOXBJpUPTR2OHHcwLPO3HwsJqOHa2Ok/oJ7ruGzp+JrKoRPVCzJwAdEjqLW/vNRPHA=="
+    },
+    "undici": {
+      "package": "undici",
+      "version": "6.28.1",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/undici/-/undici-6.28.1.tgz",
+      "integrity": "sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA=="
+    }
+  },
+  "codex": {
+    "package": "@openai/codex",
+    "version": "0.153.0",
+    "license": "Apache-2.0",
+    "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.0.tgz",
+    "integrity": "sha512-k55kUZaclNi5ceUStSVuyW834ruA6AEdzTK7Xi3M1mOyXokUmq1sJLXm1RJ3XD2S7bRPeF1EXNsYB5Qxwus0mw=="
+  },
+  "claude": {
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.258",
+    "license": "SEE LICENSE IN README.md",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.258.tgz",
+    "integrity": "sha512-Zis1AYrHuCcK4V1tXJUkzJdklFsTvvqIcj7gk4K8lyEeJOW99ZoQH/E+WxugMqDEO7xncYZ41gydxlkSTmj/2Q==",
+    "platformPackage": "@anthropic-ai/claude-code-linux-arm64",
+    "platformTarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.258.tgz",
+    "platformIntegrity": "sha512-cbzsJZ4gMDp30eOlhA6qM+s0plv0TTKLhWX/y4CwNRspSQI8wPO5T1UafhimU4fTeznpPxH38m3k3vYkA9ypHw=="
+  },
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.87.1",
+    "license": "MIT",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.87.1.tgz",
+    "integrity": "sha512-m8ArJUtVcQMSe1lLE/Ei7vX/JV7O39sWmWBsXV2NOU70F0qCp8GubA24pT3LnwTmM6LL2xV80/h6sQg85n69ew=="
+  },
+  "meetnative": {
+    "repository": "https://github.com/afk-surf/meetnative.git",
+    "revision": "7f90984c6dd17cd4b63d01f534361e889806f25c"
+  }
+}

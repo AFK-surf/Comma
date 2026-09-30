@@ -1,0 +1,219 @@
+name: comma-systems-dev
+
+x-comma-runtime: &comma-runtime
+  image: comma-systems-dev:local
+  environment:
+    COMMA_SUBSYSTEMS: salix,comma_product
+    COMMA_ENVIRONMENT: local
+    COMMA_SESSION_COOKIE_SECURE: "false"
+    COMMA_GOOGLE_WEB_CLIENT_ID: "${COMMA_GOOGLE_WEB_CLIENT_ID:-}"
+    COMMA_GOOGLE_ELECTRON_CLIENT_ID: "${COMMA_GOOGLE_ELECTRON_CLIENT_ID:-}"
+    COMMA_GOOGLE_ELECTRON_CLIENT_SECRET: "${COMMA_GOOGLE_ELECTRON_CLIENT_SECRET:-}"
+    COMMA_TELEGRAM_ENABLED: "${COMMA_TELEGRAM_ENABLED:-true}"
+    COMMA_TELEGRAM_BOT_TOKEN: "${COMMA_TELEGRAM_BOT_TOKEN:-comma-local-dev-bot-token}"
+    COMMA_TELEGRAM_BOT_USERNAME: "${COMMA_TELEGRAM_BOT_USERNAME:-CommaLocalBot}"
+    COMMA_TELEGRAM_PUBLIC_BASE_URL: "${COMMA_TELEGRAM_PUBLIC_BASE_URL:-http://127.0.0.1:4200}"
+    COMMA_TELEGRAM_WEBHOOK_SECRET: "${COMMA_TELEGRAM_WEBHOOK_SECRET:-comma-local-dev-webhook-secret-0001}"
+    COMMA_TELEGRAM_CLIENT_ID: "${COMMA_TELEGRAM_CLIENT_ID:-}"
+    COMMA_TELEGRAM_CLIENT_SECRET: "${COMMA_TELEGRAM_CLIENT_SECRET:-}"
+    COMMA_TELEGRAM_API_BASE_URL: "${COMMA_TELEGRAM_API_BASE_URL:-http://telegram-mock:43124}"
+    RELEASE_COOKIE: comma-dev-cookie
+    SALIX_SNOWFLAKE_WORKER_ID: "0"
+    COMMA_REDIS_URL: redis://redis:6379/0
+    COMMA_MAIL_HOST: mailpit
+    COMMA_MAIL_PORT: "1025"
+  volumes:
+    - ./config/compose-dev.json:/etc/salix/config.json:ro
+
+services:
+  minio:
+    # Open-source MinIO is archived upstream (read-only since 2026-04-25, #757):
+    # pinned by digest to the final release (RELEASE.2025-09-07T16-13-09Z) so
+    # `latest` can never drift or vanish.
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "${COMMA_DEV_MINIO_PORT:-19000}:9000"
+      - "${COMMA_DEV_MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          sleep 1
+        done
+        mc mb -p local/salix-dev || true
+        mc mb -p local/salix-test || true
+        mc mb -p local/comma-user-avatar-dev || true
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${COMMA_DEV_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${COMMA_DEV_SMTP_PORT:-1025}:1025"
+      - "${COMMA_DEV_MAILPIT_PORT:-8025}:8025"
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: billing_core_dev
+    ports:
+      - "${COMMA_DEV_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d billing_core_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ports:
+      - "${COMMA_DEV_CLICKHOUSE_PORT:-18123}:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  llm-mock:
+    image: node:24-alpine
+    command: ["node", "--watch", "/app/scripts/local-llm-mock.mjs"]
+    environment:
+      PORT: "43123"
+      LOG_PATH: /tmp/comma-local-llm-requests.jsonl
+    volumes:
+      # Mount the directory so atomic file replacement during rebase/build does not
+      # leave the running container attached to a deleted inode. Node watch reloads
+      # the deterministic mock whenever its source changes.
+      - ./scripts:/app/scripts:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:43123/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  telegram-mock:
+    image: node:24-alpine
+    command: ["node", "--watch", "/app/scripts/local-telegram-mock.mjs"]
+    environment:
+      PORT: "43124"
+      TELEGRAM_MOCK_BOT_TOKEN: "${COMMA_TELEGRAM_BOT_TOKEN:-comma-local-dev-bot-token}"
+      TELEGRAM_MOCK_BOT_USERNAME: "${COMMA_TELEGRAM_BOT_USERNAME:-CommaLocalBot}"
+      LOG_PATH: /tmp/comma-local-telegram-requests.jsonl
+    volumes:
+      - ./scripts:/app/scripts:ro
+    ports:
+      - "127.0.0.1:${COMMA_DEV_TELEGRAM_MOCK_PORT:-43124}:43124"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:43124/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  comma-migrate:
+    <<: *comma-runtime
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    # Local volumes can be reset independently. Reconcile ClickHouse from its
+    # own migration ledger before the cross-store release ledger is consulted,
+    # otherwise a retained MinIO ledger can incorrectly skip a fresh
+    # ClickHouse volume.
+    command:
+      - eval
+      - |
+        case SalixAnalytics.Migrations.migrate() do
+          {:ok, _versions} -> Comma.Release.migrate()
+          {:error, reason} -> raise "local ClickHouse migration failed: #{inspect(reason)}"
+        end
+    restart: "no"
+
+  comma:
+    <<: *comma-runtime
+    build:
+      context: ..
+      dockerfile: systems/Dockerfile
+      target: runtime
+      args:
+        # Local compose always compiles the debug capability. It starts off and
+        # is toggled at runtime from Settings > Debug.
+        COMMA_LOCAL_RECOMMENDATION_MOCK: "true"
+    depends_on:
+      comma-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      llm-mock:
+        condition: service_healthy
+      telegram-mock:
+        condition: service_healthy
+    ports:
+      - "${COMMA_DEV_SALIX_PORT:-4000}:4000"
+      - "${COMMA_DEV_COMMA_PORT:-4200}:4200"
+      - "${COMMA_DEV_TRANSFER_PORT:-4400}:4400"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4000/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 20
+
+volumes:
+  clickhouse-data:
+  minio-data:
+  postgres-data:
+  redis-data:

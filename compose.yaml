@@ -1,0 +1,183 @@
+name: comma
+
+x-comma: &comma
+  image: comma-selfhost:local
+  build:
+    context: .
+    dockerfile: systems/Dockerfile
+    target: runtime
+  environment: &comma-env
+    COMMA_SUBSYSTEMS: salix,comma_product
+    COMMA_ENVIRONMENT: selfhost
+    COMMA_PUBLIC_URL: ${COMMA_PUBLIC_URL:-http://localhost:8080}
+    COMMA_REDIS_URL: redis://redis:6379/0
+    SALIX_CONFIG_PATH: /config/config.json
+    SALIX_SNOWFLAKE_WORKER_ID: "0"
+    COMMA_PROFILE_AVATAR_BUCKET: comma-avatars
+  entrypoint: ["/bin/sh", "/selfhost/entrypoint.sh"]
+  volumes:
+    - config:/config:ro
+    - ./selfhost/entrypoint.sh:/selfhost/entrypoint.sh:ro
+  init: true
+
+services:
+  configure:
+    image: python:3.13-alpine
+    entrypoint: ["python", "/configure.py"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      COMMA_PUBLIC_URL: ${COMMA_PUBLIC_URL:-http://localhost:8080}
+    volumes:
+      - config:/config
+      - ./selfhost/configure.py:/configure.py:ro
+    restart: "no"
+
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: comma
+      POSTGRES_DB: comma
+      POSTGRES_PASSWORD_FILE: /config/postgres-password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - config:/config:ro
+    depends_on:
+      configure:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U comma -d comma"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  minio:
+    image: comma-selfhost-minio:local
+    build:
+      context: selfhost
+      dockerfile: Storage.Dockerfile
+      target: minio
+    entrypoint:
+      [
+        "/bin/sh",
+        "-c",
+        "export MINIO_ROOT_USER=comma MINIO_ROOT_PASSWORD=$$(cat /config/storage-password); exec minio server /data",
+      ]
+    volumes:
+      - objects:/data
+      - config:/config:ro
+    depends_on:
+      configure:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  buckets:
+    image: comma-selfhost-mc:local
+    build:
+      context: selfhost
+      dockerfile: Storage.Dockerfile
+      target: mc
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - 'mc alias set local http://minio:9000 comma "$$(cat /config/storage-password)"; mc mb --ignore-existing local/comma local/comma-avatars'
+    volumes:
+      - config:/config:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${COMMA_MAILPIT_PORT:-8025}:8025"
+    restart: unless-stopped
+
+  migrate:
+    <<: *comma
+    command: ["eval", "Comma.FreshInstall.run()"]
+    depends_on:
+      buckets:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  comma:
+    <<: *comma
+    command: ["start"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${COMMA_SALIX_PORT:-4000}:4000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:4000/ready && curl -fsS http://localhost:4200/ready",
+        ]
+      interval: 5s
+      timeout: 4s
+      start_period: 30s
+      retries: 60
+    restart: unless-stopped
+    stop_grace_period: 90s
+
+  web:
+    build:
+      context: .
+      dockerfile: selfhost/Web.Dockerfile
+      args:
+        COMMA_API_BASE_URL: ${COMMA_API_URL:-http://localhost:8081}
+    ports:
+      - "${COMMA_BIND_ADDRESS:-127.0.0.1}:${COMMA_HTTP_PORT:-8080}:8080"
+      - "${COMMA_BIND_ADDRESS:-127.0.0.1}:${COMMA_API_PORT:-8081}:8081"
+      - "${COMMA_BIND_ADDRESS:-127.0.0.1}:${COMMA_ADMIN_PORT:-8082}:8082"
+    depends_on:
+      comma:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  config:
+  postgres:
+  objects:
+  clickhouse:
+  redis:

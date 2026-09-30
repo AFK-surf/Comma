@@ -1,0 +1,288 @@
+{
+  "section": "CRS-04b",
+  "name": "spqr-message-format",
+  "description": "Post-quantum ratchet messages taken from field 5 of double-ratchet messages that the oracle produced, and their parsed fields (CRS-04b §4). Chosen to cover every message type, epochs above 1, multi-byte index varints and chunk indices above the systematic range where they occurred.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "label": "header chunk, epoch 1, index 1, chunk 0",
+        "post_quantum_message": "010101010089f9957e4cdc407f21c33d371e003e6e8b8ead9ba952b87e6723a978ba41afdd"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 1,
+        "type": 1,
+        "type_meaning": "header chunk",
+        "chunk_index": 0,
+        "chunk_data": "89f9957e4cdc407f21c33d371e003e6e8b8ead9ba952b87e6723a978ba41afdd",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-1 chunk, epoch 1, index 1, chunk 0",
+        "post_quantum_message": "01010105005cbb71b9696c48c32ddabb532290c682449709026641318b1ed4d7739e5958d5"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 1,
+        "type": 5,
+        "type_meaning": "ciphertext-1 chunk",
+        "chunk_index": 0,
+        "chunk_data": "5cbb71b9696c48c32ddabb532290c682449709026641318b1ed4d7739e5958d5",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "key chunk, epoch 1, index 10, chunk 0",
+        "post_quantum_message": "01010a020086bc9cd09871da67c6c7c8b8fad97e5471abe2d519ae09829417ab86d5005faa"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 10,
+        "type": 2,
+        "type_meaning": "key chunk",
+        "chunk_index": 0,
+        "chunk_data": "86bc9cd09871da67c6c7c8b8fad97e5471abe2d519ae09829417ab86d5005faa",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "key chunk, epoch 1, index 26, chunk 16",
+        "post_quantum_message": "01011a0210a2349499b7792a171a1ecdfb27fae46c90ab18c1aaafb2bc7e371c2bd2537812"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 26,
+        "type": 2,
+        "type_meaning": "key chunk",
+        "chunk_index": 16,
+        "chunk_data": "a2349499b7792a171a1ecdfb27fae46c90ab18c1aaafb2bc7e371c2bd2537812",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-1 chunk, epoch 1, index 17, chunk 16",
+        "post_quantum_message": "01011105102e77551012e369704ac744d56c617428dae064ab91ab61b5d544496718efc855"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 17,
+        "type": 5,
+        "type_meaning": "ciphertext-1 chunk",
+        "chunk_index": 16,
+        "chunk_data": "2e77551012e369704ac744d56c617428dae064ab91ab61b5d544496718efc855",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "key chunk with ciphertext-1 acknowledgement, epoch 1, index 42, chunk 32",
+        "post_quantum_message": "01012a0320144735f01a8be920c10b8755a655b376660d6bcaecbbb746c87282e39629b263"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 42,
+        "type": 3,
+        "type_meaning": "key chunk with ciphertext-1 acknowledgement",
+        "chunk_index": 32,
+        "chunk_data": "144735f01a8be920c10b8755a655b376660d6bcaecbbb746c87282e39629b263",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "none, epoch 1, index 34",
+        "post_quantum_message": "01012200"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 34,
+        "type": 0,
+        "type_meaning": "none",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-2 chunk, epoch 1, index 35, chunk 0",
+        "post_quantum_message": "0101230600fb974bb9bfa1815de1bb5a0199ece3dc16d585de93f3ca60b54ea0fb08500df6"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 35,
+        "type": 6,
+        "type_meaning": "ciphertext-2 chunk",
+        "chunk_index": 0,
+        "chunk_data": "fb974bb9bfa1815de1bb5a0199ece3dc16d585de93f3ca60b54ea0fb08500df6",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-1 acknowledgement, epoch 1, index 48",
+        "post_quantum_message": "01013004"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 1,
+        "index": 48,
+        "type": 4,
+        "type_meaning": "ciphertext-1 acknowledgement",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "none, epoch 2, index 1",
+        "post_quantum_message": "01020100"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 1,
+        "type": 0,
+        "type_meaning": "none",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "header chunk, epoch 2, index 1, chunk 0",
+        "post_quantum_message": "0102010100e09d4bfa64e78fb243027def0e8980cf4fb5c72b2e5b89635e9fa8e2ddc9595e"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 1,
+        "type": 1,
+        "type_meaning": "header chunk",
+        "chunk_index": 0,
+        "chunk_data": "e09d4bfa64e78fb243027def0e8980cf4fb5c72b2e5b89635e9fa8e2ddc9595e",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-1 chunk, epoch 2, index 6, chunk 0",
+        "post_quantum_message": "0102060500857fa452ab96a6e09e200052bcb813331bf327dad5a51d9d5ea1da90e5b0e217"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 6,
+        "type": 5,
+        "type_meaning": "ciphertext-1 chunk",
+        "chunk_index": 0,
+        "chunk_data": "857fa452ab96a6e09e200052bcb813331bf327dad5a51d9d5ea1da90e5b0e217",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "key chunk, epoch 2, index 5, chunk 0",
+        "post_quantum_message": "010205020036d37b12cbc7e23c62943362a30234797b96ec594656f5a757c3b5cdf0658f21"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 5,
+        "type": 2,
+        "type_meaning": "key chunk",
+        "chunk_index": 0,
+        "chunk_data": "36d37b12cbc7e23c62943362a30234797b96ec594656f5a757c3b5cdf0658f21",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "key chunk, epoch 2, index 21, chunk 16",
+        "post_quantum_message": "01021502104c6ee05241358fd5346915c8c61b1a1b64813388a0c406762fa2435307507c1a"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 21,
+        "type": 2,
+        "type_meaning": "key chunk",
+        "chunk_index": 16,
+        "chunk_data": "4c6ee05241358fd5346915c8c61b1a1b64813388a0c406762fa2435307507c1a",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-1 chunk, epoch 2, index 22, chunk 16",
+        "post_quantum_message": "0102160510bd275967b17c32f467a3525b59da3bc4af5009b7f3881a8a1f319ab71fb7f7a3"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 22,
+        "type": 5,
+        "type_meaning": "ciphertext-1 chunk",
+        "chunk_index": 16,
+        "chunk_data": "bd275967b17c32f467a3525b59da3bc4af5009b7f3881a8a1f319ab71fb7f7a3",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "key chunk with ciphertext-1 acknowledgement, epoch 2, index 42, chunk 37",
+        "post_quantum_message": "01022a03259dc6fb363c2b5af89dfe72e8284d1ecf956be2ffcf011780180991f1caa82faf"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 42,
+        "type": 3,
+        "type_meaning": "key chunk with ciphertext-1 acknowledgement",
+        "chunk_index": 37,
+        "chunk_data": "9dc6fb363c2b5af89dfe72e8284d1ecf956be2ffcf011780180991f1caa82faf",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-2 chunk, epoch 2, index 39, chunk 0",
+        "post_quantum_message": "0102270600f7761ca94964bc6740f9391dddbb183498d87394ce084c85bed8993dfc8f6f6f"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 39,
+        "type": 6,
+        "type_meaning": "ciphertext-2 chunk",
+        "chunk_index": 0,
+        "chunk_data": "f7761ca94964bc6740f9391dddbb183498d87394ce084c85bed8993dfc8f6f6f",
+        "trailing": ""
+      }
+    },
+    {
+      "inputs": {
+        "label": "ciphertext-1 acknowledgement, epoch 2, index 44",
+        "post_quantum_message": "01022c04"
+      },
+      "outputs": {
+        "version": 1,
+        "epoch": 2,
+        "index": 44,
+        "type": 4,
+        "type_meaning": "ciphertext-1 acknowledgement",
+        "trailing": ""
+      }
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+<%!-- OAuth 2.0 consent page — comma_web server-rendered, zero JS (RFC §6.2 / §11.3). --%>
+<%!-- Classic EEx does NOT auto-escape: every assign is HTML-escaped by --%>
+<%!-- CommaWeb.OauthIdpConsent.render_consent/1 before it reaches this template. --%>
+<%!-- Never add an assign here without escaping it there first. --%>
+<%!-- Assigns: @client_name (untrusted text — truncated ≤40 chars), @client_initial, --%>
+<%!--          @user_name, @user_initial, @user_email, @redirect_host, @handle, @csrf_token. --%>
+<%!-- CSP (RFC §6.2): default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'. --%>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<%!-- Must stay in step with the Referrer-Policy response header, and must --%>
+<%!-- never be `no-referrer`: this element overrides the header for the --%>
+<%!-- document, and under `no-referrer` Fetch serializes the Origin of a --%>
+<%!-- navigation — the consent form POST is one — as the literal "null", --%>
+<%!-- which require_same_origin/1 rejects, breaking Continue and Cancel in --%>
+<%!-- every real browser. `same-origin` still sends no referrer at all on --%>
+<%!-- cross-origin navigations, including the final hop to the client's --%>
+<%!-- redirect_uri that carries the authorization code. --%>
+<meta name="referrer" content="same-origin">
+<title>Sign in with Comma</title>
+<style>
+:root{color-scheme:light dark;
+ --bg:#ffffff;--fg:#1a1b1e;--fg-secondary:#4a4c50;--fg-tertiary:#7f8286;
+ --surface:#fafafa;--surface-strong:#f1f1f1;--chip-bg:#f5f5f5;--border:#f1f1f1;
+ --btn-bg:#ffffff;--btn-fg:#222326;--btn-border:#dfe0e2;--btn-hover:#fafafa;
+ --brand:#205bff;--brand-border:#1040f2;--brand-hover:#1040f2;
+ --shadow:0 1px 2px 0 rgba(16,24,40,.05)}
+@media (prefers-color-scheme:dark){:root{
+ --bg:#0f0f10;--fg:#f6f6f6;--fg-secondary:#d1d1d1;--fg-tertiary:#a4a5a9;
+ --surface:#18191b;--surface-strong:#27282b;--chip-bg:#27282b;--border:#27282b;
+ --btn-bg:#18191b;--btn-fg:#d1d1d1;--btn-border:#343538;--btn-hover:#27282b;
+ --shadow:0 1px 2px 0 rgba(0,0,0,.32)}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:flex;align-items:center;justify-content:center;
+ padding:32px 16px;background:var(--bg);color:var(--fg);
+ font-family:InterVariable,Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+ -webkit-font-smoothing:antialiased}
+.col{width:360px;max-width:100%;display:flex;flex-direction:column;align-items:center}
+.brandline{display:flex;align-items:center;gap:7px;color:var(--fg-tertiary);font-size:12px;font-weight:500;line-height:1}
+.brandline svg{width:16px;height:16px;color:var(--fg)}
+.app-badge{margin-top:24px;width:56px;height:56px;border-radius:16px;background:var(--chip-bg);
+ border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+ font-size:24px;font-weight:500;color:var(--fg-secondary)}
+h1{margin:14px 0 0;font-size:24px;line-height:32px;font-weight:500;letter-spacing:-.02em;
+ text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub{margin:2px 0 0;font-size:13px;line-height:20px;color:var(--fg-tertiary)}
+.identity{margin-top:20px;width:100%;background:var(--surface);border:1px solid var(--border);
+ border-radius:12px;padding:11px 14px;display:flex;align-items:center;gap:11px}
+.avatar{width:36px;height:36px;border-radius:50%;background:var(--surface-strong);flex:none;
+ display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;color:var(--fg-secondary)}
+.identity .meta{min-width:0}
+.id-name{font-size:13px;line-height:18px;font-weight:500}
+.id-email{font-size:12px;line-height:16px;color:var(--fg-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.share{margin-top:16px;width:100%}
+.share-label{font-size:12px;line-height:18px;font-weight:500;color:var(--fg-tertiary);padding:0 2px;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.share-list{margin:6px 0 0;border:1px solid var(--border);border-radius:12px;background:var(--bg)}
+.share-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px}
+.share-row + .share-row{border-top:1px solid var(--border)}
+.share-row dt{font-size:13px}
+.share-row dd{margin:0;font-size:12px;color:var(--fg-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+form{margin:20px 0 0;width:100%;display:flex;gap:12px}
+.btn{flex:1;height:44px;border-radius:16px;padding:0;font:inherit;font-size:13px;font-weight:500;
+ cursor:pointer;box-shadow:var(--shadow)}
+.btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.btn-secondary{background:var(--btn-bg);border:1px solid var(--btn-border);color:var(--btn-fg)}
+.btn-secondary:hover{background:var(--btn-hover)}
+.btn-primary{background:var(--brand);border:1px solid var(--brand-border);color:#fff}
+.btn-primary:hover{background:var(--brand-hover)}
+.footnote{margin:16px 0 0;font-size:12px;line-height:18px;color:var(--fg-tertiary);text-align:center;text-wrap:pretty}
+.footnote strong{font-weight:500;color:var(--fg-secondary)}
+</style>
+</head>
+<body>
+<main class="col">
+  <div class="brandline">
+    <svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M24.0293 4.44182C35.2292 4.44193 44.3086 13.5212 44.3086 24.7211C44.3086 26.2292 44.141 27.698 43.8271 29.1117C43.7274 29.5609 43.0935 29.5949 42.8828 29.186C41.9591 27.3916 40.5289 25.8315 38.6514 24.7475C33.4379 21.7378 26.7689 23.5256 23.7588 28.7387C20.7499 33.9519 22.5373 40.6193 27.75 43.6293C27.798 43.657 27.8462 43.6845 27.8945 43.7113C28.2968 43.9348 28.2441 44.5646 27.792 44.6498C26.5728 44.8795 25.3151 45.0004 24.0293 45.0004C12.8294 45.0004 3.75017 35.9209 3.75 24.7211C3.75001 13.5212 12.8293 4.44182 24.0293 4.44182ZM27.5752 30.475C29.5842 26.9956 34.0342 25.803 37.5137 27.8119C40.8501 29.7385 42.081 33.9084 40.4053 37.3158C40.4099 37.3203 40.4144 37.3251 40.4189 37.3295C40.3568 37.4447 40.2857 37.5685 40.2051 37.6977C40.1952 37.715 40.1858 37.7331 40.1758 37.7504C39.7991 38.4028 39.3363 38.9749 38.8105 39.4604C37.1152 41.2376 34.3055 43.2112 30.4131 43.7602C30.2618 43.7814 30.1769 43.5981 30.29 43.4955C30.9997 42.8536 31.8303 42.0905 32.6543 41.2846C31.8262 41.1437 31.0084 40.8571 30.2383 40.4125C26.7589 38.4036 25.5665 33.9545 27.5752 30.475Z" fill="currentColor"/></svg>
+    <span>Sign in with Comma</span>
+  </div>
+  <div class="app-badge" aria-hidden="true"><%= @client_initial %></div>
+  <h1>Sign in to <%= @client_name %></h1>
+  <p class="sub">with your Comma account</p>
+  <div class="identity">
+    <div class="avatar" aria-hidden="true"><%= @user_initial %></div>
+    <div class="meta">
+      <div class="id-name"><%= @user_name %></div>
+      <div class="id-email"><%= @user_email %></div>
+    </div>
+  </div>
+  <div class="share">
+    <div class="share-label"><%= @client_name %> will receive</div>
+    <dl class="share-list">
+      <div class="share-row"><dt>Name</dt><dd><%= @user_name %></dd></div>
+      <div class="share-row"><dt>Email address</dt><dd><%= @user_email %></dd></div>
+    </dl>
+  </div>
+  <%!-- Empty action posts back to the authorize URL (query string preserved); adjust to the final route if it differs. --%>
+  <form method="post" action="">
+    <input type="hidden" name="_csrf_token" value="<%= @csrf_token %>">
+    <input type="hidden" name="handle" value="<%= @handle %>">
+    <button type="submit" name="decision" value="deny" class="btn btn-secondary">Cancel</button>
+    <button type="submit" name="decision" value="approve" class="btn btn-primary">Continue</button>
+  </form>
+  <p class="footnote">You’ll be sent back to <strong><%= @redirect_host %></strong>.<br><%= @client_name %> won’t get access to your Comma workspace or tasks.</p>
+</main>
+</body>
+</html>

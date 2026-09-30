@@ -1,0 +1,53 @@
+{
+  "section": "CRS-08",
+  "name": "access-key",
+  "description": "Unidentified access key (16 bytes) derived from a profile key, and the 32-byte checksum HMAC-SHA256(access_key, 32 zero bytes) that the server returns as \"unidentifiedAccess\". Both outputs computed by the oracle (the checksum with the oracle incremental-MAC operation configured as a single-chunk HMAC-SHA256).",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "profile_key": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "access_key": "cea7403d4d606b6e074ec5d3baf39d18",
+        "access_key_checksum": "31addd658c8e50d4c2588fd66d925f5f4dc709817f4dc868a0147ed46e098746"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "0101010101010101010101010101010101010101010101010101010101010101"
+      },
+      "outputs": {
+        "access_key": "bf3598dc753b03bf937992457124c141",
+        "access_key_checksum": "0b15bd0b8b2b48701daae2c5f06502bdeacd0791874fe60e87054f3d24de02df"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "outputs": {
+        "access_key": "0ebcb5deb52c83bd08a8a935182c9199",
+        "access_key_checksum": "99b8d2ad421524db61a7fbaaf530414d36cb36e70c61b707e2771bd850da773a"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"
+      },
+      "outputs": {
+        "access_key": "7e6eb6c0caa4c9523ce0135d5569a873",
+        "access_key_checksum": "56e2edecd576c12f322f6d922a834db1b7bcb5aa84739e3ca9c8196e205f03d4"
+      }
+    },
+    {
+      "inputs": {
+        "profile_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "outputs": {
+        "access_key": "c7c96dffcd9cc01f120645ccfc24d400",
+        "access_key_checksum": "1caafee2a5230589a93019b21d5854dbf057c35a712d1ce400dc47ae7bfbbf76"
+      }
+    }
+  ]
+}

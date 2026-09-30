@@ -1,0 +1,954 @@
+syntax = "proto3";
+
+// The local control protocol (§9.3).
+//
+// One gRPC service, served by the daemon over the local transport and reached
+// by the CLI and by the S3 gateway. Two surfaces share it: `Run` answers a CLI
+// subcommand in rendered text (§9.2), and the typed calls beside it answer a
+// program that needs the data itself (§9.4).
+package synch.control.v1;
+
+// The daemon's local control surface.
+service Control {
+  // Runs one CLI subcommand, streaming its output back as it is produced.
+  //
+  // The command's arguments travel as the text the user typed and are parsed
+  // by the daemon, so a parse failure comes back as an ordinary coded error.
+  rpc Run(Command) returns (stream Frame);
+
+  // The unified listing under a prefix, resolved by a policy (§8): one entry
+  // per path the policy selects.
+  //
+  // Paths the policy refuses — divergent under `strict`, unpublished by the
+  // pinned origin under `origin=` — are left out rather than answered with one
+  // side's metadata; a direct Resolve of such a path still says what is wrong.
+  //
+  // `limit` bounds entries, not the paths scanned to find them. A page thinned
+  // by the filters above is refilled by scanning on, because a caller cannot
+  // tell a short page from a finished one and would stop early. The refill is
+  // budgeted, so a page can still end short of `limit` with more behind it: the
+  // end of a listing is an *empty* page, and a caller that stops on a short one
+  // truncates it.
+  rpc List(ListRequest) returns (stream ListItem);
+
+  // The version a policy selects for one path, with no content fetched — what
+  // HeadObject answers from (§9.4).
+  rpc Resolve(ResolveRequest) returns (Entry);
+
+  // A verified byte range of the version a policy selects.
+  rpc Read(ReadRequest) returns (stream Chunk);
+
+  // A streamed write into one of this node's sources (§7.1, §9.4).
+  //
+  // The first message carries the header; the daemon takes its gates —
+  // publishability, a resolvable target — before it answers, so the response
+  // headers are the client's signal to start streaming and a refusal arrives as
+  // the coded error it is. Chunks follow, and the write is published only on
+  // an explicit commit. Nothing is buffered whole at either end.
+  rpc Put(stream PutRequest) returns (stream Written);
+
+  // Pipes bytes to and from one socket invocation on another node
+  // (`docs/SOCKETS.md` §9.1).
+  //
+  // The daemon owns the only iroh endpoint (§9.1), so `synch socket connect` cannot
+  // dial for itself; it opens one of these and the daemon bridges it to a QUIC
+  // stream on the remote node. In `--listen` mode the TCP listener stays in the
+  // CLI process and each accepted connection opens another of these, so the
+  // foreground process owns the public port and the daemon never holds a
+  // listening socket it was not configured with.
+  //
+  // Named `OpenSocket` rather than `Connect` because tonic's generated client
+  // already has a `connect` constructor, and a method that shadowed it would
+  // make the client unbuildable.
+  rpc OpenSocket(stream ConnectRequest) returns (stream ConnectResponse);
+
+  // Every space this node has configured, and what it is doing about each.
+  //
+  // Bare `synch ls` answers the same question for a person, in column-aligned
+  // lines. This answers it for a program (§9.4): the MCP bridge publishes one
+  // resource per space and has to know their ids, and a caller that recovered
+  // them by splitting a rendered line would be coupled to the width of that
+  // column rather than to the data.
+  rpc ListSpaces(ListSpacesRequest) returns (stream SpaceInfo);
+
+  // Reads a config value from the `s3.*` namespace.
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+
+  // Appends one record to a config value in the `s3.*` namespace.
+  //
+  // Append, never replace: the gateway's bucket map and access keys are lists
+  // that more than one process reads and writes, and a read-modify-write of
+  // the whole list loses whichever concurrent edit commits first. One atomic
+  // append cannot.
+  rpc AppendConfig(AppendConfigRequest) returns (AppendConfigResponse);
+
+  // ---- multipart upload (§9.4) ---------------------------------------------
+  //
+  // A multipart upload outlives every request in it, and the gateway holds no
+  // state, so the daemon is the only place it can live. Every call names the
+  // space and path as well as the upload id: an id is a bearer token for one
+  // key, and a request that quotes it against a different key is answered as
+  // though the upload did not exist.
+
+  // Opens a multipart upload and returns its id.
+  rpc CreateUpload(CreateUploadRequest) returns (CreateUploadResponse);
+
+  // Streams one part into an open upload.
+  //
+  // The same shape as Put, for the same reasons and one more. The header comes
+  // first so the gates are taken before a byte is sent, and the part is
+  // recorded only on an explicit commit, so a truncated part is never mistaken
+  // for a whole one. The *response* is a stream carrying exactly one message
+  // because it has to be: a unary response is not sent until the call ends, so
+  // a client streaming a payload would be waiting for a reply that is waiting
+  // for the payload. The stream's headers arrive as soon as the gates pass,
+  // which is what lets the client start sending.
+  rpc UploadPart(stream UploadPartRequest) returns (stream UploadPartResponse);
+
+  // Removes this node's copy of a path and publishes its tombstone (§8, §9.4).
+  //
+  // A delete publishes this node's own view, exactly as a write does — the
+  // version model cannot publish anyone else's. The response says whether there
+  // was a copy here to remove, and whether some other origin still publishes
+  // the path, which is a thing the caller has to be able to find out without
+  // reading the key back.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+  // Assembles the named parts, publishes the object, and returns its root.
+  //
+  // Retry-safe: a completion that already ran is answered from the result it
+  // recorded rather than reported as an upload that no longer exists, because
+  // a client that never saw the response cannot tell the two apart.
+  rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
+
+  // Drops an upload and everything staged for it.
+  rpc AbortUpload(AbortUploadRequest) returns (AbortUploadResponse);
+
+  // Every upload still accepting parts under a prefix.
+  rpc ListUploads(ListUploadsRequest) returns (stream UploadInfo);
+
+  // Every part recorded for one upload, in part-number order.
+  rpc ListParts(ListPartsRequest) returns (stream PartInfo);
+}
+
+// ---- the CLI surface (§9.2) -------------------------------------------------
+
+// One CLI subcommand.
+message Command {
+  // 9 was `trust rebind`: a hand-made name is the only thing it could
+  // re-point, and there are none (DESIGN.md 3.2).
+  reserved 9, 17 to 19, 24, 27 to 30, 36, 44 to 50;
+  oneof kind {
+    // `synch id`
+    Id id = 1;
+    // `synch key rotate`
+    KeyRotate key_rotate = 2;
+    // `synch key activate <key> [--bind <addr>]`
+    KeyActivate key_activate = 3;
+    // `synch key retire <key>`
+    KeyRetire key_retire = 4;
+    // `synch key ls`
+    KeyLs key_ls = 5;
+    // `synch daemon status`
+    DaemonStatus daemon_status = 6;
+    // `synch daemon stop`
+    DaemonStop daemon_stop = 7;
+    // `synch trust add`
+    TrustAdd trust_add = 8;
+    // `synch trust rm <origin> [--key <key>]`
+    TrustRm trust_rm = 10;
+    // `synch trust ls`
+    TrustLs trust_ls = 11;
+    // `synch domain set <domain>`
+    DomainSet domain_set = 12;
+    // `synch domain clear`
+    DomainClear domain_clear = 13;
+    // `synch domain ls`
+    DomainLs domain_ls = 14;
+    // `synch domain refresh`
+    DomainRefresh domain_refresh = 15;
+    // `synch peer ls`
+    PeerLs peer_ls = 16;
+    // `synch ls [<origin>:]<space>[/<dir>]`
+    Ls ls = 20;
+    // `synch status [<space>[/<path>]]`
+    Status status = 21;
+    // `synch cat [<origin>:]<space>/<path>`
+    Cat cat = 22;
+    // `synch get [<origin>:]<space>/<path>`
+    Get get = 23;
+    // `synch log [<origin>:]<space>/<path>`
+    Log log = 25;
+    // `synch compare <space>[/<dir>] --to <origin> [--from <origin>]`
+    Compare compare = 26;
+    // `synch pin add <root>|<space>/<path>`
+    PinAdd pin_add = 31;
+    // `synch pin rm <root>|<space>/<path>`
+    PinRm pin_rm = 32;
+    // `synch pin ls`
+    PinLs pin_ls = 33;
+    // `synch recover [--wait <dur>] [--gap <n>]`
+    Recover recover = 34;
+    // `synch doctor`
+    Doctor doctor = 35;
+    // `synch peer sync`
+    PeerSync peer_sync = 37;
+    // `synch control-plane enable`
+    ControlPlaneEnable control_plane_enable = 38;
+    // `synch control-plane disable`
+    ControlPlaneDisable control_plane_disable = 39;
+    // `synch control-plane status`
+    ControlPlaneStatus control_plane_status = 40;
+    // `synch delegate add <key> --space <id> [--read-only <id>] [--until <dur>] [--note <text>]`
+    DelegateAdd delegate_add = 41;
+    // `synch delegate rm <key>`
+    DelegateRm delegate_rm = 42;
+    // `synch delegate ls`
+    DelegateLs delegate_ls = 43;
+    // `synch socket activate <name> --program <space>/<path> ...`
+    SocketActivate socket_activate = 68;
+    // `synch socket deactivate <name>`
+    SocketDeactivate socket_deactivate = 69;
+    // `synch socket ls [<origin>:]`
+    SocketLs socket_ls = 51;
+    // `synch socket sdk`
+    SocketSdk socket_sdk = 52;
+    // `synch socket ps [<name>]`
+    SocketPs socket_ps = 53;
+    // `synch socket kill <invocation>`
+    SocketKill socket_kill = 54;
+    // `synch socket log <name>`
+    SocketLog socket_log = 55;
+    SourceAdd source_add = 56;
+    SourceLs source_ls = 57;
+    SourceSetPaused source_set_paused = 72;
+    SourceRm source_rm = 58;
+    SourceScan source_scan = 59;
+    ReplicaAdd replica_add = 60;
+    ReplicaRm replica_rm = 61;
+    ReplicaLs replica_ls = 62;
+    ReplicaSync replica_sync = 63;
+    ReplicaSet replica_set = 64;
+    RepairRebuildViews repair_rebuild_views = 65;
+    AdoptPath adopt_path = 66;
+    AdoptTree adopt_tree = 67;
+  }
+}
+
+// One piece of a running command's output.
+message Frame {
+  oneof payload {
+    // One line of ordinary output.
+    string line = 1;
+    // A piece of a byte payload (`cat`, `get`).
+    bytes chunk = 2;
+    // A progress report the CLI renders and discards (`source scan`, `replica sync`).
+    string progress = 3;
+  }
+}
+
+message Id {}
+
+message KeyRotate {}
+
+message KeyActivate {
+  // The z-base-32 device key to switch signing to.
+  string key = 1;
+  // The address the new key's endpoint binds, `HOST:PORT`.
+  //
+  // Unset takes an ephemeral port on the configured interface. A
+  // static-address deployment names the next address here — the old one stays
+  // with the retiring endpoint until `key retire` frees it.
+  optional string bind = 2;
+}
+
+message KeyRetire {
+  // The z-base-32 device key to drop.
+  string key = 1;
+}
+
+message KeyLs {}
+
+message DaemonStatus {}
+
+message DaemonStop {}
+
+message TrustAdd {
+  // The peer's z-base-32 device key. The key is the identity: static trust
+  // binds OriginId::Key, and names come from zones (DESIGN.md 3.2).
+  string key = 1;
+  // 2 and 3 named a peer by hand; 9 in Command was `trust rebind`, which
+  // existed only to re-point such a name.
+  reserved 2, 3;
+  // A note for `synch trust ls`.
+  optional string note = 4;
+  // A direct address to remember for dialing.
+  optional string addr = 5;
+  // Bind the key under this named origin instead of OriginId::Key, for a
+  // member that publishes under a name this node has no zone to learn from
+  // (DESIGN.md 3.2). Not 2 or 3: those held an earlier, implicit version of
+  // this and are reserved so an old client cannot be misread.
+}
+
+message TrustRm {
+  // The origin to stop trusting.
+  string origin = 1;
+  // Drop only this key's binding, keeping the origin's others (§3.4: the
+  // cleanup step after a rotation window closes).
+  optional string key = 2;
+}
+
+message TrustLs {}
+
+message DelegateAdd {
+  // The subject's z-base-32 device key.
+  string key = 1;
+  // The spaces the delegation covers read-write. Never a wildcard; with
+  // `read_only`, at least one between them.
+  repeated string spaces = 2;
+  // How long the delegation lasts, as a duration string. Unset takes the
+  // default.
+  optional string until = 3;
+  // A note for `trust ls` and `doctor`.
+  optional string note = 4;
+  // The spaces the delegation covers read-only (DESIGN.md 3.5): served like
+  // `spaces`, refused at head promotion like a space outside the grant.
+  // Disjoint from `spaces`.
+  repeated string read_only = 5;
+}
+
+message DelegateRm {
+  // The subject's z-base-32 device key.
+  string key = 1;
+}
+
+message DelegateLs {}
+
+message DomainSet {
+  // The zone this node belongs to (DESIGN.md 3.1).
+  string domain = 1;
+  // This node is a delegate: it belongs to the zone but is not named by it,
+  // so no record for its key is expected (DESIGN.md 3.5).
+  bool delegate = 2;
+}
+
+message DomainClear {}
+
+message DomainLs {}
+
+message DomainRefresh {}
+
+message PeerLs {}
+
+message SourceAdd {
+  string space = 1;
+  string path = 2;
+  bool api = 3;
+}
+
+message SourceSetPaused {
+  string space = 1;
+  bool paused = 2;
+}
+
+message SourceLs {
+  string space = 1;
+}
+
+message SourceScan {
+  string space = 1;
+}
+
+message SourceRm {
+  string space = 1;
+}
+
+message ReplicaAdd {
+  string space = 1;
+  string retention = 2;
+  optional int64 grace = 3;
+  optional uint64 budget = 4;
+  optional string checkout = 5;
+}
+
+message ReplicaSet {
+  string space = 1;
+  optional string retention = 2;
+  optional int64 grace = 3;
+  optional uint64 budget = 4;
+  bool no_budget = 5;
+  optional string checkout = 6;
+  bool no_checkout = 7;
+}
+
+message ReplicaLs {
+  string space = 1;
+}
+
+message ReplicaSync {
+  string space = 1;
+}
+
+message ReplicaRm {
+  string space = 1;
+  bool pin_held = 2;
+}
+
+message Ls {
+  // The entry reference. Without an origin, the unified tree (§8).
+  string reference = 1;
+  // Show every version of every path, with its attestors.
+  bool all = 2;
+}
+
+message Status {
+  // The reference, or unset for every known space.
+  optional string reference = 1;
+}
+
+message Cat {
+  reserved 3, 4;
+  reserved "from", "strict";
+  // The entry reference. Empty when `root` names the object instead.
+  string reference = 1;
+  // A byte range, as `START..END`, `START..`, or `..END`.
+  optional string range = 2;
+  // `--root <hex>`: read an object by content root, with no path involved.
+  optional string root = 5;
+  // `--select newest|origin=<id>|strict`.
+  optional string select = 6;
+}
+
+message Get {
+  reserved 2, 3;
+  reserved "from", "strict";
+  // The entry reference. Empty when `root` names the object instead.
+  string reference = 1;
+  // `--root <hex>`: fetch an object by content root, with no path involved.
+  optional string root = 4;
+  // `--select newest|origin=<id>|strict`.
+  optional string select = 5;
+}
+
+message AdoptPath {
+  string reference = 1;
+  optional string select = 2;
+}
+
+message Log {
+  // The entry reference.
+  string reference = 1;
+}
+
+message Compare {
+  // The space and optional directory to compare, as `<space>[/<dir>]`.
+  string reference = 1;
+  // The baseline origin; unset means this node's own origin.
+  optional string from = 2;
+  // The target origin to compare against. Required.
+  string to = 3;
+  // Emit machine-readable JSON instead of the status listing.
+  bool json = 4;
+}
+
+message AdoptTree {
+  string reference = 1;
+  optional string select = 2;
+  bool replace = 3;
+  bool dry_run = 4;
+}
+
+message PinAdd {
+  // A hex object root, or a `<space>/<path>` whose selected version's root is
+  // pinned (§8).
+  string target = 1;
+  optional string select = 2;
+}
+
+message PinRm {
+  // A hex object root, or a `<space>/<path>` whose selected version's root is
+  // unpinned (§8).
+  string target = 1;
+  optional string select = 2;
+}
+
+message PinLs {}
+
+message Recover {
+  // How long to collect peer summaries, as the user typed it.
+  optional string wait = 1;
+  // How far above the highest observed seq to resume publishing.
+  optional uint64 gap = 2;
+}
+
+message Doctor { reserved 1; }
+message RepairRebuildViews {}
+
+// Reopens the tunnel after `control-plane disable`.
+//
+// The tunnel is on by default — no command is needed to open it — and serves
+// whatever the control plane requests, for every space this node holds. There
+// is no space list to state: which spaces a dashboard may browse is the
+// control plane's decision, made by the org admin's browsing toggle and the
+// RBAC around it.
+message ControlPlaneEnable {}
+
+// Stops answering the control plane and drops any open tunnel.
+message ControlPlaneDisable {}
+
+// Per membership domain: whether a record was found, whether the tunnel is
+// attached, and the last error if there was one.
+message ControlPlaneStatus {}
+
+// One push-pull exchange with every dialable peer, now.
+//
+// Anti-entropy runs on its jittered interval and owes nobody an early round;
+// this is the operator saying "I am watching, do one now" — after a publish
+// they want a peer to see, or in a script that would otherwise poll `status`
+// until the interval elapses.
+message PeerSync {}
+
+// ---- the structured surface (§9.4) ------------------------------------------
+
+// What an entry describes.
+enum EntryKind {
+  ENTRY_KIND_UNSPECIFIED = 0;
+  ENTRY_KIND_FILE = 1;
+  ENTRY_KIND_DIR = 2;
+  ENTRY_KIND_SYMLINK = 3;
+  ENTRY_KIND_TOMBSTONE = 4;
+  // Content is an eBPF ELF object this origin will execute for a peer that
+  // connects to it (`docs/SOCKETS.md` §2).
+  ENTRY_KIND_SOCKET = 5;
+}
+
+// One entry of the unified tree (§8).
+//
+// The metadata half of a read: what a listing renders and what HeadObject
+// answers from, with no content fetched. The content root travels as the 32
+// raw bytes it is, so a caller that renders it — an S3 ETag, say — does its
+// own formatting.
+message Entry {
+  // The origin whose assertion the policy selected, canonically rendered.
+  string origin = 1;
+  // The space the entry lives in.
+  string space = 2;
+  // The path within the space.
+  string path = 3;
+  // What the entry describes.
+  EntryKind kind = 4;
+  // The content length in bytes.
+  uint64 size = 5;
+  // The selected origin's observed mtime, in unix nanoseconds.
+  int64 mtime_ns = 6;
+  // The object root, for files.
+  optional bytes content = 7;
+  // Field 8 carried the publishing seq; nothing ever read it.
+  reserved 8;
+  // The link target, for a symlink.
+  optional string symlink_target = 9;
+  // How many versions the path carries in the unified tree (§8). One means
+  // every publisher agrees; more means the selection above chose a side.
+  uint32 versions = 10;
+}
+
+// One item in a listing stream.
+//
+// The scan runs past the paths its filters drop, so a page can end for two
+// reasons that look identical from the outside: the prefix ran out, or the
+// scan spent its budget. Only the first is the end of the listing, and a
+// caller that cannot tell them apart stops early on the second — for good,
+// since a run of dropped paths longer than the budget yields a page with
+// nothing in it to resume from. So the daemon says which happened rather than
+// leaving it to be inferred from what arrived.
+message ListItem {
+  oneof item {
+    // A resolved entry, in path order.
+    Entry entry = 1;
+    // The scan stopped on its budget with the prefix unfinished, having
+    // scanned this far. Sent last and at most once, and only when there is
+    // more behind it: resume from here, exclusive. Its absence is the end of
+    // the listing.
+    string scan_cursor = 2;
+  }
+}
+
+// A piece of a byte payload.
+message Chunk {
+  bytes data = 1;
+}
+
+message ListRequest {
+  // The space of the unified tree.
+  string space = 1;
+  // The path prefix to list under, empty for the whole space.
+  string prefix = 2;
+  // Resume after this path, exclusive — a listing cursor.
+  optional string start_after = 3;
+  // At most this many entries. See `List`: the scan runs past what the filters
+  // drop to fill the page, within a budget, so a short page is not necessarily
+  // the last one.
+  optional uint64 limit = 4;
+  // The version policy, as `newest`, `origin=<id>`, or `strict`.
+  optional string policy = 5;
+}
+
+message ResolveRequest {
+  // The space of the unified tree.
+  string space = 1;
+  // The path within the space.
+  string path = 2;
+  // The version policy, as `newest`, `origin=<id>`, or `strict`.
+  optional string policy = 3;
+}
+
+message ReadRequest {
+  // The space of the unified tree.
+  string space = 1;
+  // The path within the space.
+  string path = 2;
+  // The version policy, as `newest`, `origin=<id>`, or `strict`.
+  optional string policy = 3;
+  // The first byte to read.
+  uint64 start = 4;
+  // How many bytes, or unset to the end of the object.
+  optional uint64 len = 5;
+}
+
+message PutRequest {
+  oneof part {
+    // The first message: what is being written and where.
+    PutHeader header = 1;
+    // A piece of the payload.
+    bytes chunk = 2;
+    // The client is abandoning the write and the daemon must keep nothing.
+    //
+    // A truncated HTTP body is the case that matters, and it is why the
+    // commit below is a message rather than the end of the stream: a partly
+    // received object must never be indistinguishable from a complete one, or
+    // it gets published as the client's own assertion.
+    string abort = 3;
+    // The payload is complete and the daemon may publish it.
+    //
+    // Nothing else commits. A client that stops sending — an abandoned write,
+    // a dropped handle, a process that died — ends the stream without one, and
+    // the daemon keeps nothing.
+    Commit commit = 4;
+  }
+}
+
+message Commit {}
+
+message PutHeader {
+  // The space to write into.
+  string space = 1;
+  // The path within the space.
+  string path = 2;
+}
+
+// The result of a completed write.
+message Written {
+  // The file the payload landed in, as the daemon sees it.
+  string path = 1;
+  // The published entry.
+  Entry entry = 2;
+}
+
+message ListSpacesRequest {}
+
+// One configured space, as a program reads it.
+message SpaceInfo {
+  string id = 1;
+  optional string source_path = 2;
+  optional string retention = 3;
+  int64 grace_secs = 4;
+  optional uint64 budget = 5;
+  optional uint64 held_bytes = 6;
+  optional uint64 wanted = 7;
+  optional string source_kind = 8;
+  optional string checkout_path = 9;
+  optional bool source_paused = 10;
+}
+
+message GetConfigRequest {
+  // The config key, which must be in the `s3.` namespace.
+  string key = 1;
+}
+
+message GetConfigResponse {
+  // The stored records, one per line of the value.
+  repeated string records = 1;
+}
+
+message AppendConfigRequest {
+  // The config key, which must be in the `s3.` namespace.
+  string key = 1;
+  // The record to append. One line: newlines separate records.
+  string record = 2;
+}
+
+message AppendConfigResponse {}
+
+// ---- multipart upload (§9.4) ------------------------------------------------
+
+// Which upload, and the key it must belong to.
+//
+// The pair travels on every call rather than the id alone. An upload id names
+// one key, and answering a request that quotes it against another key would let
+// a client complete an upload into a path it never named.
+message UploadRef {
+  // The upload id, as CreateUpload returned it.
+  string upload_id = 1;
+  // The space the upload must be against.
+  string space = 2;
+  // The path the upload must be against.
+  string path = 3;
+  // The access key that opened the upload, empty when the gateway is anonymous.
+  //
+  // Checked like the key is: an upload id authorizes adding parts and
+  // completing, so an id that leaked — or was guessed — must not be enough on
+  // its own.
+  string principal = 4;
+}
+
+message DeleteRequest {
+  // The space to delete from.
+  string space = 1;
+  // The path within the space.
+  string path = 2;
+}
+
+message DeleteResponse {
+  // Field 1 said whether a local copy existed; nothing ever read it.
+  reserved 1;
+  // True when some origin still publishes a live entry for the path, so the
+  // key remains readable through the unified tree (§8).
+  bool still_published = 2;
+}
+
+message CreateUploadRequest {
+  // The space to write into.
+  string space = 1;
+  // The path within the space.
+  string path = 2;
+  // The access key opening it, empty when the gateway is anonymous.
+  string principal = 3;
+}
+
+message CreateUploadResponse {
+  // The upload id, hex — never base64, whose `+` a URI decoder would eat.
+  string upload_id = 1;
+}
+
+message UploadPartRequest {
+  oneof part {
+    // The first message: which upload, and which part of it.
+    UploadPartHeader header = 1;
+    // A piece of the part's payload.
+    bytes chunk = 2;
+    // The client is abandoning this part and the daemon must keep nothing.
+    string abort = 3;
+    // The part is complete and the daemon may record it.
+    Commit commit = 4;
+  }
+}
+
+message UploadPartHeader {
+  // Which upload this part belongs to.
+  UploadRef upload = 1;
+  // The part number, 1..=10000.
+  uint32 number = 2;
+}
+
+message UploadPartResponse {
+  // The part number recorded.
+  uint32 number = 1;
+  // How many bytes it carries.
+  uint64 size = 2;
+  // Its own object root, which is the ETag the client is given.
+  bytes root = 3;
+  // When it was recorded, unix nanoseconds.
+  int64 created_ns = 4;
+}
+
+message CompleteUploadRequest {
+  // Which upload to complete.
+  UploadRef upload = 1;
+  // The parts to assemble, ascending. Parts the client leaves out are
+  // discarded, which is what S3 promises.
+  repeated CompletionPart parts = 2;
+}
+
+// One part a completion named.
+message CompletionPart {
+  // The part number.
+  uint32 number = 1;
+  // The root the client believes that part has, or empty not to check.
+  //
+  // Checked by the daemon rather than taken on trust from the gateway: the
+  // daemon is what publishes, so it is what has to be sure the object it
+  // assembles is the object the client thinks it uploaded.
+  bytes root = 2;
+}
+
+message CompleteUploadResponse {
+  // The assembled object's root.
+  bytes etag = 1;
+  // Its size in bytes.
+  uint64 size = 2;
+  // Field 3 said when the answer was replayed from the recorded result;
+  // nothing ever read it.
+  reserved 3;
+}
+
+message AbortUploadRequest {
+  // Which upload to drop.
+  UploadRef upload = 1;
+}
+
+message AbortUploadResponse {
+  // False when there was no such upload, which an abort treats as success.
+  bool existed = 1;
+}
+
+message ListUploadsRequest {
+  // The space to list uploads in.
+  string space = 1;
+  // The path prefix to list under, empty for the whole space.
+  string prefix = 2;
+  // Only uploads this access key opened. An upload id is a bearer token, so a
+  // listing that named everyone's would make it a public one.
+  string principal = 3;
+}
+
+message UploadInfo {
+  // The upload id.
+  string upload_id = 1;
+  // The path it will publish to.
+  string path = 2;
+  // When it was created, unix nanoseconds.
+  int64 created_ns = 3;
+}
+
+message ListPartsRequest {
+  // Which upload to list the parts of.
+  UploadRef upload = 1;
+}
+
+message PartInfo {
+  // The part number.
+  uint32 number = 1;
+  // How many bytes it carries.
+  uint64 size = 2;
+  // Its own object root.
+  bytes root = 3;
+  // When it was recorded, unix nanoseconds.
+  int64 created_ns = 4;
+}
+
+
+// ---- sockets (`docs/SOCKETS.md`) -------------------------------------------
+
+message SocketActivate {
+  // The socket's name on this node: a normalized path-shaped string, in no
+  // space and at no path.
+  string target = 1;
+  // `k=v` pairs the program reads through `sy_config_get`.
+  repeated string config = 2;
+  // A concurrency cap for this socket; 0 means the daemon's default.
+  uint32 max_streams = 3;
+  // A free-form operator note.
+  string note = 4;
+  // `<space>/<path>` of the program this name is bound to. Required.
+  string program = 5;
+  // Spaces whose delegates may open this socket. Empty is members only.
+  repeated string scope = 6;
+}
+
+message SocketDeactivate {
+  // The socket's name.
+  string target = 1;
+}
+
+message SocketLs {
+  // Was the space filter, back when a socket lived in one.
+  reserved 1;
+  // Show the program, its root, the manifest's declaration, the scope,
+  // the policy, and the other sockets the same program backs.
+  bool long = 2;
+  // Empty lists this node's own sockets; an origin asks that peer which
+  // sockets this node may open, over the wire `List`.
+  string origin = 3;
+}
+
+message SocketSdk {}
+
+message SocketPs {
+  // Empty lists every socket's invocations; otherwise a socket name.
+  string target = 1;
+}
+
+message SocketKill {
+  // The invocation id `synch socket ps` printed.
+  uint64 invocation = 1;
+}
+
+message SocketLog {
+  // The socket's name.
+  string target = 1;
+}
+
+// One `synch socket connect` message.
+message ConnectRequest {
+  oneof kind {
+    // Sent once, first.
+    ConnectOpen open = 1;
+    // Bytes for the program.
+    bytes data = 2;
+    // The caller's write side is done; the program sees an EOF.
+    ConnectFin fin = 3;
+  }
+}
+
+message ConnectOpen {
+  // `<origin>:<name>` — origin-qualified, always. A socket name means
+  // something only on the node that activated it, so there is nothing to
+  // select between and no version policy to take.
+  string reference = 1;
+  // Caller-supplied metadata, readable by the program through `sy_conn_meta`.
+  repeated MetaPair meta = 2;
+}
+
+message MetaPair {
+  string key = 1;
+  string value = 2;
+}
+
+message ConnectFin {}
+
+message ConnectResponse {
+  oneof kind {
+    // Sent once, before any data: the invocation is running.
+    ConnectOpened opened = 1;
+    // Bytes from the program.
+    bytes data = 2;
+    // The invocation ended.
+    ConnectClosed closed = 3;
+  }
+}
+
+message ConnectOpened {
+  // The content root actually running, so a caller can audit what it reached.
+  bytes program = 1;
+  // The callee's id for this invocation, as `synch socket ps` prints it.
+  uint64 invocation = 2;
+  // `<space>/<path>` of that program on the callee.
+  string program_path = 3;
+}
+
+message ConnectClosed {
+  // What `synch socket connect` exits with.
+  int32 exit_code = 1;
+  // How it ended, in words.
+  string status = 2;
+}

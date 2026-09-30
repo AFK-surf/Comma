@@ -1,0 +1,51 @@
+{
+  "tables": [
+    {
+      "table": "slack_messages",
+      "equal_metadata": true,
+      "hits": 200,
+      "body_bytes": [
+        260883124,
+        2617713346
+      ],
+      "normal": {
+        "query_id": "146037bd-bc04-43f4-a749-037de154fcc7",
+        "read_rows": 99458,
+        "read_bytes": 5611792,
+        "memory_usage": 4992359,
+        "query_duration_ms": 25
+      },
+      "large": {
+        "query_id": "a86a5371-463a-4a08-b7d2-25dd2245a113",
+        "read_rows": 35735,
+        "read_bytes": 2062511,
+        "memory_usage": 6074900,
+        "query_duration_ms": 13
+      }
+    },
+    {
+      "table": "slack_message_payloads",
+      "equal_metadata": true,
+      "hits": 200,
+      "body_bytes": [
+        260872374,
+        2617605476
+      ],
+      "normal": {
+        "query_id": "bb6b0e4f-9a37-4951-9980-29e62b048ad8",
+        "read_rows": 99496,
+        "read_bytes": 5735208,
+        "memory_usage": 4963551,
+        "query_duration_ms": 10
+      },
+      "large": {
+        "query_id": "b69a491c-666a-4e1c-9110-e3a7f84921b5",
+        "read_rows": 35464,
+        "read_bytes": 2068811,
+        "memory_usage": 6059732,
+        "query_duration_ms": 10
+      }
+    }
+  ],
+  "method": "Independent table copy; identical metadata, valid expanded JSON and tenfold text. Actual runtime current_sources SQL. Logical bytes from query_log, not physical disk IO."
+}

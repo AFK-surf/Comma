@@ -1,0 +1,237 @@
+{
+  "section": "CRS-02",
+  "name": "registration-requests",
+  "description": "Verification-session and registration requests exactly as the oracle client emits them over the chat WebSocket (captured at the oracle fake server), with the JSON replies the fake server returned (every reply value, including the session id, was chosen by the CRS author and configured into the fake server) and the client-side result under neutral key names. Signatures are XEdDSA over the serialized public key and are randomized, so compare them by verification, not bytes; every other field is deterministic.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "operation": "create verification session",
+        "e164": "+15555550123"
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 0,
+          "verb": "POST",
+          "path": "/v1/verification/session",
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body_utf8": "{\"number\":\"+15555550123\"}"
+        },
+        "server_reply_used": {
+          "id": "ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "allowedToRequestCode": false,
+          "verified": false,
+          "requestedInformation": [
+            "captcha"
+          ],
+          "nextSms": null,
+          "nextCall": null,
+          "nextVerificationAttempt": null
+        },
+        "client_state": {
+          "session_id": "ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "requested_information": [
+            "captcha"
+          ],
+          "allowed_to_request_code": false
+        }
+      }
+    },
+    {
+      "inputs": {
+        "operation": "submit captcha",
+        "captcha": "signal-hcaptcha.example-sitekey.registration.example-token-0001"
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 1,
+          "verb": "PATCH",
+          "path": "/v1/verification/session/ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body_utf8": "{\"captcha\":\"signal-hcaptcha.example-sitekey.registration.example-token-0001\"}"
+        },
+        "server_reply_used": {
+          "id": "ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "allowedToRequestCode": true,
+          "verified": false,
+          "requestedInformation": [],
+          "nextSms": 0,
+          "nextCall": 60,
+          "nextVerificationAttempt": null
+        },
+        "client_result": {
+          "allowed_to_request_code": true,
+          "verified": false,
+          "next_call_seconds": 60,
+          "next_sms_seconds": 0,
+          "requested_information": []
+        }
+      }
+    },
+    {
+      "inputs": {
+        "operation": "request verification code",
+        "transport": "sms",
+        "client": "comma-signal",
+        "languages": [
+          "en-US",
+          "de"
+        ]
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 2,
+          "verb": "POST",
+          "path": "/v1/verification/session/ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx/code",
+          "headers": {
+            "accept-language": "en-US,de",
+            "content-type": "application/json"
+          },
+          "body_utf8": "{\"transport\":\"sms\",\"client\":\"comma-signal\"}"
+        },
+        "server_reply_used": {
+          "id": "ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "allowedToRequestCode": true,
+          "verified": false,
+          "requestedInformation": [],
+          "nextSms": 60,
+          "nextCall": 60,
+          "nextVerificationAttempt": 0
+        }
+      }
+    },
+    {
+      "inputs": {
+        "operation": "request verification code",
+        "transport": "voice",
+        "client": "comma-signal",
+        "languages": []
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 3,
+          "verb": "POST",
+          "path": "/v1/verification/session/ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx/code",
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body_utf8": "{\"transport\":\"voice\",\"client\":\"comma-signal\"}"
+        },
+        "server_reply_used": {
+          "id": "ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "allowedToRequestCode": true,
+          "verified": false,
+          "requestedInformation": [],
+          "nextSms": 60,
+          "nextCall": 60,
+          "nextVerificationAttempt": 0
+        }
+      }
+    },
+    {
+      "inputs": {
+        "operation": "submit verification code",
+        "code": "123456"
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 4,
+          "verb": "PUT",
+          "path": "/v1/verification/session/ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx/code",
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body_utf8": "{\"code\":\"123456\"}"
+        },
+        "server_reply_used": {
+          "id": "ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx",
+          "allowedToRequestCode": false,
+          "verified": true,
+          "requestedInformation": []
+        },
+        "client_result_verified": true
+      }
+    },
+    {
+      "inputs": {
+        "operation": "check SVR2 credentials",
+        "tokens": [
+          "svr2user1:1758790000:aaaaaaaaaaaaaaaaaaaa",
+          "svr2user2:1758790001:bbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 5,
+          "verb": "POST",
+          "path": "/v2/backup/auth/check",
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body_utf8": "{\"number\":\"+15555550123\",\"tokens\":[\"svr2user1:1758790000:aaaaaaaaaaaaaaaaaaaa\",\"svr2user2:1758790001:bbbbbbbbbbbbbbbbbbbb\"]}"
+        },
+        "server_reply_used": {
+          "matches": {
+            "svr2user1:1758790000:aaaaaaaaaaaaaaaaaaaa": "match",
+            "svr2user2:1758790001:bbbbbbbbbbbbbbbbbbbb": "no-match"
+          }
+        },
+        "client_result": {
+          "svr2user1:1758790000:aaaaaaaaaaaaaaaaaaaa": "match",
+          "svr2user2:1758790001:bbbbbbbbbbbbbbbbbbbb": "no-match"
+        }
+      }
+    },
+    {
+      "inputs": {
+        "operation": "register account",
+        "account_password": "example-password",
+        "aci_identity_private_key": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a040",
+        "pni_identity_private_key": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b040",
+        "aci_signed_pre_key_private": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c040",
+        "pni_signed_pre_key_private": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d040",
+        "aci_kem_public_key": "085f27587ff56f46a0000b22311cd11be80440f5e2075e446e1dd0128d4a5448ca4d0867ca3523ad4bf09809504f4f03a748408ad827979754bac7aa6bf0ca2bb7b1c66498649ef02dc15114d853305fca7f4926a1215b14e2a40865116c6b0580be458ff40b62e542013725b046894835882b83232b9db2979112623da91ddf09889c289e1e22929742ba36846c00a517cd6914ed545d403339f454c88f81839cb11f30320c5a952573337765c861246ab0ec1819b3c657b5b1bfce808ffa826ccd9ba18545b34c8c1e7ec267bba89ce143791b2962f9a2176c8bb5f284be15415133caa528d89c53276e7e64a2a0843403a71dbd6c7399b4498c35501ab264ce3034d1476b123c1c14bb79b840bee13b7fa0752c45b71ab62477434c5cbd86800f94a5e7473069b34754b5afe0292c1cc9bde6800eb702b00ea8b4cdd52ad7dc28d7926887788c04a63361d174ef891be0676de0144ef503b7e7a57ee6a0a13ea717b1d79edf7b7757c94d7a2592b29c373a462fc7774cbab2b3dfa1a88e2c5114aaa3bb534f1ccb8ff6a2345865cd631ac971ca61c16081512a89a74c0882ac14f4e92cad9c9c87aab461dbcf60b32f3a2026115252bf71bf7b619981d9814fa1668ceb7ea9fac664b07721b4cf58a6897e263a7d6b144b835744248645348edc3bc75a557ca818435b5692dc68af7cac8217d2611dd4a204bc428b9225c1314ddd6a4ac1619cdf3c4e800338eeb91512b2927b4bb51c68193a62385478521b80417a7970f24a95a6367f00180c171ca21d8abb34605f790995faf990a9b741aab953b48092c19b09b54923b475bcc17bac3ba3216d8c61e28948163cc103865407b855a861b2da246a8625b2d102150ddacbe2e0a6e6a82b0fab7538f251fd722de396b0f43c8375b8b6741a5cc6199dab8aba2bd684f4167cab9a14a02b484402bbbed01a07307f4a409f7fca8a7c55919b5273e38153c9d860faf527b3db38bc461f12c01fc76c866c132a7fbbc2980a47159431f9846cf62350692175fda12759804ede8939dfd01e61247ef6115bd1502baa0932f3915ac964a4a9f087dc9837b1b95b319c8ef83162172333a4417e9da0b7a6e4a770bb80c059ab04284ede7190ae17427ca5bd90134766719fd7052b8478041dea209c699293701993488bb7f8bbb3f020ac5921525ca9467166633ba2d08096c7a3a3f7942846d4175308cce57077757c3ba15254478ab8bcec1f8e4790b6e5adad89a810ea1253946839a5769cc85edae99a4c20587fd136e71c23cd1cba5ad1881b03cc7f044325064627d4634dea02a1a0637973cd5c83b77ec8913556536040672be3a61e663eae0c3e2ba7b514e5cbe70b83f72b3d1df15aa776ae4d1babb0e00eae96429f224a50ecba25569d0ab7328272836779964272117961bf38e21209f895565c5727596a7c25875eb516d2531decbb8a28e16346081c5fb3bea0557046d644119a90c837cf54c16fe815736aec2bfcd30a07863502fb5701fb7210cc7e0fd67a359468e2c48216dcc5c14a2b67e92e4e1a8c5feb6009f85fac674a82b1100be739ff33161ac897dc5b5c48f40e763728116ba8a283ac8cd848e1db1658a74585fa74dd98626b416814466fd171bdc0932351513b76b801083ac1e084812d298a691944bcbaa60d4659dd070c2abb4949544548f120745c780915c72c446a4bc09f7bd5a0a6438b58d792ec41af83d534938b2811cb41a5727d52365e29055c91001de012bd605075be052d6623885ca7227ee968adf20f8426603f5c686125a9eb07821a187c919cc04744641bb08bc926bc37bc1e9aacc3d98c91282b6c422b3f2dc52937a6a7e3d8a5894b37696823f311a8a44919b2644934e8b367b0a43c98c71846530113353d896522745b081083bc1b9d6959b2cbe07d751ab017f739c52b9c56e9b0dfd16f85d0408c2a0d917c187cd7474e5a0580f6520158a8d64c85d99957d6e55ea57729267c935015982c7bbbdb25ce7f0617b5a4663b68805b855200c5c3bdd8282f8aa5f61983962bbfeb711e19492ba3a939e9628637c650fc3accc2b7b64a4a1d5454ad16e48ccf939aa7e17a409524c281193c477eaae9ba146b5fea3161d83c30073b334f0a3fa399af47fbb1448a54d6722151c966a8474aae40a990950b6a4c6241a0e3eb2b7bc47eeb0b97811ffd6c35ab877eb9c01efb",
+        "pni_kem_public_key": "08c19008cc4bccb02956a7a1172aa717cd6b3240dc1718ec364d98b151a58812f46bbb5590bee78b453cad664251542228d5b79e081010f7e00c0f296ef23960cbb50eff486987b09f1d8b1b0271a88a6529ee3511adf39c3eec4094c01322573ec999676bc7438bb2bdab066d4eecc9c4cb3c4ca5268507456d68a49f368f843cc0877b37f35272e638c40184b2a5f255c1358156918e5ab0818eac628175784161cf78b293c2c2868a2bcb29cc96a0b3c51e1a62b8898816d0554773cfb8125d08f30698f750bcabaac730c24e60bf2ca12ab08671cabcae2b2b887f2442a9413412f0b849f32ac8291447188827d43afbd96ae3d988bf1832fa88cfc3236e5744900036440a9bb5462c02e89bc8396c5de4f5267f923a66ac73ef514c5fa7244ef38364bc1b8842811fd014cf0ca5af636a39b760f3b96764eb35f5840c676674bd0a97de810a0f521f06553652b91fe2c1ad1724633f344df762193c57821f4a4e2f04b040135417d47e9e5c7b0926058da6615c02a26c927735eb05c9e08c0c072e87262979d752613835643476475931c1025fccbb4b009742f7b52a1035990f7825ac54163e4c6754c120051364d1c985a8383edee105cd691ea17b5fe5a5a08532b1084951533191419239be34a089c03d15615217a60028268286a95cd283afe09b0002b937fe67b274f3ae967bcd43e27898447b950970d6243017034355418761620c2a9c156c97a6f834c4027163c7b412201b48f5c2a14c60a91e9201e05c9eb7b218cc66935f0b09b030482f2883d0a60df9068f72e654aa290666b17304d3a193552039444a725312d1271a7a1b0cdce08eea4b3860b2c29da14746b8cf67bcc3ac30056a28c82bf006e877c61774a8c265a1742c83320782a484259d5c1c20e5cbbdb49beb93624854889fd7be4ec47326e887789b7392288ae54a9a4b7ab33d902464273bf87207b5a0c836984d5e97b46d27c7e4d433888a1a4fd714c6b750d31ccff078060e03106ac60180347eb3e724aaf05f71287106a2002f47632cd42cc9d8a6f9617e6be78017261b49c4830a9c01ade0b40bdbaf75141c3ee94a0ec7088077a66f3019d63b7479b7b6e0a40991d3aeacf43173318c1fda9c4b63c52f3676739617d49023db11415e8975b998c609c76d65ba33c7d58d95a292b2089864f76c057126d3b7b990283f1200b8954c7463661821dac1d52c411820074e17075e819a1a809cc563738e2b5ba07101462a4482542268644e5c2c6c831c731c08af5742481953b9e96c5cd5748f6b885482e44745746f095467698946aa26b6568c4e334572857748589b3daeb55e927c0e7ef53a94b80fc61b0266879cbe5c079ae2388fd3a32ba078400869c2102fb108541c038d9050c3420c7e4eb27630b0479ce989050bc50e9b74d59c3739595618704fcbe32fa410c917690f4d639213c914ae65a98c60c3f549c6776354a50594e0861f50c67f4a512d59bb7f23d570f0f5297a369b61fa841150cdc986a91acb13fb821ba839612f1a02ae6434129826cf3566be658e52e628907c8e94685641926ae6373aff4bc96e822265268c9644b9a21350bf694f58190fe8d7a015aa48e041247fb82c8005072895cfbb35bc2b2489e1344260258dce3383e11b67dc2c1eeb659503d2943aba7246c66ab2eccd8bca44b21a03cb272a16faa7f49636b5a953ca82c08ee494b8c350949500a31c8fa91766be841a438693dd600956c77c0355919158b08fb8551db7b1867b75c6c56ac1fb6e3d7a7e3d6c06ddd2a28581c0cd4274e4fc9642b0a1c4f2caa1248ceb8ba88d02370f214912b69dc40757cfb652d8474b8176c9cd06c4e8ab7074e230d9b73e6e9baf70c80bb96874937bbe9acc9cd885bdd5d24a30b4711bea3f06d272918b4c04d70086526f32240ebd29553510bcea8355e46cb8a2d34ab178cee8357da9328088682542e620287a21494abd8d6cbae4661cb577c64fb001a729c1e702c54f95942ebcce10204c3224b676070561fc092bd87d31aa0e6aab43ba543c8ea0a00b339f4772002adc676b760ffda896501c95aa013a1cba427e686f71511e6ab39a1d976e742a1a07bc6e29708fb4a479c4661f0928ab04305692c622f8d2b798565a126a8b268433a2d4a74c3412b96cabb856c62ba9cf3a2f55c8afbd0e09a4ae8b1376214c5c103bfc19dc6fce41c547",
+        "registration_lock": "0c5f865eea5eebe9ef4fa8c4d99cb91de301bebb5b3b91bf775da1a57c725975",
+        "recovery_password": "0707070707070707070707070707070707070707070707070707070707070707",
+        "unidentified_access_key": "11111111111111111111111111111111"
+      },
+      "outputs": {
+        "request": {
+          "ws_request_id": 6,
+          "verb": "POST",
+          "path": "/v1/registration",
+          "headers": {
+            "content-type": "application/json",
+            "authorization": "Basic KzE1NTU1NTUwMTIzOmV4YW1wbGUtcGFzc3dvcmQ="
+          },
+          "body_utf8": "{\"sessionId\":\"ZXhhbXBsZS12ZWN0b3Itc2Vzc2lvbi0wMDAx\",\"accountAttributes\":{\"fetchesMessages\":true,\"pniRegistrationId\":5678,\"recoveryPassword\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=\",\"registrationId\":1234,\"registrationLock\":\"0c5f865eea5eebe9ef4fa8c4d99cb91de301bebb5b3b91bf775da1a57c725975\",\"unidentifiedAccessKey\":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],\"unrestrictedUnidentifiedAccess\":false,\"capabilities\":{\"usernameChangeSyncMessage\":true,\"spqr\":true,\"attachmentBackfill\":true},\"discoverableByPhoneNumber\":true},\"skipDeviceTransfer\":true,\"aciIdentityKey\":\"BSAGkV+XTD0U6/+dBbOK3G6C5aNMaLPtOrlEyOny39A9\",\"pniIdentityKey\":\"BdSqKZPMqeDW6Y3dLoeWSaYZkRk7RJK0o/6DqizzGDNt\",\"aciSignedPreKey\":{\"keyId\":1,\"publicKey\":\"BRx4/HHvAYVfZwxVXIIiY5fw5zsKr0Q6SR1BENwi8oI2\",\"signature\":\"KGxcU+cs5FcYjRFfKWsqsSuYrI9+gIdC7ZfZxOK+eK8dMntPxXJKJJWi+PE7d82E4ntNEMSmPs7+2s8pCBDYgg==\"},\"pniSignedPreKey\":{\"keyId\":2,\"publicKey\":\"BRmHXxsV4+gFUkDdnorw4MyU//WQvkEbFBu/2/kPUEZQ\",\"signature\":\"ymOgVdYI2rStccGyn/xIaAHjfgNB8oSxwA6FvJI3fxnds9hL+rQohkcF0vi0evX1spL2nM8SEYIQJZCHeegVjA==\"},\"aciPqLastResortPreKey\":{\"keyId\":3,\"publicKey\":\"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\",\"signature\":\"2Qyvm5fwOWIDfRLtfMyQBE7fvb93JvpyLZLBmoGut9QraJpGYUH8DqVDluW31dw3sRZiziTQRY0SEqjqpmOOiA==\"},\"pniPqLastResortPreKey\":{\"keyId\":4,\"publicKey\":\"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\",\"signature\":\"hfU3WFMPqOKCGXeMrEFdZaYdqlE1pvPkSAsnsEtTCjFndJGutNxWww2zzMyQIuUSI3MExI2T6i3hFiQOgE9eiA==\"}}"
+        },
+        "server_reply_used": {
+          "uuid": "00000000-0000-4000-8000-0000000000a1",
+          "number": "+15555550123",
+          "pni": "3b2c8f5e-0f7d-4a8b-9c1e-2d3f4a5b6c7d",
+          "usernameHash": null,
+          "usernameLinkHandle": null,
+          "storageCapable": false,
+          "entitlements": {
+            "badges": [],
+            "backup": null
+          },
+          "reregistration": false
+        },
+        "client_result": {
+          "aci": "00000000-0000-4000-8000-0000000000a1",
+          "pni": "PNI:3b2c8f5e-0f7d-4a8b-9c1e-2d3f4a5b6c7d",
+          "number": "+15555550123",
+          "reregistration": false,
+          "storage_capable": false
+        }
+      }
+    }
+  ]
+}

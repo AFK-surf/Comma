@@ -1,0 +1,378 @@
+diff --git a/sdk/cliproxy/subscription_executor.go b/sdk/cliproxy/subscription_executor.go
+new file mode 100644
+index 0000000..5163b16
+--- /dev/null
++++ b/sdk/cliproxy/subscription_executor.go
+@@ -0,0 +1,23 @@
++package cliproxy
++
++import (
++	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
++)
++
++// NewSubscriptionExecutor executes a host-selected credential without a Manager.
++// The host owns persistence, refresh coordination, and account selection.
++func NewSubscriptionExecutor(provider string) (auth.ProviderExecutor, error) {
++	cfg := &config.Config{DisableClaudeCloakMode: true}
++	switch provider {
++	case "codex":
++		return executor.NewCodexExecutor(cfg), nil
++	case "claude":
++		return executor.NewClaudeExecutor(cfg), nil
++	default:
++		return nil, fmt.Errorf("unsupported provider")
++	}
++}
+diff --git a/sdk/oauth/subscription.go b/sdk/oauth/subscription.go
+new file mode 100644
+index 0000000..2cd7f95
+--- /dev/null
++++ b/sdk/oauth/subscription.go
+@@ -0,0 +1,82 @@
++// Package oauth exposes split-phase subscription enrollment without a callback listener.
++package oauth
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Attempt contains secrets. Persist it only in the host's credential store.
++type Attempt struct {
++	Provider  string `json:"provider"`
++	State     string `json:"state"`
++	Verifier  string `json:"verifier"`
++	Challenge string `json:"challenge"`
++	URL       string `json:"url"`
++}
++
++func Begin(cfg *config.Config, provider, state string) (*Attempt, error) {
++	a := &Attempt{Provider: provider, State: state}
++	switch provider {
++	case "codex":
++		p, err := codex.GeneratePKCECodes()
++		if err != nil {
++			return nil, err
++		}
++		a.Verifier, a.Challenge = p.CodeVerifier, p.CodeChallenge
++		a.URL, err = codex.NewCodexAuth(cfg).GenerateAuthURL(state, p)
++		return a, err
++	case "claude":
++		p, err := claude.GeneratePKCECodes()
++		if err != nil {
++			return nil, err
++		}
++		a.Verifier, a.Challenge = p.CodeVerifier, p.CodeChallenge
++		a.URL, _, err = claude.NewClaudeAuth(cfg).GenerateAuthURL(state, p)
++		return a, err
++	default:
++		return nil, fmt.Errorf("unsupported provider")
++	}
++}
++
++// Exchange uses the original provider redirect and the attempt's PKCE verifier.
++// The host verifies tenant ownership, expiry, state, and single use before calling it.
++func Exchange(ctx context.Context, cfg *config.Config, a Attempt, code string) (map[string]any, error) {
++	var token any
++	var last string
++	var devices []string
++	switch a.Provider {
++	case "codex":
++		b, err := codex.NewCodexAuth(cfg).ExchangeCodeForTokens(ctx, code, &codex.PKCECodes{CodeVerifier: a.Verifier, CodeChallenge: a.Challenge})
++		if err != nil {
++			return nil, err
++		}
++		token, last = b.TokenData, b.LastRefresh
++	case "claude":
++		b, err := claude.NewClaudeAuth(cfg).ExchangeCodeForTokens(ctx, code, a.State, &claude.PKCECodes{CodeVerifier: a.Verifier, CodeChallenge: a.Challenge})
++		if err != nil {
++			return nil, err
++		}
++		token, last, devices = b.TokenData, b.LastRefresh, b.DeviceIDs
++	default:
++		return nil, fmt.Errorf("unsupported provider")
++	}
++	data, err := json.Marshal(token)
++	if err != nil {
++		return nil, err
++	}
++	var metadata map[string]any
++	if err = json.Unmarshal(data, &metadata); err != nil {
++		return nil, err
++	}
++	metadata["type"], metadata["last_refresh"] = a.Provider, last
++	if len(devices) > 0 {
++		metadata["claude_device_ids"] = devices
++	}
++	return metadata, nil
++}
+diff --git a/sdk/oauth/subscription_test.go b/sdk/oauth/subscription_test.go
+new file mode 100644
+index 0000000..aa3ef63
+--- /dev/null
++++ b/sdk/oauth/subscription_test.go
+@@ -0,0 +1,37 @@
++package oauth_test
++
++import (
++	"crypto/sha256"
++	"encoding/base64"
++	"net/url"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/oauth"
++)
++
++func TestSubscriptionEnrollmentKeepsPKCEAndProviderRedirect(t *testing.T) {
++	for provider, redirect := range map[string]string{"codex": "http://localhost:1455/auth/callback", "claude": "http://localhost:54545/callback"} {
++		t.Run(provider, func(t *testing.T) {
++			attempt, err := oauth.Begin(&config.Config{}, provider, "host-owned-state")
++			if err != nil {
++				t.Fatal(err)
++			}
++			u, err := url.Parse(attempt.URL)
++			if err != nil {
++				t.Fatal(err)
++			}
++			q := u.Query()
++			if q.Get("state") != attempt.State || q.Get("redirect_uri") != redirect {
++				t.Fatal("authorization context changed")
++			}
++			hash := sha256.Sum256([]byte(attempt.Verifier))
++			if q.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(hash[:]) {
++				t.Fatal("PKCE mismatch")
++			}
++			if q.Get("code_verifier") != "" {
++				t.Fatal("verifier leaked into browser URL")
++			}
++		})
++	}
++}
+diff --git a/internal/runtime/executor/helps/proxy_helpers.go b/internal/runtime/executor/helps/proxy_helpers.go
+index 0c5f6c9..d086463 100644
+--- a/internal/runtime/executor/helps/proxy_helpers.go
++++ b/internal/runtime/executor/helps/proxy_helpers.go
+@@ -30,6 +30,7 @@ import (
+ //   - *http.Client: An HTTP client with configured proxy or transport
+ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+ 	httpClient := &http.Client{}
++	defer observeSubscriptionTransport(ctx, httpClient)
+ 	if timeout > 0 {
+ 		httpClient.Timeout = timeout
+ 	}
+@@ -155,3 +156,14 @@ func buildProxyTransport(proxyURL string) *http.Transport {
+ 	}
+ 	return transport
+ }
++
++// The embedded host decorates the selected transport without changing TLS or proxy policy.
++func observeSubscriptionTransport(ctx context.Context, client *http.Client) {
++	if wrap, ok := ctx.Value("salix.observe_transport").(func(http.RoundTripper) http.RoundTripper); ok {
++		rt := client.Transport
++		if rt == nil {
++			rt = http.DefaultTransport
++		}
++		client.Transport = wrap(rt)
++	}
++}
+diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
+index 4857bac..0561621 100644
+--- a/internal/runtime/executor/helps/utls_client.go
++++ b/internal/runtime/executor/helps/utls_client.go
+@@ -397,5 +397,6 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 	if timeout > 0 {
+ 		client.Timeout = timeout
+ 	}
++	observeSubscriptionTransport(ctx, client)
+ 	return client
+ }
+diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
+index cc2febb..7489b15 100644
+--- a/sdk/auth/codex_device.go
++++ b/sdk/auth/codex_device.go
+@@ -170,60 +170,60 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
+ 
+ func pollCodexDeviceToken(ctx context.Context, client *http.Client, deviceAuthID, userCode string, interval time.Duration) (*codexDeviceTokenResponse, error) {
+ 	deadline := time.Now().Add(codexDeviceTimeout)
+-
+ 	for {
+ 		if time.Now().After(deadline) {
+ 			return nil, fmt.Errorf("codex device authentication timed out after 15 minutes")
+ 		}
+-
+-		body, err := json.Marshal(codexDeviceTokenRequest{
+-			DeviceAuthID: deviceAuthID,
+-			UserCode:     userCode,
+-		})
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to encode codex device poll request: %w", err)
++		result, err := pollCodexDeviceTokenOnce(ctx, client, deviceAuthID, userCode)
++		if err != nil || result != nil {
++			return result, err
+ 		}
+-
+-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexDeviceTokenURL, bytes.NewReader(body))
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to create codex device poll request: %w", err)
++		select {
++		case <-ctx.Done():
++			return nil, ctx.Err()
++		case <-time.After(interval):
+ 		}
+-		req.Header.Set("Content-Type", "application/json")
+-		req.Header.Set("Accept", "application/json")
++	}
++}
+ 
+-		resp, err := client.Do(req)
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to poll codex device token: %w", err)
+-		}
++func pollCodexDeviceTokenOnce(ctx context.Context, client *http.Client, deviceAuthID, userCode string) (*codexDeviceTokenResponse, error) {
++	body, err := json.Marshal(codexDeviceTokenRequest{
++		DeviceAuthID: deviceAuthID,
++		UserCode:     userCode,
++	})
++	if err != nil {
++		return nil, fmt.Errorf("failed to encode codex device poll request: %w", err)
++	}
+ 
+-		respBody, readErr := io.ReadAll(resp.Body)
+-		_ = resp.Body.Close()
+-		if readErr != nil {
+-			return nil, fmt.Errorf("failed to read codex device poll response: %w", readErr)
+-		}
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexDeviceTokenURL, bytes.NewReader(body))
++	if err != nil {
++		return nil, fmt.Errorf("failed to create codex device poll request: %w", err)
++	}
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Accept", "application/json")
+ 
+-		switch {
+-		case codexDeviceIsSuccessStatus(resp.StatusCode):
+-			var parsed codexDeviceTokenResponse
+-			if err := json.Unmarshal(respBody, &parsed); err != nil {
+-				return nil, fmt.Errorf("failed to decode codex device token response: %w", err)
+-			}
+-			return &parsed, nil
+-		case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+-			select {
+-			case <-ctx.Done():
+-				return nil, ctx.Err()
+-			case <-time.After(interval):
+-				continue
+-			}
+-		default:
+-			trimmed := strings.TrimSpace(string(respBody))
+-			if trimmed == "" {
+-				trimmed = "empty response body"
+-			}
+-			return nil, fmt.Errorf("codex device token polling failed with status %d: %s", resp.StatusCode, trimmed)
+-		}
++	resp, err := client.Do(req)
++	if err != nil {
++		return nil, fmt.Errorf("failed to poll codex device token: %w", err)
++	}
++
++	respBody, readErr := io.ReadAll(resp.Body)
++	_ = resp.Body.Close()
++	if readErr != nil {
++		return nil, fmt.Errorf("failed to read codex device poll response: %w", readErr)
++	}
++
++	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
++		return nil, nil
+ 	}
++	if !codexDeviceIsSuccessStatus(resp.StatusCode) {
++		return nil, fmt.Errorf("codex device token polling failed with status %d", resp.StatusCode)
++	}
++	var parsed codexDeviceTokenResponse
++	if err := json.Unmarshal(respBody, &parsed); err != nil {
++		return nil, fmt.Errorf("failed to decode codex device token response: %w", err)
++	}
++	return &parsed, nil
+ }
+ 
+ func parseCodexDevicePollInterval(raw json.RawMessage) time.Duration {
+@@ -302,3 +302,51 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
+ 		},
+ 	}, nil
+ }
++
++// BeginCodexDeviceAuthorization starts a split-phase device login for an embedded host.
++func BeginCodexDeviceAuthorization(ctx context.Context, cfg *config.Config) (string, string, int, error) {
++	client := util.SetProxy(&cfg.SDKConfig, &http.Client{})
++	result, err := requestCodexDeviceUserCode(ctx, client)
++	if err != nil {
++		return "", "", 0, err
++	}
++	code := strings.TrimSpace(result.UserCode)
++	if code == "" {
++		code = strings.TrimSpace(result.UserCodeAlt)
++	}
++	if code == "" || strings.TrimSpace(result.DeviceAuthID) == "" {
++		return "", "", 0, fmt.Errorf("missing device authorization fields")
++	}
++	return result.DeviceAuthID, code, int(parseCodexDevicePollInterval(result.Interval).Seconds()), nil
++}
++
++// PollCodexDeviceAuthorization checks once. The host owns the interval and expiry.
++func PollCodexDeviceAuthorization(ctx context.Context, cfg *config.Config, deviceAuthID, userCode string) (map[string]any, bool, error) {
++	client := util.SetProxy(&cfg.SDKConfig, &http.Client{})
++	result, err := pollCodexDeviceTokenOnce(ctx, client, deviceAuthID, userCode)
++	if err != nil {
++		return nil, false, err
++	}
++	if result == nil {
++		return nil, true, nil
++	}
++	if result.AuthorizationCode == "" || result.CodeVerifier == "" || result.CodeChallenge == "" {
++		return nil, false, fmt.Errorf("invalid device authorization response")
++	}
++
++	svc := codex.NewCodexAuth(cfg)
++	bundle, err := svc.ExchangeCodeForTokensWithRedirect(ctx, result.AuthorizationCode, codexDeviceTokenExchangeRedirectURI, &codex.PKCECodes{CodeVerifier: result.CodeVerifier, CodeChallenge: result.CodeChallenge})
++	if err != nil {
++		return nil, false, err
++	}
++	data, err := json.Marshal(bundle.TokenData)
++	if err != nil {
++		return nil, false, err
++	}
++	var metadata map[string]any
++	if err := json.Unmarshal(data, &metadata); err != nil {
++		return nil, false, err
++	}
++	metadata["type"], metadata["last_refresh"] = "codex", bundle.LastRefresh
++	return metadata, false, nil
++}
+diff --git a/sdk/cliproxy/auth/subscription_model.go b/sdk/cliproxy/auth/subscription_model.go
+new file mode 100644
+index 0000000..3dd2f4d
+--- /dev/null
++++ b/sdk/cliproxy/auth/subscription_model.go
+@@ -0,0 +1,13 @@
++package auth
++
++import (
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// SubscriptionModelRequest uses the host-selected model without the SDK's static
++// capability table. Subscription catalogs change independently of this SDK.
++// Keep the normal translation pipeline. The provider validates the requested effort.
++func SubscriptionModelRequest(req executor.Request) executor.Request {
++	return attachResolvedHomeModelInfo(req, nil, req.Model, &registry.ModelInfo{ID: req.Model, UserDefined: true}, nil)
++}

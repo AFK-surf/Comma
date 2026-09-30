@@ -1,0 +1,52 @@
+[
+  {
+    "name": "product_observation_without_a_request",
+    "source": "Original Slack thread, read successfully: A teammate says: 我记得这个产品以前主要宣传端侧小模型，现在看起来更强调把事情做完、让用户少动手了。 There are no replies yet. No external marketing history has been independently verified.",
+    "allowed_kinds": [
+      "reply"
+    ]
+  },
+  {
+    "name": "resolved_access_problem",
+    "source": "Original Slack thread, read successfully: A: 我刚才创建不了 API key。 B: 邀请补好了，再试一下。 A: 可以了，已经创建成功。 B: 好的。 There is no new question, failure, or unaddressed point.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  },
+  {
+    "name": "casual_share_with_an_unreadable_link",
+    "source": "Original Slack thread, read successfully: A teammate shares: 信息隔离生效了 [forwarded Slack link]. There is no question or request for help. The linked message could not be read: slack_source_changed. Its contents and the claimed success are not verified. A known eyes reaction is available.",
+    "allowed_kinds": [
+      "silence",
+      "reaction"
+    ]
+  },
+  {
+    "name": "incorrect_answer_with_direct_counterevidence",
+    "source": "Original Slack thread, read successfully: A asks: What percentage of the 200 checkout requests failed in this run? B replies: 5%, so this meets our maximum 10% failure threshold. The attached run report was read successfully: 200 total requests, 40 failed requests. These counts refer to the same run. No one has corrected the answer.",
+    "allowed_kinds": [
+      "reply"
+    ],
+    "required_reply_patterns": [
+      "20\\s*(?:%|percent)"
+    ]
+  },
+  {
+    "name": "partial_recovery_does_not_complete_the_requested_check",
+    "source": "Original Slack thread, read successfully: A asks Comma: Please check whether checkout and webhook delivery have both recovered. B replies: Checkout is healthy; I will check webhooks next. Current authorized probe results, read successfully: checkout HTTP 200; webhook delivery HTTP 503. No later webhook recovery has been reported.",
+    "allowed_kinds": [
+      "reply"
+    ],
+    "required_reply_patterns": [
+      "(?i)webhook",
+      "503"
+    ]
+  },
+  {
+    "name": "owned_investigation_without_new_evidence",
+    "source": "Original Slack thread, read successfully: A reports webhook failures. B replies: I have the logs and am checking delivery now. There is no request to Comma, no new diagnostic evidence, and no distinct useful check Comma can perform with its available access. Recovery has not been confirmed.",
+    "allowed_kinds": [
+      "silence"
+    ]
+  }
+]

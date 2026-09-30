@@ -1,0 +1,457 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "$schema": { "type": "string" },
+        "concurrency": {
+          "default": 1,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "retry": {
+          "type": "object",
+          "properties": {
+            "maxRetries": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": ["maxRetries"],
+          "additionalProperties": false
+        },
+        "adapters": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "salix": {
+              "type": "object",
+              "properties": {
+                "baseUrl": { "type": "string", "format": "uri" },
+                "token": { "type": "string", "minLength": 1 },
+                "tenantId": { "default": "evalens", "type": "string", "minLength": 1 },
+                "templateId": { "type": "string", "minLength": 1 },
+                "integrations": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "minLength": 1 },
+                          "provider": { "type": "string", "const": "slack" },
+                          "credentials": {
+                            "type": "object",
+                            "properties": {
+                              "type": { "type": "string", "const": "app" },
+                              "appId": { "type": "string", "minLength": 1 },
+                              "clientId": { "type": "string", "minLength": 1 },
+                              "clientSecret": { "type": "string", "minLength": 1 },
+                              "signingSecret": { "type": "string", "minLength": 1 },
+                              "botToken": { "type": "string", "minLength": 1 },
+                              "appName": { "type": "string", "minLength": 1 }
+                            },
+                            "required": [
+                              "type",
+                              "appId",
+                              "clientId",
+                              "clientSecret",
+                              "signingSecret",
+                              "botToken"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": ["id", "provider", "credentials"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "minLength": 1 },
+                          "provider": { "type": "string", "minLength": 1 },
+                          "alias": { "type": "string", "minLength": 1 },
+                          "credentials": {
+                            "type": "object",
+                            "properties": {
+                              "type": { "type": "string", "const": "oauth" },
+                              "accessToken": { "type": "string", "minLength": 1 },
+                              "refreshToken": { "type": "string", "minLength": 1 },
+                              "expiresAt": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "refreshExpiresAt": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "tokenType": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["type", "accessToken"],
+                            "additionalProperties": false
+                          },
+                          "scopes": {
+                            "default": [],
+                            "type": "array",
+                            "items": { "type": "string", "minLength": 1 }
+                          },
+                          "account": {
+                            "type": "object",
+                            "properties": {
+                              "id": { "type": "string" },
+                              "name": { "type": "string" }
+                            },
+                            "additionalProperties": false
+                          },
+                          "plugin": {
+                            "type": "object",
+                            "properties": {
+                              "pluginId": { "type": "string", "minLength": 1 },
+                              "connectionId": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["pluginId", "connectionId"],
+                            "additionalProperties": false
+                          },
+                          "providerKey": { "type": "string", "minLength": 1 }
+                        },
+                        "required": [
+                          "id",
+                          "provider",
+                          "alias",
+                          "credentials",
+                          "scopes"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": ["baseUrl", "tenantId"],
+              "additionalProperties": false
+            },
+            "codex": {
+              "type": "object",
+              "properties": {
+                "command": { "default": "codex", "type": "string", "minLength": 1 },
+                "profile": { "type": "string", "minLength": 1 },
+                "authJson": {
+                  "type": "object",
+                  "propertyNames": { "type": "string" },
+                  "additionalProperties": {}
+                },
+                "env": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": { "type": "string" },
+                  "additionalProperties": { "type": "string" }
+                },
+                "sandbox": {
+                  "default": "workspace-write",
+                  "type": "string",
+                  "enum": ["read-only", "workspace-write", "danger-full-access"]
+                },
+                "approvalPolicy": {
+                  "default": "never",
+                  "type": "string",
+                  "enum": ["never", "on-request", "on-failure", "untrusted"]
+                },
+                "skipGitRepoCheck": { "default": true, "type": "boolean" }
+              },
+              "required": [
+                "command",
+                "env",
+                "sandbox",
+                "approvalPolicy",
+                "skipGitRepoCheck"
+              ],
+              "additionalProperties": false
+            },
+            "slack": {
+              "type": "object",
+              "properties": {
+                "token": { "type": "string", "minLength": 1 },
+                "workspaceId": { "type": "string", "minLength": 1 },
+                "allowedChannelIds": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "expectedUserId": { "type": "string", "minLength": 1 },
+                "otherAppDriver": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string", "minLength": 1 },
+                    "expectedBotUserId": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["token", "expectedBotUserId"],
+                  "additionalProperties": false
+                },
+                "pollMs": {
+                  "default": 1000,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["token", "workspaceId", "allowedChannelIds", "pollMs"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "local": {
+          "type": "object",
+          "properties": { "outputDir": { "type": "string", "minLength": 1 } },
+          "required": ["outputDir"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["concurrency", "local"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "$schema": { "type": "string" },
+        "concurrency": {
+          "default": 1,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "retry": {
+          "type": "object",
+          "properties": {
+            "maxRetries": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": ["maxRetries"],
+          "additionalProperties": false
+        },
+        "adapters": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "salix": {
+              "type": "object",
+              "properties": {
+                "baseUrl": { "type": "string", "format": "uri" },
+                "token": { "type": "string", "minLength": 1 },
+                "tenantId": { "default": "evalens", "type": "string", "minLength": 1 },
+                "templateId": { "type": "string", "minLength": 1 },
+                "integrations": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "minLength": 1 },
+                          "provider": { "type": "string", "const": "slack" },
+                          "credentials": {
+                            "type": "object",
+                            "properties": {
+                              "type": { "type": "string", "const": "app" },
+                              "appId": { "type": "string", "minLength": 1 },
+                              "clientId": { "type": "string", "minLength": 1 },
+                              "clientSecret": { "type": "string", "minLength": 1 },
+                              "signingSecret": { "type": "string", "minLength": 1 },
+                              "botToken": { "type": "string", "minLength": 1 },
+                              "appName": { "type": "string", "minLength": 1 }
+                            },
+                            "required": [
+                              "type",
+                              "appId",
+                              "clientId",
+                              "clientSecret",
+                              "signingSecret",
+                              "botToken"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": ["id", "provider", "credentials"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "minLength": 1 },
+                          "provider": { "type": "string", "minLength": 1 },
+                          "alias": { "type": "string", "minLength": 1 },
+                          "credentials": {
+                            "type": "object",
+                            "properties": {
+                              "type": { "type": "string", "const": "oauth" },
+                              "accessToken": { "type": "string", "minLength": 1 },
+                              "refreshToken": { "type": "string", "minLength": 1 },
+                              "expiresAt": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "refreshExpiresAt": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "tokenType": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["type", "accessToken"],
+                            "additionalProperties": false
+                          },
+                          "scopes": {
+                            "default": [],
+                            "type": "array",
+                            "items": { "type": "string", "minLength": 1 }
+                          },
+                          "account": {
+                            "type": "object",
+                            "properties": {
+                              "id": { "type": "string" },
+                              "name": { "type": "string" }
+                            },
+                            "additionalProperties": false
+                          },
+                          "plugin": {
+                            "type": "object",
+                            "properties": {
+                              "pluginId": { "type": "string", "minLength": 1 },
+                              "connectionId": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["pluginId", "connectionId"],
+                            "additionalProperties": false
+                          },
+                          "providerKey": { "type": "string", "minLength": 1 }
+                        },
+                        "required": [
+                          "id",
+                          "provider",
+                          "alias",
+                          "credentials",
+                          "scopes"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": ["baseUrl", "tenantId"],
+              "additionalProperties": false
+            },
+            "codex": {
+              "type": "object",
+              "properties": {
+                "command": { "default": "codex", "type": "string", "minLength": 1 },
+                "profile": { "type": "string", "minLength": 1 },
+                "authJson": {
+                  "type": "object",
+                  "propertyNames": { "type": "string" },
+                  "additionalProperties": {}
+                },
+                "env": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": { "type": "string" },
+                  "additionalProperties": { "type": "string" }
+                },
+                "sandbox": {
+                  "default": "workspace-write",
+                  "type": "string",
+                  "enum": ["read-only", "workspace-write", "danger-full-access"]
+                },
+                "approvalPolicy": {
+                  "default": "never",
+                  "type": "string",
+                  "enum": ["never", "on-request", "on-failure", "untrusted"]
+                },
+                "skipGitRepoCheck": { "default": true, "type": "boolean" }
+              },
+              "required": [
+                "command",
+                "env",
+                "sandbox",
+                "approvalPolicy",
+                "skipGitRepoCheck"
+              ],
+              "additionalProperties": false
+            },
+            "slack": {
+              "type": "object",
+              "properties": {
+                "token": { "type": "string", "minLength": 1 },
+                "workspaceId": { "type": "string", "minLength": 1 },
+                "allowedChannelIds": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "expectedUserId": { "type": "string", "minLength": 1 },
+                "otherAppDriver": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string", "minLength": 1 },
+                    "expectedBotUserId": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["token", "expectedBotUserId"],
+                  "additionalProperties": false
+                },
+                "pollMs": {
+                  "default": 1000,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["token", "workspaceId", "allowedChannelIds", "pollMs"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "remote": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string", "format": "uri" },
+            "access": {
+              "type": "object",
+              "properties": {
+                "clientId": { "type": "string", "minLength": 1 },
+                "clientSecret": { "type": "string", "minLength": 1 }
+              },
+              "required": ["clientId", "clientSecret"],
+              "additionalProperties": false
+            },
+            "r2": {
+              "type": "object",
+              "properties": {
+                "accountId": { "type": "string", "minLength": 1 },
+                "bucket": { "type": "string", "minLength": 1 },
+                "accessKeyId": { "type": "string", "minLength": 1 },
+                "secretAccessKey": { "type": "string", "minLength": 1 }
+              },
+              "required": ["accountId", "bucket", "accessKeyId", "secretAccessKey"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["url", "access", "r2"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["concurrency", "remote"],
+      "additionalProperties": false
+    }
+  ]
+}

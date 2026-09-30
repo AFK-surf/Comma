@@ -1,0 +1,35 @@
+{
+  "name": "@comma/web",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
+    "build": "vite build --configLoader runner",
+    "build:prod": "COMMA_BUILD_FLAVOR=prod vite build --configLoader runner",
+    "build:staging": "COMMA_BUILD_FLAVOR=staging vite build --configLoader runner",
+    "deploy": "pnpm run build:prod && wrangler deploy --config wrangler.jsonc --env \"\" --name \"$CLOUDFLARE_WORKER_NAME\"",
+    "deploy:staging": "pnpm run build:staging && wrangler deploy --config wrangler.jsonc --env staging --name \"$CLOUDFLARE_WORKER_NAME_STAGING\"",
+    "preview": "vite preview --configLoader runner"
+  },
+  "dependencies": {
+    "@comma/app": "workspace:*",
+    "@comma/chat-contract": "workspace:*",
+    "@comma/config": "workspace:*",
+    "@comma/i18n": "workspace:*",
+    "@comma/native-bridge": "workspace:*",
+    "@comma/product-inbox-runtime": "workspace:*",
+    "@comma/session-contract": "workspace:*",
+    "@vitejs/plugin-react": "^6.0.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^8.0.16",
+    "@comma/session-history-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.77.0"
+  }
+}

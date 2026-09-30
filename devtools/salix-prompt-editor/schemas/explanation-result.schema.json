@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["success", "explanation", "warnings"],
+  "properties": {
+    "success": { "type": "boolean" },
+    "explanation": { "type": "string" },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

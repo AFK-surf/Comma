@@ -1,0 +1,1016 @@
+{
+  "schema": "comma.triage-online-case-fixture.v1",
+  "captured_at": "2026-09-07",
+  "derivation": "Captured frozen v8 snapshots, not newly written prompts. Replaced customer/person/endpoint display names only; kept aliases, order, missing fields, conflicting retained facts and actor classification. No raw provider credentials, Slack ids or production run ids.",
+  "cases": [
+    {
+      "id": "bare_forwarded_reply",
+      "historical_model": "openai/gpt-6-astra",
+      "historical_request_count": 2,
+      "historical_read_tool": "web.read_pages",
+      "wire_options": {
+        "max_output_tokens": 4096,
+        "model": "openai/gpt-6-astra",
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "snapshot": {
+        "decision_contract": {
+          "principal_refs": [
+            "principal://run/self"
+          ],
+          "remember_forbidden_source_refs": [
+            "principal://run/self",
+            "source://run/s002",
+            "source://run/s004"
+          ],
+          "source_refs": [
+            "source://run/s001",
+            "source://run/s002",
+            "source://run/s003",
+            "source://run/s004",
+            "source://run/s005",
+            "source://run/s006",
+            "source://run/s007",
+            "source://run/s008",
+            "source://run/s009",
+            "source://run/s010",
+            "source://run/s011",
+            "source://run/s012",
+            "source://run/s013",
+            "source://run/s014",
+            "source://run/s015",
+            "source://run/s016",
+            "source://run/s017",
+            "source://run/s018",
+            "source://run/s019",
+            "source://run/s020",
+            "source://run/s021",
+            "source://run/s022",
+            "source://run/s023",
+            "source://run/s024",
+            "source://run/s025"
+          ]
+        },
+        "events": [
+          {
+            "actor_kind": "human",
+            "addressing_kind": "ambient",
+            "event_ref": "event://run/e001",
+            "event_type": "message",
+            "fast_path": false,
+            "ordinal": 1,
+            "trigger_kind": "none"
+          }
+        ],
+        "generation_ref": "generation://run/current",
+        "identity_context": {
+          "mention_evidence": [],
+          "observed_principals": [],
+          "principal_refs": [
+            "principal://run/self"
+          ],
+          "remember_forbidden_source_refs": [
+            "principal://run/self",
+            "source://run/s002",
+            "source://run/s004"
+          ],
+          "schema": "comma.triage-identity-model-context.v1",
+          "self_agent": {
+            "display_alias": "@self",
+            "principal_ref": "principal://run/self",
+            "role": "router",
+            "source_ref": "source://run/s002"
+          },
+          "self_endpoint": {
+            "display_aliases": [
+              "@self",
+              "bft_staging_fixture"
+            ],
+            "endpoint_ref": "endpoint://run/self",
+            "provider": "slack",
+            "represents_principal_ref": "principal://run/self",
+            "revision_status": "exact",
+            "source_ref": "source://run/s004"
+          },
+          "source_mode": "clickhouse_etl",
+          "source_refs": [
+            "source://run/s002",
+            "source://run/s004"
+          ]
+        },
+        "receipt_refs": [
+          "receipt://run/r001"
+        ],
+        "schema": "comma.triage-context-snapshot.v8",
+        "slack_context": {
+          "decision_target": {
+            "link_refs": [
+              "link://run/l001"
+            ],
+            "message_ref": "message://run/m001",
+            "ordinal": 1,
+            "source_ref": "source://run/s005",
+            "syntactic_addressee": "none"
+          },
+          "expression_context": {
+            "allow_reactions": true,
+            "allowed_emojis": [
+              "+1",
+              "affine",
+              "afk",
+              "android",
+              "at-the-beach",
+              "black_square",
+              "blink",
+              "bma",
+              "bowtie",
+              "bridge",
+              "bunny-slippers",
+              "catching-up",
+              "clap",
+              "claude-loading",
+              "codex",
+              "commuting",
+              "computer-sleep",
+              "cubimal_chick",
+              "comma-zoom",
+              "comma1",
+              "doge",
+              "dusty_stick",
+              "eyes",
+              "fast",
+              "favicon-96",
+              "glitch_crab",
+              "gpt",
+              "heart",
+              "hot-desking",
+              "joy",
+              "kid-drop-off",
+              "laugh",
+              "lgtm",
+              "meow_party",
+              "miku",
+              "neko",
+              "note-taking",
+              "ok1",
+              "ooo",
+              "out-of-office",
+              "piggy",
+              "pokeball-hdr",
+              "praise-the-sun",
+              "pray",
+              "pride",
+              "pto",
+              "pto-soon",
+              "raised_hands",
+              "relaxing",
+              "satania_laugh",
+              "self-care",
+              "shipit",
+              "simple_smile",
+              "slack",
+              "slack_call",
+              "slackbot",
+              "sleeping-potato",
+              "smart",
+              "sparkles",
+              "squirrel",
+              "tada",
+              "thinking",
+              "thinking_face",
+              "thumbsup_all",
+              "time-zone-fyi",
+              "touch-grass",
+              "travel-time",
+              "white_square",
+              "why",
+              "working-from-coffee-shop",
+              "working-from-home",
+              "working-in-office",
+              "zoom"
+            ],
+            "catalog": {
+              "complete?": true,
+              "custom_emojis": [
+                "affine",
+                "afk",
+                "android",
+                "at-the-beach",
+                "black_square",
+                "blink",
+                "bma",
+                "bowtie",
+                "bridge",
+                "bunny-slippers",
+                "catching-up",
+                "claude-loading",
+                "codex",
+                "commuting",
+                "computer-sleep",
+                "cubimal_chick",
+                "comma-zoom",
+                "comma1",
+                "doge",
+                "dusty_stick",
+                "fast",
+                "favicon-96",
+                "glitch_crab",
+                "gpt",
+                "hot-desking",
+                "kid-drop-off",
+                "laugh",
+                "lgtm",
+                "meow_party",
+                "miku",
+                "neko",
+                "note-taking",
+                "ok1",
+                "ooo",
+                "out-of-office",
+                "piggy",
+                "pokeball-hdr",
+                "praise-the-sun",
+                "pride",
+                "pto",
+                "pto-soon",
+                "relaxing",
+                "satania_laugh",
+                "self-care",
+                "shipit",
+                "simple_smile",
+                "slack",
+                "slack_call",
+                "slackbot",
+                "sleeping-potato",
+                "smart",
+                "squirrel",
+                "thinking",
+                "thumbsup_all",
+                "time-zone-fyi",
+                "touch-grass",
+                "travel-time",
+                "white_square",
+                "why",
+                "working-from-coffee-shop",
+                "working-from-home",
+                "working-in-office",
+                "zoom"
+              ],
+              "status": "available"
+            },
+            "guidance": "Use reactions for lightweight acknowledgement. Prefer a fitting workspace custom emoji when its name or observed use makes the meaning clear; do not guess opaque emoji names.",
+            "mode": "project",
+            "observed_reactions": [],
+            "schema": "comma.triage-expression-context.v1"
+          },
+          "links": [
+            {
+              "display_alias": "@link:l001",
+              "link_ref": "link://run/l001",
+              "message_refs": [
+                "message://run/m001"
+              ],
+              "source_refs": [
+                "source://run/s005"
+              ]
+            }
+          ],
+          "messages": [
+            {
+              "actor_kind": "human",
+              "actor_ref": "participant://run/u001",
+              "message_ref": "message://run/m001",
+              "observed_reactions": [],
+              "ordinal": 1,
+              "source_ref": "source://run/s005",
+              "text": "<@link:l001|@link:l001>"
+            }
+          ],
+          "source_refs": [
+            "source://run/s005"
+          ]
+        },
+        "source_authority": {
+          "bucket_ref": "bucket://run/scope",
+          "endpoint_ref": "endpoint://run/self",
+          "provider": "slack",
+          "scope_kind": "thread",
+          "workspace_ref": "workspace://run/self"
+        },
+        "team_project_memory": {
+          "facts": [
+            {
+              "deadline": null,
+              "kind": "retained_decision",
+              "owner_ref": null,
+              "source_ref": "source://run/s006",
+              "text": "事故处理流程: 以后系统或服务发生故障挂了需要编写事故报告"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s007",
+              "text": "虚拟机宿主硬件配置建议: 参与者认为，若后续不增加新的重型负载，M5、32GB 内存的 Mac mini 足以运行 VMM、iOS 和 Android 虚拟机。这是配置建议，尚非实测容量结论或采购决定。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s008",
+              "text": "Worker 完成后的后台回报机制: 讨论中提出，worker 完成工作后可以在后台向 router 回报做了什么，而不是通过 UI 层告知；尚未确认实施决定。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s009",
+              "text": "Packaging request: library instead of CLI: A team member suggests exposing the current CLI-only functionality as a library, since after the VMM starts a virtual machine it still needs to obtain the vsock and communicate with the daemon inside the VM."
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s010",
+              "text": "客户端文件引用方式: 团队确认客户端也支持直接拖入文件夹，目前文件走本地索引。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s011",
+              "text": "bft staging bot model: 3.8 flash"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s012",
+              "text": "bft: bft 当前模型为 3.8 flash"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_follow_up",
+              "owner_ref": null,
+              "source_ref": "source://run/s013",
+              "text": "Orion 的 Mac 配置待确认: 参与者目前不知道为 Orion 购买的 Mac 配置，计划明天在会上询问；具体型号和内存仍待确认。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_follow_up",
+              "owner_ref": null,
+              "source_ref": "source://run/s014",
+              "text": "拖入本地文件夹后出现上传失败弹窗: 用户报告拖入文件夹即出现弹窗；已有排查任务进行中，现有回复指出底层提示找不到请求的文件或目录，但尚未确定失败发生在目录识别、读取还是本地索引环节。待排查确认原因和处理结果，客户端版本也尚待补充。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s015",
+              "text": "Router 与 worker 的产品交互边界: 讨论中有人质疑将用户与 worker 直接对话作为产品交互方式：若用户绕过 router 直接派任务，router 的协调价值可能被架空；这是产品意见，尚非已确认决定。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s016",
+              "text": "astra: 有 astra 就会重置"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s017",
+              "text": "Slack 与客户端的 worker 对话入口: 参与者纠正此前关于 Slack 支持与 worker 对话的说法，指出只是客户端提供了这一入口；该消息未确认 Slack 的具体实现能力或新的产品决策。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s018",
+              "text": "Orion 周一上午待确认清单: 待确认四项：Orion 的 meeting bot 能用；为 Orion 提供独立机器部署 meeting runtime、VMM 和安卓模拟器；Claude 和 Codex worker 由 VMM 管理；为同事的仓库配置 CI/CD。该消息列出待确认事项，未说明已经完成。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s019",
+              "text": "随手分享内容时的 router 交互偏好: 参与者表示，有时转发视频只是一次性分享，不希望 router 因此启动 bot 并向自己反馈。这是场景化的产品偏好，尚非已确认的全局交互规则。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s020",
+              "text": "bft staging bot daily cost: bft staging bot 每天消耗约 100 至 200 美元"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_follow_up",
+              "owner_ref": null,
+              "source_ref": "source://run/s021",
+              "text": "客户端布局改造修复: 客户端布局改造合并后可能存在部分 layout 问题，计划近期修复"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s022",
+              "text": "Slack worker 提及路由: 参与者确认，当前讨论中的提及入口实际指向 coding worker。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s023",
+              "text": "Android CLI tooling suggestion for agent environment: A teammate suggested installing an Android CLI in the Android virtual machine setup for the agent, noting an included archive contains app-design skills specific to that vendor's design style."
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s024",
+              "text": "Slack 中与 worker 交互: 讨论中有人表示，也可以在 Slack 中直接提及 worker；该消息未明确改变 router 与 worker 的整体产品交互边界。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s025",
+              "text": "用户与 worker 直接对话的产品交互: 讨论中提出移除用户与 worker 直接对话的交互，另一位参与者认同这样可能更清晰；当前消息未明确确认实施安排。"
+            }
+          ],
+          "member_roster": {
+            "completeness": "complete",
+            "limit": 25,
+            "returned_count": 1,
+            "truncated": false
+          },
+          "members": [
+            {
+              "display_alias": "@member:m001",
+              "entity_ref": "member://run/m001",
+              "rbac_role": "admin",
+              "source_ref": "source://run/s003"
+            }
+          ],
+          "project": {
+            "display_alias": "@project:p001",
+            "entity_ref": "project://run/p001",
+            "source_ref": "source://run/s001",
+            "status": "active"
+          },
+          "source_refs": [
+            "source://run/s001",
+            "source://run/s003",
+            "source://run/s006",
+            "source://run/s007",
+            "source://run/s008",
+            "source://run/s009",
+            "source://run/s010",
+            "source://run/s011",
+            "source://run/s012",
+            "source://run/s013",
+            "source://run/s014",
+            "source://run/s015",
+            "source://run/s016",
+            "source://run/s017",
+            "source://run/s018",
+            "source://run/s019",
+            "source://run/s020",
+            "source://run/s021",
+            "source://run/s022",
+            "source://run/s023",
+            "source://run/s024",
+            "source://run/s025"
+          ]
+        }
+      },
+      "historical_decision": {
+        "communication": {
+          "kind": "reply",
+          "source_refs": [
+            "source://run/s005"
+          ],
+          "text": "这个 Slack 链接没读到消息正文。方便贴一下原文，并说明希望我帮忙看什么吗？"
+        },
+        "companion_reaction": null,
+        "context_candidates": [],
+        "delegations": [],
+        "identity_interpretation": {
+          "referenced_principal_refs": [],
+          "topic": "none"
+        },
+        "schema": "comma.triage-product-decision.v2"
+      }
+    },
+    {
+      "id": "token_report_no_tools",
+      "source_actor_observation": {
+        "origin": "stored private source bundle v6, read-only metadata capture 2026-09-07",
+        "subtype": "file_share",
+        "user_present": true,
+        "bot_id_present": false,
+        "bot_profile_present": false,
+        "app_id_present": false,
+        "historical_actor_kind": "system"
+      },
+      "historical_model": "openai/gpt-6-astra",
+      "historical_request_count": 1,
+      "historical_read_tool": null,
+      "wire_options": {
+        "max_output_tokens": 4096,
+        "model": "openai/gpt-6-astra",
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "snapshot": {
+        "decision_contract": {
+          "principal_refs": [
+            "principal://run/self"
+          ],
+          "remember_forbidden_source_refs": [
+            "principal://run/self",
+            "source://run/s002",
+            "source://run/s004"
+          ],
+          "source_refs": [
+            "source://run/s001",
+            "source://run/s002",
+            "source://run/s003",
+            "source://run/s004",
+            "source://run/s005",
+            "source://run/s006",
+            "source://run/s007",
+            "source://run/s008",
+            "source://run/s009",
+            "source://run/s010",
+            "source://run/s011",
+            "source://run/s012",
+            "source://run/s013",
+            "source://run/s014",
+            "source://run/s015",
+            "source://run/s016",
+            "source://run/s017",
+            "source://run/s018",
+            "source://run/s019",
+            "source://run/s020",
+            "source://run/s021",
+            "source://run/s022",
+            "source://run/s023",
+            "source://run/s024",
+            "source://run/s025"
+          ]
+        },
+        "events": [
+          {
+            "actor_kind": "human",
+            "addressing_kind": "ambient",
+            "event_ref": "event://run/e001",
+            "event_type": "message",
+            "fast_path": false,
+            "ordinal": 1,
+            "trigger_kind": "none"
+          }
+        ],
+        "generation_ref": "generation://run/current",
+        "identity_context": {
+          "mention_evidence": [],
+          "observed_principals": [],
+          "principal_refs": [
+            "principal://run/self"
+          ],
+          "remember_forbidden_source_refs": [
+            "principal://run/self",
+            "source://run/s002",
+            "source://run/s004"
+          ],
+          "schema": "comma.triage-identity-model-context.v1",
+          "self_agent": {
+            "display_alias": "@self",
+            "principal_ref": "principal://run/self",
+            "role": "router",
+            "source_ref": "source://run/s002"
+          },
+          "self_endpoint": {
+            "display_aliases": [
+              "@self",
+              "bft_staging_fixture"
+            ],
+            "endpoint_ref": "endpoint://run/self",
+            "provider": "slack",
+            "represents_principal_ref": "principal://run/self",
+            "revision_status": "exact",
+            "source_ref": "source://run/s004"
+          },
+          "source_mode": "clickhouse_etl",
+          "source_refs": [
+            "source://run/s002",
+            "source://run/s004"
+          ]
+        },
+        "receipt_refs": [
+          "receipt://run/r001"
+        ],
+        "schema": "comma.triage-context-snapshot.v8",
+        "slack_context": {
+          "decision_target": {
+            "link_refs": [],
+            "message_ref": "message://run/m001",
+            "ordinal": 1,
+            "source_ref": "source://run/s005",
+            "syntactic_addressee": "none"
+          },
+          "expression_context": {
+            "allow_reactions": true,
+            "allowed_emojis": [
+              "+1",
+              "affine",
+              "afk",
+              "android",
+              "at-the-beach",
+              "black_square",
+              "blink",
+              "bma",
+              "bowtie",
+              "bridge",
+              "bunny-slippers",
+              "catching-up",
+              "clap",
+              "claude-loading",
+              "codex",
+              "commuting",
+              "computer-sleep",
+              "cubimal_chick",
+              "comma-zoom",
+              "comma1",
+              "doge",
+              "dusty_stick",
+              "eyes",
+              "fast",
+              "favicon-96",
+              "glitch_crab",
+              "gpt",
+              "heart",
+              "hot-desking",
+              "joy",
+              "kid-drop-off",
+              "laugh",
+              "lgtm",
+              "meow_party",
+              "miku",
+              "neko",
+              "note-taking",
+              "ok1",
+              "ooo",
+              "out-of-office",
+              "piggy",
+              "pokeball-hdr",
+              "praise-the-sun",
+              "pray",
+              "pride",
+              "pto",
+              "pto-soon",
+              "raised_hands",
+              "relaxing",
+              "satania_laugh",
+              "self-care",
+              "shipit",
+              "simple_smile",
+              "slack",
+              "slack_call",
+              "slackbot",
+              "sleeping-potato",
+              "smart",
+              "sparkles",
+              "squirrel",
+              "tada",
+              "thinking",
+              "thinking_face",
+              "thumbsup_all",
+              "time-zone-fyi",
+              "touch-grass",
+              "travel-time",
+              "white_square",
+              "why",
+              "working-from-coffee-shop",
+              "working-from-home",
+              "working-in-office",
+              "zoom"
+            ],
+            "catalog": {
+              "complete?": true,
+              "custom_emojis": [
+                "affine",
+                "afk",
+                "android",
+                "at-the-beach",
+                "black_square",
+                "blink",
+                "bma",
+                "bowtie",
+                "bridge",
+                "bunny-slippers",
+                "catching-up",
+                "claude-loading",
+                "codex",
+                "commuting",
+                "computer-sleep",
+                "cubimal_chick",
+                "comma-zoom",
+                "comma1",
+                "doge",
+                "dusty_stick",
+                "fast",
+                "favicon-96",
+                "glitch_crab",
+                "gpt",
+                "hot-desking",
+                "kid-drop-off",
+                "laugh",
+                "lgtm",
+                "meow_party",
+                "miku",
+                "neko",
+                "note-taking",
+                "ok1",
+                "ooo",
+                "out-of-office",
+                "piggy",
+                "pokeball-hdr",
+                "praise-the-sun",
+                "pride",
+                "pto",
+                "pto-soon",
+                "relaxing",
+                "satania_laugh",
+                "self-care",
+                "shipit",
+                "simple_smile",
+                "slack",
+                "slack_call",
+                "slackbot",
+                "sleeping-potato",
+                "smart",
+                "squirrel",
+                "thinking",
+                "thumbsup_all",
+                "time-zone-fyi",
+                "touch-grass",
+                "travel-time",
+                "white_square",
+                "why",
+                "working-from-coffee-shop",
+                "working-from-home",
+                "working-in-office",
+                "zoom"
+              ],
+              "status": "available"
+            },
+            "guidance": "Use reactions for lightweight acknowledgement. Prefer a fitting workspace custom emoji when its name or observed use makes the meaning clear; do not guess opaque emoji names.",
+            "mode": "project",
+            "observed_reactions": [],
+            "schema": "comma.triage-expression-context.v1"
+          },
+          "links": [],
+          "messages": [
+            {
+              "actor_kind": "system",
+              "actor_ref": "participant://run/u001",
+              "message_ref": "message://run/m001",
+              "observed_reactions": [],
+              "ordinal": 1,
+              "source_ref": "source://run/s005",
+              "text": "orion meet bot 的 salix token 怎么被注销了"
+            }
+          ],
+          "source_refs": [
+            "source://run/s005"
+          ]
+        },
+        "source_authority": {
+          "bucket_ref": "bucket://run/scope",
+          "endpoint_ref": "endpoint://run/self",
+          "provider": "slack",
+          "scope_kind": "thread",
+          "workspace_ref": "workspace://run/self"
+        },
+        "team_project_memory": {
+          "facts": [
+            {
+              "deadline": null,
+              "kind": "retained_decision",
+              "owner_ref": null,
+              "source_ref": "source://run/s006",
+              "text": "事故处理流程: 以后系统或服务发生故障挂了需要编写事故报告"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s007",
+              "text": "虚拟机宿主硬件配置建议: 参与者认为，若后续不增加新的重型负载，M5、32GB 内存的 Mac mini 足以运行 VMM、iOS 和 Android 虚拟机。这是配置建议，尚非实测容量结论或采购决定。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s008",
+              "text": "Worker 完成后的后台回报机制: 讨论中提出，worker 完成工作后可以在后台向 router 回报做了什么，而不是通过 UI 层告知；尚未确认实施决定。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s009",
+              "text": "Packaging request: library instead of CLI: A team member suggests exposing the current CLI-only functionality as a library, since after the VMM starts a virtual machine it still needs to obtain the vsock and communicate with the daemon inside the VM."
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s010",
+              "text": "客户端文件引用方式: 团队确认客户端也支持直接拖入文件夹，目前文件走本地索引。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s011",
+              "text": "bft staging bot model: 3.8 flash"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s012",
+              "text": "bft: bft 当前模型为 3.8 flash"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_follow_up",
+              "owner_ref": null,
+              "source_ref": "source://run/s013",
+              "text": "Orion 的 Mac 配置待确认: 参与者目前不知道为 Orion 购买的 Mac 配置，计划明天在会上询问；具体型号和内存仍待确认。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_follow_up",
+              "owner_ref": null,
+              "source_ref": "source://run/s014",
+              "text": "拖入本地文件夹后出现上传失败弹窗: 用户报告拖入文件夹即出现弹窗；已有排查任务进行中，现有回复指出底层提示找不到请求的文件或目录，但尚未确定失败发生在目录识别、读取还是本地索引环节。待排查确认原因和处理结果，客户端版本也尚待补充。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s015",
+              "text": "Router 与 worker 的产品交互边界: 讨论中有人质疑将用户与 worker 直接对话作为产品交互方式：若用户绕过 router 直接派任务，router 的协调价值可能被架空；这是产品意见，尚非已确认决定。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s016",
+              "text": "astra: 有 astra 就会重置"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s017",
+              "text": "Slack 与客户端的 worker 对话入口: 参与者纠正此前关于 Slack 支持与 worker 对话的说法，指出只是客户端提供了这一入口；该消息未确认 Slack 的具体实现能力或新的产品决策。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s018",
+              "text": "Orion 周一上午待确认清单: 待确认四项：Orion 的 meeting bot 能用；为 Orion 提供独立机器部署 meeting runtime、VMM 和安卓模拟器；Claude 和 Codex worker 由 VMM 管理；为同事的仓库配置 CI/CD。该消息列出待确认事项，未说明已经完成。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s019",
+              "text": "随手分享内容时的 router 交互偏好: 参与者表示，有时转发视频只是一次性分享，不希望 router 因此启动 bot 并向自己反馈。这是场景化的产品偏好，尚非已确认的全局交互规则。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s020",
+              "text": "bft staging bot daily cost: bft staging bot 每天消耗约 100 至 200 美元"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_follow_up",
+              "owner_ref": null,
+              "source_ref": "source://run/s021",
+              "text": "客户端布局改造修复: 客户端布局改造合并后可能存在部分 layout 问题，计划近期修复"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s022",
+              "text": "Slack worker 提及路由: 参与者确认，当前讨论中的提及入口实际指向 coding worker。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s023",
+              "text": "Android CLI tooling suggestion for agent environment: A teammate suggested installing an Android CLI in the Android virtual machine setup for the agent, noting an included archive contains app-design skills specific to that vendor's design style."
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s024",
+              "text": "Slack 中与 worker 交互: 讨论中有人表示，也可以在 Slack 中直接提及 worker；该消息未明确改变 router 与 worker 的整体产品交互边界。"
+            },
+            {
+              "deadline": null,
+              "kind": "retained_project_fact",
+              "owner_ref": null,
+              "source_ref": "source://run/s025",
+              "text": "用户与 worker 直接对话的产品交互: 讨论中提出移除用户与 worker 直接对话的交互，另一位参与者认同这样可能更清晰；当前消息未明确确认实施安排。"
+            }
+          ],
+          "member_roster": {
+            "completeness": "complete",
+            "limit": 25,
+            "returned_count": 1,
+            "truncated": false
+          },
+          "members": [
+            {
+              "display_alias": "@member:m001",
+              "entity_ref": "member://run/m001",
+              "rbac_role": "admin",
+              "source_ref": "source://run/s003"
+            }
+          ],
+          "project": {
+            "display_alias": "@project:p001",
+            "entity_ref": "project://run/p001",
+            "source_ref": "source://run/s001",
+            "status": "active"
+          },
+          "source_refs": [
+            "source://run/s001",
+            "source://run/s003",
+            "source://run/s006",
+            "source://run/s007",
+            "source://run/s008",
+            "source://run/s009",
+            "source://run/s010",
+            "source://run/s011",
+            "source://run/s012",
+            "source://run/s013",
+            "source://run/s014",
+            "source://run/s015",
+            "source://run/s016",
+            "source://run/s017",
+            "source://run/s018",
+            "source://run/s019",
+            "source://run/s020",
+            "source://run/s021",
+            "source://run/s022",
+            "source://run/s023",
+            "source://run/s024",
+            "source://run/s025"
+          ]
+        }
+      },
+      "historical_decision": {
+        "communication": {
+          "kind": "reply",
+          "source_refs": [
+            "source://run/s005"
+          ],
+          "text": "目前还不能确认是被主动注销，还是过期或权限变更导致失效。能补一下首次失败时间和脱敏后的错误码／报错吗？不要贴 token 本身。下一步先对照 Salix 的撤销、过期记录及近期凭据配置变更，确认原因后再处理，避免直接换 token 掩盖问题。"
+        },
+        "companion_reaction": null,
+        "context_candidates": [],
+        "delegations": [
+          {
+            "source_refs": [
+              "source://run/s005"
+            ],
+            "task": "只读排查 Orion meet bot 的 Salix token 被报告注销的问题：检查可访问的认证失败日志、凭据生命周期记录和近期相关配置变更，区分主动撤销、过期与权限变更。回报已确认的证据、仍缺失的信息及建议处理步骤；若无访问权限则明确说明。不要读取或输出 token 明文，不要自行撤销、轮换凭据或修改配置。"
+          }
+        ],
+        "identity_interpretation": {
+          "referenced_principal_refs": [],
+          "topic": "none"
+        },
+        "schema": "comma.triage-product-decision.v2"
+      }
+    }
+  ]
+}

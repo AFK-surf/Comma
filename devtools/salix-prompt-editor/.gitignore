@@ -1,0 +1,15 @@
+# Installed dependencies and generated bundles.
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local editor state. This includes pending apply manifests, Codex job files,
+# explanation-session ids, request payloads, and cached explanations.
+.local/
+
+# Machine-local overrides and tool logs.
+.env.local
+.env.*.local
+*.log
+.DS_Store

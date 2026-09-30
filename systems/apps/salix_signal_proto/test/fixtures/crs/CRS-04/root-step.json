@@ -1,0 +1,100 @@
+{
+ "section": "CRS-04",
+ "name": "root-step",
+ "description": "DH ratchet step on receipt of a new ratchet key, observed in the oracle receiver. Inputs are the receiver state before the message (read from oracle state) and the new sending ratchet key pair the oracle generated (read from oracle state after). root_key_after, sending_chain_key_0, our_new_ratchet_public and previous_chain_length_after are oracle-observed; the intermediate values are generator arithmetic that reproduces them. receiving_chain_state_after_first_message is the oracle receiving chain after it consumed the first message of the new chain (index = message number + 1).",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "root_key": "5fbce73f918832806c848aec980d04e36b69a22a3a4e636c16e40e8bee1af917",
+    "our_ratchet_private": "30042e0aa0f7e6ab65bb0a0a2f2f936b02ca6a9430c7cacdbcd90adcdee01242",
+    "our_previous_sending_chain_index": 1,
+    "their_new_ratchet_public": "0577b45fa394a9c9ad757b9434cffb1b6003a2537d7891a2293a01eda850492267",
+    "our_new_ratchet_private": "60b4b9573a97746f7c6cef07430f63cf6b95626485380a99ab47d46632475f41"
+   },
+   "outputs": {
+    "dh_receive": "56a5589ef3f9cf3c82255fe6aef4d1a7cecde1e9eef796dbb4d5dd225a8c792b",
+    "root_key_after_receive_half": "52659bfb739c283b4cb14be1775668f4cd06839f73f56f38032558c06f246f52",
+    "receiving_chain_key_0": "f893bfdf65c6d003ba1e981967c6b56572fd5daf63dfdf22ff2551c333275699",
+    "dh_send": "7f24f44a409ff691a85769c8ee39cad0eb69ee291cf055f89f8a0d6e6f90ab55",
+    "root_key_after": "a712fbdce95fdf33323ae8f1d8451f5c5df2f5a0511840042bafa8edd87629d0",
+    "sending_chain_key_0": "fabf1f34e83e9e4c622e98053f7054b44ffb8cc67d5c537241671cbcd174a0ca",
+    "our_new_ratchet_public": "05b5aea59a3886d6a702f0cd29baea44b38b648d9bdeb41ec09e99d828c86c8320",
+    "previous_chain_length_after": 0,
+    "receiving_chain_state_after_first_message": {
+     "chain_index": 1,
+     "chain_key": "1bebf60ea5610f84e1d237767961a866c8cbcc09d4be979c2f9db3354bfd938b"
+    }
+   }
+  },
+  {
+   "inputs": {
+    "root_key": "52659bfb739c283b4cb14be1775668f4cd06839f73f56f38032558c06f246f52",
+    "our_ratchet_private": "381f2a8cc7b502982f9f18ab9f9422f57907f1236914edb8922fcc096e594769",
+    "our_previous_sending_chain_index": 1,
+    "their_new_ratchet_public": "05b5aea59a3886d6a702f0cd29baea44b38b648d9bdeb41ec09e99d828c86c8320",
+    "our_new_ratchet_private": "605d5accef76eca4bb34864a77337398e1cbc2da16c7e3d9fa057d0ffc847852"
+   },
+   "outputs": {
+    "dh_receive": "7f24f44a409ff691a85769c8ee39cad0eb69ee291cf055f89f8a0d6e6f90ab55",
+    "root_key_after_receive_half": "a712fbdce95fdf33323ae8f1d8451f5c5df2f5a0511840042bafa8edd87629d0",
+    "receiving_chain_key_0": "fabf1f34e83e9e4c622e98053f7054b44ffb8cc67d5c537241671cbcd174a0ca",
+    "dh_send": "f05f201ae54dbf1b40dcfebf84c9e560990d8f1593845c59d818581afcbe2373",
+    "root_key_after": "ac7054a54407fc3fe7f34f82c91fbcd680b450e2082b60b0db8074d165419fbf",
+    "sending_chain_key_0": "d2d2eb7692de8fcc1275c0c55f99fd123d03d01c34432a9b41c46bd76ab69974",
+    "our_new_ratchet_public": "05179816201551bdee54faffede89ce31d0eb4b5b44aab5e9494dfd1f0f0029d3b",
+    "previous_chain_length_after": 0,
+    "receiving_chain_state_after_first_message": {
+     "chain_index": 1,
+     "chain_key": "40ea6f0052e57c22fef7c2ceafb3b6a93d39b2e5b84ee5dae65652d099ce7e2a"
+    }
+   }
+  },
+  {
+   "inputs": {
+    "root_key": "a712fbdce95fdf33323ae8f1d8451f5c5df2f5a0511840042bafa8edd87629d0",
+    "our_ratchet_private": "60b4b9573a97746f7c6cef07430f63cf6b95626485380a99ab47d46632475f41",
+    "our_previous_sending_chain_index": 2,
+    "their_new_ratchet_public": "05179816201551bdee54faffede89ce31d0eb4b5b44aab5e9494dfd1f0f0029d3b",
+    "our_new_ratchet_private": "40667edfa7020891eeb8f287f3fd62a17156ab939d327ce1b549d9f08e7d227c"
+   },
+   "outputs": {
+    "dh_receive": "f05f201ae54dbf1b40dcfebf84c9e560990d8f1593845c59d818581afcbe2373",
+    "root_key_after_receive_half": "ac7054a54407fc3fe7f34f82c91fbcd680b450e2082b60b0db8074d165419fbf",
+    "receiving_chain_key_0": "d2d2eb7692de8fcc1275c0c55f99fd123d03d01c34432a9b41c46bd76ab69974",
+    "dh_send": "e6ff21f8ee263b51a6471dce0986d22d8830bb48236be99fe8bc01c4bb4b035c",
+    "root_key_after": "515e803ee58ba6c880eb07136242a264e340ac036e49fc8697d6b96c4732943c",
+    "sending_chain_key_0": "249fcd864e1ed8b0ff7a7d332a8ce60e3ace90dbc9918a0b0381ad1361458a54",
+    "our_new_ratchet_public": "05510d7c30a516dd64ec6f94ed55447f1a58184bfef97560d6f64571c8b4ecb74c",
+    "previous_chain_length_after": 1,
+    "receiving_chain_state_after_first_message": {
+     "chain_index": 1,
+     "chain_key": "4c249333d71ba223d5c07031b9c99ccde12d605b7edb4ae8a45d12d143c6170e"
+    }
+   }
+  },
+  {
+   "inputs": {
+    "root_key": "ac7054a54407fc3fe7f34f82c91fbcd680b450e2082b60b0db8074d165419fbf",
+    "our_ratchet_private": "605d5accef76eca4bb34864a77337398e1cbc2da16c7e3d9fa057d0ffc847852",
+    "our_previous_sending_chain_index": 3,
+    "their_new_ratchet_public": "05510d7c30a516dd64ec6f94ed55447f1a58184bfef97560d6f64571c8b4ecb74c",
+    "our_new_ratchet_private": "78540e5a472c06940c6e637cab2f79c71d0a3f1732495ada4b0283aebfb58741"
+   },
+   "outputs": {
+    "dh_receive": "e6ff21f8ee263b51a6471dce0986d22d8830bb48236be99fe8bc01c4bb4b035c",
+    "root_key_after_receive_half": "515e803ee58ba6c880eb07136242a264e340ac036e49fc8697d6b96c4732943c",
+    "receiving_chain_key_0": "249fcd864e1ed8b0ff7a7d332a8ce60e3ace90dbc9918a0b0381ad1361458a54",
+    "dh_send": "d90caa82d27c7efdc765f5d8456d88a7566d966a8ea3ec23b841f45d21f40811",
+    "root_key_after": "e25de2485a4b7ce99af8681474bfb03ef6deaaa75b7b4cda1cda1ca2012b8c28",
+    "sending_chain_key_0": "115e943247f2456a56b67b50e8a64ea397ffdc3392d02673e7d305784206fec9",
+    "our_new_ratchet_public": "058aabc32020e19a3837a08cda4a4a99ed560ea732d6773d0da9d040af6d622342",
+    "previous_chain_length_after": 2,
+    "receiving_chain_state_after_first_message": {
+     "chain_index": 1,
+     "chain_key": "6369533871d72dfa95bc7f371b11cc61b9bd5e1f53b5126a0978ea5dfddb0ccc"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,14 @@
+# Test-only model. This file is never loaded by the default Compose command.
+services:
+  configure:
+    environment:
+      COMMA_OWNER_EMAIL: selfhost-owner@example.com
+      COMMA_LLM_API_KEY: local-dev-only
+      COMMA_LLM_BASE_URL: http://llm-mock:43123
+      COMMA_LLM_MODEL: gpt-local-dev
+      COMMA_LLM_PROTOCOL: chat_completions
+  llm-mock:
+    image: node:24-alpine
+    command: ["node", "/local-llm-mock.mjs"]
+    volumes:
+      - ./systems/scripts/local-llm-mock.mjs:/local-llm-mock.mjs:ro

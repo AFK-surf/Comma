@@ -1,0 +1,38 @@
+{
+  "section": "CRS-14",
+  "name": "opaque-user-id",
+  "description": "The SFU identifies participants by opaqueUserId = lowercase hex of SHA-256 over the member's encrypted service id (the 65-byte encrypted UUID as stored in group state). The encryption is computed by the oracle (deterministic for a given group master key); SHA-256 and hex encoding are applied to the oracle output outside the oracle, with a standard implementation.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "group_master_key": "2d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff06",
+        "aci_uuid": "00000000-0000-4000-8000-0000000000a1"
+      },
+      "outputs": {
+        "encrypted_member_id": "00782dd81a5dbd20976ad05cf07d01bb06e223577d9ecadfca1c5515736d46cd5928ffcbb25fd2f5c98705090ccdb33fffe0e74eafc36722f3b6c6bca9d04a3e26",
+        "opaque_user_id": "e08d7cdf26f2ddf2f805541f73fa75f6681d88dfd39c1b3caa2d79a1402fa494"
+      }
+    },
+    {
+      "inputs": {
+        "group_master_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "aci_uuid": "00000000-0000-4000-8000-000000000001"
+      },
+      "outputs": {
+        "encrypted_member_id": "00ec501fb6e5b2f859f1ee4579a4a1a74a8104c8cb63a3587256cdc6566c9bd650d21c47048b6a61beac73c3431863717b45e8c6acc7b202c2584d990329ff8b26",
+        "opaque_user_id": "16c7884c3ec99ec604901ba77daebca7f565bddf4f0c888aec028e440ccfcf6d"
+      }
+    },
+    {
+      "inputs": {
+        "group_master_key": "abababababababababababababababababababababababababababababababab",
+        "aci_uuid": "ffffffff-ffff-4fff-bfff-ffffffffffff"
+      },
+      "outputs": {
+        "encrypted_member_id": "00c8208db8b75de289177f10d9db3c769bc4a28b733700c4fbc0e34bc11bc6f875c63dbad396e2cefcf839d36e35cbc237650b2127c7e35c688cc47fad580e4a74",
+        "opaque_user_id": "24b70db8e04b870aaa61f0b612e6d143a6a4b36a869ed4f30aebbfb3a5fd7c04"
+      }
+    }
+  ]
+}

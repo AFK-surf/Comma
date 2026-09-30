@@ -1,0 +1,487 @@
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+
+\usepackage[a4paper,margin=2.35cm]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{xcolor}
+
+\definecolor{BridgeBlue}{HTML}{2563EB}
+\definecolor{BridgeGray}{HTML}{374151}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=BridgeBlue,
+  urlcolor=BridgeBlue,
+  pdftitle={Bridge For Teams 用户手册},
+  pdfauthor={AFK AI, Inc.}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Bridge For Teams 用户手册}
+\rhead{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\headheight}{14pt}
+
+\setlist[itemize]{leftmargin=2em}
+\setlist[enumerate]{leftmargin=2em}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+\sloppy
+
+\title{\Huge Bridge For Teams 用户手册}
+\author{AFK AI, Inc.}
+\date{2026 年 7 月 19 日}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\vfill
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+文档版本 & 1.5 \\
+适用产品 & Bridge For Teams Dashboard \\
+访问地址 & \url{https://teams.bridge.surf} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vfill
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{产品概览}
+
+Bridge For Teams 是面向团队的智能协作工作台。团队可以在同一个 Dashboard 中管理组织、Agent Swarm、成员、Agent、任务、集成、设备和网站。
+
+本手册面向普通成员、Agent Swarm 管理员和组织管理员，说明日常使用中会看到的页面与操作。不同角色可见的菜单和按钮可能不同；如果缺少某个入口，请先向组织 owner 或 admin 确认权限。
+
+\section{核心概念}
+
+\begin{longtable}{p{3.2cm}p{10.6cm}}
+\toprule
+概念 & 说明 \\
+\midrule
+组织 & 团队或公司的协作空间。成员、组织设置和 Agent Swarm 都归属于组织。 \\
+Agent Swarm & 围绕一个业务目标建立的工作空间，用来组织 Agent、任务、集成、设备和网站。 \\
+成员 & 被授权访问组织的用户。组织角色包括 owner、admin 和 member。 \\
+Agent & Agent Swarm 中负责接收请求或完成工作的智能助手。Router Agent 负责分配工作，Worker Agent 负责执行具体任务。 \\
+任务 & 团队交给 Agent 处理的工作。任务详情页保留后续消息和执行进展。 \\
+计划 & 按预定时间触发的工作，在 \textbf{Schedules} 中管理。 \\
+集成 & 把 Slack 或 Feishu 等消息入口连接到 Agent Swarm。 \\
+连接 & Agent Swarm 使用的第三方帐号授权，与消息集成分开管理。 \\
+Runner & 由组织管理、用于承载设备工作的机器。Runner 在 \textbf{Fin} 中添加和维护。 \\
+设备 & Agent 可使用的远程工作环境。创建设备前，需要组织中有可用 Runner。 \\
+网站 & Agent 发布并归属于当前 Agent Swarm 的网站。 \\
+\bottomrule
+\end{longtable}
+
+\section{登录、创建组织与退出}
+
+\subsection{登录 Dashboard}
+
+\begin{enumerate}
+  \item 打开 \url{https://teams.bridge.surf}。
+  \item 按登录页提示选择或填写组织。
+  \item 如果组织启用了单点登录，请在组织的登录服务中完成身份验证。
+  \item 验证成功后返回 Dashboard。
+\end{enumerate}
+
+如果页面提示组织不存在、登录方式未配置或帐号没有访问权，请联系组织 owner 或 admin 确认组织和成员设置。
+
+\subsection{使用邀请码创建组织}
+
+\begin{enumerate}
+  \item 在登录页选择 \textbf{Create organization with invite code}。
+  \item 填写 \textbf{Invite code}。
+  \item 填写 \textbf{Organization name} 和 \textbf{Organization slug}。
+  \item 填写创建者的 \textbf{Work email} 和 \textbf{Name}。
+  \item 点击 \textbf{Create organization}。
+\end{enumerate}
+
+创建者会成为新组织的 owner。邀请码只能使用一次；如果提交失败，请确认邀请码仍然有效，并检查邮箱、组织名称和 slug。
+
+\subsection{退出登录}
+
+打开左侧边栏底部的用户菜单，选择 \textbf{Sign out}。
+
+\section{Dashboard 导航}
+
+Dashboard 的左侧边栏按使用范围分组：
+
+\begin{itemize}
+  \item 顶部的组织切换器：切换当前组织，或选择 \textbf{View all organizations}。
+  \item \textbf{Personal}：\textbf{My Space} 是个人工作视图。
+  \item \textbf{Workspace}：包括 \textbf{Overview}、\textbf{Agent Swarms}、\textbf{Fin}，以及按角色显示的 \textbf{Operations}。
+  \item 当前 Agent Swarm：包括 \textbf{Tasks}、\textbf{Agents}、\textbf{Schedules}、\textbf{Devices} 和 \textbf{Websites}。
+  \item \textbf{Configure}：包括 \textbf{Plugins}、\textbf{Skills}、\textbf{Integrations} 和 \textbf{Connections}。
+  \item \textbf{Administration}：包括 \textbf{Members}、\textbf{Organization plugins} 和按角色显示的 \textbf{Settings}。
+\end{itemize}
+
+顶部面包屑显示当前位置。使用 \textbf{Search navigation} 或快捷键提示，可以快速查找页面。窄屏设备会把同一组导航放入抽屉菜单。
+
+\section{My Space 与组织概览}
+
+\subsection{My Space}
+
+\textbf{My Space} 汇总与当前用户相关的工作。日常处理个人任务时，可以先从这里查看需要继续关注的内容，再进入对应的 Agent Swarm 或任务详情。
+
+\subsection{Overview}
+
+\textbf{Overview} 展示当前组织的概况和可访问资源。若要切换到其他组织，使用左上角组织切换器；若要查看全部组织，选择 \textbf{View all organizations}。
+
+普通 member 只会看到已获授权的 Agent Swarm。owner 和 admin 可以查看组织范围的管理入口。
+
+\section{组织与成员管理}
+
+\subsection{查看和切换组织}
+
+\begin{enumerate}
+  \item 打开左上角组织切换器。
+  \item 直接选择另一个组织，或点击 \textbf{View all organizations}。
+  \item 在组织列表中选择要进入的组织。
+\end{enumerate}
+
+\subsection{角色说明}
+
+\begin{longtable}{p{3cm}p{10.8cm}}
+\toprule
+角色 & 典型权限 \\
+\midrule
+owner & 管理组织、成员、组织设置和所有 Agent Swarm。系统会保护组织的最后一个 owner。 \\
+admin & 管理大多数组织资源和 Agent Swarm，适合团队管理员。 \\
+member & 使用已获授权的 Agent Swarm 和任务，适合普通团队成员。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{添加成员}
+
+\begin{enumerate}
+  \item 在 \textbf{Administration} 中打开 \textbf{Members}。
+  \item 点击 \textbf{Invite member}。
+  \item 填写成员邮箱并选择角色。
+  \item 点击 \textbf{Add member}。
+\end{enumerate}
+
+添加后，请通知成员使用对应组织完成登录。owner 或 admin 也可以在成员列表中调整角色或移除成员。系统不允许降级或移除最后一个 owner。
+
+\section{组织设置}
+
+有权限的用户可以从 \textbf{Administration} 打开 \textbf{Settings}。设置页按标签分类。
+
+\subsection{General}
+
+\textbf{General} 用于维护组织名称和默认语言。修改后点击 \textbf{Save changes}。
+
+\subsection{Models}
+
+\textbf{Models} 用于限制组织可使用的模型，并设置默认模型。调整前应确认现有 Agent 是否依赖即将停用的选项。
+
+\subsection{Single sign-on}
+
+\textbf{Single sign-on} 用于配置组织登录方式。保存后，应使用测试帐号在新的浏览器会话中验证登录，再通知全体成员切换。
+
+\subsection{OAuth apps 与 Composio}
+
+\textbf{OAuth apps} 用于管理组织授权的应用，\textbf{Composio} 用于配置可供 \textbf{Connections} 使用的服务。敏感凭据保存后不会再次完整显示；需要更换时，请使用页面提供的更新或撤销操作。
+
+\subsection{Feishu apps}
+
+Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这样，同一份组织配置可以用于 Dashboard 登录或群机器人。
+
+\begin{enumerate}
+  \item 打开 \textbf{Settings} 的 \textbf{Feishu apps}。
+  \item 添加 Feishu app，并按页面提示填写显示名称、应用标识、应用密钥和机器人验证信息。
+  \item 根据用途选择 \textbf{Use for dashboard login (SSO)}、\textbf{Use for the group bot (IM)}，或同时选择两项。
+  \item 保存后，使用页面展示的地址和检查项完成 Feishu 管理后台配置。
+\end{enumerate}
+
+当前每个组织只能有一个启用群机器人用途的 Feishu app，并且该机器人同一时间只连接一个 Agent Swarm。变更连接前，请先确认现有群聊不会受影响。
+
+\section{Fin：管理 Runner}
+
+\textbf{Fin} 是组织的 Runner 管理入口。Runner 列表会显示状态、容量、主机信息、版本和最近在线时间。
+
+\subsection{添加 Runner}
+
+\begin{enumerate}
+  \item 在 \textbf{Workspace} 中打开 \textbf{Fin}。
+  \item 点击 \textbf{Add runner}。
+  \item 按页面提示填写名称，并生成一次性安装命令。
+  \item 复制命令，在目标 Mac 上执行。
+  \item 返回 \textbf{Fin}，等待新 Runner 显示为可用。
+\end{enumerate}
+
+安装命令只在生成时展示，并且会在短时间后失效。不要把命令转发给无关人员；若未及时使用，请重新生成。
+
+\subsection{维护 Runner}
+
+展开 Runner 可查看更详细的状态和容量。owner 或 admin 可以使用页面提供的 \textbf{Rotate access}、\textbf{Revoke} 和 \textbf{Remove} 等操作。普通 member 可以查看 Runner，但不能执行管理操作。
+
+设备创建页面若提示没有可用 Runner，请先点击 \textbf{Open Fin}，完成 Runner 添加或恢复后再重试。
+
+\section{Agent Swarm 管理}
+
+\subsection{查看和搜索 Agent Swarm}
+
+在 \textbf{Workspace} 中打开 \textbf{Agent Swarms}。列表只显示当前用户有权访问的项目，可使用搜索框按名称查找。
+
+\subsection{创建 Agent Swarm}
+
+\begin{enumerate}
+  \item 点击 \textbf{New Agent Swarm}。
+  \item 填写名称和 slug。
+  \item 点击 \textbf{Create Agent Swarm}。
+  \item 创建后进入该 Agent Swarm，继续添加 Agent、成员和集成。
+\end{enumerate}
+
+名称用于界面展示；slug 用于稳定链接，建议使用简短、清晰的英文小写名称。
+
+\subsection{访问权限}
+
+打开 Agent Swarm 的设置入口，再进入 \textbf{Access}。owner 或 admin 可以添加有权访问该 Agent Swarm 的组织成员，并按页面提供的角色分配权限。
+
+组织 owner 和 admin 通常具有组织范围的管理权；普通 member 需要明确加入后才能看到对应 Agent Swarm。
+
+\section{Agents}
+
+\subsection{创建 Agent}
+
+\begin{enumerate}
+  \item 进入 Agent Swarm，打开 \textbf{Agents}。
+  \item 点击 \textbf{New agent}。
+  \item 填写名称，并选择 \textbf{Agent type}。
+  \item 根据团队分工选择 Router Agent 或 Worker Agent，并完成页面要求的配置。
+  \item 点击 \textbf{Create agent}。
+\end{enumerate}
+
+\textbf{Internal} 类型由 Bridge For Teams 调度；\textbf{External Codex} 类型需要先连接可用设备。若设备尚未准备好，请先完成本手册的“设备”章节。
+
+\subsection{配置和归档 Agent}
+
+在 Agent 列表中选择 \textbf{Configure}，可以调整名称、模型、职责说明和其他可见设置。修改 Router Agent 前，应确认消息仍能分配到合适的 Worker Agent。
+
+不再使用的 Agent 可以选择 \textbf{Archive}。归档前先检查仍在进行的任务和消息集成，避免新的请求继续指向该 Agent。
+
+\section{Tasks 与 Schedules}
+
+\subsection{创建和跟进任务}
+
+\begin{enumerate}
+  \item 在 Agent Swarm 中打开 \textbf{Tasks}。
+  \item 点击 \textbf{New task}。
+  \item 填写目标和必要背景，选择页面提供的 Agent 或执行选项。
+  \item 提交后打开任务详情，查看进展。
+  \item 需要补充信息时，在任务详情中继续发送消息。
+\end{enumerate}
+
+任务描述应包含清晰目标、可验证结果和必要限制。不要在任务中粘贴不应共享的敏感凭据。
+
+\subsection{管理计划}
+
+\textbf{Schedules} 用于查看和管理定时工作。创建或修改计划时，确认时区、触发时间、目标 Agent 和任务内容。停用不再需要的计划，避免重复工作。
+
+\section{Integrations}
+
+\textbf{Integrations} 管理 Agent Swarm 的消息入口。目前页面支持 Slack 和 Feishu。只有授权用户可以新增、启用、停用或删除集成。
+
+\subsection{连接 Feishu}
+
+\begin{enumerate}
+  \item 请组织 owner 或 admin 先在 \textbf{Settings} 的 \textbf{Feishu apps} 中完成组织级配置，并启用 \textbf{Use for the group bot (IM)}。
+  \item 进入目标 Agent Swarm，打开 \textbf{Integrations}。
+  \item 选择 Feishu，选择组织已登记的 Feishu app，并填写 \textbf{Connect name}。
+  \item 按页面检查项，在 Feishu 管理后台完成权限、事件订阅和回调配置。
+  \item 返回 Dashboard，点击 \textbf{Run checks}。
+  \item 把机器人加入测试群并发送一条消息，确认任务或回复出现在预期的 Agent Swarm。
+\end{enumerate}
+
+如果页面提示没有可选的 Feishu app，请先返回组织设置完成登记。若 app 已连接其他 Agent Swarm，请确认影响后再调整。
+
+\subsection{连接 Slack}
+
+\begin{enumerate}
+  \item 进入 Agent Swarm 的 \textbf{Integrations}，选择 Slack。
+  \item 按侧边面板提供的 manifest 在 Slack 中创建应用。
+  \item 把页面要求的应用信息填回 Dashboard 并保存。
+  \item 点击 \textbf{Open install URL}，在 Slack 中完成安装和授权。
+  \item 把应用加入测试频道并发送消息，确认消息由预期 Agent Swarm 处理。
+\end{enumerate}
+
+应用权限或事件订阅发生变化后，请重新完成页面给出的检查。停用或删除集成前，先通知仍在使用对应群聊或频道的成员。
+
+\subsection{在 Feishu 群里使用 Google Calendar 与 Google Meet}
+
+这条能力使用 Agent Swarm 的 Google Calendar 连接和 Google Meet，不使用 Feishu 日历或飞书会议。创建日程与 Slack 使用相同方式：管理员只需先在 \textbf{Connections} 中完成 Google Calendar 授权，不需要先配置群通知。有且只有一个可用账号时，机器人直接使用该账号；有多个可用账号时，机器人会先询问使用哪一个。用户未指定日历时，Google Calendar 按该授权账号的默认日历规则处理。
+
+到点向群里发送会议链接是独立的可选配置。需要这项能力时，管理员再为当前 Feishu connect 设置明确的共享日历、目标群和 \textbf{notify} 模式，并通过 \textbf{Run checks} 核对状态。只有配置成功且会议位于被监控日历时，机器人才会在开始时间或其后的首个扫描周期向目标群发送包含会议标题、时间和 Google Meet 链接的顶层消息；实际延迟取决于管理员配置的扫描间隔和当时的任务积压，不承诺固定的 60 秒时限（服务重启只补发开始后 5 分钟内的会议）。未配置通知不会阻止创建日程。Feishu 首版不会因为日历事件而自动入会。
+
+\begin{enumerate}
+  \item 在群里真实提及机器人并说明会议时间、时区、主题和参会人，例如“明天上午 10 点安排项目会，邀请 @Alice”。
+  \item 如果参会人邮箱、时间或时区不明确，按机器人提示补充；机器人不会静默漏掉参会人。
+  \item 创建成功后，核对机器人回复的日历、准确时间、参会人和 Google Meet 链接。Google Calendar 是这场会议的唯一时间来源。只有明确需要额外提醒时，才为这场会议另建 Schedule。
+  \item 如果管理员配置了到点群通知，请在机器人发送的会议消息话题中真实提及机器人并说“入会”。未配置通知时，也可以在群里真实提及机器人并附上唯一的 Google Meet 链接。手工输入纯文本“@机器人名称”不算真实提及。
+  \item 机器人会把等待准入、入会成功、失败和离会状态发在同一话题。话题中必须只有一个明确的 \texttt{meet.google.com} 链接；机器人最多查看该已知话题最近 50 条消息，不会扫描整个群历史。
+  \item 散会后，在同一话题查看摘要、\texttt{transcript.txt} 和可用录音。每个文件独立发送，单个文件上限为 30 MB；文件缺失或超限不会阻止摘要发布，也不会重复已经成功发送的产物。
+\end{enumerate}
+
+普通定时提醒仍在 \textbf{Schedules} 中管理。Calendar 到点通知由管理员单独启用；没有明确需要时，不要再为同一会议配置一份重复提醒。
+
+\section{Connections}
+
+\textbf{Connections} 管理 Agent Swarm 可使用的第三方帐号授权。它与 Slack、Feishu 消息入口不同：集成负责接收消息，连接负责让 Agent 使用已授权服务。
+
+\begin{enumerate}
+  \item 在 Agent Swarm 中打开 \textbf{Connections}。
+  \item 选择要连接的服务。
+  \item 按页面提示完成授权。
+  \item 返回连接列表，确认状态可用。
+\end{enumerate}
+
+如果没有所需服务，请联系组织 owner 或 admin 检查 \textbf{Settings} 中的 \textbf{Composio} 配置。
+
+\section{Plugins 与 Skills}
+
+\textbf{Plugins} 用于为当前 Agent Swarm 启用已获准的插件；\textbf{Skills} 用于查看和配置 Agent 可使用的技能。
+
+\begin{itemize}
+  \item \textbf{Organization plugins}：组织范围的插件目录和可用性设置。
+  \item Agent Swarm 的 \textbf{Plugins}：为当前 Agent Swarm 选择和配置插件。
+  \item Agent Swarm 的 \textbf{Skills}：查看技能说明，并按页面支持的方式启用或配置。
+\end{itemize}
+
+启用前应确认插件或技能的用途和访问范围。停用前先检查依赖它的 Agent 和任务。
+
+\section{设备}
+
+设备为 \textbf{External Codex} Agent 提供可连接的远程工作环境。创建设备前，组织中必须有可用 Runner。
+
+\subsection{创建设备}
+
+\begin{enumerate}
+  \item 进入 Agent Swarm，打开 \textbf{Devices}。
+  \item 点击 \textbf{Add device}。
+  \item 填写 \textbf{Name} 和可选的 \textbf{Alias}。
+  \item 选择一个可用 \textbf{Runner}。
+  \item 点击 \textbf{Create on runner}。
+  \item 等待设备列表显示可用状态，再把它分配给 \textbf{External Codex} Agent。
+\end{enumerate}
+
+如果没有可选 Runner，点击 \textbf{Open Fin}。确认 Runner 在线且有足够容量后，返回设备页重试。
+
+\subsection{维护设备}
+
+设备不再使用时，可以按页面提供的操作断开或删除。执行前先检查仍在使用该设备的 Agent 和任务。设备状态异常时，先查看所选 Runner 是否可用，再尝试重新连接。
+
+\section{Websites}
+
+\textbf{Websites} 汇总当前 Agent Swarm 下已发布的网站。打开网站条目可以查看页面提供的访问和管理操作。
+
+如果列表为空，说明当前 Agent Swarm 还没有已发布网站，或当前用户没有相应访问权。
+
+\section{Operations}
+
+\textbf{Operations} 会根据角色显示，用于查看组织资源、集成和近期操作的健康状态。处理异常时先阅读页面提示并使用相应检查；需要修改组织级配置时，请由 owner 或 admin 操作。
+
+\section{常见问题}
+
+\subsection{登录后看不到组织}
+
+\begin{itemize}
+  \item 确认登录使用的邮箱与成员记录一致。
+  \item 确认选择了正确的组织。
+  \item 请 owner 或 admin 在 \textbf{Members} 中检查成员状态和角色。
+\end{itemize}
+
+\subsection{看不到 Agent Swarm 或管理按钮}
+
+\begin{itemize}
+  \item 普通 member 只能看到明确授权的 Agent Swarm。
+  \item 管理入口会按角色隐藏。
+  \item 请 owner 或 admin 检查成员角色和 Agent Swarm 的 \textbf{Access}。
+\end{itemize}
+
+\subsection{无法创建设备}
+
+\begin{itemize}
+  \item 打开 \textbf{Fin}，确认至少一个 Runner 可用。
+  \item 检查 Runner 是否仍有容量。
+  \item 回到 \textbf{Devices}，重新选择 Runner 后提交。
+\end{itemize}
+
+\subsection{Feishu 检查失败}
+
+\begin{itemize}
+  \item 确认组织级 Feishu app 已启用群机器人用途。
+  \item 确认当前 Agent Swarm 选择了正确的 app。
+  \item 对照页面检查项核对权限、事件订阅和回调地址。
+  \item 点击 \textbf{Run checks} 后，再在测试群发送消息。
+\end{itemize}
+
+如果创建 Google Calendar 日程失败，请先确认当前 Agent Swarm 已有 \textbf{ACTIVE} 的 Google Calendar 授权；存在多个授权账号时，需要明确选择一个。群通知检查未通过只表示“到点发群链接”尚未就绪，不会阻止创建日程。需要群通知时，请配置共享日历、目标群和 \textbf{notify} 模式；扫描器不会自动监控授权人的私人 \textbf{primary} 日历。会议消息未出现时，还要检查事件是否位于被监控日历、是否已取消或改期、是否包含 Google Meet 链接，以及服务重启后是否已经超过会议开始 5 分钟。
+
+如果“@机器人 入会”没有响应，请确认使用了 Feishu 的真实提及控件，并在机器人发送会议链接的原话题中回复。散会后只有摘要没有附件时，请检查文件是否超过 30 MB、是否被删除，或机器人是否缺少群文件权限。
+
+\subsection{Slack 没有收到回复}
+
+\begin{itemize}
+  \item 确认应用已完成安装，并已加入测试频道。
+  \item 核对页面要求的权限和事件订阅。
+  \item 确认集成处于启用状态，目标 Agent Swarm 中有可用 Agent。
+\end{itemize}
+
+\subsection{任务没有继续执行}
+
+\begin{itemize}
+  \item 打开任务详情，检查是否正在等待补充信息。
+  \item 确认分配的 Agent 没有被归档。
+  \item 若使用 \textbf{External Codex}，确认关联设备和 Runner 可用。
+\end{itemize}
+
+\section{安全建议}
+
+\begin{itemize}
+  \item 按最小权限原则分配 owner、admin 和 member 角色。
+  \item 定期检查成员、Agent Swarm 访问名单、集成和连接。
+  \item 敏感凭据只填写在 Dashboard 指定字段中，不要放入任务、群聊或截图。
+  \item Runner 的一次性安装命令只交给负责目标 Mac 的管理员。
+  \item 成员离职、设备退役或第三方帐号不再使用时，及时撤销相应访问。
+  \item 修改登录、模型或消息集成配置后，先用测试帐号和测试群验证。
+\end{itemize}
+
+\section{术语表}
+
+\begin{longtable}{p{3.8cm}p{10cm}}
+\toprule
+术语 & 含义 \\
+\midrule
+Dashboard & Bridge For Teams 的网页管理界面。 \\
+Organization slug & 组织在链接和登录流程中使用的短标识。 \\
+Agent Swarm & 组织 Agent、任务、集成、设备和网站的工作空间。 \\
+Router Agent & 接收入口请求并分配工作的 Agent。 \\
+Worker Agent & 完成具体任务的 Agent。 \\
+Runner & 在 \textbf{Fin} 中管理、用于承载设备工作的机器。 \\
+Device & Agent 可使用的远程工作环境。 \\
+Integration & Slack 或 Feishu 等消息入口。 \\
+Connection & Agent Swarm 使用的第三方帐号授权。 \\
+SSO & Single Sign-On，单点登录。 \\
+\bottomrule
+\end{longtable}
+
+\section{获取帮助}
+
+联系管理员前，请记录问题发生的时间、所在组织、Agent Swarm、页面名称、可见提示和已经尝试的操作。不要在工单、聊天或截图中附带敏感凭据。
+
+\vfill
+\begin{center}
+\textcolor{BridgeGray}{Bridge For Teams 用户手册 · AFK AI, Inc.}
+\end{center}
+
+\end{document}

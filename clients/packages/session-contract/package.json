@@ -1,0 +1,24 @@
+{
+  "name": "@comma/session-contract",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./schema": "./generated/session-lifecycle.schema.json"
+  },
+  "scripts": {
+    "generate:schema": "node --experimental-strip-types ./scripts/generate-schema.mjs",
+    "generate:schema:check": "node --experimental-strip-types ./scripts/generate-schema.mjs --check"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.4",
+    "typescript": "^6.0.3"
+  }
+}

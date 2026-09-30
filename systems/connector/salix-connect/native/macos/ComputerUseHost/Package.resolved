@@ -1,0 +1,14 @@
+{
+  "originHash" : "52ea6aa33e343ccda394e3d1c83da1b9b9ebafeaf83582b08b1047bfdfd63c83",
+  "pins" : [
+    {
+      "identity" : "permissionflow",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/EYHN/PermissionFlow.git",
+      "state" : {
+        "revision" : "9b02967a8b47133204c2456c56a1bfb393d4bd95"
+      }
+    }
+  ],
+  "version" : 3
+}

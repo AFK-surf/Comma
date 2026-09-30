@@ -1,0 +1,62 @@
+{
+ "section": "CRS-03",
+ "name": "ec-key-pair",
+ "description": "X25519 key pair: a 32-byte private key input is clamped (RFC 7748) and serialized as 32 bytes; the public key is serialized as 0x05 followed by the 32-byte u-coordinate. Computed by the oracle.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "private_key_input": "603c2e023cbd7de392a0abc1d56b527ced2a1c0f405081e0f27bce2dbb24a76a"
+   },
+   "outputs": {
+    "private_key_serialized": "603c2e023cbd7de392a0abc1d56b527ced2a1c0f405081e0f27bce2dbb24a76a",
+    "public_key_serialized": "05e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658"
+   }
+  },
+  {
+   "inputs": {
+    "private_key_input": "34020e382d53885f8acf7114a2699a5d72033d4f746f2086ab7a1824a9282e04"
+   },
+   "outputs": {
+    "private_key_serialized": "30020e382d53885f8acf7114a2699a5d72033d4f746f2086ab7a1824a9282e44",
+    "public_key_serialized": "0590544a7669bff9f8e65de6535fb31a5f28832a84ad93ba0524973b5dd76fe953"
+   }
+  },
+  {
+   "inputs": {
+    "private_key_input": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+   },
+   "outputs": {
+    "private_key_serialized": "f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    "public_key_serialized": "05847c0d2c375234f365e660955187a3735a0f7613d1609d3a6a4d8c53aeaa5a22"
+   }
+  },
+  {
+   "inputs": {
+    "private_key_input": "0000000000000000000000000000000000000000000000000000000000000000"
+   },
+   "outputs": {
+    "private_key_serialized": "0000000000000000000000000000000000000000000000000000000000000040",
+    "public_key_serialized": "052fe57da347cd62431528daac5fbb290730fff684afc4cfc2ed90995f58cb3b74"
+   }
+  },
+  {
+   "inputs": {
+    "private_key_input": "0100000000000000000000000000000000000000000000000000000000000000"
+   },
+   "outputs": {
+    "private_key_serialized": "0000000000000000000000000000000000000000000000000000000000000040",
+    "public_key_serialized": "052fe57da347cd62431528daac5fbb290730fff684afc4cfc2ed90995f58cb3b74"
+   }
+  },
+  {
+   "inputs": {
+    "private_key_input": "2ea5eae5a1d7a8d204ecb45bce6ebbb2f5e8325f1339c464dc2c0a709e86fe56"
+   },
+   "outputs": {
+    "private_key_serialized": "28a5eae5a1d7a8d204ecb45bce6ebbb2f5e8325f1339c464dc2c0a709e86fe56",
+    "public_key_serialized": "05974aa7f5a369c6d2217eeaf67f9993921322eb28dc1102f365b42958bcccbf0d"
+   }
+  }
+ ]
+}

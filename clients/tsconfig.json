@@ -1,0 +1,76 @@
+{
+  "compilerOptions": {
+    "paths": {
+      "@comma/app": ["./packages/app/src/index.tsx"],
+      "@comma/app/auth": ["./packages/app/src/auth/index.ts"],
+      "@comma/chat-contract": ["./packages/chat-contract/src/index.ts"],
+      "@comma/config": ["./packages/config/src/index.ts"],
+      "@comma/i18n": ["./packages/i18n/src/index.ts"],
+      "@comma/i18n/react": ["./packages/i18n/src/react.tsx"],
+      "@comma/layout-inspector": ["./packages/layout-inspector/src/index.ts"],
+      "@comma/native-bridge": ["./packages/native-bridge/src/index.ts"],
+      "@comma/native-bridge/web": ["./packages/native-bridge/src/web.ts"],
+      "@comma/product-inbox-runtime": ["./packages/product-inbox-runtime/src/index.ts"],
+      "@comma/product-inbox-runtime/contracts": [
+        "./packages/product-inbox-runtime/src/contracts.ts"
+      ],
+      "@comma/session-contract": ["./packages/session-contract/src/index.ts"],
+      "@comma/test-utils/*": ["./packages/test-utils/src/*"],
+      "@comma/ui": ["./packages/ui/src/index.ts"],
+      "@comma/session-history-runtime": [
+        "./packages/session-history-runtime/src/index.ts"
+      ],
+      "@comma/session-history-runtime/records": [
+        "./packages/session-history-runtime/src/records.ts"
+      ]
+    }
+  },
+  "include": [],
+  "references": [
+    {
+      "path": "./apps/admin"
+    },
+    {
+      "path": "./apps/electron"
+    },
+    {
+      "path": "./apps/web"
+    },
+    {
+      "path": "./packages/app"
+    },
+    {
+      "path": "./packages/chat-contract"
+    },
+    {
+      "path": "./packages/config"
+    },
+    {
+      "path": "./packages/i18n"
+    },
+    {
+      "path": "./packages/layout-inspector"
+    },
+    {
+      "path": "./packages/native-bridge"
+    },
+    {
+      "path": "./packages/product-inbox-runtime"
+    },
+    {
+      "path": "./packages/session-contract"
+    },
+    {
+      "path": "./packages/test-utils"
+    },
+    {
+      "path": "./packages/ui"
+    },
+    {
+      "path": "./tsconfig.test.json"
+    },
+    {
+      "path": "./packages/session-history-runtime"
+    }
+  ]
+}

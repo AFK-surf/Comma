@@ -1,0 +1,709 @@
+/*
+ * Runtime Workbench — dev-only compact inspector shell.
+ * Visual target: a light inspector with dark evidence wells.
+ * All structural classes are scoped under .comma-runtime-workbench so this dev-only
+ * route stylesheet never leaks generic class names into product UI.
+ */
+
+.comma-runtime-workbench {
+  --ink: #161c26;
+  --muted: #586071;
+  --line: #d3d8df;
+  --line2: #e4e7eb;
+  --accent: #2c6cf0;
+  --pass: #137333;
+  --pass-bg: #e4f2e8;
+  --partial: #8a5a00;
+  --partial-bg: #fbf1dd;
+  --fail: #c5221f;
+  --fail-bg: #fbe6e6;
+  --planned: #7b8494;
+  --planned-bg: #eceef1;
+  --dk: #171b26;
+  --dk-ink: #d6def0;
+  --dk-mut: #8a93a6;
+  --key: #7aa2f7;
+  --str: #9ece6a;
+  --num: #e0af68;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  background: #fbfcfd;
+  color: var(--ink);
+  font:
+    0.75rem/1.45 -apple-system,
+    BlinkMacSystemFont,
+    "PingFang SC",
+    "Segoe UI",
+    Inter,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.comma-runtime-workbench h1,
+.comma-runtime-workbench h2,
+.comma-runtime-workbench p {
+  margin: 0;
+}
+
+/* title strip */
+.comma-runtime-workbench__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f4f5f7;
+  border-bottom: 1px solid var(--line);
+}
+
+.comma-runtime-workbench__title h1 {
+  font-size: 0.78125rem;
+  font-weight: 600;
+}
+
+.comma-runtime-workbench__title .sub {
+  color: var(--muted);
+  font-size: 0.6875rem;
+}
+
+.comma-runtime-workbench__title .dev {
+  margin-left: auto;
+  font: 700 0.59375rem var(--mono);
+  color: var(--partial);
+  background: var(--partial-bg);
+  border: 1px solid #ecdcae;
+  padding: 1px 6px;
+}
+
+/* runtime status bar */
+.comma-runtime-workbench__rbar {
+  display: flex;
+  flex-wrap: wrap;
+  background: #fbfcfd;
+  border-bottom: 1px solid var(--line);
+}
+
+.comma-runtime-workbench .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-right: 1px solid var(--line2);
+  padding: 4px 10px;
+  font-size: 0.65625rem;
+}
+
+.comma-runtime-workbench .chip .k {
+  color: var(--muted);
+}
+
+.comma-runtime-workbench .chip .v {
+  font-family: var(--mono);
+  font-size: 0.65625rem;
+}
+
+.comma-runtime-workbench .chip.ok {
+  background: var(--pass-bg);
+}
+
+.comma-runtime-workbench .chip.ok .v {
+  color: var(--pass);
+}
+
+.comma-runtime-workbench .sdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--planned);
+}
+
+.comma-runtime-workbench .sdot.g {
+  background: var(--pass);
+}
+
+/* functional tabs */
+.comma-runtime-workbench__tabs {
+  display: flex;
+  background: #eceef1;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.comma-runtime-workbench__tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 0.71875rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.comma-runtime-workbench__tabs button[aria-selected="true"] {
+  background: #fff;
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+/* status palette — the 4-tone vocabulary defined ONCE, driven by data-tone.
+   Every workbench dot/badge/tag reads --tone/--tone-bg/--tone-line from here. */
+.comma-runtime-workbench [data-tone="pass"] {
+  --tone: var(--pass);
+  --tone-bg: var(--pass-bg);
+  --tone-line: #bcdcc6;
+}
+
+.comma-runtime-workbench [data-tone="partial"] {
+  --tone: var(--partial);
+  --tone-bg: var(--partial-bg);
+  --tone-line: #ecdcae;
+}
+
+.comma-runtime-workbench [data-tone="fail"] {
+  --tone: var(--fail);
+  --tone-bg: var(--fail-bg);
+  --tone-line: #e6bcbc;
+}
+
+.comma-runtime-workbench [data-tone="planned"] {
+  --tone: var(--planned);
+  --tone-bg: var(--planned-bg);
+  --tone-line: var(--line);
+}
+
+.comma-runtime-workbench .wb-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone, var(--planned));
+}
+
+.comma-runtime-workbench .wb-badge {
+  font: 700 0.59375rem var(--mono);
+  padding: 2px 7px;
+  white-space: nowrap;
+  border: 1px solid var(--tone-line, var(--line));
+  color: var(--tone, var(--muted));
+  background: var(--tone-bg, var(--planned-bg));
+}
+
+.comma-runtime-workbench .wb-tag {
+  font: 0.5625rem var(--mono);
+  padding: 0 5px;
+  border: 1px solid var(--tone-line, var(--line));
+  color: var(--tone, var(--muted));
+  background: var(--tone-bg, transparent);
+}
+
+.comma-runtime-workbench__tabs .st {
+  font: 700 0.53125rem var(--mono);
+  color: var(--muted);
+}
+
+/* acceptance strip */
+.comma-runtime-workbench__accept {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: #fbfcfd;
+  border-bottom: 1px solid var(--line);
+}
+
+.comma-runtime-workbench__accept .proves-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.comma-runtime-workbench__accept .prove {
+  color: var(--muted);
+  font-size: 0.6875rem;
+  flex: 1;
+  min-width: 0;
+}
+
+/* body: control | observation */
+.comma-runtime-workbench__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+}
+
+.comma-runtime-workbench__body--side-chat {
+  display: block;
+}
+
+.comma-side-chat-backdrop {
+  height: 100%;
+}
+
+.comma-side-chat-backdrop__content {
+  display: grid;
+  gap: 16px;
+  max-width: 640px;
+  padding: 20px;
+}
+
+.comma-side-chat-backdrop__content h2 {
+  margin-bottom: 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.comma-side-chat-backdrop__content p,
+.comma-side-chat-backdrop__unavailable {
+  color: var(--muted);
+}
+
+.comma-side-chat-backdrop__unavailable {
+  padding: 20px;
+}
+
+.comma-side-chat-backdrop__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.comma-side-chat-backdrop__actions button {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.comma-side-chat-backdrop__actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.comma-side-chat-backdrop__actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.comma-side-chat-backdrop__actions button:active:not(:disabled) {
+  background: var(--line2);
+}
+
+.comma-side-chat-backdrop__actions output {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.comma-side-chat-backdrop__content [role="alert"] {
+  color: var(--fail);
+}
+
+.comma-workbench-pane.comma-side-chat-backdrop__pane {
+  --tp-container-unit-size: 32px;
+  --tp-base-font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-runtime-workbench__control {
+  min-width: 0;
+  overflow: auto;
+  padding: 10px 11px;
+  border-right: 1px solid var(--line);
+}
+
+/* surface summary */
+.comma-runtime-workbench__surfaces {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin-bottom: 10px;
+}
+
+.comma-runtime-workbench__surfaces dl {
+  border: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 8px;
+  padding: 7px 8px;
+  font-size: 0.65625rem;
+}
+
+.comma-runtime-workbench__surfaces dt {
+  color: var(--muted);
+}
+
+.comma-runtime-workbench__surfaces dd {
+  font-family: var(--mono);
+}
+
+/* observed flows — 重点观察的流程 */
+.comma-runtime-workbench__flows {
+  margin-bottom: 12px;
+}
+
+.comma-runtime-workbench .flow-card {
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+.comma-runtime-workbench .flow-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  background: #f4f6f8;
+  border-bottom: 1px solid var(--line2);
+}
+
+.comma-runtime-workbench .flow-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.comma-runtime-workbench .flow-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comma-runtime-workbench .flow-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line2);
+  font-size: 0.65625rem;
+}
+
+.comma-runtime-workbench .flow-step:last-child {
+  border-bottom: 0;
+}
+
+.comma-runtime-workbench .flow-hop {
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.comma-runtime-workbench .flow-arrow {
+  color: var(--muted);
+  margin: 0 3px;
+}
+
+.comma-runtime-workbench .flow-step-label {
+  font-family: var(--mono);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.comma-runtime-workbench .flow-observes {
+  flex-basis: 100%;
+  padding-left: 16px;
+  color: var(--muted);
+}
+
+.comma-runtime-workbench .flow-trace {
+  padding: 4px 8px;
+  border-top: 1px solid var(--line2);
+  color: var(--muted);
+  font-size: 0.59375rem;
+}
+
+/* dev token row */
+.comma-runtime-workbench__token-row {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.comma-runtime-workbench__token-row label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.65625rem;
+  color: var(--muted);
+}
+
+.comma-runtime-workbench__token-row input {
+  border: 1px solid var(--line);
+  padding: 3px 6px;
+  font: 0.6875rem var(--mono);
+  width: 220px;
+}
+
+.comma-runtime-workbench__token-row button {
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 4px 9px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Tweakpane-backed control pane — Comma compact LIGHT theme */
+.comma-workbench-pane {
+  --tp-base-background-color: #f6f7f8;
+  --tp-base-border-radius: 0px;
+  --tp-blade-border-radius: 0px;
+  --tp-container-background-color: rgba(15, 23, 42, 0.06);
+  --tp-container-foreground-color: #111827;
+  --tp-label-foreground-color: rgba(17, 24, 39, 0.72);
+  --tp-input-background-color: #ffffff;
+  --tp-input-foreground-color: #111827;
+  --tp-button-background-color: #e5e7eb;
+  --tp-button-foreground-color: #111827;
+  --tp-container-unit-size: 18px;
+
+  border: 1px solid var(--line);
+}
+
+.comma-runtime-workbench .note {
+  font-size: 0.65625rem;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+.comma-runtime-workbench .note code {
+  font: 0.625rem var(--mono);
+  color: var(--planned);
+}
+
+/* observation column */
+.comma-runtime-workbench__obs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #fbfcfd;
+  overflow: auto;
+  padding: 10px 11px;
+}
+
+.comma-runtime-workbench__olabel {
+  font-size: 0.59375rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 6px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.comma-runtime-workbench__olabel .code {
+  font: 0.59375rem var(--mono);
+  color: var(--planned);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* communication matrix */
+.comma-runtime-workbench table.mx {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.65625rem;
+  margin-bottom: 10px;
+}
+
+.comma-runtime-workbench table.mx th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--line);
+  background: #f4f6f8;
+}
+
+.comma-runtime-workbench table.mx td {
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--line2);
+  font-family: var(--mono);
+  font-size: 0.65625rem;
+  white-space: nowrap;
+}
+
+.comma-runtime-workbench .mst {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.comma-runtime-workbench .mst .dt {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--planned);
+}
+
+.comma-runtime-workbench .dt.c {
+  background: var(--pass);
+}
+
+.comma-runtime-workbench .dt.p {
+  background: var(--planned);
+}
+
+/* evidence sub-tabs + dark wells */
+.comma-runtime-workbench__ev-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+.comma-runtime-workbench__ev-tabs button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: 600 0.6875rem inherit;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+
+.comma-runtime-workbench__ev-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.comma-runtime-workbench__ev-tabs .n {
+  color: var(--muted);
+  font: 0.5625rem var(--mono);
+}
+
+.comma-runtime-workbench .well {
+  background: var(--dk);
+  padding: 8px 10px;
+  font: 0.6875rem/1.5 var(--mono);
+  color: var(--dk-ink);
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+.comma-runtime-workbench .well .whead {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--dk-mut);
+  margin-bottom: 4px;
+}
+
+.comma-runtime-workbench .well .whead .lbl {
+  color: var(--dk-ink);
+  font-weight: 600;
+}
+
+.comma-runtime-workbench .well .whead .ok {
+  color: var(--str);
+}
+
+.comma-runtime-workbench .well .whead .err {
+  color: #f7768e;
+}
+
+.comma-runtime-workbench .well .whead .chan {
+  color: var(--key);
+}
+
+/* structured object inspector */
+.comma-runtime-workbench .jroot {
+  font: 0.6875rem/1.55 var(--mono);
+}
+
+.comma-runtime-workbench .jtree {
+  display: block;
+}
+
+.comma-runtime-workbench .jtree > summary {
+  cursor: pointer;
+  color: var(--dk-mut);
+  list-style: none;
+}
+
+.comma-runtime-workbench .jtree > summary::-webkit-details-marker {
+  display: none;
+}
+
+.comma-runtime-workbench .jtree > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 11px;
+  color: var(--dk-mut);
+}
+
+.comma-runtime-workbench .jtree[open] > summary::before {
+  content: "▾";
+}
+
+.comma-runtime-workbench .jbody {
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid rgba(214, 222, 240, 0.12);
+}
+
+.comma-runtime-workbench .jrow {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.comma-runtime-workbench .jk {
+  color: var(--key);
+}
+
+.comma-runtime-workbench .js {
+  color: var(--str);
+}
+
+.comma-runtime-workbench .jb {
+  color: var(--num);
+}
+
+.comma-runtime-workbench .jn {
+  color: #c586c0;
+}
+
+.comma-runtime-workbench .jm,
+.comma-runtime-workbench .jsep {
+  color: var(--dk-mut);
+}
+
+.comma-runtime-workbench .ev-empty {
+  color: var(--muted);
+  font-size: 0.65625rem;
+  padding: 8px 0;
+}
+
+/* footer */
+.comma-runtime-workbench__foot {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 5px 10px;
+  border-top: 1px solid var(--line);
+  background: #f4f5f7;
+  color: var(--muted);
+  font-size: 0.65625rem;
+}
+
+.comma-runtime-workbench__foot code {
+  font: 0.625rem var(--mono);
+}

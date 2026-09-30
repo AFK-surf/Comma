@@ -1,0 +1,31 @@
+{
+  "name": "@comma/admin",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "COMMA_BUILD_FLAVOR=dev vite --host 127.0.0.1 --port 4175 --strictPort",
+    "build": "COMMA_BUILD_FLAVOR=dev vite build --configLoader runner",
+    "build:prod": "COMMA_BUILD_FLAVOR=prod vite build --configLoader runner",
+    "build:staging": "COMMA_BUILD_FLAVOR=staging vite build --configLoader runner",
+    "deploy": "pnpm run build:prod && wrangler deploy --config wrangler.jsonc --env \"\" --name \"$CLOUDFLARE_WORKER_NAME\"",
+    "deploy:staging": "pnpm run build:staging && wrangler deploy --config wrangler.jsonc --env staging --name \"$CLOUDFLARE_WORKER_NAME_STAGING\"",
+    "preview": "COMMA_BUILD_FLAVOR=dev vite preview --configLoader runner --host 127.0.0.1 --port 4175 --strictPort"
+  },
+  "dependencies": {
+    "@comma/app": "workspace:*",
+    "@comma/config": "workspace:*",
+    "@comma/ui": "workspace:*",
+    "@vitejs/plugin-react": "^6.0.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^8.0.16",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.77.0"
+  }
+}

@@ -1,0 +1,480 @@
+{
+  "staging_sql_variants": [
+    {
+      "name": "baseline",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "474675423",
+        "memory_usage": "63250112",
+        "read_bytes": "180503807",
+        "read_rows": "83575",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "83575",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 515,
+      "hits": 20,
+      "same_results": true,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000
+    },
+    {
+      "name": "materialize_source",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "444625528",
+        "memory_usage": "62923904",
+        "read_bytes": "180504994",
+        "read_rows": "83576",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "83576",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 486,
+      "hits": 20,
+      "same_results": true,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000
+    },
+    {
+      "name": "materialize_content",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "461906559",
+        "memory_usage": "62837144",
+        "read_bytes": "180504994",
+        "read_rows": "83576",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "83576",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 503,
+      "hits": 20,
+      "same_results": true,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000
+    },
+    {
+      "name": "materialize_both",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "402787037",
+        "memory_usage": "66296906",
+        "read_bytes": "180504994",
+        "read_rows": "83576",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "83576",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 443,
+      "hits": 20,
+      "same_results": true,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000
+    },
+    {
+      "name": "indexed_keys",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "348116622",
+        "memory_usage": "59447957",
+        "read_bytes": "203017520",
+        "read_rows": "108164",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "83576",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 389,
+      "hits": 20,
+      "same_results": true,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000
+    }
+  ],
+  "staging_read_decomposition": [
+    {
+      "name": "canonical_sweep",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "348997514",
+        "memory_usage": "72868158",
+        "read_bytes": "112228164",
+        "read_rows": "57545",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "57545",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 391,
+      "hits": 1,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000,
+      "aggregate_rows": [
+        {
+          "messages": 12906,
+          "text_bytes": 7472234
+        }
+      ]
+    },
+    {
+      "name": "index_sweep",
+      "ok": true,
+      "summary": {
+        "elapsed_ns": "279235659",
+        "memory_usage": "48929175",
+        "read_bytes": "67130890",
+        "read_rows": "26218",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "26218",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "elapsed_ms": 321,
+      "hits": 1,
+      "window_end_us": 1788678253367825,
+      "diagnostic_max_rows": 200000,
+      "aggregate_rows": [
+        {
+          "chunk_bytes": 4116738,
+          "distance_sum": 12137.138182520866,
+          "indexed_records": 8305,
+          "source_bytes": 3548504
+        }
+      ]
+    }
+  ],
+  "local_auto_layout": [
+    {
+      "granularity": 8192,
+      "latency_ms": 41.98279231786728,
+      "hits": 20,
+      "same_results": true,
+      "summary": {
+        "read_rows": "69308",
+        "read_bytes": "42245692",
+        "written_rows": "0",
+        "written_bytes": "0",
+        "total_rows_to_read": "69308",
+        "result_rows": "20",
+        "result_bytes": "4402",
+        "elapsed_ns": "34083250",
+        "memory_usage": "35822452",
+        "query_id": "1079bd76-a1c9-4081-a2f2-cd5c6772116e"
+      },
+      "application_budget_passed": false,
+      "budget_error": "Received ClickHouse exception, code: 158, server response: Code: 158. DB::Exception: Limit for rows or bytes to read exceeded, max rows: 65.54 thousand, current rows: 69.31 thousand: While executing MergeTreeSelect(pool: ReadPoolInOrder, algorithm: InOrder). (TOO_MANY_ROWS) (version 26.4.5.143 (official build)) (for url http://127.0.0.1:32773)",
+      "parts": [
+        [
+          "slack_message_payloads",
+          120000,
+          25,
+          6245409,
+          [
+            "Wide"
+          ]
+        ],
+        [
+          "slack_messages",
+          120000,
+          25,
+          6245409,
+          [
+            "Wide"
+          ]
+        ],
+        [
+          "slack_semantic_documents",
+          66047,
+          14,
+          1302692,
+          [
+            "Wide",
+            "Compact"
+          ]
+        ]
+      ]
+    },
+    {
+      "granularity": 2048,
+      "latency_ms": 29.80037499219179,
+      "hits": 20,
+      "same_results": true,
+      "summary": {
+        "read_rows": "24576",
+        "read_bytes": "31347232",
+        "written_rows": "0",
+        "written_bytes": "0",
+        "total_rows_to_read": "24576",
+        "result_rows": "20",
+        "result_bytes": "4402",
+        "elapsed_ns": "25020042",
+        "memory_usage": "22616788",
+        "query_id": "eb9b151d-cb54-4e65-8020-b12b0d836cce"
+      },
+      "application_budget_passed": true,
+      "parts": [
+        [
+          "slack_message_payloads",
+          120000,
+          64,
+          6269388,
+          [
+            "Wide"
+          ]
+        ],
+        [
+          "slack_messages",
+          120000,
+          64,
+          6269388,
+          [
+            "Wide"
+          ]
+        ],
+        [
+          "slack_semantic_documents",
+          66047,
+          38,
+          1304919,
+          [
+            "Wide",
+            "Compact"
+          ]
+        ]
+      ]
+    },
+    {
+      "granularity": 1024,
+      "latency_ms": 28.68150034919381,
+      "hits": 20,
+      "same_results": true,
+      "summary": {
+        "read_rows": "15360",
+        "read_bytes": "21582752",
+        "written_rows": "0",
+        "written_bytes": "0",
+        "total_rows_to_read": "15360",
+        "result_rows": "20",
+        "result_bytes": "4402",
+        "elapsed_ns": "24264209",
+        "memory_usage": "22699778",
+        "query_id": "9372dfb3-4c81-41ce-ab24-e55171ba2a62"
+      },
+      "application_budget_passed": true,
+      "parts": [
+        [
+          "slack_message_payloads",
+          120000,
+          123,
+          6270459,
+          [
+            "Wide"
+          ]
+        ],
+        [
+          "slack_messages",
+          120000,
+          123,
+          6270459,
+          [
+            "Wide"
+          ]
+        ],
+        [
+          "slack_semantic_documents",
+          66047,
+          70,
+          1309067,
+          [
+            "Wide",
+            "Compact"
+          ]
+        ]
+      ]
+    }
+  ],
+  "local_compact_layout": [
+    {
+      "granularity": 8192,
+      "requested_layout": "Compact",
+      "latency_ms": 49.32399978861213,
+      "hits": 20,
+      "same_results": true,
+      "summary": {
+        "read_rows": "69308",
+        "read_bytes": "122902306",
+        "written_rows": "0",
+        "written_bytes": "0",
+        "total_rows_to_read": "69308",
+        "result_rows": "20",
+        "result_bytes": "4402",
+        "elapsed_ns": "39838208",
+        "memory_usage": "68473550",
+        "query_id": "7a822f12-6826-4039-8448-90269d805a89"
+      },
+      "application_budget_passed": false,
+      "budget_error": "Received ClickHouse exception, code: 158, server response: Code: 158. DB::Exception: Limit for rows or bytes to read exceeded, max rows: 65.54 thousand, current rows: 69.31 thousand: While executing MergeTreeSelect(pool: ReadPoolInOrder, algorithm: InOrder). (TOO_MANY_ROWS) (version 26.4.5.143 (official build)) (for url http://127.0.0.1:32773)",
+      "parts": [
+        [
+          "slack_message_payloads",
+          120000,
+          25,
+          6250585,
+          [
+            "Compact"
+          ]
+        ],
+        [
+          "slack_messages",
+          120000,
+          25,
+          6250585,
+          [
+            "Compact"
+          ]
+        ],
+        [
+          "slack_semantic_documents",
+          66047,
+          13,
+          1297243,
+          [
+            "Compact"
+          ]
+        ]
+      ]
+    },
+    {
+      "granularity": 2048,
+      "requested_layout": "Compact",
+      "latency_ms": 27.523125056177378,
+      "hits": 20,
+      "same_results": true,
+      "summary": {
+        "read_rows": "26624",
+        "read_bytes": "45092422",
+        "written_rows": "0",
+        "written_bytes": "0",
+        "total_rows_to_read": "26624",
+        "result_rows": "20",
+        "result_bytes": "4402",
+        "elapsed_ns": "24215834",
+        "memory_usage": "29719068",
+        "query_id": "54714d64-712b-4680-a764-4fa76c88a885"
+      },
+      "application_budget_passed": true,
+      "parts": [
+        [
+          "slack_message_payloads",
+          120000,
+          63,
+          6301014,
+          [
+            "Compact"
+          ]
+        ],
+        [
+          "slack_messages",
+          120000,
+          63,
+          6301014,
+          [
+            "Compact"
+          ]
+        ],
+        [
+          "slack_semantic_documents",
+          66047,
+          36,
+          1319784,
+          [
+            "Compact"
+          ]
+        ]
+      ]
+    },
+    {
+      "granularity": 1024,
+      "requested_layout": "Compact",
+      "latency_ms": 25.4465420730412,
+      "hits": 20,
+      "same_results": true,
+      "summary": {
+        "read_rows": "15360",
+        "read_bytes": "26699204",
+        "written_rows": "0",
+        "written_bytes": "0",
+        "total_rows_to_read": "15360",
+        "result_rows": "20",
+        "result_bytes": "4402",
+        "elapsed_ns": "22355458",
+        "memory_usage": "22707122",
+        "query_id": "90ff02c4-61f1-4a7b-8622-8703e972eb8b"
+      },
+      "application_budget_passed": true,
+      "parts": [
+        [
+          "slack_message_payloads",
+          120000,
+          122,
+          6351201,
+          [
+            "Compact"
+          ]
+        ],
+        [
+          "slack_messages",
+          120000,
+          122,
+          6351201,
+          [
+            "Compact"
+          ]
+        ],
+        [
+          "slack_semantic_documents",
+          66047,
+          68,
+          1345058,
+          [
+            "Compact"
+          ]
+        ]
+      ]
+    }
+  ],
+  "local_environment": {
+    "server": "26.4.5.143",
+    "cpu_limit": 2,
+    "memory_gib": 4,
+    "rows": 120000,
+    "channels": 40,
+    "indexed_records": 66047,
+    "corpus": "synthetic text only; about 55% text index coverage; empty file index",
+    "window_days": 60,
+    "query_count": 1,
+    "candidate_limit": 20,
+    "source_tables": "message and payload tables with identical synthetic content",
+    "canonical_or_query_api_changed": false
+  },
+  "ddl_restriction": "On ClickHouse 26.4.5.143, ALTER TABLE MODIFY SETTING index_granularity and index_granularity_bytes returned Code 472 READONLY_SETTING."
+}

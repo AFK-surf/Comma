@@ -1,0 +1,45 @@
+## "errors" domain. msgids come from Ecto changeset validations and are
+## translated at runtime by CoreComponents.translate_error/1. Maintained by
+## hand: the msgid is a variable at the call site (not statically extractable),
+## so do NOT run `mix gettext.extract` against this domain (it would empty it).
+msgid ""
+msgstr ""
+
+msgid "can't be blank"
+msgstr ""
+
+msgid "has already been taken"
+msgstr ""
+
+msgid "is invalid"
+msgstr ""
+
+msgid "must be accepted"
+msgstr ""
+
+msgid "has invalid format"
+msgstr ""
+
+msgid "does not match confirmation"
+msgstr ""
+
+msgid "is still associated with this entry"
+msgstr ""
+
+msgid "must be an inline PNG, JPEG, GIF, or WebP data URL"
+msgstr ""
+
+msgid "should be at least %{count} character(s)"
+msgid_plural "should be at least %{count} character(s)"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "should be at most %{count} character(s)"
+msgid_plural "should be at most %{count} character(s)"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "should have %{count} item(s)"
+msgid_plural "should have %{count} item(s)"
+msgstr[0] ""
+msgstr[1] ""

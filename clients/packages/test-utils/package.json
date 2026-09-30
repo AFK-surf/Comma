@@ -1,0 +1,35 @@
+{
+  "name": "@comma/test-utils",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    "./intersection": {
+      "types": "./src/intersection.ts",
+      "default": "./src/intersection.ts"
+    },
+    "./native-bridge": {
+      "types": "./src/native-bridge.ts",
+      "default": "./src/native-bridge.ts"
+    },
+    "./render": {
+      "types": "./src/render.tsx",
+      "default": "./src/render.tsx"
+    },
+    "./setup-dom": {
+      "types": "./src/setup-dom.ts",
+      "default": "./src/setup-dom.ts"
+    }
+  },
+  "dependencies": {
+    "@comma/native-bridge": "workspace:*",
+    "@testing-library/react": "^16.3.2",
+    "vitest": "^4.1.11"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3"
+  }
+}

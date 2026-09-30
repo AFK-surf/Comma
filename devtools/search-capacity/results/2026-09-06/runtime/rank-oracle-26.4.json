@@ -1,0 +1,125 @@
+{
+  "cases": [
+    {
+      "case": 0,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 1,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 2,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 3,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 4,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 5,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 6,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 7,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 8,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 9,
+      "count": 100,
+      "hits": 100,
+      "exact_equal": true
+    },
+    {
+      "case": 10,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 11,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 12,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 13,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 14,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 15,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 16,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 17,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 18,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    },
+    {
+      "case": 19,
+      "count": 200,
+      "hits": 200,
+      "exact_equal": true
+    }
+  ],
+  "reference": "Wide-vector FINAL (without the build-ID metadata preselection), same filtered complete components/distances, and one untruncated global argMin/group/sort. Diagnostic reference alone may use 512 MiB. The implementation retains 128 MiB."
+}

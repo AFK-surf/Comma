@@ -1,0 +1,4 @@
+.lake/
+_build/
+priv/
+.native/

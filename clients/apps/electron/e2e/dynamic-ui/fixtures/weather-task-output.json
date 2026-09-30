@@ -1,0 +1,38 @@
+{
+  "data": {
+    "days": [
+      {
+        "condition": "阴",
+        "date": "09/16",
+        "high": 28,
+        "low": 22,
+        "precipitationProbability": null,
+        "wind": "小于3级"
+      },
+      {
+        "condition": "小雨",
+        "date": "09/17",
+        "high": 26,
+        "low": 21,
+        "precipitationProbability": null,
+        "wind": "小于3级"
+      },
+      {
+        "condition": "多云",
+        "date": "09/18",
+        "high": 29,
+        "low": 22,
+        "precipitationProbability": null,
+        "wind": "小于3级"
+      }
+    ],
+    "missingFields": ["降水概率未知"],
+    "observedAt": "2026-09-16 08:00 +08:00",
+    "place": "上海",
+    "source": "Evaluation weather fixture"
+  },
+  "html": "<section class=\"card surface-night stack motion-enter\"><div class=\"spread\"><div class=\"stack\"><h2 class=\"widget-title\" id=\"place\"></h2><small>未来三天预报</small><strong class=\"display\" id=\"todayHigh\"></strong><span class=\"sub\" id=\"todayCondition\"></span></div><div class=\"stack align-end\"><comma-icon name=\"cloud\" class=\"icon-hero\" aria-label=\"阴\"></comma-icon><small id=\"todayRange\"></small></div></div><div class=\"strip\"><div class=\"stack\"><small>09/16</small><comma-icon name=\"cloud\" aria-label=\"阴\"></comma-icon><strong id=\"day0\"></strong><small>阴</small></div><div class=\"stack\"><small>09/17</small><comma-icon name=\"rain\" aria-label=\"小雨\"></comma-icon><strong id=\"day1\"></strong><small>小雨</small></div><div class=\"stack\"><small>09/18</small><comma-icon name=\"partly-cloudy\" aria-label=\"多云\"></comma-icon><strong id=\"day2\"></strong><small>多云</small></div></div><small class=\"widget-meta\" id=\"source\"></small></section>",
+  "script": "comma.text('place', comma.data.place); comma.text('todayHigh', Math.round(comma.data.days[0].high)+'°'); comma.text('todayCondition', comma.data.days[0].condition); comma.text('todayRange', '高 '+Math.round(comma.data.days[0].high)+'° · 低 '+Math.round(comma.data.days[0].low)+'°'); comma.data.days.forEach((d,i)=>comma.text('day'+i, Math.round(d.high)+'° / '+Math.round(d.low)+'°')); comma.text('source', comma.data.source+' · 观测 '+comma.data.observedAt);",
+  "summary": "上海未来三天：09/16 阴，28/22°C；09/17 小雨，26/21°C；09/18 多云，29/22°C。风均小于3级；降水概率未知。来源：Evaluation weather fixture，观测时间 2026-09-16 08:00 +08:00。",
+  "version": 1
+}

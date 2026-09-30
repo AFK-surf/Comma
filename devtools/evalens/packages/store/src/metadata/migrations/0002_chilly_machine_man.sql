@@ -1,0 +1,1 @@
+ALTER TABLE `runs` ADD `target_item_count` integer NOT NULL;

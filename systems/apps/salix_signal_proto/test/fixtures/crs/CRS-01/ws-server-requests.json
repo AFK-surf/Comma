@@ -1,0 +1,84 @@
+{
+  "section": "CRS-01",
+  "name": "ws-server-requests",
+  "description": "Server-to-client requests on the authenticated chat WebSocket. websocket_request_message is the inner request message (the oracle harness takes only the inner message); outer_websocket_message wraps it as a type-1 frame per the framing table in CRS-01 and is derived from that table; not oracle evidence. client_events are what the oracle client reported. A missing timestamp header gives a delivery timestamp of 0; a non-PUT verb or an unknown path produces no event.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "websocket_request_message": "0a03505554120f2f6170692f76312f6d6573736167651a02080120072a20582d5369676e616c2d54696d657374616d703a31373538373930303030313233",
+        "outer_websocket_message": "0801123e0a03505554120f2f6170692f76312f6d6573736167651a02080120072a20582d5369676e616c2d54696d657374616d703a31373538373930303030313233"
+      },
+      "outputs": {
+        "client_events": [
+          {
+            "event": "pushed_envelope",
+            "envelope": "0801",
+            "server_delivery_timestamp": 1758790000123
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "websocket_request_message": "0a03505554120f2f6170692f76312f6d6573736167651a1208011a0c2b3135353535353530313233280120ffffffffffffffff7f2a21782d7369676e616c2d74696d657374616d703a2031373538373930303030393939",
+        "outer_websocket_message": "080112570a03505554120f2f6170692f76312f6d6573736167651a1208011a0c2b3135353535353530313233280120ffffffffffffffff7f2a21782d7369676e616c2d74696d657374616d703a2031373538373930303030393939"
+      },
+      "outputs": {
+        "client_events": [
+          {
+            "event": "pushed_envelope",
+            "envelope": "08011a0c2b31353535353535303132332801",
+            "server_delivery_timestamp": 1758790000999
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "websocket_request_message": "0a0350555412132f6170692f76312f71756575652f656d70747920082a20582d5369676e616c2d54696d657374616d703a31373538373930303030343536",
+        "outer_websocket_message": "0801123e0a0350555412132f6170692f76312f71756575652f656d70747920082a20582d5369676e616c2d54696d657374616d703a31373538373930303030343536"
+      },
+      "outputs": {
+        "client_events": [
+          {
+            "event": "backlog_sent"
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "websocket_request_message": "0a03505554120f2f6170692f76312f6d6573736167651a020801200a",
+        "outer_websocket_message": "0801121c0a03505554120f2f6170692f76312f6d6573736167651a020801200a"
+      },
+      "outputs": {
+        "client_events": [
+          {
+            "event": "pushed_envelope",
+            "envelope": "0801",
+            "server_delivery_timestamp": 0
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "websocket_request_message": "0a03474554120f2f6170692f76312f6d6573736167651a020801200b2a20582d5369676e616c2d54696d657374616d703a31373538373930303030313233",
+        "outer_websocket_message": "0801123e0a03474554120f2f6170692f76312f6d6573736167651a020801200b2a20582d5369676e616c2d54696d657374616d703a31373538373930303030313233"
+      },
+      "outputs": {
+        "client_events": []
+      }
+    },
+    {
+      "inputs": {
+        "websocket_request_message": "0a03505554120f2f6170692f76312f756e6b6e6f776e200c",
+        "outer_websocket_message": "080112180a03505554120f2f6170692f76312f756e6b6e6f776e200c"
+      },
+      "outputs": {
+        "client_events": []
+      }
+    }
+  ]
+}

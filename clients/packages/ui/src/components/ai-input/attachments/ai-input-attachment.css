@@ -1,0 +1,60 @@
+/*
+ * Attachment row entrance. The first file staged into a draft — pasted,
+ * dropped, or picked — materializes the row on the shared state-change
+ * cadence instead of popping. Two constraints shape the recipe:
+ *
+ * - The row is the animation surface, not the chip: chip identity may change
+ *   mid-upload (a renderer admission row hands off to Main's authoritative
+ *   row), so a per-chip mount animation would blink on that handoff.
+ * - Chips are hover and press targets, so the entrance moves no geometry:
+ *   opacity plus the shared surface-materialize blur, never a transform that
+ *   would slide targets under an arriving pointer.
+ *
+ * Transitions (not keyframes) so an interrupted mount retargets; the global
+ * reduced-motion rule zeroes the durations.
+ */
+.comma-ai-input-attachment-row {
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    filter var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+@starting-style {
+  .comma-ai-input-attachment-row {
+    opacity: 0;
+    filter: blur(var(--motion-blur-menu-enter));
+  }
+}
+
+/*
+ * Close affordance reveal. The chip's remove control fades in on hover and
+ * focus rather than popping. It carries its own transition because the global
+ * unlayered button rule declares the whole `transition` shorthand and would
+ * otherwise drop opacity from the list — an unlayered rule outranks layered
+ * utilities whatever their specificity, so a Tailwind `transition-` class here
+ * is silently dead. The scale leg re-states the shared button press tokens so
+ * the close control can use its smaller, action-specific press scale.
+ */
+.comma-ai-input-attachment-close {
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    scale var(--button-press-current-duration) var(--button-press-easing);
+}
+
+.comma-ai-input-attachment-close[data-pressed] {
+  --button-press-current-duration: var(--button-press-in-duration);
+
+  scale: var(--motion-scale-action-pressed);
+}
+
+:root[data-comma-reduced-motion="true"] .comma-ai-input-attachment-close {
+  scale: 1 !important;
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-ai-input-attachment-close {
+    scale: 1 !important;
+    transition: none !important;
+  }
+}

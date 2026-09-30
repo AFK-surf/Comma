@@ -1,0 +1,36 @@
+{
+  "extends": "./tsconfig.react.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "paths": {
+      "@comma/app": ["./packages/app/src/index.tsx"],
+      "@comma/app/auth": ["./packages/app/src/auth/index.ts"],
+      "@comma/chat-contract": ["./packages/chat-contract/src/index.ts"],
+      "@comma/config": ["./packages/config/src/index.ts"],
+      "@comma/i18n": ["./packages/i18n/src/index.ts"],
+      "@comma/i18n/react": ["./packages/i18n/src/react.tsx"],
+      "@comma/layout-inspector": ["./packages/layout-inspector/src/index.ts"],
+      "@comma/native-bridge": ["./packages/native-bridge/src/index.ts"],
+      "@comma/native-bridge/web": ["./packages/native-bridge/src/web.ts"],
+      "@comma/session-contract": ["./packages/session-contract/src/index.ts"],
+      "@comma/test-utils/*": ["./packages/test-utils/src/*"],
+      "@comma/ui": ["./packages/ui/src/index.ts"]
+    },
+    "types": [
+      "node",
+      "vite/client",
+      "vitest/globals",
+      "@testing-library/jest-dom",
+      "@electron-forge/plugin-vite/forge-vite-env"
+    ]
+  },
+  "include": [
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "vite",
+    "e2e",
+    "apps",
+    "packages",
+    "scripts"
+  ]
+}

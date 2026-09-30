@@ -1,0 +1,24 @@
+{
+  "section": "CRS-09",
+  "name": "group-send-endorsement-combine",
+  "description": "Endorsement set algebra: combine = point addition, remove = point subtraction; combining nothing yields the identity endorsement.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "endorsements": [
+          "0088453d5e7f6a89307fdf943675a94cc29e268db1f2b2d5454829dabdda028625",
+          "00c4d307f24facd6defa5768c227ce76af23a4f3bb28ea63610fff4a4eefbdc519",
+          "00a2697b66196d6a61b5b4916f9111061f69546e6325732384b96107b7ac44de16"
+        ]
+      },
+      "outputs": {
+        "combine_0_1": "008c42066438abb16603d2255cded831c2e359c749ee70fcc379d17eb0aa13884c",
+        "combine_all": "00443d22c5ee2138969d24b4a6c0423867103a326c75892fe274ebcaf2af29fc0c",
+        "combine_all_remove_2": "008c42066438abb16603d2255cded831c2e359c749ee70fcc379d17eb0aa13884c",
+        "combine_empty": "000000000000000000000000000000000000000000000000000000000000000000",
+        "combine_all_remove_2_equals_combine_0_1": true
+      }
+    }
+  ]
+}

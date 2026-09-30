@@ -1,0 +1,92 @@
+{
+  "section": "CRS-13",
+  "name": "direct-srtp-key-derivation",
+  "description": "X25519 agreement between the two per-call ephemeral keys (field 1 of the offer and answer connection parameters), then HKDF-SHA256 with a 32-byte zero salt and info = label || caller identity public key (32 bytes) || callee identity public key (32 bytes), 88 bytes of output split into two AEAD_AES_256_GCM master key/salt pairs. Identity private keys are only a test device for producing identity public keys. Each agreement and HKDF step computed by the oracle; the split is [source].",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "caller_ephemeral_private": "1f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8",
+        "callee_ephemeral_private": "3e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb02091017",
+        "caller_identity_private_for_test": "5d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f36",
+        "callee_identity_private_for_test": "7c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e55"
+      },
+      "outputs": {
+        "caller_ephemeral_public": "e57c695eb2c613c1be54eb615343e82b6a954f88409aa3ad1fa739d0041f1a26",
+        "callee_ephemeral_public": "b99fe0f4c73a06edee98321e8753ab3e17d483a84b47b426f3d246fd0212920e",
+        "caller_identity_public": "57e53fec1db22e1708adc8fa76d7946104d9a5e0be62faaa1be87e77efaf5b22",
+        "callee_identity_public": "ab4a93b89a41a1fb3c39a5da9fc79769e8aa555adcea2d1fea68c9896565617c",
+        "shared_secret": "05e16a69368d1d866fecf8eb806d9c2ca01fcd2fe8b75b88dbd348f90a285822",
+        "hkdf_info": "5369676e616c5f43616c6c696e675f32303230303830375f5369676e616c6c696e6744485f535254504b65795f4b444657e53fec1db22e1708adc8fa76d7946104d9a5e0be62faaa1be87e77efaf5b22ab4a93b89a41a1fb3c39a5da9fc79769e8aa555adcea2d1fea68c9896565617c",
+        "okm_88": "4578fca578d485ad9215e60b6b07a9e09340356238b6dbd352bdf4a13b4abced47256a6e8f5b5bacf72e675ed7515582040b1d8c0d3a6e06aa7bc7ba1054f1892fb426261f04de482c641f849a980bd94475cad5c88f09c6",
+        "caller_to_callee_srtp_key": "4578fca578d485ad9215e60b6b07a9e09340356238b6dbd352bdf4a13b4abced",
+        "caller_to_callee_srtp_salt": "47256a6e8f5b5bacf72e675e",
+        "callee_to_caller_srtp_key": "d7515582040b1d8c0d3a6e06aa7bc7ba1054f1892fb426261f04de482c641f84",
+        "callee_to_caller_srtp_salt": "9a980bd94475cad5c88f09c6"
+      }
+    },
+    {
+      "inputs": {
+        "caller_ephemeral_private": "1111111111111111111111111111111111111111111111111111111111111111",
+        "callee_ephemeral_private": "2222222222222222222222222222222222222222222222222222222222222222",
+        "caller_identity_private_for_test": "3333333333333333333333333333333333333333333333333333333333333333",
+        "callee_identity_private_for_test": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "outputs": {
+        "caller_ephemeral_public": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+        "callee_ephemeral_public": "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
+        "caller_identity_public": "7b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14",
+        "callee_identity_public": "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b",
+        "shared_secret": "9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056",
+        "hkdf_info": "5369676e616c5f43616c6c696e675f32303230303830375f5369676e616c6c696e6744485f535254504b65795f4b44467b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b",
+        "okm_88": "4c625a2da7e075c2a35c59be004ab0b49f43439c63496e4aa0c09474691e7d8bc9b4a6cb896e199dfce3a0fd70c45b1ad230349405a634ccfe6ddb96b7f0896fe53180ff74dcff60937c06f5bd9983a875fd7838312aea39",
+        "caller_to_callee_srtp_key": "4c625a2da7e075c2a35c59be004ab0b49f43439c63496e4aa0c09474691e7d8b",
+        "caller_to_callee_srtp_salt": "c9b4a6cb896e199dfce3a0fd",
+        "callee_to_caller_srtp_key": "70c45b1ad230349405a634ccfe6ddb96b7f0896fe53180ff74dcff60937c06f5",
+        "callee_to_caller_srtp_salt": "bd9983a875fd7838312aea39"
+      }
+    },
+    {
+      "inputs": {
+        "caller_ephemeral_private": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "callee_ephemeral_private": "0101010101010101010101010101010101010101010101010101010101010101",
+        "caller_identity_private_for_test": "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+        "callee_identity_private_for_test": "8080808080808080808080808080808080808080808080808080808080808080"
+      },
+      "outputs": {
+        "caller_ephemeral_public": "847c0d2c375234f365e660955187a3735a0f7613d1609d3a6a4d8c53aeaa5a22",
+        "callee_ephemeral_public": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+        "caller_identity_public": "ffe851688ca15799239e0f6deddc806858aeb0cd75c8eaf0d7c726572e91291f",
+        "callee_identity_public": "c84a0f784d9723c28577272ff700d42b6c923c23f5bdd38e933ac77d6ceb9157",
+        "shared_secret": "1fad9a91396c437a3a936080336a1e8b7a219711ca6a3d824987e8afc3fe8921",
+        "hkdf_info": "5369676e616c5f43616c6c696e675f32303230303830375f5369676e616c6c696e6744485f535254504b65795f4b4446ffe851688ca15799239e0f6deddc806858aeb0cd75c8eaf0d7c726572e91291fc84a0f784d9723c28577272ff700d42b6c923c23f5bdd38e933ac77d6ceb9157",
+        "okm_88": "627e9e4439032473b3b61265fa8ff27bbcd246689aba78be5a971f9f655170092b9e2fa7034396f9bbd0bfcb010976a745f8719124db37c554bf64913f610cd640186bd565768eb8ac6643d5259e61aa947379394e74355c",
+        "caller_to_callee_srtp_key": "627e9e4439032473b3b61265fa8ff27bbcd246689aba78be5a971f9f65517009",
+        "caller_to_callee_srtp_salt": "2b9e2fa7034396f9bbd0bfcb",
+        "callee_to_caller_srtp_key": "010976a745f8719124db37c554bf64913f610cd640186bd565768eb8ac6643d5",
+        "callee_to_caller_srtp_salt": "259e61aa947379394e74355c"
+      }
+    },
+    {
+      "inputs": {
+        "caller_ephemeral_private": "171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0",
+        "callee_ephemeral_private": "363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f",
+        "caller_identity_private_for_test": "555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e",
+        "callee_identity_private_for_test": "555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e"
+      },
+      "outputs": {
+        "caller_ephemeral_public": "f0c598791fadf1337568bd13316c2391a020a555688c34ba091dd9f2d0bacc23",
+        "callee_ephemeral_public": "f408adb0a3ad9b658549666e1c22505ed8718cb29ab452bdc84d170566aead70",
+        "caller_identity_public": "f1339c0908641d2941545b966015ef8bf4dfb85b9f4d303d71ea888dae522902",
+        "callee_identity_public": "f1339c0908641d2941545b966015ef8bf4dfb85b9f4d303d71ea888dae522902",
+        "shared_secret": "13130f5d023c7bc5386981c401458a61aa03390521ef7e5507025222229ca15f",
+        "hkdf_info": "5369676e616c5f43616c6c696e675f32303230303830375f5369676e616c6c696e6744485f535254504b65795f4b4446f1339c0908641d2941545b966015ef8bf4dfb85b9f4d303d71ea888dae522902f1339c0908641d2941545b966015ef8bf4dfb85b9f4d303d71ea888dae522902",
+        "okm_88": "0c163d1b321efd22ccf023be1acdc7acc17bded85f2e8adec88f27eac15b7ac970347aeea058f0df8a71f9b313051943d6d19ac1cb997bd8640e68a507fd25d7df9cf26fee2268a97123b991a7f563e3459c55039bad4bd1",
+        "caller_to_callee_srtp_key": "0c163d1b321efd22ccf023be1acdc7acc17bded85f2e8adec88f27eac15b7ac9",
+        "caller_to_callee_srtp_salt": "70347aeea058f0df8a71f9b3",
+        "callee_to_caller_srtp_key": "13051943d6d19ac1cb997bd8640e68a507fd25d7df9cf26fee2268a97123b991",
+        "callee_to_caller_srtp_salt": "a7f563e3459c55039bad4bd1"
+      }
+    }
+  ]
+}

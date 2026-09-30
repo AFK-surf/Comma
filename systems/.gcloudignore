@@ -1,0 +1,10 @@
+.gcloudignore
+.git
+.gitignore
+
+#!include:.gitignore
+
+# The OTP image build copies only config, apps, native and connector. Exclude
+# only the top-level local Cloudflare workspace from the Cloud Build upload;
+# nested provider sources under apps/ are part of the OTP release.
+/cloudflare/

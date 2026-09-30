@@ -1,0 +1,41 @@
+## "errors" domain — Simplified Chinese (Ecto changeset validation messages).
+msgid ""
+msgstr ""
+"Language: zh_Hans\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "can't be blank"
+msgstr "不能为空"
+
+msgid "has already been taken"
+msgstr "已被占用"
+
+msgid "is invalid"
+msgstr "无效"
+
+msgid "must be accepted"
+msgstr "必须接受"
+
+msgid "has invalid format"
+msgstr "格式无效"
+
+msgid "does not match confirmation"
+msgstr "与确认项不匹配"
+
+msgid "is still associated with this entry"
+msgstr "仍与此条目关联"
+
+msgid "must be an inline PNG, JPEG, GIF, or WebP data URL"
+msgstr "必须是内联的 PNG、JPEG、GIF 或 WebP 数据 URL"
+
+msgid "should be at least %{count} character(s)"
+msgid_plural "should be at least %{count} character(s)"
+msgstr[0] "至少应为 %{count} 个字符"
+
+msgid "should be at most %{count} character(s)"
+msgid_plural "should be at most %{count} character(s)"
+msgstr[0] "最多应为 %{count} 个字符"
+
+msgid "should have %{count} item(s)"
+msgid_plural "should have %{count} item(s)"
+msgstr[0] "应包含 %{count} 项"

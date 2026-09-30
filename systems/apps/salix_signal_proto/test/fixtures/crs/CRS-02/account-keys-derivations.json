@@ -1,0 +1,90 @@
+{
+  "section": "CRS-02",
+  "name": "account-keys-derivations",
+  "description": "Account entropy pool (64 ASCII chars) to 32-byte SVR key, and SVR key to the registration lock value and registration recovery password. On the wire the registration lock is sent as the 64-character lowercase hex text of registration_lock; recovery_password_json_string is the padded standard base64 text sent in recoveryPassword. The last case shows a pool validity check (short input rejected).",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "account_entropy_pool": "vectoraep0vectoraep0vectoraep0vectoraep0vectoraep0vectoraep0vect"
+      },
+      "outputs": {
+        "svr_key": "c1a89b5a8d119fd6ddc4ddaab3765d97247c0cf03f801c7958cda47a4603789f",
+        "registration_lock": "e286149938100439b90aaefbaeaced957b0161ced46f222a6169fc88ebd61db1",
+        "registration_recovery_password": "5822d3879a0995558c8efd73f04c76e843cdc7999bcbfc1327e2588d1d4642b8",
+        "recovery_password_json_string": "WCLTh5oJlVWMjv1z8Ex26EPNx5mby/wTJ+JYjR1GQrg="
+      }
+    },
+    {
+      "inputs": {
+        "account_entropy_pool": "samplesamplesamplesamplesamplesamplesamplesamplesamplesamplesam1"
+      },
+      "outputs": {
+        "svr_key": "441e0384517960db56d8bc7d8ac1ee41c53f1178a58aabe87733b0cd77a77185",
+        "registration_lock": "5575ae08346ee1733b2f3e5e06197d177e45d5185c842def8b8c8ffa0ca52512",
+        "registration_recovery_password": "4d96ad8c61465f74b9a22d31d5076ee4a24443e4ca1d9a90e742c916c6bc7768",
+        "recovery_password_json_string": "TZatjGFGX3S5oi0x1Qdu5KJEQ+TKHZqQ50LJFsa8d2g="
+      }
+    },
+    {
+      "inputs": {
+        "account_entropy_pool": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+      },
+      "outputs": {
+        "svr_key": "fbdba301ae1495bd524142cbc3c90cd5af49f2850a973db886011f4f96805671",
+        "registration_lock": "870fc196cfe7435153534022ca6806b2a6e0133505658a779f8419fc538a1632",
+        "registration_recovery_password": "5c58bbb16cc25135b58c18747592f545ef89bc42f0e50bafffe2c001ed42eaac",
+        "recovery_password_json_string": "XFi7sWzCUTW1jBh0dZL1Re+JvELw5Quv/+LAAe1C6qw="
+      }
+    },
+    {
+      "inputs": {
+        "account_entropy_pool": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "svr_key": "e60dd2ae8689bbb9e018e3b3e6eefe92da5a39460741dd7e77a6d4336262839f",
+        "registration_lock": "fc1e70ea4fdd3d4b4e9e23e51a104f1658ab6569afea4622ecb84e46dec3c538",
+        "registration_recovery_password": "817f021fd4b71069655bcdc321590dd36ff598b096e511aa8be81d945051da1a",
+        "recovery_password_json_string": "gX8CH9S3EGllW83DIVkN02/1mLCW5RGqi+gdlFBR2ho="
+      }
+    },
+    {
+      "inputs": {
+        "svr_key": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "outputs": {
+        "registration_lock": "1d2ebfb68c3b6321d21bf5b4410146fa978399bbd6de677f9cf4f52df58e1a8f",
+        "registration_recovery_password": "7c8ff82f2a823b07b51c2cee648b710bf78aeff49cdbe47295aa21021cd43b35",
+        "recovery_password_json_string": "fI/4LyqCOwe1HCzuZItxC/eK7/Sc2+RylaohAhzUOzU="
+      }
+    },
+    {
+      "inputs": {
+        "svr_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "outputs": {
+        "registration_lock": "69f195f31069f0786ad2d6b3de4d63ecb020a2c1bbee0ccc2fb1e17197a9ee8c",
+        "registration_recovery_password": "da181f31c66b99ed0315d9911425aad3ef17b19df10708c02643b67595d56f85",
+        "recovery_password_json_string": "2hgfMcZrme0DFdmRFCWq0+8XsZ3xBwjAJkO2dZXVb4U="
+      }
+    },
+    {
+      "inputs": {
+        "svr_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "outputs": {
+        "registration_lock": "0c5f865eea5eebe9ef4fa8c4d99cb91de301bebb5b3b91bf775da1a57c725975",
+        "registration_recovery_password": "bdd982b7baf1d3b4796a2e669befc33b9101bc5eb67f7433dbac815ccb245ae0",
+        "recovery_password_json_string": "vdmCt7rx07R5ai5mm+/DO5EBvF62f3Qz26yBXMskWuA="
+      }
+    },
+    {
+      "inputs": {
+        "account_entropy_pool": "0123456789abcdef"
+      },
+      "outputs": {
+        "valid": false
+      }
+    }
+  ]
+}

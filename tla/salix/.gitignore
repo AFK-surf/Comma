@@ -1,0 +1,3 @@
+# TLC output (belt-and-braces; check.sh runs in a temp dir)
+*_TTrace_*
+states/

@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../../node_modules/.cache/evalens/dashboard-vite.tsbuildinfo",
+    "lib": ["ESNext"],
+    "types": ["bun"]
+  },
+  "include": ["./vite.config.ts", "./scripts"]
+}

@@ -1,0 +1,39 @@
+# This file is evaluated relative to the repository-root build context used by
+# systems/Dockerfile. Keep private local configuration outside the context sent
+# to the Docker daemon, even though the Dockerfile does not COPY it.
+.git/
+.local/
+.runtime-sources/
+
+# Host build outputs and caches are never valid image inputs.
+systems/_build/
+systems/deps/
+systems/priv_build/
+systems/.elixir_ls/
+systems/cover/
+systems/doc/
+systems/tmp/
+erl_crash.dump
+*.ez
+
+systems/native/verified_kernel/.lake/
+systems/native/verified_kernel/.native/
+systems/native/verified_kernel/_build/
+systems/native/verified_kernel/priv/
+systems/connector/salix-connect/native/macos/ComputerUseHost/.build/
+
+# The canonical install-artifacts workspace is deliberately included. Reject
+# local release residue that is not part of that fixed directory.
+systems/install-artifacts-*/
+
+# Build the subscription worker for the target platform from the pinned fork.
+systems/apps/salix_agent/priv/subscription_worker
+systems/apps/salix_agent/priv/tailcat_gateway
+systems/apps/salix_agent/priv/tailcat_testpeer
+systems/account-proxy/.upstream/
+systems/account-proxy/.data/
+systems/account-proxy/salix-account-proxy
+
+# Build the spinfoam runtime for the target platform from the pinned commit.
+systems/apps/salix_agent/priv/spinfoam
+systems/_build/spinfoam-src/

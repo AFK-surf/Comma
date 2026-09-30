@@ -1,0 +1,763 @@
+{
+  "schema_version": 1,
+  "folder_uid": "fcvt5g",
+  "rule_group_name": "comma-business-slo-1m",
+  "interval_seconds": 60,
+  "rules": [
+    {
+      "uid": "comma-stg-llm-error",
+      "name": "[P2][STG][可用性] LLM 最终请求错误率持续过高",
+      "condition": "C",
+      "for": "15m",
+      "no_data_state": "OK",
+      "exec_err_state": "KeepLast",
+      "is_paused": false,
+      "labels": {
+        "domain": "可用性",
+        "environment": "staging",
+        "priority": "P2",
+        "source": "grafana",
+        "team": "comma"
+      },
+      "annotations": {
+        "__dashboardUid__": "comma-staging-salix-runtime",
+        "__panelId__": "561",
+        "summary": "Staging 的 LLM logical request 最终错误率持续偏高。",
+        "description": "告警语义：部分 LLM logical request 可能在重试后仍失败，但不表示所有 provider 或模型不可用。 判定口径：15 分钟 logical request 数 >= 10 且最终错误率 > 10%，条件连续成立 15 分钟。",
+        "impact": "部分 LLM logical request 可能在重试后仍失败，但不表示所有 provider 或模型不可用。",
+        "evidence": "Grafana 在满足最低请求量后，持续观察到最终 outcome=error 的比例超过阈值。",
+        "unknown": "尚未确认具体 provider、model、surface、受影响用户与根因。",
+        "action": "先看 Grafana Panel，再在 Salix Runtime 对照 logical request、attempt 与 workload 维度。",
+        "criteria": "15 分钟 logical request 数 >= 10 且最终错误率 > 10%，条件连续成立 15 分钟。",
+        "policy_id": "comma_grafana:stg_llm_logical_error",
+        "logs_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22comma%22?project=${GCP_PROJECT_ID}",
+        "deployment_url": "https://github.com/AFK-surf/Comma/actions/workflows/comma-deployment.yml?query=branch%3Amain"
+      },
+      "data": [
+        {
+          "ref_id": "A",
+          "query_type": "promQL",
+          "relative_time_range": {
+            "from": 1200,
+            "to": 0
+          },
+          "datasource_uid": "${GCM_DATASOURCE_UID}",
+          "model": {
+            "datasource": {
+              "type": "stackdriver",
+              "uid": "${GCM_DATASOURCE_UID}"
+            },
+            "hide": false,
+            "instant": true,
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "promQLQuery": {
+              "expr": "(((((sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\",outcome=\"error\"}[15m]))) or on(workload) (0 * (sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m]))))) / (sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m])))) > 0.1) and on(workload) ((sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m]))) >= 10)) or on(workload) (0 * (sum by (workload) (increase(salix_llm_requests_total{namespace=\"comma\",workload=\"comma\"}[15m]))))",
+              "projectName": "${GCP_PROJECT_ID}",
+              "step": "10s"
+            },
+            "queryType": "promQL",
+            "refId": "A",
+            "timeSeriesList": {
+              "filters": [],
+              "instant": true,
+              "projectName": "${GCP_PROJECT_ID}",
+              "view": "FULL"
+            }
+          }
+        },
+        {
+          "ref_id": "reducer",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0,
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": []
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "avg"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "name": "Expression",
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "A",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "reducer": "last",
+            "refId": "reducer",
+            "type": "reduce"
+          }
+        },
+        {
+          "ref_id": "C",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": [
+                    "C"
+                  ]
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "last"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "reducer",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "refId": "C",
+            "type": "threshold"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "bfsralwg6q1hcd",
+      "name": "[P2][STG][容量] LLM TTFT p95 持续过高",
+      "condition": "C",
+      "for": "15m",
+      "no_data_state": "OK",
+      "exec_err_state": "KeepLast",
+      "is_paused": false,
+      "labels": {
+        "domain": "容量",
+        "environment": "staging",
+        "priority": "P2",
+        "source": "grafana",
+        "team": "comma"
+      },
+      "annotations": {
+        "__dashboardUid__": "comma-staging-salix-runtime",
+        "__panelId__": "562",
+        "summary": "Staging 的 LLM 首 token 延迟持续偏高。",
+        "description": "告警语义：部分 LLM 请求的首 token 等待可能明显变长；该指标不等同于端到端用户等待时间。 判定口径：15 分钟 TTFT 样本数 >= 20 且 p95 > 30 秒，条件连续成立 15 分钟。",
+        "impact": "部分 LLM 请求的首 token 等待可能明显变长；该指标不等同于端到端用户等待时间。",
+        "evidence": "Grafana 在满足最低样本量后，持续观察到 provider attempt TTFT p95 超过阈值。",
+        "unknown": "尚未确认具体 provider、model、surface、受影响用户与根因。",
+        "action": "先看 Grafana Panel，再在 Salix Runtime 对照 provider、model、attempt latency 与 workload。",
+        "criteria": "15 分钟 TTFT 样本数 >= 20 且 p95 > 30 秒，条件连续成立 15 分钟。",
+        "policy_id": "comma_grafana:stg_llm_ttft",
+        "logs_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22comma%22?project=${GCP_PROJECT_ID}",
+        "deployment_url": "https://github.com/AFK-surf/Comma/actions/workflows/comma-deployment.yml?query=branch%3Amain"
+      },
+      "data": [
+        {
+          "ref_id": "A",
+          "query_type": "promQL",
+          "relative_time_range": {
+            "from": 1200,
+            "to": 0
+          },
+          "datasource_uid": "${GCM_DATASOURCE_UID}",
+          "model": {
+            "datasource": {
+              "type": "stackdriver",
+              "uid": "${GCM_DATASOURCE_UID}"
+            },
+            "hide": false,
+            "instant": true,
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "promQLQuery": {
+              "expr": "(((histogram_quantile(0.95, sum by (workload, le) (rate(salix_llm_ttft_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[15m])))) > 30) and on(workload) ((sum by (workload) (increase(salix_llm_ttft_seconds_count{namespace=\"comma\",workload=\"comma\"}[15m]))) >= 20)) or on(workload) (0 * (sum by (workload) (increase(salix_llm_ttft_seconds_count{namespace=\"comma\",workload=\"comma\"}[15m]))))",
+              "projectName": "${GCP_PROJECT_ID}",
+              "step": "10s"
+            },
+            "queryType": "promQL",
+            "refId": "A",
+            "timeSeriesList": {
+              "filters": [],
+              "instant": true,
+              "projectName": "${GCP_PROJECT_ID}",
+              "view": "FULL"
+            }
+          }
+        },
+        {
+          "ref_id": "reducer",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0,
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": []
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "avg"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "name": "Expression",
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "A",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "reducer": "last",
+            "refId": "reducer",
+            "type": "reduce"
+          }
+        },
+        {
+          "ref_id": "C",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": [
+                    "C"
+                  ]
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "last"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "reducer",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "refId": "C",
+            "type": "threshold"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "comma-stg-meeting-runtime-lost",
+      "name": "[P2][STG][可用性] 会议因运行时失联被判为记录不完整",
+      "condition": "C",
+      "for": "15m",
+      "no_data_state": "OK",
+      "exec_err_state": "KeepLast",
+      "is_paused": false,
+      "labels": {
+        "domain": "可用性",
+        "environment": "staging",
+        "priority": "P2",
+        "source": "grafana",
+        "team": "comma"
+      },
+      "annotations": {
+        "__dashboardUid__": "comma-staging-salix-runtime",
+        "__panelId__": "590",
+        "summary": "有会议在拖堂上限内始终没有收到运行时的结束事件，被判定终态。",
+        "description": "告警语义：这些会议的参会者收到的是「记录不完整」说明而不是总结；即使真实总结随后抵达也不会再发布。 判定口径：30 分钟内出现至少一次 runtime_lost 终态化，条件连续成立 15 分钟。",
+        "impact": "这些会议的参会者收到的是「记录不完整」说明而不是总结；即使真实总结随后抵达也不会再发布。",
+        "evidence": "总结 watchdog 在超过拖堂 cutoff 后仍拿不到确定的活会话答案，将会议置为 failed(runtime_lost)。",
+        "unknown": "尚未确认是运行时进程失联、连接器掉线，还是会议确实超长。",
+        "action": "先看该会议的 join_dispatch 与最后一次运行时事件时间，再确认对应连接器是否在线。",
+        "criteria": "30 分钟内出现至少一次 runtime_lost 终态化，条件连续成立 15 分钟。",
+        "policy_id": "comma_grafana:stg_meeting_runtime_lost",
+        "logs_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22comma%22?project=${GCP_PROJECT_ID}",
+        "deployment_url": "https://github.com/AFK-surf/Comma/actions/workflows/comma-deployment.yml?query=branch%3Amain"
+      },
+      "data": [
+        {
+          "ref_id": "A",
+          "query_type": "promQL",
+          "relative_time_range": {
+            "from": 1200,
+            "to": 0
+          },
+          "datasource_uid": "${GCM_DATASOURCE_UID}",
+          "model": {
+            "datasource": {
+              "type": "stackdriver",
+              "uid": "${GCM_DATASOURCE_UID}"
+            },
+            "hide": false,
+            "instant": true,
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "promQLQuery": {
+              "expr": "((sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_watchdog\",outcome=\"ok\"}[30m]))) > 0) or on(workload) (0 * (sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_watchdog\",outcome=\"ok\"}[30m]))))",
+              "projectName": "${GCP_PROJECT_ID}",
+              "step": "10s"
+            },
+            "queryType": "promQL",
+            "refId": "A",
+            "timeSeriesList": {
+              "filters": [],
+              "instant": true,
+              "projectName": "${GCP_PROJECT_ID}",
+              "view": "FULL"
+            }
+          }
+        },
+        {
+          "ref_id": "reducer",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0,
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": []
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "avg"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "name": "Expression",
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "A",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "reducer": "last",
+            "refId": "reducer",
+            "type": "reduce"
+          }
+        },
+        {
+          "ref_id": "C",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": [
+                    "C"
+                  ]
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "last"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "reducer",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "refId": "C",
+            "type": "threshold"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "comma-stg-meeting-stuck",
+      "name": "[P2][STG][可用性] 会议卡在非终态且没有时间锚点",
+      "condition": "C",
+      "for": "15m",
+      "no_data_state": "OK",
+      "exec_err_state": "KeepLast",
+      "is_paused": false,
+      "labels": {
+        "domain": "可用性",
+        "environment": "staging",
+        "priority": "P2",
+        "source": "grafana",
+        "team": "comma"
+      },
+      "annotations": {
+        "__dashboardUid__": "comma-staging-salix-runtime",
+        "__panelId__": "591",
+        "summary": "有会议确实派发过入会、未被日历放弃，但缺少任何时间戳锚点，watchdog 无法安全终态化。",
+        "description": "告警语义：这些会议既不会产出总结，也不会被自动终态化，属于需要人工兜底的静默滞留。 判定口径：30 分钟内出现至少一次无锚点滞留，条件连续成立 15 分钟。",
+        "impact": "这些会议既不会产出总结，也不会被自动终态化，属于需要人工兜底的静默滞留。",
+        "evidence": "投递巡检对该会议求值出 no_anchor：end_at、left_at、joined_at、last_seen_live_at 全缺。",
+        "unknown": "尚未确认锚点缺失是入会写入不完整，还是运行时事件从未抵达。",
+        "action": "按 meeting_id 读该会议文档，确认它是如何在缺少全部时间戳的情况下完成派发的。",
+        "criteria": "30 分钟内出现至少一次无锚点滞留，条件连续成立 15 分钟。",
+        "policy_id": "comma_grafana:stg_meeting_stuck_nonterminal",
+        "logs_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22comma%22?project=${GCP_PROJECT_ID}",
+        "deployment_url": "https://github.com/AFK-surf/Comma/actions/workflows/comma-deployment.yml?query=branch%3Amain"
+      },
+      "data": [
+        {
+          "ref_id": "A",
+          "query_type": "promQL",
+          "relative_time_range": {
+            "from": 1200,
+            "to": 0
+          },
+          "datasource_uid": "${GCM_DATASOURCE_UID}",
+          "model": {
+            "datasource": {
+              "type": "stackdriver",
+              "uid": "${GCM_DATASOURCE_UID}"
+            },
+            "hide": false,
+            "instant": true,
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "promQLQuery": {
+              "expr": "((sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_stuck_nonterminal\"}[30m]))) > 0) or on(workload) (0 * (sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_stuck_nonterminal\"}[30m]))))",
+              "projectName": "${GCP_PROJECT_ID}",
+              "step": "10s"
+            },
+            "queryType": "promQL",
+            "refId": "A",
+            "timeSeriesList": {
+              "filters": [],
+              "instant": true,
+              "projectName": "${GCP_PROJECT_ID}",
+              "view": "FULL"
+            }
+          }
+        },
+        {
+          "ref_id": "reducer",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0,
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": []
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "avg"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "name": "Expression",
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "A",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "reducer": "last",
+            "refId": "reducer",
+            "type": "reduce"
+          }
+        },
+        {
+          "ref_id": "C",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": [
+                    "C"
+                  ]
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "last"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "reducer",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "refId": "C",
+            "type": "threshold"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "comma-stg-meeting-delivery-error",
+      "name": "[P2][STG][可用性] 会议总结投递持续报错",
+      "condition": "C",
+      "for": "15m",
+      "no_data_state": "OK",
+      "exec_err_state": "KeepLast",
+      "is_paused": false,
+      "labels": {
+        "domain": "可用性",
+        "environment": "staging",
+        "priority": "P2",
+        "source": "grafana",
+        "team": "comma"
+      },
+      "annotations": {
+        "__dashboardUid__": "comma-staging-salix-runtime",
+        "__panelId__": "592",
+        "summary": "会议总结投递在持续失败重试，尚未收敛为已发布或终态失败。",
+        "description": "告警语义：受影响会议的总结暂时没有送达；有界重试仍在进行，尚未到达终态化门槛。 判定口径：30 分钟内投递 error 结局非零，条件连续成立 15 分钟。",
+        "impact": "受影响会议的总结暂时没有送达；有界重试仍在进行，尚未到达终态化门槛。",
+        "evidence": "meeting_delivery 的 error 结局持续非零。等待连接被重新启用的投递不计入本条件，因此这里只反映真实失败。",
+        "unknown": "尚未确认是 provider 侧拒绝、存储故障，还是准备阶段的失败。",
+        "action": "读该会议 delivery 记录的 status、attempt_count 与 error，判断它会收敛还是需要介入。",
+        "criteria": "30 分钟内投递 error 结局非零，条件连续成立 15 分钟。",
+        "policy_id": "comma_grafana:stg_meeting_delivery_error",
+        "logs_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.namespace_name%3D%22comma%22?project=${GCP_PROJECT_ID}",
+        "deployment_url": "https://github.com/AFK-surf/Comma/actions/workflows/comma-deployment.yml?query=branch%3Amain"
+      },
+      "data": [
+        {
+          "ref_id": "A",
+          "query_type": "promQL",
+          "relative_time_range": {
+            "from": 1200,
+            "to": 0
+          },
+          "datasource_uid": "${GCM_DATASOURCE_UID}",
+          "model": {
+            "datasource": {
+              "type": "stackdriver",
+              "uid": "${GCM_DATASOURCE_UID}"
+            },
+            "hide": false,
+            "instant": true,
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "promQLQuery": {
+              "expr": "((sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_delivery\",outcome=\"error\"}[30m]))) > 0) or on(workload) (0 * (sum by (workload) (increase(salix_operations_total{namespace=\"comma\",workload=\"comma\",component=\"salix_meet\",operation=\"meeting_delivery\",outcome=\"error\"}[30m]))))",
+              "projectName": "${GCP_PROJECT_ID}",
+              "step": "10s"
+            },
+            "queryType": "promQL",
+            "refId": "A",
+            "timeSeriesList": {
+              "filters": [],
+              "instant": true,
+              "projectName": "${GCP_PROJECT_ID}",
+              "view": "FULL"
+            }
+          }
+        },
+        {
+          "ref_id": "reducer",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0,
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": []
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "avg"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "name": "Expression",
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "A",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "reducer": "last",
+            "refId": "reducer",
+            "type": "reduce"
+          }
+        },
+        {
+          "ref_id": "C",
+          "query_type": "expression",
+          "relative_time_range": {
+            "from": 0,
+            "to": 0
+          },
+          "datasource_uid": "-100",
+          "model": {
+            "conditions": [
+              {
+                "evaluator": {
+                  "params": [
+                    0
+                  ],
+                  "type": "gt"
+                },
+                "operator": {
+                  "type": "and"
+                },
+                "query": {
+                  "params": [
+                    "C"
+                  ]
+                },
+                "reducer": {
+                  "params": [],
+                  "type": "last"
+                },
+                "type": "query"
+              }
+            ],
+            "datasource": {
+              "type": "__expr__",
+              "uid": "-100"
+            },
+            "expression": "reducer",
+            "intervalMs": 1000,
+            "maxDataPoints": 43200,
+            "refId": "C",
+            "type": "threshold"
+          }
+        }
+      ]
+    }
+  ]
+}

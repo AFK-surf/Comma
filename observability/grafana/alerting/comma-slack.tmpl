@@ -1,0 +1,25 @@
+{{ define "comma.slack.title" -}}
+{{- if eq .Status "firing" -}}告警触发｜{{- else -}}已恢复｜{{- end -}}{{ index .CommonLabels "alertname" }}
+{{- end }}
+
+{{ define "comma.slack.message" -}}
+{{- if eq .Status "firing" }}
+*当前状态：* 告警触发（FIRING）
+{{- else }}
+*当前状态：* 已恢复（RESOLVED）
+{{- end }}
+*来源：* Grafana · staging business signal
+
+{{ range .Alerts -}}
+*实例状态：* {{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }}
+{{ with index .Labels "workload" }}*Workload：* `{{ . }}`
+{{ end -}}
+*影响：* {{ index .Annotations "impact" }}
+*证据：* {{ index .Annotations "evidence" }}
+*尚未确认：* {{ index .Annotations "unknown" }}
+*立即检查：* {{ index .Annotations "action" }}
+*判定口径：* {{ index .Annotations "criteria" }}
+*规则 ID：* `{{ index .Annotations "policy_id" }}`
+*入口：* {{ if .GeneratorURL }}<{{ .GeneratorURL }}|当前告警>{{ end }}{{ if .PanelURL }} · <{{ .PanelURL }}|Grafana Panel>{{ end }}{{ if .DashboardURL }} · <{{ .DashboardURL }}|Dashboard>{{ end }} · <{{ index .Annotations "logs_url" }}|Logs> · <{{ index .Annotations "deployment_url" }}|Deployment>
+{{ end -}}
+{{- end }}

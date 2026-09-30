@@ -1,0 +1,89 @@
+{
+  "section": "CRS-05",
+  "name": "decryption-error-message",
+  "description": "Decryption error message (content container field 8) built from an undecryptable original message, and its plaintext wrapper = 0xC0 || content container{field 8 = decryption error message} || 0x80. plaintext_content_body is the wrapper without the 0xC0 byte (what is padded-stripped and parsed as a content container). All values observed from the oracle. The reason field of the negative case is a neutral paraphrase of the oracle result, not its text.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "1:1 message original: ratchet key taken from the message",
+      "inputs": {
+        "original_message": "440a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b6296310001800225047d0ffd58efed27a65b4735f9127022bf1afff9a941ba35f60d5b6e53b1b89ffd8a6497a2032a3a6fede5abfb601cdcc466b03bbe5c824e18a293b8b44bd45452274da13971e93dfbaa378a3a10e37c72a25010102010105a073a21c1f320a14803a976faa81dc4f84fe28d65ff7e9ddb72af1be64ba14696d2cbe6fd38a35",
+        "original_kind": "one-to-one",
+        "original_timestamp": 1700000000123,
+        "original_sender_device_id": 2
+      },
+      "outputs": {
+        "decryption_error_message": "0a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b6296310fbd095ffbc311802",
+        "ratchet_key": "0504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b62963",
+        "plaintext_content": "c0422c0a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b6296310fbd095ffbc31180280",
+        "plaintext_content_body": "422c0a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b6296310fbd095ffbc31180280",
+        "reparsed_timestamp": 1700000000123,
+        "reparsed_device_id": 2
+      }
+    },
+    {
+      "label": "pre-key message original: ratchet key taken from the embedded 1:1 message",
+      "inputs": {
+        "original_message": "44080b122105702f3283a0edf04a5909de1ad3cfbb7f07c017ed9b8a7fc3c8b3e555280fa81e1a21055e9dceb1b7fa0408242604db63c3176b7775e6ea31cd6b2abc3c6693bb49590022cf01440a2105db75f0da2f99afed92cfd02ac45ca8f4fa0825e821a0e97a19c26029277f2a3c100018002250938542fcf4a4c773e3bae57c4da6dded6a9e422f8807c7d1f57ebaaadd88dbd94086c7915f232d09c8ee09f64d1732a85f383e578ddbbd8bee907badc0e8012ecd5e598d3eea52fc2fb27a32099a8b512a2501010101001bbbafbc7e71bdd84482be90ff191a9a4d21c2604ab5aa2f10802e052840cdf7322400000000000000400080000000000000a102004fcfa7c82f6c4a5b8f3e1b2c3d4e5f6001e93eaecca920e1fa28d7083007380d42a10c080f7b53539f3075ea20492ac98a453dd57e125ab719e2a8735c59b5f878377859509e359acaec20812bab7ee82e59edfa32779d87330287bda9b7eafe551a6b95422bd461bbfb1e1fd887999a1eac80efa17211856fd97fbe8837032ceb67eb66365020ae0b309a7320af68ff04a21732ade8b639d1b31175824273cbc3f0588a5883759873226eaec727a812a7eafd9a89f27194c258950e17b4d756af65a8866f006dd98cdcd69e6d6f86a6a6b0e48369c2f7ad6a8b5c188a08f3aefcd82c713145e88aaa8757d09d0b4a872fb664f09cfb87cb30b9b2bedccaad3a8527d8d9dc856855a542b87725b06501cc20fada4056793eac332538594552bbd1a9c17308088e9e1f76c1803884d958bf04cd78201444a874a445412aba2c318be3a1967dd0d4e197e4ff1bff63876344a7a5fc804a00397eb6206bff5eb5f824312d31c051feeb55d27268d04091e3cf7d25884f77641aa9320b59d41107c71b5534ffb3fe6444d3f25a6d8473b37b851caa827ed8acaf9f092814d7622c9af980e769d9cf51b6e870470e018a11a12742cff3329dcbead91ab0128cfe10772aa212305665b8017c353822d3c79ce8f6cb707f5a49a619c71b5f007c131e3e06da3554b190d6248057fb5d57a901cf17932e678a4f89c2eca1b90a5cae9088d9d61a82e9b15661ccbc578c0f5eb2c13ad977da9294596bb4ad2b46250363fffed3566ee6c34cb37b2ce5d333d2bbee062c5ce011afe8ef3186f76fa0f1f8974b65005f306be4fa4e07c0e1d347125e91978d9b80edf11c9a1178d0aafe1a689d89fcd4ffa5041540c8d6fcd64d97bac3908ed16098a082f0898678f4d3908c1d8dfd86c541b5e14f983d3e52a349dc7d1b645ffc6e46cc633e4de482578a2bc1083250d34cf98d1ea0b4d5b3af8382146f556fbd243f26e7394cdc6d1815f0ef191998cc1693523addb48ea57369f09d4e3ae4161639553a19f521e6b728f6ca09a3892ae27ee6d11618a2a7f82b5323bd65a7555313a158f419f84574dcd889bf61f667dc2fe72d6279bd22ab69f1512c6c1c75f69d75632af088e4bcbd53f02072cebc7de5d2e3071a516e10daeffbabfc0e945949975361152406d0649aefb53e889e86438b0d3cb0328147f02d7f591f0d000ad606cccb60abb822ea9b99f7222f2d5e4b6d3d501d55f46d9ad71413a0dbb5ac5c7d6707c32991d9806acc66df3b2ffbd0ffc18aa1069a46d66b5c174519a596291d9c91527f9f197ab717cea7967d4c0867dc24edb477817a8d25d7e6b48d888b91849acfb6e31910a647fd254a41c3b19060452a1c42851aecab1ed79c3af78c6601ca0f5b58d23b70401c958eedc34b696ff13817e4a27bc7acda6bd130954c30eb85fa74346a799143f21d20eec339fba38b9bff5bd392de8e40dc1668f411030441db6524a832ea441fcb9eb835401930c306b581462bb5f94cd367f7e593199b4fd0cf2847dc09dae7c8e4e6436eafcb75fde0a7d6feb4fb38a54540620543f59022b53e5ea90efc34a2bd281faf1642796998be64bfaffc5b1057d0d028d5e90b7ed3606d22467734d2e08db1bbba9b04cdc814777a0acdda29f9776b7d95ee47d574bee7abb3d5204245f9a53b2647cc8c51ca77eda0e97c20662e39e4948da0eef60306f93eb9bdbaf1d031e3607523b16582c7f1d96ed78d6caf7c253bbc5516deea6208b2fde15cd87b759c0357b824d6adf1aba337e516bdca8a58e9303cbff28fb484f25f66d524a71c245e27ebb8bcc858cd32ae6b76abdf08ad52488a6f518b2395ba3b176fa01b177b7005a623bb4b30d59934f8d89222dafddb3c6d9ed3560f34a720b9f887bb8d11989b00b437f9edda313aef50ca2e7bbc1bc42e0a6607af21f6133fac1aecc4e48e24243817c7c88aa1f782123c0a0d954b6bf874730c60b4515b7965bba46edb1262748bc554fb5038470edc7ea831358da48dbb67602f4285b4cab3d8ee890ab731394e57e4dc975b024e0ac8a488c9a4e8b75a8f8823c013e104119fd1893cbb47aa1ccaa7a9896c6e25672bb5b892a7d330632d791ad12dbd10fd4d5c91998be82fd3bacbba947fa331405e72180ac580f931dd66f28dc497d52ddfd5daa2a67a4e6342910e060ced80baf4b8f1f974daf188a1f42721ee562e095726945a2fc78f30b0cf5968c9356e4a6f4dbdf3ed43d92d855fa8a5902ce0aa09",
+        "original_kind": "pre-key",
+        "original_timestamp": 1700000000000,
+        "original_sender_device_id": 2
+      },
+      "outputs": {
+        "decryption_error_message": "0a2105db75f0da2f99afed92cfd02ac45ca8f4fa0825e821a0e97a19c26029277f2a3c1080d095ffbc311802",
+        "ratchet_key": "05db75f0da2f99afed92cfd02ac45ca8f4fa0825e821a0e97a19c26029277f2a3c",
+        "plaintext_content": "c0422c0a2105db75f0da2f99afed92cfd02ac45ca8f4fa0825e821a0e97a19c26029277f2a3c1080d095ffbc31180280",
+        "plaintext_content_body": "422c0a2105db75f0da2f99afed92cfd02ac45ca8f4fa0825e821a0e97a19c26029277f2a3c1080d095ffbc31180280",
+        "reparsed_timestamp": 1700000000000,
+        "reparsed_device_id": 2
+      }
+    },
+    {
+      "label": "sender-key message original: no ratchet key",
+      "inputs": {
+        "original_message": "330a105a5a5a5a11114222833344445555666610cfb6ef2718002250cb88f14f25ac20b2c57c439f21fa00e6a5af43a53930db828fdd1fdfa4a120dfdb55a38570e0b0918957da2d50081048a92d35653b1124155749432496972c94410835b372a63e50eac74ed20eda60da854b17475d34f64552a51cbf0c4273c7d3816086d9099e7119ec83268d2ba722c8da408a018398000b7b573926c7b5aebda6fcf6670b6a5f974c9f6a571d8107",
+        "original_kind": "sender-key",
+        "original_timestamp": 1700000000456,
+        "original_sender_device_id": 2
+      },
+      "outputs": {
+        "decryption_error_message": "10c8d395ffbc311802",
+        "ratchet_key": null,
+        "plaintext_content": "c0420910c8d395ffbc31180280",
+        "plaintext_content_body": "420910c8d395ffbc31180280",
+        "reparsed_timestamp": 1700000000456,
+        "reparsed_device_id": 2
+      }
+    },
+    {
+      "label": "device id 127, timestamp 0",
+      "inputs": {
+        "original_message": "440a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b6296310001800225047d0ffd58efed27a65b4735f9127022bf1afff9a941ba35f60d5b6e53b1b89ffd8a6497a2032a3a6fede5abfb601cdcc466b03bbe5c824e18a293b8b44bd45452274da13971e93dfbaa378a3a10e37c72a25010102010105a073a21c1f320a14803a976faa81dc4f84fe28d65ff7e9ddb72af1be64ba14696d2cbe6fd38a35",
+        "original_kind": "one-to-one",
+        "original_timestamp": 0,
+        "original_sender_device_id": 127
+      },
+      "outputs": {
+        "decryption_error_message": "0a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b629631000187f",
+        "ratchet_key": "0504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b62963",
+        "plaintext_content": "c042270a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b629631000187f80",
+        "plaintext_content_body": "42270a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b629631000187f80",
+        "reparsed_timestamp": 0,
+        "reparsed_device_id": 127
+      }
+    },
+    {
+      "label": "negative: a plaintext wrapper original is refused",
+      "inputs": {
+        "original_message": "c0422c0a210504487ef2bd8b0ab5af991caee8c4e3b1e1fd2f7cc72108c7f9b80f5869b6296310fbd095ffbc31180280",
+        "original_kind": "plaintext-wrapper",
+        "original_timestamp": 1,
+        "original_sender_device_id": 1
+      },
+      "outputs": {
+        "error": true,
+        "reason": "refused: the original is a plaintext wrapper, which is not encrypted"
+      }
+    }
+  ]
+}

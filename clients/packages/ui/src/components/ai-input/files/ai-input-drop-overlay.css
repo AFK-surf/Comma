@@ -1,0 +1,18 @@
+/**
+ * Drop overlay — opaque panel fill so the composer does not show through, plus
+ * a brand wash painted over the type icons (Figma 1180:11503). Product uses
+ * 20% instead of the file's 10%. Copy sits above the wash.
+ *
+ * Inner radius is concentric with the existing `rounded-3xl` shell minus the
+ * `inset-md` (8px) gap. Figma 1180:11232 uses radius-4xl/24 outer + 3xl/20
+ * inner; the production shell stays 3xl/20, so the dashed frame uses 12px.
+ */
+.ai-input-drop-overlay {
+  background: var(--color-ai-input-panel-bg-input);
+  border-radius: calc(var(--radius-3xl) - var(--spacing-md));
+  isolation: isolate;
+}
+
+.ai-input-drop-overlay-wash {
+  background: color-mix(in srgb, var(--color-bg-brand-solid) 20%, transparent);
+}

@@ -1,0 +1,9 @@
+account_id          = "0367b0648b476f564267fd6f4c2d515e"
+compatibility_date  = "2026-03-24"
+compatibility_flags = ["nodejs_als"]
+main                = ".svelte-kit/cloudflare/_worker.js"
+name                = "e2e-reports"
+
+[assets]
+binding   = "ASSETS"
+directory = ".svelte-kit/cloudflare"

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Focus ring E2E fixture</title>
+  </head>
+  <body>
+    <!-- Pressed first so the page is in keyboard modality: Chromium only paints
+         its own focus ring on programmatic focus once a key has been used. -->
+    <button data-testid="seed" type="button">Seed keyboard modality</button>
+
+    <!-- React Aria stamps [data-rac] on the elements it renders, and adds
+         [data-focus-visible] only when its own modality tracking calls the
+         focus keyboard-driven. The first of these is the disagreement the
+         stylesheet suppresses; the rest must keep their rings. -->
+    <button data-rac data-testid="rac-pointer" type="button">
+      React Aria, pointer
+    </button>
+    <button data-focus-visible data-rac data-testid="rac-keyboard" type="button">
+      React Aria, keyboard
+    </button>
+    <button data-testid="plain" type="button">Plain button</button>
+    <a class="markdown-stream-link" data-testid="link" href="#seed">Markdown link</a>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

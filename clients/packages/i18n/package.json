@@ -1,0 +1,34 @@
+{
+  "name": "@comma/i18n",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./react": {
+      "types": "./src/react.tsx",
+      "default": "./src/react.tsx"
+    },
+    "./vite": {
+      "types": "./src/vite.ts",
+      "default": "./src/vite.ts"
+    }
+  },
+  "scripts": {
+    "compile": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --strategy globalVariable baseLocale --emit-ts-declarations",
+    "check": "node ./scripts/check-i18n.mjs"
+  },
+  "dependencies": {
+    "@inlang/paraglide-js": "2.21.0",
+    "@inlang/plugin-m-function-matcher": "2.2.6",
+    "@inlang/plugin-message-format": "4.4.0",
+    "react": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "typescript": "^6.0.3"
+  }
+}

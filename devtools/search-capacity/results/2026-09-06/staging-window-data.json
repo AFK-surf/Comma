@@ -1,0 +1,1784 @@
+{
+  "environment": "staging",
+  "inventory": [
+    {
+      "name": "server",
+      "rows": [
+        {
+          "observed_at": "2026-09-06 06:41:51",
+          "version": "26.4.1.2212",
+          "window_end_us": 1788676911825382
+        }
+      ]
+    },
+    {
+      "name": "physical_parts",
+      "rows": [
+        {
+          "active_parts": 33,
+          "bytes_on_disk": 74161021,
+          "part_types": [
+            "Compact"
+          ],
+          "physical_rows": 123084,
+          "table": "slack_messages"
+        },
+        {
+          "active_parts": 56,
+          "bytes_on_disk": 83235708,
+          "part_types": [
+            "Compact"
+          ],
+          "physical_rows": 58273,
+          "table": "slack_semantic_documents"
+        },
+        {
+          "active_parts": 49,
+          "bytes_on_disk": 22858578,
+          "part_types": [
+            "Compact"
+          ],
+          "physical_rows": 2091,
+          "table": "slack_semantic_files"
+        },
+        {
+          "active_parts": 28,
+          "bytes_on_disk": 52644375,
+          "part_types": [
+            "Compact"
+          ],
+          "physical_rows": 121362,
+          "table": "slack_message_payloads"
+        }
+      ]
+    },
+    {
+      "name": "canonical_by_workspace",
+      "rows": [
+        {
+          "channels": 38,
+          "file_references": 6442,
+          "first_day": "2025-10-13",
+          "last_day": "2026-09-06",
+          "messages": 106584,
+          "rows_14d": 14389,
+          "rows_180d": 87406,
+          "rows_1d": 319,
+          "rows_30d": 23216,
+          "rows_365d": 106584,
+          "rows_60d": 31939,
+          "rows_7d": 7262,
+          "rows_90d": 38157,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channels": 2,
+          "file_references": 782,
+          "first_day": "2026-04-01",
+          "last_day": "2026-09-04",
+          "messages": 11560,
+          "rows_14d": 2605,
+          "rows_180d": 11560,
+          "rows_1d": 0,
+          "rows_30d": 4508,
+          "rows_365d": 11560,
+          "rows_60d": 5648,
+          "rows_7d": 1260,
+          "rows_90d": 6395,
+          "tenant_id": "ten1_2094797960708620288",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channels": 1,
+          "file_references": 33,
+          "first_day": "2026-06-22",
+          "last_day": "2026-09-02",
+          "messages": 559,
+          "rows_14d": 246,
+          "rows_180d": 559,
+          "rows_1d": 0,
+          "rows_30d": 246,
+          "rows_365d": 559,
+          "rows_60d": 268,
+          "rows_7d": 159,
+          "rows_90d": 559,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T0B1K42MDC1"
+        }
+      ]
+    },
+    {
+      "name": "slack_semantic_documents",
+      "rows": [
+        {
+          "channels": 36,
+          "first_day": "2025-10-13",
+          "indexed_records": 57812,
+          "indexed_units": 70776,
+          "last_day": "2026-09-06",
+          "tenant_id": "ten1_2075863631777492992",
+          "units_14d": 16228,
+          "units_180d": 67688,
+          "units_1d": 409,
+          "units_30d": 24184,
+          "units_365d": 70776,
+          "units_60d": 30805,
+          "units_7d": 8740,
+          "units_90d": 35213,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channels": 1,
+          "first_day": "2026-06-22",
+          "indexed_records": 461,
+          "indexed_units": 809,
+          "last_day": "2026-09-02",
+          "tenant_id": "ten1_2075863631777492992",
+          "units_14d": 424,
+          "units_180d": 809,
+          "units_1d": 0,
+          "units_30d": 424,
+          "units_365d": 809,
+          "units_60d": 458,
+          "units_7d": 303,
+          "units_90d": 809,
+          "workspace_id": "T0B1K42MDC1"
+        }
+      ]
+    },
+    {
+      "name": "slack_semantic_files",
+      "rows": [
+        {
+          "channels": 24,
+          "first_day": "2025-10-13",
+          "indexed_records": 2036,
+          "indexed_units": 18980,
+          "last_day": "2026-09-06",
+          "tenant_id": "ten1_2075863631777492992",
+          "units_14d": 6102,
+          "units_180d": 18407,
+          "units_1d": 223,
+          "units_30d": 8938,
+          "units_365d": 18980,
+          "units_60d": 11424,
+          "units_7d": 2170,
+          "units_90d": 13276,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channels": 1,
+          "first_day": "2026-06-22",
+          "indexed_records": 23,
+          "indexed_units": 976,
+          "last_day": "2026-09-02",
+          "tenant_id": "ten1_2075863631777492992",
+          "units_14d": 939,
+          "units_180d": 976,
+          "units_1d": 0,
+          "units_30d": 939,
+          "units_365d": 976,
+          "units_60d": 939,
+          "units_7d": 859,
+          "units_90d": 976,
+          "workspace_id": "T0B1K42MDC1"
+        }
+      ]
+    }
+  ],
+  "details": [
+    {
+      "name": "runtime",
+      "environment": "staging",
+      "semantic_active": true
+    },
+    {
+      "name": "largest_channels",
+      "rows": [
+        {
+          "channel_id": "C09KVPBMLJ3",
+          "file_references": 1954,
+          "first_day": "2025-10-14",
+          "messages": 26853,
+          "messages_14d": 1,
+          "messages_90d": 817,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09LB7V1WGJ",
+          "file_references": 914,
+          "first_day": "2025-10-14",
+          "messages": 21222,
+          "messages_14d": 0,
+          "messages_90d": 297,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0BAJ7A71H8",
+          "file_references": 333,
+          "first_day": "2026-06-15",
+          "messages": 14678,
+          "messages_14d": 5321,
+          "messages_90d": 14678,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0AQ0C0KVMH",
+          "file_references": 781,
+          "first_day": "2026-04-01",
+          "messages": 11755,
+          "messages_14d": 2800,
+          "messages_90d": 6590,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0AQ0C0KVMH",
+          "file_references": 782,
+          "first_day": "2026-04-01",
+          "messages": 11558,
+          "messages_14d": 2603,
+          "messages_90d": 6393,
+          "tenant_id": "ten1_2094797960708620288",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09L0TAN31T",
+          "file_references": 961,
+          "first_day": "2025-10-13",
+          "messages": 8912,
+          "messages_14d": 752,
+          "messages_90d": 2661,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09LH8P4M0R",
+          "file_references": 278,
+          "first_day": "2025-10-13",
+          "messages": 4461,
+          "messages_14d": 232,
+          "messages_90d": 1187,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0BBJS6BC84",
+          "file_references": 360,
+          "first_day": "2026-06-18",
+          "messages": 4419,
+          "messages_14d": 2175,
+          "messages_90d": 4419,
+          "tenant_id": "ten1_2075863631777492992",
+          "workspace_id": "T09LH8NN1QR"
+        }
+      ]
+    },
+    {
+      "name": "file_unit_kinds",
+      "rows": [
+        {
+          "kind": "document_text",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 11324,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "kind": "ocr_text",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 3417,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "kind": "asr_transcript",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 2454,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "kind": "image",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 1511,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "kind": "document_text",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 957,
+          "workspace_id": "T0B1K42MDC1"
+        },
+        {
+          "kind": "video_segment",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 274,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "kind": "ocr_text",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 10,
+          "workspace_id": "T0B1K42MDC1"
+        },
+        {
+          "kind": "image",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 7,
+          "workspace_id": "T0B1K42MDC1"
+        },
+        {
+          "kind": "video_segment",
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 2,
+          "workspace_id": "T0B1K42MDC1"
+        }
+      ]
+    },
+    {
+      "error": {
+        "status": 500,
+        "detail": "{\"exception\": \"Code: 158. DB::Exception: Limit for rows (controlled by 'max_rows_to_read' setting) exceeded, max rows: 1.00 million, current rows: 1.02 million. (TOO_MANY_ROWS) (version 26.4.1.2212 (official build))\"}\n"
+      },
+      "name": "recent_semantic_query_limits"
+    }
+  ],
+  "budget_discovery": [
+    {
+      "name": "deployed_budget_code",
+      "status": "no abstract code"
+    },
+    {
+      "name": "largest_indexed_channels",
+      "rows": [
+        {
+          "channel_id": "C0BAJ7A71H8",
+          "file_units": 1696,
+          "largest_file_units": 321,
+          "records": 7951,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 12108,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09KVPBMLJ3",
+          "file_units": 1682,
+          "largest_file_units": 252,
+          "records": 9022,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 11487,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09LB7V1WGJ",
+          "file_units": 848,
+          "largest_file_units": 531,
+          "records": 8441,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 11113,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0AQ0C0KVMH",
+          "file_units": 1668,
+          "largest_file_units": 382,
+          "records": 6855,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 9521,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09L0TAN31T",
+          "file_units": 1363,
+          "largest_file_units": 51,
+          "records": 7223,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 8951,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0BBJS6BC84",
+          "file_units": 2869,
+          "largest_file_units": 673,
+          "records": 3911,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 7417,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C0AK914ULBE",
+          "file_units": 1824,
+          "largest_file_units": 330,
+          "records": 3370,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 6681,
+          "workspace_id": "T09LH8NN1QR"
+        },
+        {
+          "channel_id": "C09LH8P4M0R",
+          "file_units": 1417,
+          "largest_file_units": 90,
+          "records": 3873,
+          "tenant_id": "ten1_2075863631777492992",
+          "units": 6108,
+          "workspace_id": "T09LH8NN1QR"
+        }
+      ]
+    }
+  ],
+  "window_totals": [
+    {
+      "days": 7,
+      "messages": 8681,
+      "indexed_units": 12072
+    },
+    {
+      "days": 14,
+      "messages": 17240,
+      "indexed_units": 23693
+    },
+    {
+      "days": 30,
+      "messages": 27970,
+      "indexed_units": 34485
+    },
+    {
+      "days": 60,
+      "messages": 37855,
+      "indexed_units": 43626
+    },
+    {
+      "days": 90,
+      "messages": 45111,
+      "indexed_units": 50274
+    },
+    {
+      "days": 180,
+      "messages": 99525,
+      "indexed_units": 87880
+    },
+    {
+      "days": 365,
+      "messages": 118703,
+      "indexed_units": 91541
+    }
+  ],
+  "representative_sql_replay": [
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "218903317",
+        "memory_usage": "29512791",
+        "read_bytes": "110145409",
+        "read_rows": "48712",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "48712",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 7,
+      "channel_id": "C0BAJ7A71H8",
+      "elapsed_ms": 336,
+      "hits": 20,
+      "scenario": "recent_busy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "343255623",
+        "memory_usage": "48905998",
+        "read_bytes": "121696068",
+        "read_rows": "51903",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "51903",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 14,
+      "channel_id": "C0BAJ7A71H8",
+      "elapsed_ms": 390,
+      "hits": 20,
+      "scenario": "recent_busy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "359505732",
+        "memory_usage": "65810814",
+        "read_bytes": "139665946",
+        "read_rows": "59406",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "59406",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 30,
+      "channel_id": "C0BAJ7A71H8",
+      "elapsed_ms": 406,
+      "hits": 20,
+      "scenario": "recent_busy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "error": "{\"exception\": \"Code: 158. DB::Exception: Limit for rows or bytes to read exceeded, max rows: 65.54 thousand, current rows: 71.09 thousand: While executing MergeTreeSelect(pool: ReadPoolInOrder, algorithm: InOrder). (TOO_MANY_ROWS) (version 26.4.1.2212 (official build))\"}\n",
+      "ok": false,
+      "status": 500,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "days": 60,
+      "channel_id": "C0BAJ7A71H8",
+      "elapsed_ms": 396,
+      "scenario": "recent_busy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "205351708",
+        "memory_usage": "47176798",
+        "read_bytes": "137034915",
+        "read_rows": "51919",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "51919",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 7,
+      "channel_id": "C0AQ0C0KVMH",
+      "elapsed_ms": 253,
+      "hits": 20,
+      "scenario": "previous_failure",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "244909049",
+        "memory_usage": "52786732",
+        "read_bytes": "144963051",
+        "read_rows": "55359",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "55359",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 14,
+      "channel_id": "C0AQ0C0KVMH",
+      "elapsed_ms": 307,
+      "hits": 20,
+      "scenario": "previous_failure",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "241190919",
+        "memory_usage": "61451471",
+        "read_bytes": "144963051",
+        "read_rows": "55359",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "55359",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 30,
+      "channel_id": "C0AQ0C0KVMH",
+      "elapsed_ms": 288,
+      "hits": 20,
+      "scenario": "previous_failure",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "error": "{\"exception\": \"Code: 158. DB::Exception: Limit for rows or bytes to read exceeded, max rows: 65.54 thousand, current rows: 65.86 thousand: While executing MergeTreeSelect(pool: ReadPoolInOrder, algorithm: InOrder). (TOO_MANY_ROWS) (version 26.4.1.2212 (official build))\"}\n",
+      "ok": false,
+      "status": 500,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "days": 60,
+      "channel_id": "C0AQ0C0KVMH",
+      "elapsed_ms": 272,
+      "scenario": "previous_failure",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "24547048",
+        "memory_usage": "19400087",
+        "read_bytes": "195396",
+        "read_rows": "3428",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "3428",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 7,
+      "channel_id": "C09KVPBMLJ3",
+      "elapsed_ms": 70,
+      "hits": 0,
+      "scenario": "largest_history",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "51124781",
+        "memory_usage": "25128644",
+        "read_bytes": "28485498",
+        "read_rows": "14425",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "14425",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 14,
+      "channel_id": "C09KVPBMLJ3",
+      "elapsed_ms": 104,
+      "hits": 1,
+      "scenario": "largest_history",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "69120122",
+        "memory_usage": "42255911",
+        "read_bytes": "41434410",
+        "read_rows": "14425",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "14425",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 30,
+      "channel_id": "C09KVPBMLJ3",
+      "elapsed_ms": 117,
+      "hits": 20,
+      "scenario": "largest_history",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "95554229",
+        "memory_usage": "58124081",
+        "read_bytes": "74080228",
+        "read_rows": "27583",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "27583",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "channel_id": "C09KVPBMLJ3",
+      "elapsed_ms": 151,
+      "hits": 20,
+      "scenario": "largest_history",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "138140187",
+        "memory_usage": "74430510",
+        "read_bytes": "104123686",
+        "read_rows": "42878",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "42878",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 90,
+      "channel_id": "C09KVPBMLJ3",
+      "elapsed_ms": 185,
+      "hits": 20,
+      "scenario": "largest_history",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "error": "{\"exception\": \"Code: 158. DB::Exception: Limit for rows or bytes to read exceeded, max rows: 65.54 thousand, current rows: 68.59 thousand: While executing MergeTreeSelect(pool: PrefetchedReadPool, algorithm: Thread). (TOO_MANY_ROWS) (version 26.4.1.2212 (official build))\"}\n",
+      "ok": false,
+      "status": 500,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "days": 180,
+      "channel_id": "C09KVPBMLJ3",
+      "elapsed_ms": 134,
+      "scenario": "largest_history",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "125518831",
+        "memory_usage": "45482359",
+        "read_bytes": "80370951",
+        "read_rows": "34238",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "34238",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 7,
+      "channel_id": "C0BBJS6BC84",
+      "elapsed_ms": 182,
+      "hits": 20,
+      "scenario": "media_heavy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "208205078",
+        "memory_usage": "34116347",
+        "read_bytes": "99074883",
+        "read_rows": "38967",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "38967",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 14,
+      "channel_id": "C0BBJS6BC84",
+      "elapsed_ms": 256,
+      "hits": 20,
+      "scenario": "media_heavy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "221361045",
+        "memory_usage": "41910495",
+        "read_bytes": "117025988",
+        "read_rows": "46099",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "46099",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 30,
+      "channel_id": "C0BBJS6BC84",
+      "elapsed_ms": 277,
+      "hits": 20,
+      "scenario": "media_heavy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "243995013",
+        "memory_usage": "58045717",
+        "read_bytes": "148927498",
+        "read_rows": "61756",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "61756",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "days": 60,
+      "channel_id": "C0BBJS6BC84",
+      "elapsed_ms": 293,
+      "hits": 20,
+      "scenario": "media_heavy",
+      "window_end_us": 1788677346364173
+    },
+    {
+      "error": "{\"exception\": \"Code: 158. DB::Exception: Limit for rows or bytes to read exceeded, max rows: 65.54 thousand, current rows: 65.67 thousand: While executing MergeTreeSelect(pool: ReadPoolInOrder, algorithm: InOrder). (TOO_MANY_ROWS) (version 26.4.1.2212 (official build))\"}\n",
+      "ok": false,
+      "status": 500,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "days": 90,
+      "channel_id": "C0BBJS6BC84",
+      "elapsed_ms": 275,
+      "scenario": "media_heavy",
+      "window_end_us": 1788677346364173
+    }
+  ],
+  "all_indexed_channels_30d": [
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "77901784",
+        "memory_usage": "42278535",
+        "read_bytes": "41434410",
+        "read_rows": "14425",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "14425",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C09KVPBMLJ3",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 132,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "178573774",
+        "memory_usage": "42775117",
+        "read_bytes": "101188532",
+        "read_rows": "35832",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35832",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C09L0TAN31T",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 228,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "29385218",
+        "memory_usage": "20022750",
+        "read_bytes": "448695",
+        "read_rows": "8159",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "8159",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C09LB7V1WGJ",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 73,
+      "hits": 0,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "138870484",
+        "memory_usage": "21531268",
+        "read_bytes": "83199477",
+        "read_rows": "35828",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35828",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C09LH8P4M0R",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 188,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "158730232",
+        "memory_usage": "12098725",
+        "read_bytes": "89625802",
+        "read_rows": "35829",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35829",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C09LNPCGU3E",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 219,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "167194272",
+        "memory_usage": "10922891",
+        "read_bytes": "96025898",
+        "read_rows": "35828",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35828",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C09SSC9Q5HS",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 212,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "131889914",
+        "memory_usage": "19466046",
+        "read_bytes": "87317230",
+        "read_rows": "35828",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35828",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0AAWU2ABMY",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 187,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "115038316",
+        "memory_usage": "11284849",
+        "read_bytes": "68776442",
+        "read_rows": "35828",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35828",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0AK914ULBE",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 163,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "145811856",
+        "memory_usage": "28938577",
+        "read_bytes": "96897429",
+        "read_rows": "35828",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "35828",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0ALMF2AD70",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 204,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "254761914",
+        "memory_usage": "59867318",
+        "read_bytes": "145069423",
+        "read_rows": "55389",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "55389",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0AQ0C0KVMH",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 322,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "113176975",
+        "memory_usage": "10517422",
+        "read_bytes": "60517889",
+        "read_rows": "43685",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "43685",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0AUC9J8WRZ",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 173,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "325402434",
+        "memory_usage": "59356754",
+        "read_bytes": "139793684",
+        "read_rows": "59440",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "59440",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BAJ7A71H8",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 371,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "215809934",
+        "memory_usage": "56790914",
+        "read_bytes": "117119426",
+        "read_rows": "46127",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "46127",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BBJS6BC84",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 287,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "101099013",
+        "memory_usage": "16783610",
+        "read_bytes": "55577125",
+        "read_rows": "34278",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "34278",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BBTV7KB6K",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 153,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "170417834",
+        "memory_usage": "37973490",
+        "read_bytes": "99935134",
+        "read_rows": "36240",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "36240",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BCHCQ19QA",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 239,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "62120214",
+        "memory_usage": "9889738",
+        "read_bytes": "23414357",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BEJFLJGMC",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 106,
+      "hits": 1,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "60891377",
+        "memory_usage": "9877798",
+        "read_bytes": "26242766",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BFQDZDEK1",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 136,
+      "hits": 3,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "115169274",
+        "memory_usage": "10400141",
+        "read_bytes": "61858783",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BG38ED97G",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 239,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "77999890",
+        "memory_usage": "9914888",
+        "read_bytes": "47871887",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BG5GF9FDY",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 233,
+      "hits": 2,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "29286296",
+        "memory_usage": "9224394",
+        "read_bytes": "362399",
+        "read_rows": "6625",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "6625",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BG8TEM7PD",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 73,
+      "hits": 0,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "82677338",
+        "memory_usage": "8689654",
+        "read_bytes": "51343427",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BGZL0T8AC",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 137,
+      "hits": 16,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "100000586",
+        "memory_usage": "26481512",
+        "read_bytes": "65562283",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BJ1699HSN",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 158,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "80203587",
+        "memory_usage": "18300927",
+        "read_bytes": "41854342",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BJGFCEVDW",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 128,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "54638653",
+        "memory_usage": "9867114",
+        "read_bytes": "23414357",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BL2FT2FHA",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 111,
+      "hits": 1,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "97472092",
+        "memory_usage": "10933068",
+        "read_bytes": "55039695",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BMMQ01ZGF",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 145,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "59101683",
+        "memory_usage": "9759092",
+        "read_bytes": "24811709",
+        "read_rows": "32680",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "32680",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BP6NEDS2F",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 114,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "95377723",
+        "memory_usage": "27597731",
+        "read_bytes": "60245805",
+        "read_rows": "36220",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "36220",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BPKGY2DG8",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 151,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "74384828",
+        "memory_usage": "9920652",
+        "read_bytes": "44941062",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0BSULT2PFB",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 127,
+      "hits": 4,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "71578068",
+        "memory_usage": "19214169",
+        "read_bytes": "34444188",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "C0C0C2TU9KJ",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 126,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "60803032",
+        "memory_usage": "9911726",
+        "read_bytes": "20483532",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BAYA4QF5L",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 107,
+      "hits": 5,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "97149527",
+        "memory_usage": "16335538",
+        "read_bytes": "59390153",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BB0C70U9Y",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 144,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "84385674",
+        "memory_usage": "14732981",
+        "read_bytes": "50611497",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BB0C777JN",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 146,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "27172939",
+        "memory_usage": "9201770",
+        "read_bytes": "362399",
+        "read_rows": "6625",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "6625",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BB0CC4WTU",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 79,
+      "hits": 0,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "58483377",
+        "memory_usage": "9906800",
+        "read_bytes": "20483532",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BBULGTR0Q",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 112,
+      "hits": 7,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "53686018",
+        "memory_usage": "10100611",
+        "read_bytes": "20483532",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BEG7JEUVD",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 115,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "53702769",
+        "memory_usage": "9705489",
+        "read_bytes": "21880884",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T09LH8NN1QR",
+      "days": 30,
+      "channel_id": "D0BLJRMVC6M",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 107,
+      "hits": 4,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    },
+    {
+      "ok": true,
+      "method": "repository SQL with 256 MiB patch budget; one thread; one sequential sample; synthetic valid query vector; no query encoding or provider authorization timing",
+      "summary": {
+        "elapsed_ns": "113715531",
+        "memory_usage": "60822453",
+        "read_bytes": "62041822",
+        "read_rows": "31019",
+        "result_bytes": "0",
+        "result_rows": "0",
+        "total_rows_to_read": "31019",
+        "written_bytes": "0",
+        "written_rows": "0"
+      },
+      "workspace_id": "T0B1K42MDC1",
+      "days": 30,
+      "channel_id": "C0BCAFJS1H7",
+      "tenant_id": "ten1_2075863631777492992",
+      "elapsed_ms": 169,
+      "hits": 20,
+      "scenario": "all_indexed_channels",
+      "window_end_us": 1788677539613374
+    }
+  ],
+  "deployed_budget": [
+    [
+      {
+        "arity": 5,
+        "function": "read_rows",
+        "instructions": [
+          "{:move, {:x, 1}, {:y, 3}}",
+          "{:move, {:x, 0}, {:y, 4}}",
+          "{:move, {:atom, :max_rows_to_read}, {:x, 1}}",
+          "{:move, {:integer, 65536}, {:x, 2}}",
+          "{:move, {:x, 4}, {:x, 0}}",
+          "{:line, [{:location, ~c\"lib/salix_analytics/slack_semantic_index.ex\", 394}]}",
+          "{:call_ext, 3, {:extfunc, Keyword, :get, 3}}"
+        ]
+      },
+      {
+        "arity": 5,
+        "function": "read_rows",
+        "instructions": [
+          "{:swap, {:y, 0}, {:x, 0}}",
+          "{:move, {:integer, 67108864}, {:x, 2}}",
+          "{:move, {:atom, :max_bytes_to_read}, {:x, 1}}",
+          "{:line, [{:location, ~c\"lib/salix_analytics/slack_semantic_index.ex\", 395}]}",
+          "{:call_ext, 3, {:extfunc, Keyword, :get, 3}}",
+          "{:test_heap, 14, 1}",
+          "{:put_tuple2, {:x, 0}, {:list, [atom: :max_bytes_to_read, x: 0]}}"
+        ]
+      },
+      {
+        "arity": 5,
+        "function": "read_rows",
+        "instructions": [
+          "{:call_ext, 3, {:extfunc, Keyword, :get, 3}}",
+          "{:test_heap, 14, 1}",
+          "{:put_tuple2, {:x, 0}, {:list, [atom: :max_bytes_to_read, x: 0]}}",
+          "{:put_list, {:x, 0}, {:literal, [max_memory_usage: 134217728, max_execution_time: 2, max_threads: 1, do_not_merge_across_partitions_select_final: 1, max_result_rows: 40, max_result_bytes: 2097152, read_overflow_mode: \"throw\", result_overflow_mode: \"throw\", timeout_overflow_mode: \"throw\"]}, {:x, 0}}",
+          "{:put_tuple2, {:x, 1}, {:list, [atom: :max_rows_to_read, y: 0]}}",
+          "{:put_list, {:x, 1}, {:x, 0}, {:x, 0}}",
+          "{:put_list, {:literal, {:join_use_nulls, 0}}, {:x, 0}, {:x, 0}}"
+        ]
+      },
+      {
+        "arity": 5,
+        "function": "read_rows",
+        "instructions": [
+          "{:test_heap, 14, 1}",
+          "{:put_tuple2, {:x, 0}, {:list, [atom: :max_bytes_to_read, x: 0]}}",
+          "{:put_list, {:x, 0}, {:literal, [max_memory_usage: 134217728, max_execution_time: 2, max_threads: 1, do_not_merge_across_partitions_select_final: 1, max_result_rows: 40, max_result_bytes: 2097152, read_overflow_mode: \"throw\", result_overflow_mode: \"throw\", timeout_overflow_mode: \"throw\"]}, {:x, 0}}",
+          "{:put_tuple2, {:x, 1}, {:list, [atom: :max_rows_to_read, y: 0]}}",
+          "{:put_list, {:x, 1}, {:x, 0}, {:x, 0}}",
+          "{:put_list, {:literal, {:join_use_nulls, 0}}, {:x, 0}, {:x, 0}}",
+          "{:put_list, {:literal, {:output_format_json_quote_64bit_integers, 0}}, {:x, 0}, {:x, 1}}"
+        ]
+      },
+      {
+        "arity": 5,
+        "function": "read_rows",
+        "instructions": [
+          "{:put_tuple2, {:x, 0}, {:list, [atom: :max_bytes_to_read, x: 0]}}",
+          "{:put_list, {:x, 0}, {:literal, [max_memory_usage: 134217728, max_execution_time: 2, max_threads: 1, do_not_merge_across_partitions_select_final: 1, max_result_rows: 40, max_result_bytes: 2097152, read_overflow_mode: \"throw\", result_overflow_mode: \"throw\", timeout_overflow_mode: \"throw\"]}, {:x, 0}}",
+          "{:put_tuple2, {:x, 1}, {:list, [atom: :max_rows_to_read, y: 0]}}",
+          "{:put_list, {:x, 1}, {:x, 0}, {:x, 0}}",
+          "{:put_list, {:literal, {:join_use_nulls, 0}}, {:x, 0}, {:x, 0}}",
+          "{:put_list, {:literal, {:output_format_json_quote_64bit_integers, 0}}, {:x, 0}, {:x, 1}}",
+          "{:move, {:y, 2}, {:x, 0}}"
+        ]
+      }
+    ]
+  ],
+  "deployed_wrapper": [
+    [
+      {
+        "arity": 4,
+        "function": "read_rows",
+        "instructions": [
+          "{:label, 151}",
+          "{:line, [{:location, ~c\"lib/salix_analytics/slack_semantic_index.ex\", 388}]}",
+          "{:func_info, {:atom, SalixAnalytics.SlackSemanticIndex}, {:atom, :read_rows}, 4}",
+          "{:label, 152}",
+          "{:move, nil, {:x, 4}}",
+          "{:call_only, 5, {SalixAnalytics.SlackSemanticIndex, :read_rows, 5}}"
+        ]
+      }
+    ]
+  ],
+  "deployed_read_call": [
+    [
+      {
+        "arity": 7,
+        "function": "read",
+        "instructions": [
+          "{:move, {:y, 2}, {:x, 3}}",
+          "{:move, {:y, 7}, {:x, 1}}",
+          "{:move, {:y, 8}, {:x, 0}}",
+          "{:init_yregs, {:list, [y: 2, y: 7, y: 8]}}",
+          "{:line, [{:location, ~c\"lib/salix_analytics/slack_semantic_index.ex\", 369}]}",
+          "{:call, 4, {SalixAnalytics.SlackSemanticIndex, :read_rows, 4}}",
+          "{:move, {:x, 0}, {:y, 8}}"
+        ]
+      }
+    ]
+  ]
+}

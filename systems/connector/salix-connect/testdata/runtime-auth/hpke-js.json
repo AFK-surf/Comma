@@ -1,0 +1,33 @@
+{
+  "Public": "BHFY8e2c7CYswXmFohsVmnaK4jSgK61jsjFEMa/BHH1vdxvRL73zwrt1++N62uEVbAZZT1Qtwl4u5rg8v7ATikI=",
+  "Private": "Er3Z2k4Z/pDzCw3usgeXV6szrM+SSAmK46hp99GlOrA=",
+  "Enc": "BCq7jv7Qrj+CNDPCGYCWO3rdmFK8DVO9O0dxLvs8ZxWlSWRmzb94JFnFQ25fUnDk3q5IvtNYuV6zDDoMVuqksmE=",
+  "Ciphertext": "hG4YbU+aFmy4goNUgwushW3uJwFHoD0x8TEvkzEIf+SENAd11numo8qHKuY=",
+  "Info": "Y29tbWEucnVudGltZS1hdXRoLmlucHV0LnYx",
+  "AAD": "AAAAG2NvbW1hLnJ1bnRpbWUtYXV0aC5pbnB1dC52MQAAAAxhZG1pbi3mtYvor5UAAAAIdGVuYW50LWEAAAAJcHJvamVjdC1hAAAAEGNvbXB1dGVfd29ya2xvYWQAAAAKd29ya2xvYWQtYQAAAAAAAAAAAAAAAnBpAAAACm9wZW5yb3V0ZXIAAAARY3JlZGVudGlhbF9pbXBvcnQAAAAHYXBpX2tleQAAAAExAAAACWF0dGVtcHQtYQAAAAppbnN0YW5jZS1hAAAAATMAAAAMY29ubmVjdGlvbi1hAAAADGFsbG9jYXRpb24tYQAAAAExAAAACG5hdGl2ZS1hAAAABmF1dGgtYQAAAAExAAAADTE3ODg2MDMwMDAwMDA=",
+  "Plaintext": "c3ludGhldGljIGNyZWRlbnRpYWwgZml4dHVyZQ==",
+  "Context": {
+    "actor_id": "admin-测试",
+    "tenant_id": "tenant-a",
+    "project_id": "project-a",
+    "target_kind": "compute_workload",
+    "workload_id": "workload-a",
+    "device_id": "",
+    "runtime_id": "",
+    "provider": "pi",
+    "backend": "openrouter",
+    "method": "credential_import",
+    "form": "api_key",
+    "schema_version": 1,
+    "attempt_id": "attempt-a",
+    "runtime_instance_id": "instance-a",
+    "generation": "3",
+    "connection_epoch": "connection-a",
+    "allocation_id": "allocation-a",
+    "allocation_generation": "1",
+    "native_generation": "native-a",
+    "auth_epoch": "auth-a",
+    "sequence": 1,
+    "expires_at": 1788603000000
+  }
+}

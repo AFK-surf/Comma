@@ -1,0 +1,46 @@
+{
+  "data": {
+    "place": "杭州",
+    "source": "天气服务评测数据",
+    "observedAt": "2026-09-16 09:08 UTC",
+    "forecast": [
+      {
+        "date": "9月16日",
+        "condition": "多云",
+        "high": 30,
+        "low": 21,
+        "icon": "partly-cloudy",
+        "tone": "tone-warm"
+      },
+      {
+        "date": "9月17日",
+        "condition": "晴",
+        "high": 31,
+        "low": 22,
+        "icon": "sun",
+        "tone": "tone-warm"
+      },
+      {
+        "date": "9月18日",
+        "condition": "小雨",
+        "high": 26,
+        "low": 20,
+        "icon": "rain",
+        "tone": "tone-cool"
+      },
+      {
+        "date": "9月19日",
+        "condition": "阴",
+        "high": 27,
+        "low": 21,
+        "icon": "cloud",
+        "tone": "tone-cool"
+      }
+    ],
+    "labels": ["9/16", "9/17", "9/18", "9/19"],
+    "highs": [30, 31, 26, 27]
+  },
+  "html": "<section class=\"card stack\" aria-label=\"杭州未来四天天气预报\"><div class=\"widget-head\"><h2 class=\"widget-title\">杭州未来四天天气</h2><small class=\"widget-meta\">天气服务评测数据 · 观测于 2026-09-16 09:08 UTC</small></div><div class=\"widget-body stack\"><div class=\"feature motion-enter\"><comma-icon name=\"partly-cloudy\" class=\"icon-hero tone-warm\" aria-label=\"多云\"></comma-icon><div class=\"stack\"><small class=\"muted\">9月16日预报</small><strong class=\"hero\">30°<span class=\"unit\"> / 21°C</span></strong><span class=\"badge\">多云</span></div></div><p class=\"sub\">明天晴朗偏热；9月18日转小雨，最高温降至 26°C。</p><comma-chart id=\"highTrend\" aria-label=\"杭州未来四天最高气温趋势\"></comma-chart><div class=\"widget-grid compact-grid motion-stagger\"><div class=\"stack\"><small>9月16日</small><comma-icon name=\"partly-cloudy\" class=\"icon-lg tone-warm\" aria-label=\"多云\"></comma-icon><strong>多云</strong><span class=\"muted\">30 / 21°C</span></div><div class=\"stack\"><small>9月17日</small><comma-icon name=\"sun\" class=\"icon-lg tone-warm\" aria-label=\"晴\"></comma-icon><strong>晴</strong><span class=\"muted\">31 / 22°C</span></div><div class=\"stack\"><small>9月18日</small><comma-icon name=\"rain\" class=\"icon-lg tone-cool\" aria-label=\"小雨\"></comma-icon><strong>小雨</strong><span class=\"muted\">26 / 20°C</span></div><div class=\"stack\"><small>9月19日</small><comma-icon name=\"cloud\" class=\"icon-lg tone-cool\" aria-label=\"阴\"></comma-icon><strong>阴</strong><span class=\"muted\">27 / 21°C</span></div></div></div><div class=\"widget-footer\"><small class=\"muted\">预报覆盖 9月16日至9月19日；温度为最高 / 最低气温。</small></div></section>",
+  "script": "comma.chart('highTrend',{labels:comma.data.labels,values:comma.data.highs,type:'line'});",
+  "summary": "杭州未来四天天气（天气服务评测数据；观测时间 2026-09-16 09:08 UTC）：9月16日多云，30/21°C；9月17日晴，31/22°C；9月18日小雨，26/20°C；9月19日阴，27/21°C。明天晴朗偏热，9月18日转小雨并明显降温。"
+}

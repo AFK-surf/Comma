@@ -1,0 +1,2296 @@
+@import "tailwindcss";
+@import "markstream-react/index.css";
+@import "katex/dist/katex.min.css";
+@plugin "tailwindcss-animate";
+@import "./styles/theme.css";
+@import "./styles/icon-press-motion.css";
+@import "./components/ai-activity/ai-activity.css";
+@import "./components/meeting-recorder/meeting-recorder.css";
+@import "./components/ai-input/attachments/ai-input-attachment.css";
+@import "./components/ai-input/files/ai-input-drop-overlay.css";
+@import "./components/ai-input/menu/ai-input-menu.css";
+@import "./components/command-palette/command-palette.css";
+@import "./components/hover-card/hover-card.css";
+@import "./components/inline-task/inline-task.css";
+@import "./components/selection-action-bar/selection-action-bar.css";
+@import "./components/side-chat/side-chat.css";
+@import "./components/chat-panel/chat-panel-media.css";
+@import "./components/chat-panel/chat-panel-image-group.css";
+@import "./components/chat-panel/chat-panel-image-filmstrip.css";
+@import "./components/comma-mascot/comma-mascot.css";
+@import "./components/comma-mascot/comma-logo-animation.css";
+@import "./components/settings-shortcut/settings-shortcut.css";
+@import "./components/settings/DeviceSettings.css";
+@import "./components/settings/NotchWidthSetting.css";
+@import "./components/settings/CreatedSecretPanel.css";
+@import "./components/home-tasks/home-tasks.css";
+@import "./components/right-sidebar/right-sidebar-browser-toolbar.css";
+@import "./components/right-sidebar/right-sidebar-tabs.css";
+/* Composed onto elements the sheets above already style — keep it last. */
+@import "./styles/chat-notice.css";
+
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="Dark mode"], [data-theme="Dark mode"] *));
+
+@source "./";
+/* "container" occurs in code and Markdown node names, but Comma does not use
+   that layout utility. Its viewport media queries invalidate the whole
+   document at each breakpoint, including long transcripts during resize. */
+@source not inline("container");
+
+:root {
+  scrollbar-color: var(--color-scrollbar-bg) transparent;
+}
+
+/* Chromium paints its own `outline: auto` focus ring — amber, tied to no token
+   of ours — whenever native :focus-visible matches. React Aria drives our rings
+   from its own modality tracking instead, and the two heuristics disagree: a
+   pointer press React Aria reads as "not keyboard" still lands native focus, so
+   a control that resets its outline only under [data-focus-visible] is left
+   showing the UA ring alone.
+
+   Suppress exactly that disagreement, not focus rings at large. [data-rac]
+   marks React Aria's own elements, and :not([data-focus-visible]) is React Aria
+   saying this focus was not keyboard-driven — together they name the state
+   where a ring should not have been painted. Anything React Aria does not own
+   (markdown links, plain buttons, range inputs, the forced-colors fallbacks)
+   keeps the UA ring, which for those is the only focus indicator they have. */
+:where([data-rac]:focus-visible:not([data-focus-visible])) {
+  outline: none;
+}
+
+:root[data-comma-reduced-motion="true"] {
+  scroll-behavior: auto !important;
+}
+
+:root[data-comma-reduced-motion="true"] *,
+:root[data-comma-reduced-motion="true"] *::before,
+:root[data-comma-reduced-motion="true"] *::after {
+  animation-delay: 0ms !important;
+  animation-duration: 0s !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-delay: 0ms !important;
+  transition-duration: 0s !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    scroll-behavior: auto !important;
+  }
+
+  :root *,
+  :root *::before,
+  :root *::after {
+    animation-delay: 0ms !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-delay: 0ms !important;
+    transition-duration: 0s !important;
+  }
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("./fonts/InterVariable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("./fonts/InterVariable-Italic.woff2") format("woff2");
+}
+
+/* Radix writes these measurements on the collapse container. Its descendants
+   do not use them and must not restyle whenever the container is measured. */
+@property --radix-collapsible-content-height {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --radix-collapsible-content-width {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-area-edge-mask-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-area-edge-mask-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-area-edge-blur-layer-radius {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* The viewport's own mask, built from the two lengths above while they
+   transition. It must not inherit: an inherited copy would restyle every
+   element of the scrolled subtree on each frame of that transition, which is
+   the whole transcript each time a chat leaves or reaches its tail. */
+@property --scroll-area-edge-mask-image {
+  syntax: "*";
+  inherits: false;
+}
+
+.comma-tooltip {
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: var(--trigger-anchor-point);
+  transition:
+    opacity var(--motion-duration-tooltip-enter) var(--motion-easing-surface-smooth-out),
+    transform var(--motion-duration-tooltip-enter)
+      var(--motion-easing-surface-smooth-out);
+  will-change: opacity, transform;
+}
+
+.comma-tooltip[data-entering],
+.comma-tooltip[data-exiting] {
+  opacity: 0;
+  transform: scale(var(--motion-scale-tooltip-enter));
+}
+
+.comma-tooltip[data-exiting] {
+  transition-duration: var(--motion-duration-tooltip-exit);
+}
+
+.comma-tooltip[data-instant="true"] {
+  transition-duration: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-tooltip {
+    transform: none;
+    transition-property: opacity;
+  }
+
+  .comma-tooltip[data-entering],
+  .comma-tooltip[data-exiting] {
+    transform: none;
+  }
+}
+
+::highlight(comma-context-selection) {
+  background-color: Highlight;
+  color: HighlightText;
+}
+
+/* Shiny text — the one "still working" treatment. A narrow highlight sweeps
+   through the copy: the Greet rail's "Generating your briefing…", the Task
+   workspace loading heading, and the running Task card's progress line all
+   render from this rule, so the cadence and the ramp stay identical.
+
+   The gradient cannot ride on currentcolor: painting the sweep requires
+   `color: transparent`, which is what currentcolor would then resolve to. The
+   two ends are tokens instead, overridable per caller.
+
+   The paint rules repeat the class to reach (0,2,0). Callers are component
+   classes of their own — .comma-recommendations-empty-copy sets a resting color
+   at (0,1,0) and, being in the app stylesheet, is imported after this one, so
+   a single class would lose `color: transparent` on source order and leave the
+   standards path relying on -webkit-text-fill-color alone. */
+.comma-shiny-text {
+  --comma-shiny-text-base: var(--color-text-quaternary);
+  --comma-shiny-text-highlight: var(--color-text-primary);
+}
+
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .comma-shiny-text.comma-shiny-text {
+    display: inline-block;
+    background-image: linear-gradient(
+      90deg,
+      var(--comma-shiny-text-base) 0%,
+      var(--comma-shiny-text-base) 40%,
+      var(--comma-shiny-text-highlight) 50%,
+      var(--comma-shiny-text-base) 60%,
+      var(--comma-shiny-text-base) 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 400% 100%;
+    background-clip: text;
+    color: transparent;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: comma-shiny-text-shine var(--motion-duration-loading-shine) linear
+      infinite;
+  }
+}
+
+@keyframes comma-shiny-text-shine {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: 0% 0;
+  }
+}
+
+/* The app drives this flag from the JS reduced-motion store; the media query
+   covers the OS setting on its own. */
+:root[data-comma-reduced-motion="true"] .comma-shiny-text.comma-shiny-text {
+  background-image: none;
+  color: var(--comma-shiny-text-base);
+  animation: none !important;
+  -webkit-text-fill-color: currentcolor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-shiny-text.comma-shiny-text {
+    background-image: none;
+    color: var(--comma-shiny-text-base);
+    animation: none !important;
+    -webkit-text-fill-color: currentcolor;
+  }
+}
+
+@media (forced-colors: active) {
+  .comma-shiny-text.comma-shiny-text {
+    background-image: none;
+    color: CanvasText;
+    animation: none;
+    -webkit-text-fill-color: currentcolor;
+  }
+
+  [data-slot="command-palette-input"]:focus-visible,
+  [data-slot="command-palette-close"]:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+:root {
+  --resize-dur: 150ms;
+  --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-resize {
+  transition:
+    width var(--resize-dur) var(--resize-ease),
+    height var(--resize-dur) var(--resize-ease);
+  will-change: width, height;
+}
+
+/* The knob is placed by its two edges rather than moved by a transform, and the
+   trailing edge starts a beat after the leading one. That lag is the whole
+   effect: the knob stretches as it leaves, and squashes back as the trailing
+   edge lands. No keyframes, and nothing for a transform transition to fight
+   over — the shape falls out of the layout. */
+.comma-toggle {
+  /* A quarter of the travel, not half: this easing is far more front-loaded
+     than a plain ease-out, so a longer lag lets the leading edge finish before
+     the trailing one moves and the knob stretches the whole track. */
+  --comma-toggle-thumb-lag: calc(var(--motion-duration-feedback-in) / 4);
+  --comma-toggle-thumb-hover-stretch: 2px;
+  --comma-toggle-thumb-near: var(--comma-toggle-thumb-inset);
+  --comma-toggle-thumb-far: calc(
+    100% - var(--comma-toggle-thumb-inset) - var(--comma-toggle-thumb-size)
+  );
+
+  position: relative;
+  transition:
+    background-color var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out),
+    box-shadow var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out);
+}
+
+/* Unselected: the knob sits at the near edge and travels left-first when it
+   leaves, so `right` is the trailing edge and carries the lag. */
+.comma-toggle-thumb-motion {
+  position: absolute;
+  top: 50%;
+  left: var(--comma-toggle-thumb-near);
+  right: var(--comma-toggle-thumb-far);
+  height: var(--comma-toggle-thumb-size);
+  transform: translateY(-50%);
+  transition:
+    left var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out),
+    right var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out)
+      var(--comma-toggle-thumb-lag);
+}
+
+/* Selected: the direction of travel flips, so the lag moves to `left`. */
+.comma-toggle[data-selected="true"] .comma-toggle-thumb-motion {
+  left: var(--comma-toggle-thumb-far);
+  right: var(--comma-toggle-thumb-near);
+  transition:
+    left var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out)
+      var(--comma-toggle-thumb-lag),
+    right var(--motion-duration-feedback-in) var(--motion-easing-surface-smooth-out);
+}
+
+/* A pill while stretched, a circle at rest. */
+.comma-toggle-thumb {
+  border-radius: var(--radius-full);
+  transition:
+    background-color var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out),
+    border-color var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out),
+    box-shadow var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out);
+}
+
+/*
+ * A disabled toggle dims, but only once it has been disabled long enough to be
+ * worth showing. App preference writes disable every window's toggle while the
+ * native write is in flight; those usually resolve inside the delay, so the
+ * control stays visually still instead of flashing on each click. Reverting
+ * within the delay never starts the transition, so no flash is possible.
+ */
+.comma-toggle-disabled {
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-surface-smooth-out) var(--motion-duration-spatial-move);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-toggle-disabled {
+    transition: none;
+  }
+}
+
+/* Hover darkens the track by laying the black-alpha token over whichever color
+   the track has, so on and off share one hover treatment. Faded via opacity —
+   background-image itself cannot transition. */
+.comma-toggle::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-alpha-black-10);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-surface-smooth-out);
+}
+
+/* Hover leans the knob the way it is about to travel by stretching its leading
+   edge — the same mechanism as the commit, so the two never fight. */
+@media (hover: hover) and (pointer: fine) {
+  .comma-toggle:not([data-disabled="true"]):hover::before {
+    opacity: 1;
+  }
+
+  .comma-toggle:not([data-disabled="true"]):hover .comma-toggle-thumb-motion {
+    right: calc(
+      var(--comma-toggle-thumb-far) - var(--comma-toggle-thumb-hover-stretch)
+    );
+  }
+
+  .comma-toggle[data-selected="true"]:not([data-disabled="true"]):hover
+    .comma-toggle-thumb-motion {
+    left: calc(var(--comma-toggle-thumb-far) - var(--comma-toggle-thumb-hover-stretch));
+    right: var(--comma-toggle-thumb-near);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-toggle,
+  .comma-toggle::before,
+  .comma-toggle-thumb-motion,
+  .comma-toggle-thumb {
+    transition: none !important;
+  }
+}
+
+.ai-input-small-shell-motion {
+  transition:
+    border-radius var(--resize-dur) var(--resize-ease),
+    padding var(--resize-dur) var(--resize-ease);
+}
+
+.ai-input-small-shell-motion[data-compact="true"] {
+  --resize-dur: 80ms;
+}
+
+.ai-input-small-prompt-motion {
+  transition: transform var(--resize-dur) var(--resize-ease);
+  will-change: transform;
+}
+
+/* Login stage cross-transition: the entering and leaving step overlap inside
+   a fixed-height viewport and swap with a blurred scale-fade (ported from the
+   commaboard Motion login flow, driven here entirely by CSS motion tokens). */
+.login-stage-viewport {
+  position: relative;
+  width: 100%;
+  height: var(--login-stage-height, 24rem);
+  overflow: visible;
+}
+
+.login-stage {
+  --login-stage-shake-gutter: calc(
+    var(--motion-login-code-error-amplitude) + var(--spacing-xs)
+  );
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc(var(--login-stage-shake-gutter) * -1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-inline: var(--login-stage-shake-gutter);
+  overflow: hidden auto;
+  transform-origin: center;
+}
+
+.login-stage-motion[data-stage-state="enter"] {
+  animation: login-stage-enter var(--motion-duration-login-stage-enter)
+    var(--motion-easing-surface-smooth-out) both;
+  will-change: opacity, transform, filter;
+}
+
+.login-stage-motion[data-stage-state="exit"] {
+  animation: login-stage-exit var(--motion-duration-login-stage-exit)
+    var(--motion-easing-surface-smooth-out) both;
+  pointer-events: none;
+  will-change: opacity, transform, filter;
+}
+
+@keyframes login-stage-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-login-stage-shift))
+      scale(var(--motion-scale-login-stage));
+    filter: blur(var(--motion-blur-login-stage));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes login-stage-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-login-stage-shift))
+      scale(var(--motion-scale-login-stage));
+    filter: blur(var(--motion-blur-login-stage));
+  }
+}
+
+/* Settings is the other full-surface overlay raised over the shell, so its
+   scrim reads at the same weight as the command palette's rather than the
+   heavier one shared by the small dialogs. */
+.comma-settings-overlay {
+  background-color: var(--color-alpha-black-10);
+}
+
+[data-theme="Dark mode"] .comma-settings-overlay {
+  background-color: var(--color-alpha-black-30);
+}
+
+.login-code-cell-motion {
+  transform: scale(1);
+  transition:
+    transform var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    background-color var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    color var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    box-shadow var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+.login-code-cell-motion[data-active="true"] {
+  transform: scale(var(--motion-scale-login-code-active));
+}
+
+.login-code-cell-motion[data-pressed="true"],
+.login-code-cell-motion[data-pop="true"] {
+  transform: scale(var(--motion-scale-login-code-press));
+  transition-duration: var(--motion-duration-feedback-in);
+}
+
+.login-code-cell-motion[data-active="true"][data-pressed="true"],
+.login-code-cell-motion[data-active="true"][data-pop="true"] {
+  transform: scale(
+    calc(var(--motion-scale-login-code-active) * var(--motion-scale-login-code-press))
+  );
+}
+
+.login-code-caret-motion {
+  animation: login-code-caret-blink var(--motion-duration-caret-blink) infinite;
+}
+
+:root[data-comma-reduced-motion="true"] .login-code-cell-motion {
+  transform: none;
+  transition: none;
+}
+
+@keyframes login-code-caret-blink {
+  0%,
+  49.9% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.ai-input-rich-editor[data-empty="true"]::before {
+  pointer-events: none;
+  color: var(--color-ai-input-panel-text-placeholder);
+  content: attr(data-placeholder);
+}
+
+.ai-input-rich-token-tooltip-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
+.ai-input-rich-token-tooltip {
+  --tooltip-enter-duration: 150ms;
+  --tooltip-exit-duration: 50ms;
+  --tooltip-enter-delay: 80ms;
+  --tooltip-closed-scale: 0.98;
+
+  opacity: 0;
+  transform: scale(var(--tooltip-closed-scale));
+  transform-origin: bottom center;
+  transition:
+    opacity var(--tooltip-exit-duration) ease-in,
+    transform var(--tooltip-exit-duration) ease-in;
+  will-change: opacity, transform;
+}
+
+.ai-input-rich-token-tooltip[data-placement="below"] {
+  transform-origin: top center;
+}
+
+.ai-input-rich-token-tooltip[data-state="open"] {
+  opacity: 1;
+  transform: scale(1);
+  transition-duration: var(--tooltip-enter-duration);
+  transition-timing-function: ease-out;
+  transition-delay: var(--tooltip-enter-delay);
+}
+
+.ai-input-rich-token-tooltip[data-animate="false"] {
+  transition: none;
+}
+
+.ai-input-small-toolbar-hit-area,
+.ai-input-small-toolbar-hit-area > * {
+  pointer-events: none;
+}
+
+.ai-input-small-toolbar-hit-area > * > * {
+  pointer-events: auto;
+}
+
+.ai-input-voice-recording {
+  opacity: 1;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-resize,
+  .ai-input-small-shell-motion,
+  .ai-input-small-prompt-motion,
+  .comma-content-header,
+  .ai-input-rich-token-tooltip {
+    transition: none !important;
+  }
+
+  .login-stage-motion[data-stage-state="enter"] {
+    animation: none;
+  }
+
+  .login-stage-motion[data-stage-state="exit"] {
+    animation: none;
+    visibility: hidden;
+  }
+
+  .login-code-cell-motion,
+  .login-code-cell-motion[data-pressed="true"],
+  .login-code-cell-motion[data-active="true"],
+  .login-code-cell-motion[data-pop="true"] {
+    transform: none;
+    transition: none;
+  }
+
+  .login-code-caret-motion {
+    animation: none;
+  }
+}
+
+:where(
+  :is(button, [data-slot="settings-sidebar-item"]):not(:disabled):not(
+      [aria-disabled="true"]
+    ):not([role="slider"]):not([data-no-press-feedback])
+) {
+  --button-press-current-duration: var(--button-press-out-duration);
+
+  scale: 1;
+  transition:
+    color var(--button-state-duration) var(--button-state-easing),
+    background-color var(--button-state-duration) var(--button-state-easing),
+    border-color var(--button-state-duration) var(--button-state-easing),
+    text-decoration-color var(--button-state-duration) var(--button-state-easing),
+    fill var(--button-state-duration) var(--button-state-easing),
+    stroke var(--button-state-duration) var(--button-state-easing),
+    scale var(--button-press-current-duration) var(--button-press-easing);
+}
+
+:where(
+  :is(button, [data-slot="settings-sidebar-item"]):not(:disabled):not(
+      [aria-disabled="true"]
+    ):not([role="slider"]):not([data-no-press-feedback]):active
+) {
+  --button-press-current-duration: var(--button-press-in-duration);
+
+  scale: var(--button-press-scale);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(
+    :is(button, [data-slot="settings-sidebar-item"]):not(:disabled):not(
+        [aria-disabled="true"]
+      ):not([role="slider"])
+  ) {
+    --button-press-scale: 1;
+
+    scale: 1 !important;
+    transition: none !important;
+  }
+}
+
+@layer base {
+  :root {
+    color: var(--color-text-primary);
+    background: var(--color-bg-primary);
+    font-family: var(--font-sans);
+    font-weight: var(--font-weight-regular);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  /* Tailwind's numeric size utilities use --spacing; icon slots stay pixel-based. */
+  .comma-icon-slot,
+  [data-comma-icon] {
+    --spacing: 4px;
+  }
+
+  [data-comma-icon] {
+    /* Icon geometry is fixed; it must not follow the app's root font setting. */
+    font-size: 16px;
+    scale: 1 !important;
+    transform-origin: center;
+  }
+
+  [data-comma-icon] :where([stroke-width="2"]) {
+    stroke-width: var(--comma-icon-stroke-width, 2);
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}
+
+@layer components {
+  :root {
+    --button-state-duration: var(--motion-duration-state-change);
+    --button-state-easing: var(--motion-easing-smooth-out);
+    --button-press-in-duration: var(--motion-duration-feedback-in);
+    --button-press-out-duration: var(--motion-duration-feedback-out);
+    --button-press-easing: var(--motion-easing-smooth-out);
+    --button-press-scale: var(--motion-scale-pressed);
+    --icon-swap-dur: var(--motion-duration-icon-swap);
+    --icon-swap-blur: var(--spacing-xxs);
+    --icon-swap-start-scale: var(--motion-scale-action-pressed);
+    --icon-swap-ease: var(--motion-easing-icon-swap);
+    --collapse-container-duration: 180ms;
+    --collapse-container-bezier-x1: 0.006;
+    --collapse-container-bezier-y1: 0.522;
+    --collapse-container-bezier-x2: 0.252;
+    --collapse-container-bezier-y2: 0.968;
+    --collapse-content-duration: 200ms;
+    --collapse-content-bezier-x1: 0.004;
+    --collapse-content-bezier-y1: 0.505;
+    --collapse-content-bezier-x2: 0.202;
+    --collapse-content-bezier-y2: 0.918;
+    --collapse-content-opacity-hidden: 0;
+    --collapse-content-scale-hidden: 0.98;
+    --collapse-content-translate-x-hidden: 0px;
+    --collapse-content-translate-y-hidden: -10px;
+    --task-list-item-icon-duration: 220ms;
+    --task-list-item-icon-blur: 5px;
+    --task-list-item-icon-travel: 14px;
+    --task-list-item-icon-easing: cubic-bezier(0.16, 1, 0.3, 1);
+    --task-list-item-dot-duration: 180ms;
+    --task-list-item-dot-width: 16px;
+    --task-list-item-dot-easing: cubic-bezier(0.16, 1, 0.3, 1);
+    --scroll-area-scrollbar-size: 8px;
+    --scroll-area-scrollbar-inset: 2px;
+    --scroll-area-v-thumb-size: 0px;
+    --scroll-area-v-thumb-offset: 0px;
+    --scroll-area-h-thumb-size: 0px;
+    --scroll-area-h-thumb-offset: 0px;
+    --scroll-area-edge-mask-start: 0px;
+    --scroll-area-edge-mask-end: 0px;
+    --scroll-area-edge-blur-start-size: 0px;
+    --scroll-area-edge-blur-end-size: 0px;
+    --scroll-area-edge-blur-target-start-size: 0px;
+    --scroll-area-edge-blur-target-end-size: 0px;
+    --scroll-area-edge-transition-duration: 450ms;
+    --scroll-area-edge-transition-easing: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .comma-scroll-area {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+
+  .comma-plugin-card,
+  .comma-plugin-list-item,
+  .comma-plugin-show-all {
+    transition: background-color var(--motion-duration-state-change)
+      var(--motion-easing-smooth-out);
+  }
+
+  .comma-plugin-reveal [data-pointer-expanding] .comma-plugin-list-item {
+    pointer-events: none;
+    transition: none;
+  }
+
+  .comma-plugin-list-item:focus-visible,
+  .comma-plugin-list-item:has(:focus-visible),
+  .comma-plugin-show-all:focus-visible {
+    background-color: var(--color-plugin-row-bg-hover);
+  }
+
+  .comma-plugin-card:focus-visible {
+    background-color: var(--color-bg-secondary);
+  }
+
+  .collapse-container.comma-plugin-reveal[data-state="open"] {
+    height: auto;
+    overflow: visible;
+    animation: none;
+  }
+
+  .collapse-container.comma-plugin-reveal[data-state="open"] .collapse-content {
+    animation: none;
+    transform: none;
+  }
+
+  .collapse-container.comma-plugin-reveal[data-state="open"]
+    > .collapse-content-wrapper {
+    animation: none;
+    opacity: 1;
+  }
+
+  .comma-plugin-reveal [data-slot="plugin-list-item"] {
+    transform-origin: left center;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .comma-plugin-list-item:hover,
+    .comma-plugin-show-all:hover {
+      background-color: var(--color-plugin-row-bg-hover);
+    }
+
+    .comma-plugin-card:hover {
+      background-color: var(--color-bg-secondary);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .comma-plugin-card,
+    .comma-plugin-list-item,
+    .comma-plugin-show-all {
+      transition: none;
+    }
+  }
+
+  .comma-scroll-area__viewport {
+    width: 100%;
+    height: 100%;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    overscroll-behavior: contain;
+  }
+
+  /* Armed by `syncEdgeTransition` once an edge state has held: the first state
+     of an area lands with its content instead of easing in after it. */
+  .comma-scroll-area__viewport[data-edge-transition="true"] {
+    transition:
+      --scroll-area-edge-mask-start var(--scroll-area-edge-transition-duration)
+        var(--scroll-area-edge-transition-easing),
+      --scroll-area-edge-mask-end var(--scroll-area-edge-transition-duration)
+        var(--scroll-area-edge-transition-easing);
+  }
+
+  .comma-scroll-area__viewport::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  /* The browser scrolls every area itself, so it also decides where a scroll
+     goes next. The outermost area ends the chain (`contain` above): nothing
+     reaches the page behind it, and a sideways swipe never becomes history
+     navigation. An area inside another hands on what it does not take — a
+     vertical wheel over a code block, a sideways swipe over a board column, a
+     list that has reached its end — to the area around it. */
+  .comma-scroll-area__content .comma-scroll-area__viewport {
+    overscroll-behavior: auto;
+  }
+
+  .comma-scroll-area[data-freeze-content-inline-size="true"]
+    > .comma-scroll-area__viewport
+    > .comma-scroll-area__content {
+    position: relative;
+    inset-inline-start: 50%;
+    inline-size: var(--scroll-area-resize-content-inline-size);
+    max-inline-size: none;
+    translate: -50% 0;
+  }
+
+  /* Each area sets its own viewport only. As descendant rules these reached
+     the viewport of any area nested inside, and the later rule won: a vertical
+     column inside a horizontal board computed `overflow-y: hidden`, which the
+     browser will not scroll. */
+  .comma-scroll-area[data-orientation="vertical"] > .comma-scroll-area__viewport {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .comma-scroll-area[data-orientation="horizontal"] > .comma-scroll-area__viewport {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .comma-scroll-area[data-orientation="both"] > .comma-scroll-area__viewport {
+    overflow: auto;
+  }
+
+  .comma-scroll-area[data-orientation="horizontal"] .comma-scroll-area__content,
+  .comma-scroll-area[data-orientation="both"] .comma-scroll-area__content {
+    min-width: max-content;
+  }
+
+  /* Ease-in-out cubic sampled across the fade, not a two-stop linear clip. */
+  .comma-scroll-area[data-edge-axis="vertical"] {
+    --scroll-area-edge-mask-direction: to bottom;
+  }
+
+  .comma-scroll-area[data-edge-axis="horizontal"] {
+    --scroll-area-edge-mask-direction: to right;
+  }
+
+  /* Its own viewport only: as a descendant rule this also masked the viewport
+     of every area nested inside — each code block and table of a transcript. */
+  .comma-scroll-area[data-edge-mask="true"]:not([data-window-resizing="true"])
+    > .comma-scroll-area__viewport {
+    --scroll-area-edge-mask-image: linear-gradient(
+      var(--scroll-area-edge-mask-direction),
+      rgb(0 0 0 / 0) 0,
+      rgb(0 0 0 / 0.008) calc(var(--scroll-area-edge-mask-start) * 0.125),
+      rgb(0 0 0 / 0.063) calc(var(--scroll-area-edge-mask-start) * 0.25),
+      rgb(0 0 0 / 0.211) calc(var(--scroll-area-edge-mask-start) * 0.375),
+      rgb(0 0 0 / 0.5) calc(var(--scroll-area-edge-mask-start) * 0.5),
+      rgb(0 0 0 / 0.789) calc(var(--scroll-area-edge-mask-start) * 0.625),
+      rgb(0 0 0 / 0.938) calc(var(--scroll-area-edge-mask-start) * 0.75),
+      rgb(0 0 0 / 0.992) calc(var(--scroll-area-edge-mask-start) * 0.875),
+      black var(--scroll-area-edge-mask-start),
+      black calc(100% - var(--scroll-area-edge-mask-end)),
+      rgb(0 0 0 / 0.992) calc(100% - var(--scroll-area-edge-mask-end) * 0.875),
+      rgb(0 0 0 / 0.938) calc(100% - var(--scroll-area-edge-mask-end) * 0.75),
+      rgb(0 0 0 / 0.789) calc(100% - var(--scroll-area-edge-mask-end) * 0.625),
+      rgb(0 0 0 / 0.5) calc(100% - var(--scroll-area-edge-mask-end) * 0.5),
+      rgb(0 0 0 / 0.211) calc(100% - var(--scroll-area-edge-mask-end) * 0.375),
+      rgb(0 0 0 / 0.063) calc(100% - var(--scroll-area-edge-mask-end) * 0.25),
+      rgb(0 0 0 / 0.008) calc(100% - var(--scroll-area-edge-mask-end) * 0.125),
+      rgb(0 0 0 / 0) 100%
+    );
+    mask-image: var(--scroll-area-edge-mask-image);
+    -webkit-mask-image: var(--scroll-area-edge-mask-image);
+  }
+
+  .comma-scroll-area__scrollbar {
+    display: none;
+    position: absolute;
+    z-index: 3;
+    border-radius: 999px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease;
+    contain: strict;
+  }
+
+  .comma-scroll-area[data-has-overflow-y="true"]
+    > .comma-scroll-area__scrollbar--vertical,
+  .comma-scroll-area[data-has-overflow-x="true"]
+    > .comma-scroll-area__scrollbar--horizontal {
+    display: block;
+  }
+
+  .comma-scroll-area[data-scrollbar-visibility="scrollbar-hover"]
+    > .comma-scroll-area__scrollbar,
+  .comma-scroll-area[data-scrollbar-visibility="scroll"][data-scrollbar-hover-reveal="true"]
+    > .comma-scroll-area__scrollbar {
+    pointer-events: auto;
+  }
+
+  /* A scrollbar carries its own `data-scrolling`. Keyed on the root, that state
+     restyled the scrollbar of every area nested inside on each reveal and hide. */
+  .comma-scroll-area[data-scrollbar-visibility="always"]
+    > .comma-scroll-area__scrollbar,
+  .comma-scroll-area[data-scrollbar-visibility="hover"]:hover
+    > .comma-scroll-area__scrollbar,
+  .comma-scroll-area[data-scrollbar-visibility="hover"]:focus-within
+    > .comma-scroll-area__scrollbar,
+  .comma-scroll-area__scrollbar[data-scrolling="true"],
+  .comma-scroll-area[data-scrollbar-visibility="scroll"][data-scrollbar-hover-reveal="true"]
+    > .comma-scroll-area__scrollbar:hover,
+  .comma-scroll-area[data-scrollbar-visibility="scrollbar-hover"]
+    > .comma-scroll-area__scrollbar:hover,
+  .comma-scroll-area[data-dragging="true"] > .comma-scroll-area__scrollbar {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .comma-scroll-area__scrollbar--vertical {
+    top: var(--scroll-area-scrollbar-inset);
+    right: var(--scroll-area-scrollbar-inset);
+    bottom: var(--scroll-area-scrollbar-inset);
+    width: var(--scroll-area-scrollbar-size);
+  }
+
+  .comma-scroll-area__scrollbar--horizontal {
+    right: var(--scroll-area-scrollbar-inset);
+    bottom: var(--scroll-area-scrollbar-inset);
+    left: var(--scroll-area-scrollbar-inset);
+    height: var(--scroll-area-scrollbar-size);
+  }
+
+  .comma-scroll-area__thumb {
+    position: absolute;
+    border-radius: inherit;
+    background: var(--color-scrollbar-bg);
+  }
+
+  .comma-scroll-area__thumb--vertical {
+    right: 0;
+    width: var(--scroll-area-scrollbar-size);
+    height: var(--scroll-area-v-thumb-size);
+    transform: translate3d(0, var(--scroll-area-v-thumb-offset), 0);
+  }
+
+  .comma-scroll-area__thumb--horizontal {
+    bottom: 0;
+    width: var(--scroll-area-h-thumb-size);
+    height: var(--scroll-area-scrollbar-size);
+    transform: translate3d(var(--scroll-area-h-thumb-offset), 0, 0);
+  }
+
+  .comma-scroll-area__edge-blur {
+    position: absolute;
+    z-index: 2;
+    pointer-events: none;
+    overflow: hidden;
+    contain: strict;
+  }
+
+  .comma-scroll-area__edge-blur[data-edge-transition="true"] {
+    transition:
+      height var(--scroll-area-edge-transition-duration)
+        var(--scroll-area-edge-transition-easing),
+      width var(--scroll-area-edge-transition-duration)
+        var(--scroll-area-edge-transition-easing);
+  }
+
+  .comma-scroll-area[data-edge-blur="true"][data-edge-start-visible="true"] {
+    --scroll-area-edge-blur-start-size: var(--scroll-area-edge-blur-target-start-size);
+  }
+
+  .comma-scroll-area[data-edge-blur="true"][data-edge-end-visible="true"] {
+    --scroll-area-edge-blur-end-size: var(--scroll-area-edge-blur-target-end-size);
+  }
+
+  .comma-scroll-area__edge-blur[data-axis="vertical"][data-edge="start"] {
+    top: 0;
+    right: 0;
+    left: 0;
+    height: var(--scroll-area-edge-blur-start-size);
+  }
+
+  .comma-scroll-area__edge-blur[data-axis="vertical"][data-edge="end"] {
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: var(--scroll-area-edge-blur-end-size);
+  }
+
+  .comma-scroll-area__edge-blur[data-axis="horizontal"][data-edge="start"] {
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: var(--scroll-area-edge-blur-start-size);
+  }
+
+  .comma-scroll-area__edge-blur[data-axis="horizontal"][data-edge="end"] {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--scroll-area-edge-blur-end-size);
+  }
+
+  .comma-scroll-area__edge-blur-layer {
+    position: absolute;
+    inset: 0;
+    --scroll-area-edge-blur-layer-radius: 0px;
+    backdrop-filter: blur(var(--scroll-area-edge-blur-layer-radius));
+    -webkit-backdrop-filter: blur(var(--scroll-area-edge-blur-layer-radius));
+  }
+
+  .comma-scroll-area__edge-blur[data-edge-transition="true"]
+    > .comma-scroll-area__edge-blur-layer {
+    transition: --scroll-area-edge-blur-layer-radius
+      var(--scroll-area-edge-transition-duration)
+      var(--scroll-area-edge-transition-easing);
+  }
+
+  /* Keyed on the edge element, not on the root: see `setEdgeVisible`. */
+  .comma-scroll-area__edge-blur[data-visible="true"]
+    > .comma-scroll-area__edge-blur-layer {
+    --scroll-area-edge-blur-layer-radius: var(--scroll-area-edge-blur-layer-blur);
+  }
+
+  /* The bottom chevron of a selection-aligned list shows while rows are
+     clipped below it. The subject is a class on purpose. Tailwind's
+     `peer-data-[edge-end-visible=true]:` form compiles to
+     `[data-edge-end-visible] ~ *`, and with a universal subject the browser
+     cannot tell who the rule reaches: every flip of that attribute, on any
+     ScrollArea, then restyles that ScrollArea's whole subtree — for a chat, the
+     entire transcript each time it leaves or reaches its tail. */
+  .comma-selection-reveal-indicator {
+    opacity: 0;
+  }
+
+  .comma-scroll-area[data-edge-end-visible="true"] ~ .comma-selection-reveal-indicator {
+    opacity: 1;
+  }
+
+  .collapse-container {
+    overflow: hidden;
+  }
+
+  .collapse-content-wrapper {
+    min-height: min-content;
+  }
+
+  .collapse-content {
+    transform-origin: top center;
+  }
+
+  .sidebar-task-section-chevron[data-expanded="true"] {
+    transform: rotate(90deg);
+  }
+
+  .task-list-item-icon-stage {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .task-list-item-icon-layer {
+    position: absolute;
+    inset: 0;
+  }
+
+  .task-list-item-icon-layer[data-motion="enter"] {
+    animation: task-list-item-icon-enter var(--task-list-item-icon-duration)
+      var(--task-list-item-icon-easing) both;
+    will-change: filter, opacity, transform;
+  }
+
+  .task-list-item-icon-layer[data-motion="exit"] {
+    animation: task-list-item-icon-exit var(--task-list-item-icon-duration)
+      var(--task-list-item-icon-easing) both;
+    will-change: filter, opacity, transform;
+  }
+
+  .task-list-item-dot-track {
+    position: relative;
+    width: 0;
+    overflow: visible;
+  }
+
+  .task-list-item-dot-inner {
+    position: absolute;
+    inset-inline-start: 0;
+    width: var(--task-list-item-dot-width);
+    opacity: 0;
+    transform: scale(0.5);
+    transform-origin: left center;
+    transition:
+      opacity var(--task-list-item-dot-duration) var(--task-list-item-dot-easing),
+      transform var(--task-list-item-dot-duration) var(--task-list-item-dot-easing);
+  }
+
+  .task-list-item-dot-track[data-state="visible"] .task-list-item-dot-inner {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .task-list-item-dot-track + [data-slot="task-list-item-title"] {
+    transform: translateX(0);
+    transition: transform var(--task-list-item-dot-duration)
+      var(--task-list-item-dot-easing);
+  }
+
+  .task-list-item-dot-track[data-state="visible"] + [data-slot="task-list-item-title"] {
+    margin-inline-end: var(--task-list-item-dot-width);
+    transform: translateX(var(--task-list-item-dot-width));
+  }
+
+  @keyframes task-list-item-icon-enter {
+    from {
+      opacity: 0;
+      filter: blur(var(--task-list-item-icon-blur));
+      transform: translate3d(0, var(--task-list-item-icon-travel), 0);
+    }
+
+    to {
+      opacity: 1;
+      filter: blur(0);
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes task-list-item-icon-exit {
+    from {
+      opacity: 1;
+      filter: blur(0);
+      transform: translate3d(0, 0, 0);
+    }
+
+    to {
+      opacity: 0;
+      filter: blur(var(--task-list-item-icon-blur));
+      transform: translate3d(0, calc(-1 * var(--task-list-item-icon-travel)), 0);
+    }
+  }
+
+  .markdown-stream {
+    --ms-font-mono: var(--font-mono);
+
+    font-size: var(--text-sm);
+    line-height: calc(var(--text-sm) + var(--spacing-md));
+    letter-spacing: var(--text-sm--letter-spacing);
+    font-optical-sizing: auto;
+    font-synthesis: none;
+    font-feature-settings:
+      "calt" 1,
+      "kern" 1;
+    font-variant-ligatures: common-ligatures contextual;
+    overflow-wrap: anywhere;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .markdown-stream > .markdown-renderer {
+    position: relative;
+    min-width: 0;
+  }
+
+  .markdown-stream .node-slot,
+  .markdown-stream .node-content {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .markdown-stream > .markdown-renderer > .node-slot + .node-slot,
+  .markdown-stream > .markdown-renderer + .markdown-renderer > .node-slot:first-child {
+    margin-top: var(--spacing-lg);
+  }
+
+  .markdown-stream
+    > .markdown-renderer
+    > .node-slot[data-node-type="code_block"]:not(:first-child),
+  .markdown-stream
+    > .markdown-renderer
+    + .markdown-renderer
+    > .node-slot:first-child[data-node-type="code_block"] {
+    margin-top: var(--spacing-xl);
+  }
+
+  .markdown-stream
+    > .markdown-renderer
+    > .node-slot[data-node-type="heading"]:not(:first-child),
+  .markdown-stream
+    > .markdown-renderer
+    + .markdown-renderer
+    > .node-slot:first-child[data-node-type="heading"] {
+    margin-top: var(--spacing-2xl);
+  }
+
+  .markdown-stream
+    > .markdown-renderer
+    > .node-slot[data-node-type="heading"]
+    + .node-slot {
+    margin-top: var(--spacing-lg);
+  }
+
+  .markdown-stream
+    > .markdown-renderer
+    > .node-slot[data-node-type="thematic_break"]:not(:first-child),
+  .markdown-stream
+    > .markdown-renderer
+    + .markdown-renderer
+    > .node-slot:first-child[data-node-type="thematic_break"] {
+    margin-top: var(--spacing-4xl);
+  }
+
+  .markdown-stream
+    > .markdown-renderer
+    > .node-slot[data-node-type="thematic_break"]
+    + .node-slot {
+    margin-top: var(--spacing-4xl);
+  }
+
+  .markdown-stream
+    > .markdown-renderer:has(> .node-slot:last-child[data-node-type="thematic_break"])
+    + .markdown-renderer
+    > .node-slot:first-child {
+    margin-top: var(--spacing-4xl);
+  }
+
+  .markdown-stream :is(.markdown-stream-copy, .markdown-stream-heading) {
+    margin: 0;
+  }
+
+  .markdown-stream
+    :where(
+      .markdown-stream-quote,
+      .markdown-stream-list-item,
+      .markdown-stream-surface,
+      dd
+    )
+    > :is(
+      .markdown-stream-copy,
+      .markdown-stream-heading,
+      .markdown-stream-list,
+      .markdown-stream-quote,
+      .markdown-stream-code-block,
+      .markdown-stream-surface,
+      .markdown-stream-rule
+    )
+    + :is(
+      .markdown-stream-copy,
+      .markdown-stream-heading,
+      .markdown-stream-list,
+      .markdown-stream-quote,
+      .markdown-stream-code-block,
+      .markdown-stream-surface,
+      .markdown-stream-rule
+    ) {
+    /* Markstream utilities are unlayered, so this owned nested-flow rule must win. */
+    margin-top: var(--spacing-lg) !important;
+  }
+
+  .markdown-stream
+    :where(
+      .markdown-stream-quote,
+      .markdown-stream-list-item,
+      .markdown-stream-surface,
+      dd
+    )
+    > :is(
+      .markdown-stream-copy,
+      .markdown-stream-heading,
+      .markdown-stream-list,
+      .markdown-stream-quote,
+      .markdown-stream-code-block,
+      .markdown-stream-surface,
+      .markdown-stream-rule
+    )
+    + .markdown-stream-heading {
+    margin-top: var(--spacing-2xl) !important;
+  }
+
+  .markdown-stream
+    :where(
+      .markdown-stream-quote,
+      .markdown-stream-list-item,
+      .markdown-stream-surface,
+      dd
+    )
+    > :is(
+      .markdown-stream-copy,
+      .markdown-stream-heading,
+      .markdown-stream-list,
+      .markdown-stream-quote,
+      .markdown-stream-code-block,
+      .markdown-stream-surface,
+      .markdown-stream-rule
+    )
+    + .markdown-stream-code-block {
+    margin-top: var(--spacing-xl) !important;
+  }
+
+  .markdown-stream
+    :where(
+      .markdown-stream-quote,
+      .markdown-stream-list-item,
+      .markdown-stream-surface,
+      dd
+    )
+    > :is(
+      .markdown-stream-copy,
+      .markdown-stream-heading,
+      .markdown-stream-list,
+      .markdown-stream-quote,
+      .markdown-stream-code-block,
+      .markdown-stream-surface,
+      .markdown-stream-rule
+    )
+    + .markdown-stream-rule,
+  .markdown-stream
+    :where(
+      .markdown-stream-quote,
+      .markdown-stream-list-item,
+      .markdown-stream-surface,
+      dd
+    )
+    > .markdown-stream-rule
+    + :is(
+      .markdown-stream-copy,
+      .markdown-stream-heading,
+      .markdown-stream-list,
+      .markdown-stream-quote,
+      .markdown-stream-code-block,
+      .markdown-stream-surface,
+      .markdown-stream-rule
+    ) {
+    margin-top: var(--spacing-4xl) !important;
+  }
+
+  /* Rebalancing a partial last line moves already completed words. Keep the
+     same wrapping policy while content grows and after it becomes final. */
+  .markdown-stream :where(p, li, dd, h1, h2, h3, h4, h5, h6) {
+    text-wrap: wrap;
+  }
+
+  .markdown-stream .markdown-stream-link {
+    text-decoration-line: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+    text-decoration-thickness: 1px;
+    text-decoration-skip-ink: auto;
+    text-underline-offset: var(--spacing-xxs);
+    transition:
+      color 150ms ease,
+      text-decoration-color 150ms ease;
+  }
+
+  .markdown-stream .markdown-stream-link:hover {
+    text-decoration-color: currentColor;
+  }
+
+  .markdown-stream ::selection,
+  .markdown-stream ::highlight(comma-context-selection) {
+    background: color-mix(
+      in srgb,
+      var(--color-markdown-text-primary) 24%,
+      var(--color-markdown-bg-table)
+    );
+    color: var(--color-markdown-text-primary);
+  }
+
+  .markdown-stream .markdown-stream-list {
+    margin: 0;
+    padding-inline-start: var(--spacing-2xl);
+    list-style-position: outside;
+  }
+
+  .markdown-stream .markdown-stream-list-item {
+    padding-inline-start: var(--spacing-xxs);
+  }
+
+  .markdown-stream .markdown-stream-list-item + .markdown-stream-list-item {
+    margin-top: var(--spacing-md);
+  }
+
+  .markdown-stream .markdown-stream-list .markdown-stream-list {
+    margin-top: var(--spacing-md) !important;
+    margin-bottom: 0;
+    padding-inline-start: var(--spacing-xl);
+  }
+
+  .markdown-stream .markdown-stream-list-unordered {
+    list-style-type: disc;
+  }
+
+  .markdown-stream .markdown-stream-list-ordered {
+    font-variant-numeric: tabular-nums;
+    list-style-type: decimal;
+  }
+
+  .markdown-stream .markdown-stream-list-unordered .markdown-stream-list-unordered {
+    list-style-type: circle;
+  }
+
+  .markdown-stream
+    .markdown-stream-list
+    .markdown-stream-list
+    .markdown-stream-list-unordered {
+    list-style-type: square;
+  }
+
+  .markdown-stream .markdown-stream-list-item::marker {
+    color: var(--color-markdown-text-primary);
+  }
+
+  .markdown-stream .markdown-stream-list-item-task {
+    padding-inline-start: 0;
+    list-style-type: none;
+  }
+
+  .markdown-stream .markdown-stream-quote {
+    position: relative;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    font-style: normal;
+    line-height: var(--text-md--line-height);
+  }
+
+  .markdown-stream .markdown-stream-quote::after {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    top: var(--spacing-md);
+    bottom: var(--spacing-md);
+    width: var(--spacing-xs);
+    border-radius: var(--radius-xxs);
+    background: var(--color-markdown-border-table);
+  }
+
+  .markdown-stream .markdown-stream-surface {
+    border-radius: var(--radius-xl);
+  }
+
+  .markdown-stream :where(table, code, pre) {
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  .markdown-stream :where(code, pre) {
+    font-variant-ligatures: none;
+  }
+
+  .markdown-stream .markdown-stream-image-preview {
+    display: block;
+    width: 480px;
+    max-width: 100%;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    border: 0.5px solid var(--color-markdown-border-table);
+    background: var(--color-markdown-bg-tool);
+  }
+
+  .markdown-stream .markdown-stream-image-preview img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .markdown-stream .markdown-stream-diagram-preview {
+    height: 280px;
+  }
+
+  .markdown-stream .math-block-node,
+  .markdown-stream .code-block-content .shiki {
+    overflow: visible;
+    max-height: none;
+  }
+
+  .markdown-stream .markdown-stream-inline-code {
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    display: inline;
+    padding: 0 var(--spacing-xs);
+    border: var(--border-width-0-5) solid var(--color-border-primary);
+    border-radius: var(--radius-xs);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.92em;
+  }
+
+  .markdown-stream .markdown-stream-inline-code + .markdown-stream-inline-code {
+    margin-inline-start: var(--spacing-xs);
+  }
+
+  .markdown-stream .markdown-stream-checkbox {
+    accent-color: var(--color-markdown-text-link);
+    opacity: 1;
+  }
+
+  .markdown-stream .markdown-stream-code-block {
+    position: relative;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--color-markdown-bg-table);
+  }
+
+  .markdown-stream .markdown-stream-code-body-collapsed {
+    max-height: 480px;
+    overflow: hidden;
+  }
+
+  .markdown-stream .markdown-stream-code-body-expanded {
+    padding-block-end: calc(var(--spacing-4xl) + var(--spacing-lg));
+  }
+
+  .markdown-stream .markdown-stream-code-fade {
+    position: absolute;
+    inset: auto 0 0;
+    height: 120px;
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      color-mix(in srgb, var(--color-markdown-bg-table) 8%, transparent) 18%,
+      color-mix(in srgb, var(--color-markdown-bg-table) 26%, transparent) 38%,
+      color-mix(in srgb, var(--color-markdown-bg-table) 58%, transparent) 64%,
+      color-mix(in srgb, var(--color-markdown-bg-table) 86%, transparent) 84%,
+      var(--color-markdown-bg-table) 100%
+    );
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 72%);
+    mask-image: linear-gradient(to bottom, transparent, black 72%);
+  }
+
+  .markdown-stream .markdown-stream-control-active {
+    /* Markstream's unlayered button reset otherwise wins over Comma's owned state. */
+    background: var(--color-markdown-bg-inline-code) !important;
+    color: var(--color-markdown-text-primary) !important;
+  }
+
+  .markdown-stream .markdown-stream-control-inactive {
+    /* Markstream's unlayered button reset otherwise overrides this state. */
+    color: var(--color-text-secondary) !important;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .markdown-stream
+      .markdown-stream-control:not(.markdown-stream-control-active):hover {
+      background: var(--color-markdown-bg-inline-code) !important;
+      color: var(--color-markdown-text-primary) !important;
+    }
+  }
+
+  .t-icon-swap {
+    position: relative;
+    display: inline-grid;
+  }
+
+  .t-icon-swap .t-icon {
+    grid-area: 1 / 1;
+    transition:
+      opacity var(--icon-swap-dur) var(--icon-swap-ease),
+      filter var(--icon-swap-dur) var(--icon-swap-ease),
+      transform var(--icon-swap-dur) var(--icon-swap-ease);
+    will-change: opacity, filter, transform;
+  }
+
+  .t-icon-swap[data-state="a"] .t-icon[data-icon="a"],
+  .t-icon-swap[data-state="b"] .t-icon[data-icon="b"] {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+
+  .t-icon-swap[data-state="a"] .t-icon[data-icon="b"],
+  .t-icon-swap[data-state="b"] .t-icon[data-icon="a"] {
+    opacity: 0;
+    filter: blur(var(--icon-swap-blur));
+    transform: scale(var(--icon-swap-start-scale));
+  }
+
+  /* Copy confirmations cross-fade to the check. Do not animate filter:
+     --icon-swap-blur: 0px still interpolates a blur() on the compositor. */
+  .t-icon-swap[data-swap-blur="none"] {
+    --icon-swap-blur: 0px;
+  }
+
+  .t-icon-swap[data-swap-blur="none"] .t-icon {
+    filter: none;
+    transition:
+      opacity var(--icon-swap-dur) var(--icon-swap-ease),
+      transform var(--icon-swap-dur) var(--icon-swap-ease);
+    will-change: opacity, transform;
+  }
+
+  .t-icon-swap[data-swap-blur="none"][data-state="a"] .t-icon[data-icon="a"],
+  .t-icon-swap[data-swap-blur="none"][data-state="b"] .t-icon[data-icon="b"],
+  .t-icon-swap[data-swap-blur="none"][data-state="a"] .t-icon[data-icon="b"],
+  .t-icon-swap[data-swap-blur="none"][data-state="b"] .t-icon[data-icon="a"] {
+    filter: none;
+  }
+
+  .markdown-stream .fade-node {
+    animation: markdown-stream-node-enter 180ms cubic-bezier(0.33, 0, 0.67, 1) forwards;
+  }
+
+  .markdown-stream .typewriter-cursor {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: inline-block;
+    width: 0.55em;
+    height: 1em;
+    margin-left: 0.08em;
+    border-right: 2px solid currentColor;
+    pointer-events: none;
+    animation: markdown-stream-cursor-blink 1s steps(1, end) infinite;
+  }
+
+  .markdown-stream .markdown-stream-code-body .markdown-code-block,
+  .markdown-stream .markdown-stream-code-body .markdown-code-block-node,
+  .markdown-stream .markdown-stream-code-body .code-block-container {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .markdown-stream .markdown-stream-code-body pre,
+  .markdown-stream .markdown-stream-code-body .shiki,
+  .markdown-stream .markdown-stream-code-body .shiki-fallback,
+  .markdown-stream .markdown-stream-code-source {
+    margin: 0;
+    padding: var(--spacing-md) var(--spacing-lg) !important;
+    border-radius: 0;
+    background: transparent !important;
+    font-size: calc(var(--text-xs) + 1px) !important;
+    line-height: var(--text-sm--line-height) !important;
+  }
+
+  .markdown-stream .markdown-stream-code-preview-fallback {
+    font-size: calc(var(--text-xs) + 1px);
+    line-height: var(--text-sm--line-height);
+  }
+
+  .markdown-stream .mermaid-block {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .markdown-stream .markdown-stream-mermaid-svg {
+    min-width: 0;
+    color: var(--color-markdown-text-primary);
+  }
+
+  .markdown-stream .markdown-stream-mermaid-svg svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
+
+  .markdown-stream .math-block-node {
+    margin: 0;
+  }
+
+  .markdown-stream del {
+    text-decoration-line: line-through;
+  }
+
+  .markdown-stream ins {
+    text-decoration-line: underline;
+    text-underline-offset: 0.12em;
+  }
+
+  .markdown-stream-char-slot {
+    display: inline-block;
+    line-height: inherit;
+    overflow: visible;
+    position: relative;
+    vertical-align: baseline;
+    white-space: pre;
+  }
+
+  .markdown-stream-char-slot::before {
+    content: attr(data-markdown-stream-char);
+    display: inline-block;
+    pointer-events: none;
+    visibility: hidden;
+    white-space: pre;
+  }
+
+  .markdown-stream-char-text {
+    display: inline-block;
+    line-height: inherit;
+    white-space: pre;
+  }
+
+  .markdown-stream-char-word {
+    display: inline-block;
+    line-height: inherit;
+    overflow-wrap: normal;
+    vertical-align: baseline;
+    white-space: nowrap;
+    word-break: normal;
+  }
+
+  .markdown-stream del .markdown-stream-char-text {
+    text-decoration-color: currentColor;
+    text-decoration-line: line-through;
+    text-decoration-skip-ink: auto;
+  }
+
+  .markdown-stream ins .markdown-stream-char-text,
+  .markdown-stream a:hover .markdown-stream-char-text {
+    text-decoration-color: currentColor;
+    text-decoration-line: underline;
+    text-decoration-skip-ink: auto;
+    text-underline-offset: 0.12em;
+  }
+
+  .markdown-stream-char-glyph {
+    display: inline-block;
+    filter: blur(0);
+    inset-block-start: calc(
+      -1 *
+        var(
+          --markdown-stream-char-bleed,
+          calc(var(--markdown-stream-char-blur, 6px) * 2 + 2px)
+        )
+    );
+    inset-inline-start: calc(
+      -1 *
+        var(
+          --markdown-stream-char-bleed,
+          calc(var(--markdown-stream-char-blur, 6px) * 2 + 2px)
+        )
+    );
+    line-height: inherit;
+    opacity: 1;
+    overflow: visible;
+    padding: var(
+      --markdown-stream-char-bleed,
+      calc(var(--markdown-stream-char-blur, 6px) * 2 + 2px)
+    );
+    position: absolute;
+    transform: translate3d(0, 0, 0);
+    white-space: pre;
+  }
+
+  .markdown-stream-char-enter {
+    display: inline-block;
+    animation: markdown-stream-char-blur-in var(--markdown-stream-char-duration, 360ms)
+      cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation-delay: var(--markdown-stream-char-delay, 0ms);
+    will-change: filter, opacity, transform;
+  }
+
+  @keyframes markdown-stream-char-blur-in {
+    from {
+      opacity: var(--markdown-stream-char-start-opacity, 0.38);
+      filter: blur(var(--markdown-stream-char-blur, 6px));
+      transform: translate3d(0, var(--markdown-stream-char-translate-y, 0.08em), 0);
+    }
+
+    to {
+      opacity: 1;
+      filter: blur(0);
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes markdown-stream-node-enter {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes markdown-stream-cursor-blink {
+    0%,
+    49% {
+      opacity: 1;
+    }
+
+    50%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .t-icon-swap .t-icon {
+      transition: none !important;
+    }
+
+    .markdown-stream .fade-node,
+    .markdown-stream .typewriter-cursor,
+    .markdown-stream-char-enter {
+      animation: none;
+      opacity: 1;
+      filter: none;
+      transform: none;
+      will-change: auto;
+    }
+  }
+
+  .collapse-container[data-state="open"][data-skip-enter] {
+    animation: none;
+  }
+
+  .collapse-container[data-state="open"][data-skip-enter] > .collapse-content-wrapper {
+    animation: none;
+    opacity: 1;
+  }
+
+  .collapse-container[data-state="open"][data-skip-enter] .collapse-content {
+    animation: none;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  .collapse-container[data-state="open"] {
+    animation: collapse-container-slide-down var(--collapse-container-duration)
+      cubic-bezier(
+        var(--collapse-container-bezier-x1),
+        var(--collapse-container-bezier-y1),
+        var(--collapse-container-bezier-x2),
+        var(--collapse-container-bezier-y2)
+      );
+  }
+
+  .collapse-container[data-state="closed"] {
+    animation: collapse-container-slide-up var(--collapse-container-duration)
+      cubic-bezier(
+        var(--collapse-container-bezier-x1),
+        var(--collapse-container-bezier-y1),
+        var(--collapse-container-bezier-x2),
+        var(--collapse-container-bezier-y2)
+      );
+  }
+
+  .collapse-container[data-state="open"] > .collapse-content-wrapper {
+    animation: collapse-content-wrapper-enter var(--collapse-content-duration)
+      cubic-bezier(
+        var(--collapse-content-bezier-x1),
+        var(--collapse-content-bezier-y1),
+        var(--collapse-content-bezier-x2),
+        var(--collapse-content-bezier-y2)
+      )
+      forwards;
+  }
+
+  .collapse-container[data-state="closed"] > .collapse-content-wrapper {
+    animation: collapse-content-wrapper-exit var(--collapse-content-duration)
+      cubic-bezier(
+        var(--collapse-content-bezier-x1),
+        var(--collapse-content-bezier-y1),
+        var(--collapse-content-bezier-x2),
+        var(--collapse-content-bezier-y2)
+      )
+      forwards;
+  }
+
+  .collapse-container[data-state="open"] .collapse-content {
+    animation: collapse-content-enter var(--collapse-content-duration)
+      cubic-bezier(
+        var(--collapse-content-bezier-x1),
+        var(--collapse-content-bezier-y1),
+        var(--collapse-content-bezier-x2),
+        var(--collapse-content-bezier-y2)
+      )
+      forwards;
+  }
+
+  .collapse-container[data-state="closed"] .collapse-content {
+    animation: collapse-content-exit var(--collapse-content-duration)
+      cubic-bezier(
+        var(--collapse-content-bezier-x1),
+        var(--collapse-content-bezier-y1),
+        var(--collapse-content-bezier-x2),
+        var(--collapse-content-bezier-y2)
+      )
+      forwards;
+  }
+
+  @keyframes collapse-container-slide-down {
+    from {
+      height: 0;
+    }
+
+    to {
+      height: var(--radix-collapsible-content-height);
+    }
+  }
+
+  @keyframes collapse-container-slide-up {
+    from {
+      height: var(--radix-collapsible-content-height);
+    }
+
+    to {
+      height: 0;
+    }
+  }
+
+  @keyframes collapse-content-wrapper-enter {
+    from {
+      opacity: var(--collapse-content-opacity-hidden);
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes collapse-content-wrapper-exit {
+    from {
+      opacity: 1;
+    }
+
+    to {
+      opacity: var(--collapse-content-opacity-hidden);
+    }
+  }
+
+  @keyframes collapse-content-enter {
+    from {
+      transform: translate3d(
+          var(--collapse-content-translate-x-hidden),
+          var(--collapse-content-translate-y-hidden),
+          0
+        )
+        scale(var(--collapse-content-scale-hidden));
+    }
+
+    to {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  @keyframes collapse-content-exit {
+    from {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+
+    to {
+      transform: translate3d(
+          var(--collapse-content-translate-x-hidden),
+          var(--collapse-content-translate-y-hidden),
+          0
+        )
+        scale(var(--collapse-content-scale-hidden));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .collapse-container[data-state="open"],
+    .collapse-container[data-state="closed"] {
+      animation: none;
+    }
+
+    .collapse-container[data-state="open"] > .collapse-content-wrapper,
+    .collapse-container[data-state="closed"] > .collapse-content-wrapper {
+      animation: none;
+      opacity: 1;
+    }
+
+    .collapse-container[data-state="open"] .collapse-content,
+    .collapse-container[data-state="closed"] .collapse-content {
+      animation: none;
+      transform: none;
+    }
+
+    .sidebar-task-section-chevron {
+      transition: none;
+    }
+
+    .task-list-item-icon-layer[data-motion="enter"],
+    .task-list-item-icon-layer[data-motion="exit"] {
+      animation: none;
+      opacity: 1;
+      filter: none;
+      transform: none;
+    }
+
+    .task-list-item-dot-inner,
+    .task-list-item-dot-track + [data-slot="task-list-item-title"] {
+      transition: none;
+    }
+  }
+
+  /* Collapsed stack peek for back toasts (sonner hides children when
+     data-styled=true). Matches the single/description front card — the only
+     variant that stacks in practice, since the action variant is persistent and
+     sits alone. Tokens rather than literals so the peek follows the theme; the
+     old hardcoded shadow never swapped for dark mode. The `!important`s outrank
+     sonner's own unlayered stylesheet and are load-bearing. */
+  [data-sonner-toast].comma-sonner-toast[data-expanded="false"][data-front="false"] {
+    overflow: hidden;
+    background: var(--color-bg-popup-primary) !important;
+    border: var(--border-width-0-5) solid var(--color-border-primary) !important;
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--shadow-lg);
+  }
+}
+
+/*
+ * markstream-react ships every `.markdown-renderer` as `content-visibility:
+ * auto` with a flat `contain-intrinsic-size: 800px 600px`. A Comma message is
+ * nothing like 600px tall, so each one off the viewport claims ~500px it does
+ * not have: a Task transcript reports three to four times its real height, and
+ * the reservation swaps for the true size as the reader scrolls, which moves
+ * the scroll height by tens of thousands of pixels mid-gesture. The transcript
+ * collapses out from under the reader, so scrolling up reads as flying: 4,000px
+ * of wheel carried the reader 11,500px, back toward the Router-authored opening
+ * of the Task.
+ *
+ * A transcript is the one place a wrong reservation compounds, because the
+ * scrollport sums every message at once, and it is also where Comma least needs
+ * the library's skipping: the thread windows its turns wherever a conversation
+ * has them, and already defers its own expensive subtrees (code highlighting,
+ * image previews). Measured on a 400-message Task: three long tasks per scroll
+ * gesture before, none after, against a one-time 112ms layout for the whole
+ * transcript. Markdown outside a thread keeps the library's behaviour — a
+ * standalone document is read on its own, so its reservation never adds up.
+ *
+ * Unlayered on purpose. The library's stylesheet is imported unlayered at the
+ * top of this file, so no rule inside `@layer components` can reach it however
+ * specific it is.
+ */
+.comma-chat-thread .markdown-stream .markdown-renderer {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
+
+/* Sonner sets its own system-ui stack on the toaster. Toasts use Comma's
+   typeface instead, including a family chosen in Appearance. */
+[data-sonner-toaster].comma-sonner-toaster {
+  font-family: var(--font-sans);
+}
+
+/*
+ * Sonner ships unlayered 400ms default-ease transitions. Retime all of them on
+ * the motion tokens: strong ease-out entries under 300ms, exits that accelerate
+ * away and finish sooner than the enter, and one shared clock for the
+ * hover-expand pair. Kept unlayered, and every selector carries a `comma-` class
+ * so it outranks sonner's own stylesheet whatever order the two land in;
+ * sonner's prefers-reduced-motion !important reset still wins over all of them.
+ */
+[data-sonner-toast].comma-sonner-toast {
+  transition:
+    transform var(--motion-duration-toast-enter) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-toast-enter) var(--motion-easing-smooth-out),
+    height var(--motion-duration-toast-enter) var(--motion-easing-smooth-out),
+    box-shadow var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+/* A transfer card changes size with its phase while the pointer still rests on
+   it after Accept. Hovering pins the toast to its measured height, and easing
+   that height lets the taller card hang past the window's bottom edge until the
+   box catches up. Snap the height; the swap of content is the change anyway. */
+[data-sonner-toast].comma-sonner-toast.comma-sonner-file-transfer[data-front="true"]:not(
+    [data-removed="true"]
+  ) {
+  transition:
+    transform var(--motion-duration-toast-enter) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-toast-enter) var(--motion-easing-smooth-out),
+    box-shadow var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+/* Exits keep the strong ease-out and stay shorter than the enter. In a stack the
+   toast behind starts sliding into the dismissed one's slot on the same frame,
+   so the leaver has to clear out first: an ease-in exit sat almost still and
+   fully opaque for its first ~100ms while the follower slid over it, and the
+   two cards' text overlapped mid-motion. Restated as a full shorthand so the
+   four channels are named instead of positional; the base rule's property
+   order belongs to sonner, not to us. `height` stays in the list because the
+   collapsed stack pins back toasts to a shared height, so dropping it would
+   snap the box in the same frame the transform starts. */
+[data-sonner-toast].comma-sonner-toast[data-removed="true"] {
+  transition:
+    transform var(--motion-duration-toast-exit) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-toast-exit) var(--motion-easing-smooth-out),
+    height var(--motion-duration-toast-exit) var(--motion-easing-smooth-out),
+    box-shadow var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+/* Sonner pins this collapsed-exit state with its own 500ms transition at
+   higher attribute specificity; restate it on the token scale. */
+[data-sonner-toast].comma-sonner-toast[data-removed="true"][data-front="false"][data-swipe-out="false"][data-expanded="false"] {
+  transition:
+    transform var(--motion-duration-toast-exit) var(--motion-easing-smooth-out),
+    opacity var(--motion-duration-toast-exit) var(--motion-easing-smooth-out);
+}
+
+/*
+ * Sonner's two remaining 400ms defaults, both on the hover-expand path and both
+ * previously untimed by us. The stack lift and the copy it reveals must run on
+ * one clock, or the text fades in after the cards have already stopped moving.
+ * `spatial-move` is the shared "surface changes position" duration.
+ */
+[data-sonner-toaster].comma-sonner-toaster {
+  transition: transform var(--motion-duration-spatial-move)
+    var(--motion-easing-smooth-out);
+}
+
+/* Sonner turns every toast into a full-width row below 601px. Comma's cards stay
+   on their 380px width token inside that row, so push the content to the row's
+   physical right edge to preserve a bottom-right stack in the 500px Electron
+   main window. `max-width` keeps the card shrinkable on narrower web surfaces.
+
+   The row spans between both mobile insets rather than sonner's
+   `100% - <left inset> * 2`. Same geometry while the two match, but sonner pins
+   the row with `left: 0; right: 0` and an explicit width, and an over-constrained
+   box drops `right` — so the stack's right offset, and with it the step around a
+   native surface (`toastObstruction`), never reached the narrow layout at all.
+   Restating the width in terms of both insets is what carries it across. */
+@media (max-width: 600px) {
+  [data-sonner-toaster].comma-sonner-toaster[data-x-position="right"]
+    [data-sonner-toast].comma-sonner-toast {
+    width: calc(100% - var(--mobile-offset-left) - var(--mobile-offset-right));
+  }
+
+  [data-sonner-toaster].comma-sonner-toaster[data-x-position="right"]
+    [data-sonner-toast].comma-sonner-toast
+    > [data-content] {
+    max-width: 100%;
+    margin-left: auto;
+  }
+}
+
+[data-sonner-toast].comma-sonner-toast > * {
+  transition: opacity var(--motion-duration-spatial-move)
+    var(--motion-easing-smooth-out);
+}
+
+/*
+ * Markstream's imported reset is unlayered. Keep the owned code-block
+ * overrides unlayered as well so normal cascade order is sufficient and the
+ * global reduced-motion contract can remain authoritative.
+ */
+.markdown-stream .markdown-stream-code-body .code-block-content {
+  max-height: none;
+}
+
+/* Match Markstream's fallback weight after asynchronous highlighting. Inheriting
+ * the chat's medium weight changes code metrics and shifts bottom-aligned turns. */
+.markdown-stream .markdown-stream-code-body pre {
+  font-weight: var(--vscode-editor-font-weight, 400);
+}
+
+/* Keep highlighted code on the same font as the fallback and its pre strut. */
+.markdown-stream .markdown-stream-code-body pre > code {
+  font-family: inherit;
+}
+
+.markdown-stream .markdown-stream-code-expand {
+  position: absolute;
+  /* Markstream's fallback code surface is z-index: 1 and follows this button
+     in DOM order, so the control must sit on the next owned layer. */
+  z-index: 2;
+  left: 50%;
+  bottom: var(--spacing-md);
+  border: 1px solid var(--color-button-secondary-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-popup-secondary);
+  color: var(--color-button-secondary-fg);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  padding-left: var(--spacing-xs);
+  padding-right: var(--spacing-md);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition-property: opacity, box-shadow;
+  transition-duration:
+    var(--motion-duration-feedback-in), var(--motion-duration-feedback-out);
+  transition-timing-function:
+    var(--motion-easing-smooth-out), var(--motion-easing-smooth-out);
+}
+
+.markdown-stream .markdown-stream-code-expand:focus-visible {
+  box-shadow: var(--shadow-focus-gray-shadow-xs);
+}
+
+.markdown-stream .markdown-stream-code-expand:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.markdown-stream .markdown-stream-code-block:focus-within .markdown-stream-code-expand {
+  opacity: 1;
+  pointer-events: auto;
+  transition-duration:
+    var(--motion-duration-state-change), var(--motion-duration-feedback-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .markdown-stream .markdown-stream-code-block:hover .markdown-stream-code-expand {
+    opacity: 1;
+    pointer-events: auto;
+    transition-duration:
+      var(--motion-duration-state-change), var(--motion-duration-feedback-out);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .markdown-stream .markdown-stream-code-expand {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

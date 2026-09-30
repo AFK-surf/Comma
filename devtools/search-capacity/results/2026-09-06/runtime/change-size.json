@@ -1,0 +1,42 @@
+{
+  "base": "be72136c339e9bdf86805392bf8365c36e39b157",
+  "scope": "Entire current worktree versus its HEAD base, including the preceding read-budget hotfix already present at implementation start. No PR was created. Text-file line counts; binary artifacts excluded. Source, SQL and migrations are production; tests, models, docs, benchmark tools/data and release manifest are separate.",
+  "categories": {
+    "documents": {
+      "added": 1264,
+      "deleted": 338,
+      "net": 926,
+      "files": 18
+    },
+    "release_metadata": {
+      "added": 95,
+      "deleted": 0,
+      "net": 95,
+      "files": 1
+    },
+    "tests": {
+      "added": 870,
+      "deleted": 55,
+      "net": 815,
+      "files": 5
+    },
+    "production_sources_and_migrations": {
+      "added": 2530,
+      "deleted": 85,
+      "net": 2445,
+      "files": 29
+    },
+    "models_and_checker": {
+      "added": 857,
+      "deleted": 1,
+      "net": 856,
+      "files": 41
+    },
+    "benchmark_tools_and_text_data": {
+      "added": 18227,
+      "deleted": 0,
+      "net": 18227,
+      "files": 45
+    }
+  }
+}

@@ -1,0 +1,289 @@
+{
+  "storage": {
+    "endpoint": "https://s3.us-east-1.amazonaws.com",
+    "region": "us-east-1",
+    "bucket": "example-salix-bucket",
+    "access_key_id": "AKIA...",
+    "secret_access_key": "...",
+    "atomic_operations": "s3",
+    "conditional_delete": "native",
+    "timeouts": {
+      "fast_recv_ms": 10000,
+      "bulk_recv_ms": 30000,
+      "budget_ms": 20000
+    }
+  },
+  "log": {
+    "file": "/var/log/salix/salix.jsonl"
+  },
+  "web": {
+    "port": 4000,
+    "api_token": "change-me",
+    "sites_domain": "salix.localhost",
+    "sites_port": 4000,
+    "api_base_url": "https://salix.comma.surf"
+  },
+  "llm": {
+    "default_template": {
+      "template_id": "comma-default",
+      "name": "Comma Default",
+      "model": "gpt-5.2",
+      "provider": "openai",
+      "max_tokens": 2048,
+      "provider_config": {
+        "protocol": "responses",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-..."
+      }
+    }
+  },
+  "decide": {
+    "api_key": "",
+    "endpoint": "https://api.typesafe.ai/v1/systemone",
+    "model": "jev-1.13.0"
+  },
+  "transfer": {
+    "port": 4400,
+    "advertise_host": "10.0.0.12",
+    "advertise_port": 4400
+  },
+  "im": {
+    "identity_scan_max_concurrency": 4
+  },
+  "search": {
+    "exa_api_key": "..."
+  },
+  "email": {
+    "postmark_server_token": "...",
+    "owner_notification_from_email": "agents@comma.surf",
+    "magic_link_from_email": "login@comma.surf"
+  },
+  "cluster": {
+    "strategy": "kubernetes_dns",
+    "k8s_headless_service": "salix-headless"
+  },
+  "agent_vmm": {
+    "multi_scope_registration_enabled": false,
+    "environment_scoped_bindings_enabled": false,
+    "managed_trust_signing": {
+      "private_key": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+    },
+    "install_material": {
+      "remote_enrollment": {
+        "gateway_endpoint": "vmm.example.com:7443",
+        "trust_bundle": "base64-pem-ca-bundle"
+      }
+    }
+  },
+  "archive": {
+    "agent_events": {
+      "enabled": false,
+      "recipients": [
+        {
+          "key_id": "archive-2026q3",
+          "public_key": "age1r85jzcp43qy9uhekakgn9358ty7ney0kdzsxugg8k89gv0kdm5tsek4a0z"
+        },
+        {
+          "key_id": "escrow-offline",
+          "public_key": "age1hr4g6sz5v2luy8708nlypestremdcklx7hrsmt7udevpantufs4s0hpmac"
+        }
+      ],
+      "batch_size": 200,
+      "flush_ms": 2000,
+      "max_buffer": 5000,
+      "batch_bytes": 4194304
+    }
+  },
+  "clickhouse": {
+    "url": "http://clickhouse:8123",
+    "table": "salix_analytics.events",
+    "user": null,
+    "password": null
+  },
+  "slack_mirror": {
+    "enabled": true
+  },
+  "slack_semantic_search": {
+    "url": null,
+    "client_id": null,
+    "client_secret": null
+  },
+  "trajectory_eval": {
+    "enabled": true,
+    "sample_rate": 1.0,
+    "judge_enabled": false,
+    "judge_clean_sample_rate": 0.0,
+    "judge_provider": "haiku",
+    "judge_providers": {
+      "haiku": {
+        "label": "Claude Haiku",
+        "protocol": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "model": "claude-haiku-4-5-20251001",
+        "api_key_env": "SALIX_JUDGE_HAIKU_KEY"
+      },
+      "luna": {
+        "label": "GPT-5.6 Luna",
+        "protocol": "responses",
+        "base_url": "https://your-judge-gateway.example/openai/",
+        "model": "gpt-5.6-luna",
+        "api_key_env": "SALIX_JUDGE_LUNA_KEY",
+        "reasoning_effort": "low"
+      }
+    }
+  },
+  "meetings": {
+    "runtime_url": "http://meeting-runtime:8080",
+    "agent_template": "__internal_meeting_agent",
+    "summary_template": "example-meeting-summary-template",
+    "asr_template": "example-meeting-asr-template",
+    "bot_name": "Cirno",
+    "caption_language": "Chinese, Mandarin (Simplified)",
+    "feishu_action_activation_enabled": false,
+    "calendar_autojoin": {
+      "enabled": true,
+      "channels": {
+        "replace-with-slack-connect-id": {
+          "channel": "#your-channel",
+          "calendars": [
+            "Your Team Calendar"
+          ]
+        },
+        "replace-with-feishu-connect-id": {
+          "mode": "notify",
+          "chat_id": "oc_replace_with_target_group",
+          "calendars": [
+            "Your Team Calendar"
+          ],
+          "create_calendar": "Your Team Calendar",
+          "mentions": {
+            "mode": "none",
+            "users": []
+          }
+        }
+      }
+    }
+  },
+  "vm": {
+    "default_provider": "cloudflare",
+    "providers": {
+      "cloudflare": {
+        "enabled": true,
+        "gateway_base_url": "https://salix-vm-gateway-staging.afk.surf",
+        "gateway_secret": "replace-with-salix-vm-gateway-secret"
+      }
+    }
+  },
+  "cloud_vm_archives": {
+    "r2": {
+      "endpoint": "https://<account>.r2.cloudflarestorage.com",
+      "bucket": "salix-vm-archives-staging",
+      "access_key_id": "replace-with-r2-access-key-id",
+      "secret_access_key": "replace-with-r2-secret-access-key",
+      "zstd_enabled": false
+    }
+  },
+  "salix_dashboard": {
+    "secret_key_base": "replace-with-64-byte-random-secret"
+  },
+  "salix": {
+    "database": {
+      "url": "ecto://salix:password@127.0.0.1:5432/salix?ssl=false",
+      "pool_size": 8
+    }
+  },
+  "comma": {
+    "database": {
+      "url": "ecto://comma:password@127.0.0.1:5432/comma",
+      "pool_size": 8
+    },
+    "auth": {
+      "secret": "replace-with-at-least-32-random-bytes",
+      "rate_limit_secret": "replace-with-a-different-32-byte-random-secret",
+      "redis_url": "rediss://user:password@redis.example.com:6379/0"
+    },
+    "email": {
+      "from": "login@comma.surf",
+      "support": "support@comma.surf"
+    },
+    "web": {
+      "web_cookie_origin": "https://app.comma.surf",
+      "admin_cookie_origin": "https://admin.comma.surf",
+      "allowed_origins": [
+        "https://app.comma.surf",
+        "https://admin.comma.surf"
+      ]
+    },
+    "google_auth": {
+      "web_client_id": "replace-with-web-client-id.apps.googleusercontent.com",
+      "electron_client_id": "replace-with-desktop-client-id.apps.googleusercontent.com",
+      "electron_client_secret": "replace-with-desktop-client-secret"
+    },
+    "synchronicity": {
+      "base_url": "https://synchronicity.example.com",
+      "provisioning_secret": "replace-with-at-least-32-random-bytes"
+    },
+    "admin": {
+      "email_domain": "comma.surf"
+    },
+    "billing": {
+      "stripe_lookup_key_prefix": "comma",
+      "account_prefix": "comma-ba-"
+    },
+    "profile_avatar": {
+      "bucket": "example-avatars"
+    }
+  },
+  "bridge_for_teams": {
+    "database": {
+      "url": "ecto://bridge_for_teams:password@127.0.0.1:5432/bridge_for_teams?ssl=false",
+      "pool_size": 10
+    },
+    "bft_cli": {
+      "artifact_base_url": "https://release.example.com/bft-cli",
+      "release_id": "latest"
+    },
+    "sourced_context": {
+      "background_executor": {
+        "enabled": false
+      }
+    },
+    "dashboard": {
+      "port": 4101,
+      "public_base_url": "https://teams.bridge.surf",
+      "server": true,
+      "secret_key_base": "replace-with-64-byte-random-secret",
+      "impersonator_org_slug": null
+    }
+  },
+  "e2e_reports": {
+    "session_secret": "replace-when-e2e-reports-are-enabled",
+    "r2": {
+      "endpoint": "https://<account>.r2.cloudflarestorage.com",
+      "region": "auto",
+      "bucket": "example-e2e-reports",
+      "access_key_id": "...",
+      "secret_access_key": "..."
+    }
+  },
+  "billing": {
+    "database": {
+      "url": "ecto://billing_core:password@127.0.0.1:5432/billing_core?ssl=false",
+      "pool_size": 10
+    },
+    "stripe": {
+      "secret_key": "replace-with-stripe-secret-key",
+      "webhook_secret": "replace-with-stripe-webhook-secret",
+      "portal_configuration_id": "",
+      "force_http1": false
+    },
+    "storage_metering": {
+      "interval_ms": 3600000,
+      "sample_window_seconds": 3600,
+      "provider": "gcs",
+      "sku": "regional",
+      "storage_tier": "regional",
+      "max_objects": 25000
+    }
+  }
+}

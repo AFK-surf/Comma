@@ -1,0 +1,269 @@
+.comma-chat-sidebar-resize-handle {
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+/* The highlight bar stops short of the window's inner rounded corners so it
+   never overlaps the curve of the adjacent content panel, and fades out
+   toward both ends. */
+/* The handle extends 12px outside the sidebar and 4px inside (see
+   RightSidebar), so the highlight bar sits on the sidebar edge at 75%. */
+.comma-chat-sidebar-resize-handle::after {
+  position: absolute;
+  top: var(--comma-window-inner-corner-radius, 0px);
+  bottom: var(--comma-window-inner-corner-radius, 0px);
+  left: 75%;
+  width: 1px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(
+    to bottom,
+    transparent 10%,
+    var(--color-fg-quinary-hover) 50%,
+    transparent 90%
+  );
+  content: "";
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity 140ms ease;
+}
+
+.comma-chat-sidebar-resize-handle:hover::after,
+.comma-chat-sidebar-resize-handle:focus-visible::after,
+.comma-chat-sidebar[data-resizing="true"] .comma-chat-sidebar-resize-handle::after {
+  opacity: 1;
+}
+
+.comma-chat-sidebar-resize-cursor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  cursor: col-resize;
+}
+
+.comma-chat-sidebar-resize-handle:focus-visible {
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: -2px;
+}
+
+.comma-chat-sidebar-resize-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 50;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.comma-chat-sidebar-resize-tooltip-bubble {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+  transform-origin: right center;
+  transition:
+    opacity 125ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 125ms cubic-bezier(0.23, 1, 0.32, 1);
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.97);
+  }
+}
+
+.comma-chat-sidebar-resize-tooltip [data-slot="tooltip-bubble"] > span {
+  line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-sidebar-resize-tooltip-bubble {
+    transition: opacity 125ms ease;
+  }
+}
+
+:root[data-comma-reduced-motion="true"] .comma-chat-sidebar-resize-tooltip-bubble {
+  transition: opacity 125ms ease;
+}
+
+/*
+ * Tabs share the strip the way browser tab strips do. With room to spare each
+ * tab keeps its own width (capped by the tab button); once the strip runs out,
+ * the widest tabs give way first, and no tab narrows past a readable minimum.
+ * Past that minimum the strip scrolls, and the ScrollArea edge fade marks the
+ * tabs out of view.
+ */
+.comma-chat-sidebar-tabs {
+  --comma-right-sidebar-tab-min-width: var(--spacing-8xl);
+}
+
+.comma-right-sidebar-tab-item {
+  flex: 1 1 0;
+  min-width: var(--comma-right-sidebar-tab-min-width);
+  max-width: max-content;
+  /* Keyboard focus and scroll-into-view clear the edge fade. */
+  scroll-margin-inline: var(--spacing-3xl);
+  /* A width held after a pointer close eases back once the pointer leaves. */
+  interpolate-size: allow-keywords;
+  transition: max-width var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+}
+
+/* Taking the hold is instant: the next close button must already be under
+   the pointer. */
+.comma-chat-sidebar-tabs[data-tab-width-locked="true"] .comma-right-sidebar-tab-item {
+  transition: none;
+}
+
+.comma-right-sidebar-tab-selected {
+  background: var(--color-bg-quaternary);
+  box-shadow: inset 0 0 0 0.5px
+    color-mix(in srgb, var(--color-border-primary) 80%, transparent);
+  color: var(--color-text-primary);
+}
+
+/* Host shells lift every header control with an unlayered
+   `.comma-content header :is(button, [role="button"]) { position: relative }`
+   rule, which outranks the `absolute` utility and drops the close button out
+   of its tab. Pin the geometry here with enough specificity to win. */
+.comma-chat-sidebar-tabs
+  .comma-right-sidebar-tab-item
+  > .comma-right-sidebar-tab-close {
+  position: absolute;
+  top: 50%;
+  right: var(--spacing-xs);
+  border-radius: var(--radius-sm, 6px);
+  transition: background-color 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.comma-right-sidebar-tab-close::before {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  bottom: 0;
+  width: var(--spacing-3xl);
+  background: linear-gradient(to right, transparent, var(--color-bg-quaternary));
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+}
+
+.comma-right-sidebar-tab-close-icon {
+  position: relative;
+  color: var(--color-text-tertiary);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.comma-right-sidebar-tab-item:focus-within .comma-right-sidebar-tab-close {
+  background: var(--color-bg-quaternary);
+  pointer-events: auto;
+}
+
+.comma-right-sidebar-tab-item:focus-within .comma-right-sidebar-tab-close::before {
+  opacity: 1;
+}
+
+.comma-right-sidebar-tab-item:focus-within .comma-right-sidebar-tab-close-icon {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-right-sidebar-tab-item:hover .comma-right-sidebar-tab {
+    background: var(--color-bg-quaternary);
+    color: var(--color-text-primary);
+  }
+
+  .comma-right-sidebar-add-tab:hover {
+    background: var(--color-sidebar-bg-item);
+    color: var(--color-text-primary);
+  }
+
+  .comma-chat-sidebar-toolbar-button:hover {
+    background: var(--color-sidebar-bg-item);
+    color: var(--color-text-primary);
+  }
+
+  .comma-chat-sidebar-toolbar-button:active {
+    transform: scale(0.97);
+  }
+
+  .comma-right-sidebar-tab:active,
+  .comma-right-sidebar-add-tab:active {
+    transform: scale(0.96);
+  }
+
+  .comma-right-sidebar-tab-item:hover .comma-right-sidebar-tab-close {
+    background: var(--color-bg-quaternary);
+    pointer-events: auto;
+  }
+
+  .comma-right-sidebar-tab-item:hover .comma-right-sidebar-tab-close::before {
+    opacity: 1;
+  }
+
+  .comma-right-sidebar-tab-item:hover .comma-right-sidebar-tab-close-icon {
+    opacity: 1;
+  }
+
+  .comma-right-sidebar-tab-item:hover .comma-right-sidebar-tab-close:hover {
+    background: var(--color-sidebar-bg-item);
+  }
+
+  .comma-right-sidebar-tab-close:hover .comma-right-sidebar-tab-close-icon {
+    color: var(--color-text-primary);
+  }
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .comma-right-sidebar-tab-item[data-closable="true"] .comma-right-sidebar-tab {
+    padding-right: var(--spacing-4xl);
+  }
+
+  .comma-right-sidebar-tab-close {
+    width: var(--spacing-3xl);
+    height: var(--spacing-3xl);
+    pointer-events: auto;
+  }
+
+  .comma-right-sidebar-tab-close-icon {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-sidebar-toolbar-button:active,
+  .comma-right-sidebar-tab:active,
+  .comma-right-sidebar-add-tab:active {
+    transform: none;
+  }
+
+  .comma-right-sidebar-tab-item {
+    transition: none;
+  }
+}
+
+:root[data-comma-reduced-motion="true"] .comma-right-sidebar-tab-item {
+  transition: none;
+}
+
+/* The surface keeps its final width while its parent reveals it. Its layout
+   does not contribute to siblings. Once the exit finishes, skip its hidden
+   content without discarding mounted chat state or restarting subscriptions. */
+.comma-chat-sidebar > .comma-chat-sidebar-surface {
+  contain: layout style;
+  transition: content-visibility 0s 0s allow-discrete;
+}
+
+.comma-chat-sidebar[data-open="false"] > .comma-chat-sidebar-surface {
+  content-visibility: hidden;
+  transition-delay: 150ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-sidebar[data-open="false"] > .comma-chat-sidebar-surface {
+    transition-delay: 0s;
+  }
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-chat-sidebar[data-open="false"]
+  > .comma-chat-sidebar-surface {
+  transition-delay: 0s;
+}

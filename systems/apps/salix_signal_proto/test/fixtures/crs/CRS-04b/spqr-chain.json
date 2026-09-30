@@ -1,0 +1,278 @@
+{
+  "section": "CRS-04b",
+  "name": "spqr-chain",
+  "description": "Post-quantum chain derivations (CRS-04b §7) for one oracle session: chain epoch 0 from the start secret, then each new chain epoch from the previous next root and the epoch secret. For each direction the first six message keys are listed; a key marked oracle_confirmed was the HKDF salt of an oracle double-ratchet message that the independent model decrypted and whose MAC it reproduced. The start secret is bytes 64..95 of the PQXDH output and equals the value the oracle keeps for the session.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "label": "chain epoch 0 from the start secret",
+        "start_secret": "8fc7e24e8254eeea79ebf9bfb8be663ccea5c62b1dd45b141af365cd39596ae4",
+        "info": "5369676e616c205051205261746368657420563120436861696e20205374617274",
+        "info_ascii": "Signal PQ Ratchet V1 Chain  Start"
+      },
+      "outputs": {
+        "okm_96": "b7a7b15d7acf22c368a32ba17c5477e0018c287e9ffcfda0ba281b3245354c09755823ef6bb208a5ca0b9f14acc44fba279ccfd0a43bf01bd2dfb15e16a4e7db262b718f57c1b102da50f8b99a163e2b097c334f7a73e998981b95d7d8c063d4",
+        "next_root": "b7a7b15d7acf22c368a32ba17c5477e0018c287e9ffcfda0ba281b3245354c09",
+        "initiator_to_responder_chain_key": "755823ef6bb208a5ca0b9f14acc44fba279ccfd0a43bf01bd2dfb15e16a4e7db",
+        "responder_to_initiator_chain_key": "262b718f57c1b102da50f8b99a163e2b097c334f7a73e998981b95d7d8c063d4",
+        "initiator_to_responder_keys": [
+          {
+            "index": 1,
+            "next_chain_key_after": "8e25d24f226c7cd4f7f2726db4015d78c84d6e181b3c895f3cf70d25eba9112f",
+            "message_key": "1d70b1c970e9dfe2c31b4c2d470e77386a8dc9a215ce5b95627a2358b96fa618",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 2,
+            "next_chain_key_after": "ede5e8fb5c19e0b14e486d13eb0cd45f487819702ba1f0837d10a4b47afcd7c1",
+            "message_key": "39e0a38547e5499e789fe2662bc67ca90ecedcee710d9e7092db1ebb485d44b2",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 3,
+            "next_chain_key_after": "48e96e32a80d2f947d5d37376d17a35abcf6f46a9cc55ff12bb08ad32b9dd41f",
+            "message_key": "e0c5d827fe14f7975030d84e0f91105ca005c07cb2bf10df9d12159ec2db3a45",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 4,
+            "next_chain_key_after": "92c56bb67f4fa6ca01ea2fc0fbb2053d343930fc8fba9287547f2edd4bca4ad7",
+            "message_key": "274246f5f18f82ef820989e5c46b6bc74e7abf712f90b3ed4d1c349ec3116d95",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 5,
+            "next_chain_key_after": "0fe86bd0903b2601dfdd0c02f754138e9463abd73a31cd46734d630908e17378",
+            "message_key": "03e281557ceede8cbe770f01212a908897169b2d5121c9ecdc4fa1048361e6e8",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 6,
+            "next_chain_key_after": "435ddf76a384733f70e59d9cf9dc7c4487385285a2bb3f4f4c916d5fc35fbf1c",
+            "message_key": "33f7b0f787d4ed5ba962e13f49b260c8ca42072c27f60e7193115c17b3bfc449",
+            "oracle_confirmed": true
+          }
+        ],
+        "responder_to_initiator_keys": [
+          {
+            "index": 1,
+            "next_chain_key_after": "0c1cece95356711086359237b98a5e64de32c019b09863b807e3ca8cf6cbfa2d",
+            "message_key": "bd898a3ef1c9b055d2c1d548cd1c2e7c225828d05cad1099f981143168a72778",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 2,
+            "next_chain_key_after": "7982ccece039c6acecd70801357ea403d3a3d3b624aa28bcdeabeaa99dcd6b7d",
+            "message_key": "6e3c5eccd5d2b87840eb0a5ae50bf5c397fa4b8af5cc0b35c8bcb41ded25c63d",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 3,
+            "next_chain_key_after": "1b1645810b3b2bec1ada6fb636cb6fd76d2bcaad213be9a0a1b7eb11210b7191",
+            "message_key": "baa19cbee876622c5a2cba8cbafd0e6e28271ebea751b2719e5ef42e3bd45f92",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 4,
+            "next_chain_key_after": "4e0a10942849586c95a84f488f70079ad4f79ce0deb4be336644ea6cc5891189",
+            "message_key": "5728ecbeb5345122453a60087be0e25887bb9262f8f3ac7e84a60acf5339588d",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 5,
+            "next_chain_key_after": "44ed4174d1f059dd495532066e96103240f8ef338a8859f193e0a9bdcaf9f238",
+            "message_key": "3aa194764d1d8047b3fa29dfcd82eed2b824096c121082aecc24dcf7e59ed75a",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 6,
+            "next_chain_key_after": "c98be40a9fb1cfcadb07e046a2ded0b4e62e0b97855c1aa9ed0ab4a2e7c62fe9",
+            "message_key": "f0fd510cbbfd51a228a433e837af74bf2a0868e83262c195c435526fbc506203",
+            "oracle_confirmed": true
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "label": "add chain epoch 1",
+        "previous_next_root": "b7a7b15d7acf22c368a32ba17c5477e0018c287e9ffcfda0ba281b3245354c09",
+        "epoch_secret": "a3320bab4ceeb0a86331837fe69b7bd793d6ae12d763d32efc653e70efbe3bd0",
+        "info_ascii": "Signal PQ Ratchet V1 Chain Add Epoch"
+      },
+      "outputs": {
+        "okm_96": "08e16622d3e0024730a9d808c5f53b011494784e27519e4c0748d14d94755ebf237980fc9931f4775cc542e1206b81a6c27ee8e6bf02a15d2938fc7d4ffd2a216455fe4d351d05cb9261827e8ef9b9e2434968f8347f587d3468303d4604637d",
+        "next_root": "08e16622d3e0024730a9d808c5f53b011494784e27519e4c0748d14d94755ebf",
+        "initiator_to_responder_chain_key": "237980fc9931f4775cc542e1206b81a6c27ee8e6bf02a15d2938fc7d4ffd2a21",
+        "responder_to_initiator_chain_key": "6455fe4d351d05cb9261827e8ef9b9e2434968f8347f587d3468303d4604637d",
+        "initiator_to_responder_keys": [
+          {
+            "index": 1,
+            "next_chain_key_after": "e1c75dbd12cb5a5caa36288c0915da8c93a01b4ef11d92f26266f387b02bffba",
+            "message_key": "6ea68520d3b6176de71e7620e19b6646de5477431c49e876cff1c540246c5883",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 2,
+            "next_chain_key_after": "6dab723b0a192b6d173637071cdbcd4abeff93e0b2cca9a09bfdc231612d46a2",
+            "message_key": "eb9e270b8125a94a8ae270b644c66c59516bcc4532f22abe424c307193779520",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 3,
+            "next_chain_key_after": "dfb132a806aa035fb9f0a7d5f8694640506842da6fa0d68931561978b2447ed2",
+            "message_key": "814a6e51b14a2116f124e0b56b2adec13f462b38825f66b8adc576ea7aa94ce4",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 4,
+            "next_chain_key_after": "eb93e001bf1ac801fccb07998720b4a2d533a48b691f21c78735b24638231375",
+            "message_key": "a83200c2b4fb0a7200007e36c3f31e4651ba4ef6670ecc070eff84cd511c48d2",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 5,
+            "next_chain_key_after": "62ebda16fb41a766f73d0a42c7af4cc12709f575327a412ede49bb819d6215fc",
+            "message_key": "6379fa3d0efcf44f02e3e31eeca4f0781fe036b9b9a7f03f520698699bfdaace",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 6,
+            "next_chain_key_after": "9ad46ff5d50db91cf7494b3079376baceaa630e91c90fa20f90b0c3e3f744d81",
+            "message_key": "e82a6a3f74b7a25f68d61daec184f1caa1a506318488cdc59d6bfcf2c4554820",
+            "oracle_confirmed": true
+          }
+        ],
+        "responder_to_initiator_keys": [
+          {
+            "index": 1,
+            "next_chain_key_after": "abe2586c96bc693b93774e4497b5c8eaa531b63147678e1cce80ea2784e3a888",
+            "message_key": "c0fa86290677882b758932632b02c6d37bf5d9867804c1dcb158544e4cb15544",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 2,
+            "next_chain_key_after": "df68d1b529f385479f1093e1f05ca8aa7d5e7790175ed74b83e953ddd3d42118",
+            "message_key": "b8b45529bd57d4f5fcaaeb8bf26cdee5eb2b1ac5518be5d447ffa3ce1bb17c36",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 3,
+            "next_chain_key_after": "95ff77d0eaf694ee89d68447a537efe22f9c4a514fdb50b7b67a8b104a61170d",
+            "message_key": "e2f60a14ef893e0f6fdf4c910108f0bb9c6a4e1e2915007723eb18226cd4fb12",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 4,
+            "next_chain_key_after": "c1a673e6628c6f3c54906ab185c10d652c195d210180c90ccf51baee96986775",
+            "message_key": "ff03d07e0da32c14827b14b7b119a686c16d5f3f6b5c1a60182215ba8a215e1c",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 5,
+            "next_chain_key_after": "471548f98aec60e53b78d143e25e7b22ba39057ced9f5e46da1b3fedc6dad9e9",
+            "message_key": "e6de0b6e4144e9a427408ff266523eb73a12dfd18ff13625466e5b5212bd6ce0",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 6,
+            "next_chain_key_after": "b8ebff7a445016552571126a9b91334c9ee984a61484bca5aca79e8ee44a6547",
+            "message_key": "798c2aaf891a83c92850d222e95b420cc68d41b19b110b8bedafb44892f6db8e",
+            "oracle_confirmed": true
+          }
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "label": "add chain epoch 2",
+        "previous_next_root": "08e16622d3e0024730a9d808c5f53b011494784e27519e4c0748d14d94755ebf",
+        "epoch_secret": "bcc4dad386b6dc5bdc9ac21173b8ae7dbfed46383ce7b759c0427f1d55b652a1",
+        "info_ascii": "Signal PQ Ratchet V1 Chain Add Epoch"
+      },
+      "outputs": {
+        "okm_96": "bc56ee879e3bcbc1fb30d8075e2e1b8431cff416b1233ce0d6f908a7659aec67901982793f3c92bbff2d293cdf14f20fac1ffd2c5a261fb1d08c788e96eabb41f452e630442827b9ccb0899c82f63dc49a15203a3789fbb414ad3f5870812e67",
+        "next_root": "bc56ee879e3bcbc1fb30d8075e2e1b8431cff416b1233ce0d6f908a7659aec67",
+        "initiator_to_responder_chain_key": "901982793f3c92bbff2d293cdf14f20fac1ffd2c5a261fb1d08c788e96eabb41",
+        "responder_to_initiator_chain_key": "f452e630442827b9ccb0899c82f63dc49a15203a3789fbb414ad3f5870812e67",
+        "initiator_to_responder_keys": [
+          {
+            "index": 1,
+            "next_chain_key_after": "8a231d2886c887d12b0753a874824c9761940a7b3bd5b62219d5be2d33c49191",
+            "message_key": "3cf2973afb8a6f1219f3fde10189771c716f161a41f5ff862cc3123f6f3a93aa",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 2,
+            "next_chain_key_after": "d3fd175bc874fc8500de39e5cf7d6c92d893c8fd32c5505b0ee70bb68d7003cb",
+            "message_key": "0c64234e66862f625cb07ee60dc31442c8a650b1be102ccb6e60c9dd004b7d6a",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 3,
+            "next_chain_key_after": "292f2ec498faff14fe3c8ad481fd8aacad6065e420eddc30e44d13ce0e7e988e",
+            "message_key": "68679a2f73313ccad6585fe9d41664a38cbd29f9fc70997c401a72bc8c65681e",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 4,
+            "next_chain_key_after": "cd9cc8f11074c264d2843241b19a61636155a359cbadca251626120412d354f9",
+            "message_key": "e75256a293a48297ad289a106b2b208ea24e5db826b0e5bb3316752a1cebf42a",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 5,
+            "next_chain_key_after": "7eb742e7c66fbf92d4dfa221ef5405a2cd81dbfcbc703312a512cde4a7e494c5",
+            "message_key": "065a48321437cc8da814637f2383fdfb4466abc923e8f99fed7008b7c4538a25",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 6,
+            "next_chain_key_after": "4a79c844c6b556cc9ab6a01f53d8f465013e07a949229a548c79d216aabf7751",
+            "message_key": "b8de375544be87d92522707b89d09b7aebda9c6a9f3ed7f5bb4cf743d43a6d43",
+            "oracle_confirmed": true
+          }
+        ],
+        "responder_to_initiator_keys": [
+          {
+            "index": 1,
+            "next_chain_key_after": "49aac06f0100dc9793229834c0de0c2dc136a1ab8903fbd6feef5d97f34f4b25",
+            "message_key": "0e95bc0d74213beab03594f7b3566ca82409233e379085b1ea69617e12bb30b7",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 2,
+            "next_chain_key_after": "82dd814365ced7657fb486ea754b733f17b1fc28173ca94093ff485df01d6258",
+            "message_key": "85b25ca09462926a632a1c159f94901494a74f20cf4529ba95e6b7206257d574",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 3,
+            "next_chain_key_after": "f3afc482d6ef2c511e1c9aed9b262193d57885cd5b4a7647e7014dc49e177742",
+            "message_key": "7850944f11338c15d9b7804214995e266506520c19189d85d3428aaa9ed0f80f",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 4,
+            "next_chain_key_after": "ab011eccaac41177d6b7444d13a98cad5d05d2b7164c455daf9dee0b5d9771a6",
+            "message_key": "f48e2d8c5ea14e6526930bd655dbe177efeb9820af09313d6e58fc493ce77951",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 5,
+            "next_chain_key_after": "128912f4ff7bfb83a102566e7fc67e87a3b0dc37ec436daa3a63878e5c4dd757",
+            "message_key": "f48f5a8efd044725a4f7f732ce1609b96a235c5eeb7e8ba217f85627b5add47f",
+            "oracle_confirmed": true
+          },
+          {
+            "index": 6,
+            "next_chain_key_after": "8498a0495614a217ef715c5a9fe7239719e6cf7429d15ca26d2c6248d477f0c1",
+            "message_key": "bf9b5fa1738eb0ac40366a3b604214c8ec4a12dd85702219525518e378c8c4dc",
+            "oracle_confirmed": true
+          }
+        ]
+      }
+    }
+  ]
+}

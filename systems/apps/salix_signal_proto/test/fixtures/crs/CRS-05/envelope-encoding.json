@@ -1,0 +1,324 @@
+{
+  "section": "CRS-05",
+  "name": "envelope-encoding",
+  "description": "Derived from the stated rules; not oracle evidence. Protobuf encodings of representative server envelopes, computed from the CRS-05 envelope table with fields in ascending field-number order (the order the service emits). Payload bytes are placeholders, not real ciphertext.",
+  "pin": "libsignal v0.103.0",
+  "cases": [
+    {
+      "label": "sealed sender envelope as delivered over the WebSocket",
+      "inputs": {
+        "message": "server envelope",
+        "fields": [
+          {
+            "field": 1,
+            "type": "varint",
+            "value": 6
+          },
+          {
+            "field": 5,
+            "type": "varint",
+            "value": "1727222400000"
+          },
+          {
+            "field": 8,
+            "type": "bytes",
+            "value": "11aaaaaaaaaaaaaaaa"
+          },
+          {
+            "field": 10,
+            "type": "varint",
+            "value": "1727222400250"
+          },
+          {
+            "field": 14,
+            "type": "varint",
+            "value": true
+          },
+          {
+            "field": 20,
+            "type": "bytes",
+            "value": "4fcfa7c82f6c4a5b8f3e1b2c3d4e5f60"
+          },
+          {
+            "field": 21,
+            "type": "bytes",
+            "value": "0f1e2d3c4b5a49788796a5b4c3d2e1f0"
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0806288088e9b3a232420911aaaaaaaaaaaaaaaa50fa89e9b3a2327001a201104fcfa7c82f6c4a5b8f3e1b2c3d4e5f60aa01100f1e2d3c4b5a49788796a5b4c3d2e1f0"
+      }
+    },
+    {
+      "label": "identified pre-key envelope from device 2",
+      "inputs": {
+        "message": "server envelope",
+        "fields": [
+          {
+            "field": 1,
+            "type": "varint",
+            "value": 3
+          },
+          {
+            "field": 5,
+            "type": "varint",
+            "value": "1727222400000"
+          },
+          {
+            "field": 7,
+            "type": "varint",
+            "value": 2
+          },
+          {
+            "field": 8,
+            "type": "bytes",
+            "value": "33bbbbbbbbbbbbbbbb"
+          },
+          {
+            "field": 10,
+            "type": "varint",
+            "value": "1727222400250"
+          },
+          {
+            "field": 14,
+            "type": "varint",
+            "value": true
+          },
+          {
+            "field": 19,
+            "type": "bytes",
+            "value": "000000000000400080000000000000a1"
+          },
+          {
+            "field": 20,
+            "type": "bytes",
+            "value": "4fcfa7c82f6c4a5b8f3e1b2c3d4e5f60"
+          },
+          {
+            "field": 21,
+            "type": "bytes",
+            "value": "0f1e2d3c4b5a49788796a5b4c3d2e1f0"
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0803288088e9b3a2323802420933bbbbbbbbbbbbbbbb50fa89e9b3a23270019a0110000000000000400080000000000000a1a201104fcfa7c82f6c4a5b8f3e1b2c3d4e5f60aa01100f1e2d3c4b5a49788796a5b4c3d2e1f0"
+      }
+    },
+    {
+      "label": "identified message to a PNI destination (17-byte service id)",
+      "inputs": {
+        "message": "server envelope",
+        "fields": [
+          {
+            "field": 1,
+            "type": "varint",
+            "value": 3
+          },
+          {
+            "field": 5,
+            "type": "varint",
+            "value": "1727222400000"
+          },
+          {
+            "field": 7,
+            "type": "varint",
+            "value": 1
+          },
+          {
+            "field": 8,
+            "type": "bytes",
+            "value": "33cccccccccccccccc"
+          },
+          {
+            "field": 10,
+            "type": "varint",
+            "value": "1727222400250"
+          },
+          {
+            "field": 14,
+            "type": "varint",
+            "value": true
+          },
+          {
+            "field": 19,
+            "type": "bytes",
+            "value": "000000000000400080000000000000a1"
+          },
+          {
+            "field": 20,
+            "type": "bytes",
+            "value": "01d0d0d0d0555546668777888899990000"
+          },
+          {
+            "field": 21,
+            "type": "bytes",
+            "value": "0f1e2d3c4b5a49788796a5b4c3d2e1f0"
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0803288088e9b3a2323801420933cccccccccccccccc50fa89e9b3a23270019a0110000000000000400080000000000000a1a2011101d0d0d0d0555546668777888899990000aa01100f1e2d3c4b5a49788796a5b4c3d2e1f0"
+      }
+    },
+    {
+      "label": "server delivery receipt (no content, not urgent)",
+      "inputs": {
+        "message": "server envelope",
+        "fields": [
+          {
+            "field": 1,
+            "type": "varint",
+            "value": 5
+          },
+          {
+            "field": 5,
+            "type": "varint",
+            "value": "1727222400000"
+          },
+          {
+            "field": 7,
+            "type": "varint",
+            "value": 1
+          },
+          {
+            "field": 10,
+            "type": "varint",
+            "value": "1727222400900"
+          },
+          {
+            "field": 14,
+            "type": "varint",
+            "value": false
+          },
+          {
+            "field": 19,
+            "type": "bytes",
+            "value": "4fcfa7c82f6c4a5b8f3e1b2c3d4e5f60"
+          },
+          {
+            "field": 20,
+            "type": "bytes",
+            "value": "000000000000400080000000000000a1"
+          },
+          {
+            "field": 21,
+            "type": "bytes",
+            "value": "0f1e2d3c4b5a49788796a5b4c3d2e1f0"
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0805288088e9b3a232380150848fe9b3a23270009a01104fcfa7c82f6c4a5b8f3e1b2c3d4e5f60a20110000000000000400080000000000000a1aa01100f1e2d3c4b5a49788796a5b4c3d2e1f0"
+      }
+    },
+    {
+      "label": "plaintext-content envelope (retry request) from device 1",
+      "inputs": {
+        "message": "server envelope",
+        "fields": [
+          {
+            "field": 1,
+            "type": "varint",
+            "value": 8
+          },
+          {
+            "field": 5,
+            "type": "varint",
+            "value": "1727222405000"
+          },
+          {
+            "field": 7,
+            "type": "varint",
+            "value": 1
+          },
+          {
+            "field": 8,
+            "type": "bytes",
+            "value": "c0420910c8d395ffbc31180280"
+          },
+          {
+            "field": 10,
+            "type": "varint",
+            "value": "1727222405100"
+          },
+          {
+            "field": 14,
+            "type": "varint",
+            "value": false
+          },
+          {
+            "field": 19,
+            "type": "bytes",
+            "value": "4fcfa7c82f6c4a5b8f3e1b2c3d4e5f60"
+          },
+          {
+            "field": 20,
+            "type": "bytes",
+            "value": "000000000000400080000000000000a1"
+          },
+          {
+            "field": 21,
+            "type": "bytes",
+            "value": "0f1e2d3c4b5a49788796a5b4c3d2e1f0"
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "08082888afe9b3a2323801420dc0420910c8d395ffbc3118028050ecafe9b3a23270009a01104fcfa7c82f6c4a5b8f3e1b2c3d4e5f60a20110000000000000400080000000000000a1aa01100f1e2d3c4b5a49788796a5b4c3d2e1f0"
+      }
+    },
+    {
+      "label": "story envelope (story flag set, sealed sender)",
+      "inputs": {
+        "message": "server envelope",
+        "fields": [
+          {
+            "field": 1,
+            "type": "varint",
+            "value": 6
+          },
+          {
+            "field": 5,
+            "type": "varint",
+            "value": "1727222400000"
+          },
+          {
+            "field": 8,
+            "type": "bytes",
+            "value": "22dddddddddddddddd"
+          },
+          {
+            "field": 10,
+            "type": "varint",
+            "value": "1727222400250"
+          },
+          {
+            "field": 14,
+            "type": "varint",
+            "value": false
+          },
+          {
+            "field": 16,
+            "type": "varint",
+            "value": true
+          },
+          {
+            "field": 20,
+            "type": "bytes",
+            "value": "4fcfa7c82f6c4a5b8f3e1b2c3d4e5f60"
+          },
+          {
+            "field": 21,
+            "type": "bytes",
+            "value": "0f1e2d3c4b5a49788796a5b4c3d2e1f0"
+          }
+        ]
+      },
+      "outputs": {
+        "encoded": "0806288088e9b3a232420922dddddddddddddddd50fa89e9b3a2327000800101a201104fcfa7c82f6c4a5b8f3e1b2c3d4e5f60aa01100f1e2d3c4b5a49788796a5b4c3d2e1f0"
+      }
+    }
+  ]
+}

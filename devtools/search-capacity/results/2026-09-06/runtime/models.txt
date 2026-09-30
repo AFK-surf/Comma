@@ -1,0 +1,54 @@
+  ok         SlackMirrorOutbox_Safety
+  ok         SlackSemanticIndex_Safety
+  ok         MessageSearchSource_Safety
+  violation  MessageSearchSource_UnsafePGOnly (expected: ActualSourceObserved)
+  violation  MessageSearchSource_UnsafeVersionOnly (expected: ActualSourceObserved)
+  violation  MessageSearchSource_UnsafeMessageOnly (expected: ActualSourceObserved)
+  violation  MessageSearchSource_UnsafePending (expected: CurrentStateObserved)
+  violation  MessageSearchSource_UnsafePublishCAS (expected: PublicationFenced)
+  ok         MessageSearchBuild_Safety
+  violation  MessageSearchBuild_UnsafePartial (expected: PublishedComplete)
+  violation  MessageSearchBuild_UnsafeRefresh (expected: PublishedComplete)
+  violation  MessageSearchBuild_UnsafeOldBuild (expected: OnlyPublishedBuild)
+  ok         MessageSearchComponentRow_Safety
+  violation  MessageSearchComponentRow_UnsafePartial (expected: PublishedComplete)
+  violation  MessageSearchComponentRow_UnsafeLateWrite (expected: NoLateOverwrite)
+  violation  MessageSearchComponentRow_UnsafeAck (expected: PublishedComplete)
+  violation  MessageSearchComponentRow_UnsafePublication (expected: PublicationOrdered)
+  violation  MessageSearchComponentRow_UnsafeRead (expected: OnlyPublishedBuild)
+  ok         MessageSearchFile_Safety
+  violation  MessageSearchFile_UnsafeRead (expected: CurrentFileObserved)
+  violation  MessageSearchFile_UnsafeDeleted (expected: CurrentFileObserved)
+  violation  MessageSearchFile_UnsafePublish (expected: PublicationFenced)
+  ok         MessageSearchSourceInit_Safety
+  violation  MessageSearchSourceInit_UnsafePart (expected: IdentityStable)
+  violation  MessageSearchSourceInit_UnsafeOverwrite (expected: IdentityStable)
+  ok         MessageSearchSourceLanes_Safety
+  violation  MessageSearchSourceLanes_UnsafeShared (expected: NoHistoricalTriage)
+  ok         MessageSearchGroupScope_Safety
+  violation  MessageSearchGroupScope_UnsafeClientGroup (expected: GroupScopeObserved)
+  violation  MessageSearchGroupScope_UnsafeWorkspace (expected: GroupScopeObserved)
+  violation  MessageSearchGroupScope_UnsafeRevocation (expected: GroupScopeObserved)
+  ok         SemanticHistoryPaging_Liveness
+  violation  SemanticHistoryPaging_UnsafeCommit (expected: NoSkippedWork)
+  violation  SemanticHistoryPaging_UnsafeExpiry (expected: NoSkippedWork)
+  violation  SlackSemanticIndex_UnsafePartial (expected: PublishedComplete)
+  violation  SlackSemanticIndex_UnsafeStale (expected: NoUnverifiedContent)
+  violation  SlackSemanticIndex_UnsafeEqualVersion (expected: NoUnverifiedContent)
+  violation  SlackSemanticIndex_UnsafeScope (expected: NoUnverifiedContent)
+  violation  SlackSemanticIndex_UnsafePending (expected: NoUnverifiedContent)
+  violation  SlackSemanticIndex_UnsafeAccess (expected: NoUnverifiedContent)
+  ok         SemanticIndexScheduling_Liveness
+  violation  SemanticIndexScheduling_UnsafeSharedWorker (expected)
+  violation  SemanticIndexScheduling_UnsafePriority (expected: ObservedLivePriority)
+  violation  SemanticIndexScheduling_UnsafeCompletion (expected: NoLostObservation)
+  violation  SemanticIndexScheduling_UnsafeEarlyAck (expected: PublishedBeforeAck)
+  violation  SemanticIndexScheduling_UnsafePrune (expected: PendingRetained)
+  violation  SlackMirrorOutbox_UnsafeDeleteBeforeAck (expected: DeletedImpliesWritten)
+  ok         SemanticScopeDiscovery_Liveness
+  ok         SemanticInstallationPaging_Liveness
+  violation  SemanticInstallationPaging_UnsafeSharedCursor (expected)
+  violation  SemanticScopeDiscovery_UnsafePagination (expected)
+  violation  SemanticScopeDiscovery_UnsafeWorkspace (expected: NoForeignScope)
+  ok         MessageSearchWorkerRollout_Liveness
+  violation  MessageSearchWorkerRollout_UnsafeNoRescan (expected)

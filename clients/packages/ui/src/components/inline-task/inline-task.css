@@ -1,0 +1,103 @@
+/*
+ * Inline Task mention (Figma: Comma Design System 7976:24426 default,
+ * 7976:24417 hover/press). Text stays in the surrounding prose color at
+ * regular weight with no decoration; the pill sits on bg-tertiary at rest and
+ * deepens to bg-quaternary on hover/press. Vertical padding is pulled back so
+ * the pill hugs the 20px content row without growing the line.
+ */
+.comma-inline-task {
+  display: inline-flex;
+  max-width: min(28rem, 100%);
+  align-items: baseline;
+  gap: var(--spacing-xxs);
+  /* A 2px (spacing-xxs) gutter that surrounding prose cannot close. Message
+     text renders whitespace-pre-wrap, so whether a space separates the pill
+     from the adjacent glyph is the message author's choice, and Chinese prose
+     sets its punctuation ("：", "，") flush against the mention. A negative
+     horizontal margin cannot reclaim a space that may not be there; it only
+     slides the background under the neighbouring glyph. Only the vertical
+     padding, which is always ours, is pulled back. */
+  margin: -1px var(--spacing-xxs);
+  /* Asymmetric on purpose: the 20px status icon carries its own inner margin
+     inside the glyph box, so a 4px (spacing-xs) leading pad already reads as
+     air, while the title ends flush against its edge and needs 8px
+     (spacing-md) to look like the same gap. */
+  padding: 1px var(--spacing-md) 1px var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-tertiary);
+  color: inherit;
+  font: inherit;
+  /* The pill hugs the 20px content row (sm line-height); inheriting the
+     prose leading would stretch the background to the full line box and fuse
+     pills on adjacent lines. */
+  line-height: var(--text-sm--line-height);
+  text-decoration: none;
+  vertical-align: baseline;
+  transition:
+    background-color var(--motion-duration-state-change) ease,
+    transform var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-inline-task:not(.comma-inline-task--unavailable):not(
+      .comma-inline-task--archived
+    ):not(.comma-inline-task--passive):hover {
+    background-color: var(--color-bg-quaternary);
+  }
+}
+
+.comma-inline-task:not(.comma-inline-task--unavailable):not(
+    .comma-inline-task--archived
+  ):not(.comma-inline-task--passive):active {
+  background-color: var(--color-bg-quaternary);
+  transform: scale(var(--motion-scale-pressed));
+}
+
+.comma-inline-task:focus-visible {
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: 2px;
+}
+
+.comma-inline-task-icon {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  align-self: center;
+  justify-content: center;
+}
+
+.comma-inline-task-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.comma-inline-task-title {
+  overflow: hidden;
+  max-width: 24rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-inline-task--unavailable {
+  color: var(--color-text-tertiary);
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-inline-task {
+    transition-property: background-color;
+  }
+
+  .comma-inline-task:not(.comma-inline-task--unavailable):not(
+      .comma-inline-task--archived
+    ):not(.comma-inline-task--passive):active {
+    transform: none;
+  }
+}
+
+.comma-inline-task--archived {
+  color: var(--color-text-disabled);
+  cursor: default;
+}

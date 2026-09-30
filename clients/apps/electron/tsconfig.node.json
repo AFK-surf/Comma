@@ -1,0 +1,34 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.electron.node.tsbuildinfo",
+    "types": ["node"],
+    "paths": {
+      "@comma/app": ["../../packages/app/src/index.tsx"],
+      "@comma/config": ["../../packages/config/src/index.ts"],
+      "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
+      "@comma/session-contract": ["../../packages/session-contract/src/index.ts"],
+      "@comma/ui": ["../../packages/ui/src/index.ts"]
+    }
+  },
+  "include": [
+    "forge.config.ts",
+    "vite.*.config.ts",
+    "scripts/**/*.ts",
+    "src/app-version.ts",
+    "src/release-config.ts",
+    "src/test-support/electron-window.ts",
+    "../../vite/*.ts",
+    "../../packages/config/src/**/*.ts",
+    "../../packages/layout-inspector/src/source-location.ts",
+    "../../packages/layout-inspector/src/vite.ts",
+    "../../packages/native-bridge/src/**/*.ts",
+    "../../packages/session-contract/src/**/*.ts"
+  ],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/**/*.test.*",
+    "../../packages/**/*.spec.*"
+  ]
+}

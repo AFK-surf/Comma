@@ -1,0 +1,11 @@
+{
+  "kind": "daily_aggregate",
+  "reference_end_us": 1788682068001360,
+  "observed_at": [
+    "2026-09-06T08:07:47.280338Z",
+    "2026-09-06T08:07:47.407906Z",
+    "2026-09-06T08:07:47.869212Z",
+    "2026-09-06T08:07:48.001360Z"
+  ],
+  "method": "Actual staging per-day/per-channel counts and vector-count histograms. Timestamps within each day, versions, text, file identities/manifests, and vector values are synthetic; this is a layout/row-budget simulation, not a replica or an end-to-end correctness/SLA test."
+}

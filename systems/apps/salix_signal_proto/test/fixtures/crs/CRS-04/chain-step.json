@@ -1,0 +1,98 @@
+{
+ "section": "CRS-04",
+ "name": "chain-step",
+ "description": "Symmetric chain step: next_chain_key = HMAC-SHA256(chain_key, 0x02) and message_key_seed = HMAC-SHA256(chain_key, 0x01). Chain keys at consecutive indices were read from oracle sender state; message_key_seed values marked oracle-observed were observed in oracle receiver state as stored seeds of skipped messages (the receiver got the last message first); the other message_key_seed values are the stated HMAC applied to the oracle-observed chain keys. The *_without_pq_salt keys are HKDF(seed, no salt, WhisperMessageKeys, 80) from the oracle HKDF; deployed sessions use the post-quantum key as salt instead.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "chain_key": "e68809e59dd56826c5a4774812a7d4d3841346123cfb8c6ee8fcc3802111a237",
+    "chain_index": 0
+   },
+   "outputs": {
+    "next_chain_key": "1d0c16aed4a1970aafaeb606f1edd0dc2e9c2641082a502bea69d23cbd1ac7b4",
+    "next_chain_index": 1,
+    "message_key_seed": "e15248ddfba33b305c26bebeebc6b9a77fd7ccb66e87ad8336eeeaf87e35fedc",
+    "message_key_seed_oracle_observed": true,
+    "cipher_key_without_pq_salt": "96e9dbde91965a959e451d105a848cb59b6736059680a28dee0473a5ad5d8b90",
+    "mac_key_without_pq_salt": "d33c6acf2b206ad81433b2cabe92282f3ab8df28ed9d81bd42ed831b6c963805",
+    "iv_without_pq_salt": "ff419dd358c21c5077ccb1fc2ab5541f"
+   }
+  },
+  {
+   "inputs": {
+    "chain_key": "1d0c16aed4a1970aafaeb606f1edd0dc2e9c2641082a502bea69d23cbd1ac7b4",
+    "chain_index": 1
+   },
+   "outputs": {
+    "next_chain_key": "fa8dda3a4b35b7cf3b2f885c6bd5ec39c462801e39d2872e428dc1b45dd54f0a",
+    "next_chain_index": 2,
+    "message_key_seed": "3aecd37dee82df04a4371a30cc21ed06e372324fff4215cd4dcb9721dce4a1c1",
+    "message_key_seed_oracle_observed": true,
+    "cipher_key_without_pq_salt": "18f929020a821d5f8d6b29baf4a6244cdea54aed94595340720ab02c53839826",
+    "mac_key_without_pq_salt": "f2bb11d14a5ae64d5fef7fb508b173774b3d55f9589c72be71202d3827a2617e",
+    "iv_without_pq_salt": "2cbff551591cc426ee41e7152884a40e"
+   }
+  },
+  {
+   "inputs": {
+    "chain_key": "fa8dda3a4b35b7cf3b2f885c6bd5ec39c462801e39d2872e428dc1b45dd54f0a",
+    "chain_index": 2
+   },
+   "outputs": {
+    "next_chain_key": "d65689eaced4699ae5a9722b7ec24b2f30192f53b0cd142eee8d8044e666e638",
+    "next_chain_index": 3,
+    "message_key_seed": "78f6fde075452e2584a5101708a57b72753306c3e794d1655f792aef1e465a37",
+    "message_key_seed_oracle_observed": true,
+    "cipher_key_without_pq_salt": "292b831413badc459e8034e16b51d3e406140f1ad764a1eec028317a70da81c6",
+    "mac_key_without_pq_salt": "2bf10d07ea7311a6ace70727e46924d4321c49017cb96995b137ca5a18c91354",
+    "iv_without_pq_salt": "c0ff672837c6bc07114c227aac885966"
+   }
+  },
+  {
+   "inputs": {
+    "chain_key": "d65689eaced4699ae5a9722b7ec24b2f30192f53b0cd142eee8d8044e666e638",
+    "chain_index": 3
+   },
+   "outputs": {
+    "next_chain_key": "1cc21b65c6f150d6c709bb6f5e2ad35b7422acb919077049521d859a7519c301",
+    "next_chain_index": 4,
+    "message_key_seed": "9954b7c12d73fd44c432f3c959f015c206bbbb392e9bb88e5b002943bacea69b",
+    "message_key_seed_oracle_observed": true,
+    "cipher_key_without_pq_salt": "1fcbbaa11048849216e0877c4d3a4b83071649be4f7ec8848d90c04f7137eb10",
+    "mac_key_without_pq_salt": "9fd50eeddd82f73ea1ecd3033be5ac17af9fcf7da3924340d5b6926300f5cd4a",
+    "iv_without_pq_salt": "9563e10b4663e4eb2799810cdeed61df"
+   }
+  },
+  {
+   "inputs": {
+    "chain_key": "1cc21b65c6f150d6c709bb6f5e2ad35b7422acb919077049521d859a7519c301",
+    "chain_index": 4
+   },
+   "outputs": {
+    "next_chain_key": "f7ab4bb19fce0198a9bcbd2635591d002e879ee9da2c89de0625a7c1855075b4",
+    "next_chain_index": 5,
+    "message_key_seed": "a3e2494e47884e8215243793aef2e9c53785fc4e8ffa0a417aa8dd8cba527d6f",
+    "message_key_seed_oracle_observed": true,
+    "cipher_key_without_pq_salt": "35e2fd8cf2e724db4063123f57d17bf67173e6f53aefa984da3b89494d403e24",
+    "mac_key_without_pq_salt": "34d8f3d85577206f33be68ae692335bdb4c4c8913c69cc8ec255f8744c0c3a0b",
+    "iv_without_pq_salt": "ef939a1b0214e30974726d5b418e9d2a"
+   }
+  },
+  {
+   "inputs": {
+    "chain_key": "f7ab4bb19fce0198a9bcbd2635591d002e879ee9da2c89de0625a7c1855075b4",
+    "chain_index": 5
+   },
+   "outputs": {
+    "next_chain_key": "e737be9512d6f1785e95ec68fca3b7ba79599be8dedcf96253400867025b3a2b",
+    "next_chain_index": 6,
+    "message_key_seed": "4621bf12f2c1ac5a3a815e53b633dd2f183ea7cbb8d11451e5ba864c30808dd8",
+    "message_key_seed_oracle_observed": false,
+    "cipher_key_without_pq_salt": "1c06cfc192e9bb8f442d09f2e791e0c9107b4dd8f390a74e7277bbe7bd869e49",
+    "mac_key_without_pq_salt": "db8b9e0ce51a088ba587b2342401c6c5cc406f7016794fc25be93497993dff42",
+    "iv_without_pq_salt": "918108866d69339aca48e656f28f48e2"
+   }
+  }
+ ]
+}

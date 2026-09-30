@@ -1,0 +1,10 @@
+{
+  "name": "rfc7714-aead-aes-128-gcm",
+  "description": "RFC 7714 section 16.1.1 (SRTP AEAD_AES_128_GCM encryption). The key and salt are session keys, not master keys. The example has ROC 0.",
+  "session_key": "000102030405060708090a0b0c0d0e0f",
+  "session_salt": "517569642070726f2071756f",
+  "srtp": {
+    "plain": "8040f17b8041f8d35501a0b247616c6c696120657374206f6d6e69732064697669736120696e207061727465732074726573",
+    "protected": "8040f17b8041f8d35501a0b2f24de3a3fb34de6cacba861c9d7e4bcabe633bd50d294e6f42a5f47a51c7d19b36de3adf8833899d7f27beb16a9152cf765ee4390cce"
+  }
+}

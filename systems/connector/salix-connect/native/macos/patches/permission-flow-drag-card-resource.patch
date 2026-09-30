@@ -1,0 +1,15 @@
+--- a/Sources/PermissionFlow/UI/AppDropArea.swift
++++ b/Sources/PermissionFlow/UI/AppDropArea.swift
+@@ -178,7 +178,11 @@
+             VStack(spacing: 0) {
+                 Image(systemName: "hand.draw")
+                     .font(.system(size: 14, weight: .regular))
+-                Text("permission_flow.drag.label", bundle: .module)
++                Text(verbatim: PermissionFlowLocalizer.string(
++                    "permission_flow.drag.label",
++                    defaultValue: "Drag",
++                    localeIdentifier: nil
++                ))
+                     .font(.system(size: 8, weight: .light))
+             }
+             .foregroundStyle(.secondary)

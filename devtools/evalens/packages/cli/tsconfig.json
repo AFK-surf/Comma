@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "../../.types/cli",
+    "tsBuildInfoFile": "../../node_modules/.cache/evalens/cli.tsbuildinfo",
+    "rootDir": "./src",
+    "types": ["bun"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./src"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../store" },
+    { "path": "../adapters" },
+    { "path": "../server" }
+  ]
+}

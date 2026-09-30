@@ -1,0 +1,114 @@
+{
+  "name": "jenkins_mcp",
+  "actors": {
+    "requester": "UREQUESTER",
+    "bridge": "UBRIDGE",
+    "personal_agent": "UPERSONAL"
+  },
+  "root_thread_ts": "1700100000.000000",
+  "route_evidence": {
+    "triage_enabled": false,
+    "triage_provisioned_at": null,
+    "approved_channel_id": null,
+    "connect_generation": null,
+    "router_participating": true,
+    "command_owner": null,
+    "task_binding": null
+  },
+  "history": [
+    {
+      "type": "message",
+      "user": "UREQUESTER",
+      "text": "<@UBRIDGE> 之前有討論到因為bridge部署在外網，連不到公司內網會拿不到一些內部簽章無法完成編譯工作，後來我找公司IT內部討論，與其加個VPN, 不如讓我的agent <@UPERSONAL> 去串接jenkins的MCP做為最終解決方案，你們決定這樣設計如何? 附件是跟IT的討論紀錄",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700100000.000000",
+      "event_ts": "1700100000.000000"
+    },
+    {
+      "type": "message",
+      "user": "UPERSONAL",
+      "text": "我認為方向是對的，建議採用，但要把責任邊界定清楚：\n\n*建議結論：外部 Agent 不進公司內網；由內網 Build Agent 透過 Jenkins MCP 執行受控的編譯與簽章。​*\n\n截圖中的共識是：\n\n- Bridge／主 Agent 運行在公有雲，不能直接存取內網 Jenkins。\n- 不希望為外部 Agent 建 VPN／Windows AD 帳號。\n- IT 認為可在內網建立 Slack Agent Bot，串接外部 Agent。\n- Jenkins MCP 是否為最終執行介面，仍需補完整協定與安全設計。\n\n我建議的資料流：\n\n`外部 Agent → Slack/受控訊息通道 → 內網 Build Agent → Jenkins MCP → Jenkins 編譯/簽章`\n\n完成後回傳：\n\n`Build 狀態 + commit SHA + artifact URL + checksum + logs/evidence`\n\n*關鍵設計原則：​*\n\n1. *MCP 是工具介面，不是安全邊界*  \n   權限檢查、任務佇列、重試與稽核必須由內網 Build Agent／Gateway 負責，不能只靠 MCP。\n\n2. *簽章能力永遠留在 Jenkins 內*  \n   外部 Agent 不取得 signing key、Jenkins token 或內網憑證；只提交 repo、commit SHA、build target 等受限參數。\n\n3. *使用 allowlist，而非開放任意 Jenkins 操作*  \n   MCP 第一版只需要：\n   - `start_build`\n   - `get_build_status`\n   - `get_build_log`\n   - `get_artifact_metadata`\n   - `cancel_build`\n\n   不提供任意 shell、任意 pipeline 修改或 credentials 讀取。\n\n4. *每次請求必須可追蹤且冪等*  \n   帶上 `request_id`、repo、commit SHA、發起者、pipeline、參數及 approval 狀態，避免 Slack 重送造成重複編譯或簽章。\n\n5. *簽章／Release 應保留額外 Gate*  \n   一般 debug build 可自動化；production signing、發布或寫入正式分支，需要獨立 policy 或人工 approval。\n\n6. *Slack 只適合先做控制通道*  \n   不要透過 Slack 傳 APK、完整 logs 或秘密；只傳命令與狀態，artifact 放在既有受控儲存空間。中期如果穩定性要求提高，再把 Slack transport 換成正式 queue/API，不影響 Jenkins MCP contract。\n\n*我的 verdict：`Conditional Approve`。​*\n\n這比替公有雲 Agent 開 VPN 更符合 least privilege，也能保留 Jenkins 現有的內網簽章邊界。建議先用一條非正式簽章的 APK pipeline 做 pilot，驗證：\n\n- 指定 commit 能成功編譯\n- 重複請求不會產生兩次 build\n- 外部 Agent 看不到任何內網 credential\n- 回傳 artifact URL、SHA-256、build number 與失敗原因\n- 未授權 job／參數會被拒絕\n- 再逐步開放正式 signing gate\n\n一句話定義：*外部 Agent 負責提出可驗證的 build request，內網 Agent 負責 policy enforcement，Jenkins 負責可信執行與簽章。​*",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700100034.908240",
+      "event_ts": "1700100034.908240",
+      "thread_ts": "1700100000.000000",
+      "bot_id": "BPERSONAL"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "已建立评审任务。我会把你提出的 Conditional Approve、内外网责任边界、最小 Jenkins MCP 工具集与 pilot 验证项纳入评审，重点核对信任边界、审批门槛、审计与降级方案。",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700100086.269030",
+      "event_ts": "1700100086.269030",
+      "thread_ts": "1700100000.000000",
+      "bot_id": "BBRIDGE"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "Task 评审 Jenkins MCP 内网构建方案: ready for review",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700100087.604150",
+      "event_ts": "1700100087.604150",
+      "thread_ts": "1700100000.000000",
+      "bot_id": "BBRIDGE"
+    },
+    {
+      "type": "message",
+      "user": "UBRIDGE",
+      "text": "评审结论：**有条件推荐**。外部 Bridge 不进入公司内网；由内网、专用、低权限的 Build Agent 经最小化 Jenkins MCP/适配层触发已批准的固定 Job。MCP 只是工具接口，不能作为安全边界。  上线前至少要满足： - Bridge 无 VPN、无通用内网通路，Jenkins 本体不对公网暴露； - 仅允许固定 pipeline、完整 commit SHA、参数白名单与幂等请求；禁止 Shell、任意 Job/URL/文件/日志、Jenkins 管理和凭据读取； - 签章密钥与生产凭据始终留在 Jenkins/HSM（或企业签章服务）隔离域；生产签章和发布须精确绑定 SHA/参数的人类审批； - 形成 request → 策略 → build → artifact digest → 签章 → 审批的不可变证据链，并对重放、越权、失效与审计故障 fail closed。  建议先在隔离测试环境，用一个非敏感仓库、固定 Job、测试身份和测试签章完成 PoC；逐项验证权限隔离、参数注入防护、审批绑定、幂等、秘密隔离、网络边界、限流、故障注入与紧急撤销。IT、Security 与 Jenkins/Release Owner 书面通过各自 Gate 前，不接生产 Jenkins、生产签章或发布权限。  完整评审已在任务中，等待审阅。",
+      "channel": "CINCIDENT",
+      "channel_type": "channel",
+      "ts": "1700100123.093630",
+      "event_ts": "1700100123.093630",
+      "thread_ts": "1700100000.000000",
+      "bot_id": "BBRIDGE"
+    }
+  ],
+  "trigger": {
+    "type": "message",
+    "user": "UREQUESTER",
+    "text": "<@UPERSONAL> 那你先接入jenkins的MCP?",
+    "channel": "CINCIDENT",
+    "channel_type": "channel",
+    "ts": "1700108613.141760",
+    "event_ts": "1700108613.141760",
+    "thread_ts": "1700100000.000000",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "user",
+                "user_id": "UPERSONAL"
+              },
+              {
+                "type": "text",
+                "text": " 那你先接入jenkins的MCP?"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "observed_incorrect_reply": {
+    "type": "message",
+    "user": "UBRIDGE",
+    "text": "可以先由 Personal Agent 進行 Jenkins MCP 的接入準備與驗證，但應只連到隔離的 PoC／測試 Jenkins，不接生產 Jenkins、正式簽章或發布權限。  接入前需由 IT／Jenkins owner 提供受控 endpoint、專用低權限身份、固定 Job 與參數 allowlist，以及測試環境的網路與審計設定；完成後先驗證查詢、固定 build、狀態／日誌與 artifact metadata，並證明無法讀取憑據、執行任意 shell 或修改 pipeline。正式簽章與發布仍待 Security、IT 和 Release Owner 的 Gate。",
+    "channel": "CINCIDENT",
+    "channel_type": "channel",
+    "ts": "1700108630.466540",
+    "event_ts": "1700108630.466540",
+    "thread_ts": "1700100000.000000",
+    "bot_id": "BBRIDGE"
+  }
+}

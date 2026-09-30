@@ -1,0 +1,20 @@
+body {
+  min-width: 1180px;
+  background: var(--color-bg-secondary);
+}
+
+main {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-4xl);
+}
+
+[data-testid="copy-count"] {
+  position: fixed;
+  right: var(--spacing-xl);
+  bottom: var(--spacing-xl);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}

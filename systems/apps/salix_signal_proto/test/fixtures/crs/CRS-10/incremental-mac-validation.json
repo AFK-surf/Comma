@@ -1,0 +1,73 @@
+{
+  "section": "CRS-10",
+  "name": "incremental-mac-validation",
+  "description": "Receiver-side incremental MAC validation, computed by the oracle. \"accepted\" means the whole stream was released; \"rejected\" records a neutral summary of the oracle outcome.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "case": "valid",
+        "mac_key": "2222222222222222222222222222222222222222222222222222222222222222",
+        "data": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a",
+        "incremental_mac": "ddc58a29bda2b79ded58221ed51609c27cfd5f5735c1ee75c93f6f94fc87f7cdd343e9a674a69eeb0a2aa6e27db74af30a4677331014ce9113707d121dbaf23cd8d344e70c30a25fb403f5340b9e7c3d6ad974511da51aa88b158c108ecbf0539fa17cd755430d45ed54b0285ab77d0d3489121af814cd0229d18f4de4af7e5d",
+        "chunk_size": 16
+      },
+      "outputs": {
+        "result": "accepted",
+        "bytes_released": 50
+      }
+    },
+    {
+      "inputs": {
+        "case": "byte 20 flipped",
+        "mac_key": "2222222222222222222222222222222222222222222222222222222222222222",
+        "data": "030a11181f262d343b424950575e656c737a81888e969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a",
+        "incremental_mac": "ddc58a29bda2b79ded58221ed51609c27cfd5f5735c1ee75c93f6f94fc87f7cdd343e9a674a69eeb0a2aa6e27db74af30a4677331014ce9113707d121dbaf23cd8d344e70c30a25fb403f5340b9e7c3d6ad974511da51aa88b158c108ecbf0539fa17cd755430d45ed54b0285ab77d0d3489121af814cd0229d18f4de4af7e5d",
+        "chunk_size": 16
+      },
+      "outputs": {
+        "result": "rejected",
+        "error": "corrupted input"
+      }
+    },
+    {
+      "inputs": {
+        "case": "last digest byte flipped",
+        "mac_key": "2222222222222222222222222222222222222222222222222222222222222222",
+        "data": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a",
+        "incremental_mac": "ddc58a29bda2b79ded58221ed51609c27cfd5f5735c1ee75c93f6f94fc87f7cdd343e9a674a69eeb0a2aa6e27db74af30a4677331014ce9113707d121dbaf23cd8d344e70c30a25fb403f5340b9e7c3d6ad974511da51aa88b158c108ecbf0539fa17cd755430d45ed54b0285ab77d0d3489121af814cd0229d18f4de4af7e5c",
+        "chunk_size": 16
+      },
+      "outputs": {
+        "result": "rejected",
+        "error": "corrupted input (at end of stream)"
+      }
+    },
+    {
+      "inputs": {
+        "case": "truncated stream (48 bytes)",
+        "mac_key": "2222222222222222222222222222222222222222222222222222222222222222",
+        "data": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c",
+        "incremental_mac": "ddc58a29bda2b79ded58221ed51609c27cfd5f5735c1ee75c93f6f94fc87f7cdd343e9a674a69eeb0a2aa6e27db74af30a4677331014ce9113707d121dbaf23cd8d344e70c30a25fb403f5340b9e7c3d6ad974511da51aa88b158c108ecbf0539fa17cd755430d45ed54b0285ab77d0d3489121af814cd0229d18f4de4af7e5d",
+        "chunk_size": 16
+      },
+      "outputs": {
+        "result": "rejected",
+        "error": "corrupted input (at end of stream)"
+      }
+    },
+    {
+      "inputs": {
+        "case": "wrong chunk size",
+        "mac_key": "2222222222222222222222222222222222222222222222222222222222222222",
+        "data": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a",
+        "incremental_mac": "ddc58a29bda2b79ded58221ed51609c27cfd5f5735c1ee75c93f6f94fc87f7cdd343e9a674a69eeb0a2aa6e27db74af30a4677331014ce9113707d121dbaf23cd8d344e70c30a25fb403f5340b9e7c3d6ad974511da51aa88b158c108ecbf0539fa17cd755430d45ed54b0285ab77d0d3489121af814cd0229d18f4de4af7e5d",
+        "chunk_size": 32
+      },
+      "outputs": {
+        "result": "rejected",
+        "error": "corrupted input"
+      }
+    }
+  ]
+}

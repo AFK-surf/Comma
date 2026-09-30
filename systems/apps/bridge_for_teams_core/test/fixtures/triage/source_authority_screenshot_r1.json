@@ -1,0 +1,13 @@
+{
+  "schema": "comma.triage-source-authority-diagnostic.v1",
+  "source_case_id": "screenshot_implementation_uncertainty",
+  "capture": {
+    "task_id": "cnv1_2097280631523246080",
+    "message_id": "msg1_2097280631707795456",
+    "log_name": "triage-source-image-screenshot-r1.log",
+    "outcome_line": 4042
+  },
+  "captured_router_command": "用户在 Slack 讨论中询问：“解读一下截图里的推荐有哪些实现的方式，macOS”。\n背景讨论：\n- 用户看到截图中 Apple Messages (iMessage) 输入框上方推荐了回复选项（例如：“确实挺让人头疼的。| 你说的很对，确实需要适应。”、“哈哈，小红书太难用了吧。| 哈哈，这操作太绝了！”）。\n- 成员讨论提出：“Apple 这种怎么读的上下文”、“应该不是模型，但肯定是基于 accessibility tree + workflow 吧”。\n\n任务目标：\n请对截图中类似 macOS/Apple 智能回复与推荐的实现方式进行全面、深入的技术与产品架构解读，形成完整的最终分析结论：\n1. 截图功能本质分析：Apple Messages 原生的智能回复（Smart Reply / Quick Reply / Apple Intelligence / Suggestions），分析其技术本质（是纯规则/workflow、传统轻量级 NLP/分类模型，还是端侧小模型/Apple Intelligence？）。\n2. Apple 第一方原生实现原理：\n   - 上下文获取机制：第一方应用的内建状态访问 vs 跨应用上下文（系统级守护进程如 suggestd, duet, Personal Context 等）。\n   - 推理与生成机制：端侧处理（Core ML / NaturalLanguage 框架 / 端侧基础模型 AFM）、延迟与隐私考量。\n3. 如果在 macOS 上第三方应用（或开发者想要在 macOS 上实现类似“读取屏幕/聊天上下文并给出推荐”）的实现途径分析与对比：\n   - 方式一：Accessibility API (无障碍辅助功能 / AXUIElement / Accessibility Tree) 读取上下文 + 规则/端侧模型生成推荐 + 浮层展示。\n   - 方式二：ScreenCaptureKit + Vision OCR / 多模态视觉模型读取屏幕上下文。\n   - 方式三：输入法扩展（InputMethodKit / IME），利用光标上下文与输入前缀进行联想与推荐。\n   - 方式四：应用自建集成（若是自研应用内部）：TextKit / 文本协议 / 端侧或云端 LLM。\n4. 综合对比与评估：对各种方式在 macOS 沙盒与权限门槛（Accessibility 权限、屏幕录制权限等）、性能与延迟、跨应用兼容性、隐私与用户体验等维度的优劣与可行性进行总结。\n\n注意：请提供详尽、条理清晰且严谨的技术解读，作为交付给用户的完整最终答复。随后我会在任务中附上两张截图供你参考。",
+  "scope": "Captured Router assignment only. No Worker answer or expected finding is model input. Compare separately from the eight-case production acceptance matrix.",
+  "captured_task_title": "解读 macOS 上类似 Apple Messages 智能回复推荐的实现方式"
+}

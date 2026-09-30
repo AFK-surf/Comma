@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "../../.types/evaluators",
+    "tsBuildInfoFile": "../../node_modules/.cache/evalens/evaluators.tsbuildinfo",
+    "rootDir": "./src",
+    "types": ["bun"],
+    "lib": ["ESNext"]
+  },
+  "include": ["./src"],
+  "references": [{ "path": "../core" }, { "path": "../adapters" }]
+}

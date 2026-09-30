@@ -1,0 +1,43 @@
+{
+  "name": "libsrtp-aead-aes-128-gcm",
+  "description": "AEAD_AES_128_GCM SRTP and SRTCP (RFC 7714) with a 16-byte master key and 12-byte master salt, session keys from the 128-bit AES-CM PRF (RFC 3711 section 4.3, as RFC 7714 section 11 requires). Protected output made with libsrtp through pylibsrtp 1.0.0; an independent public implementation of the RFCs, not Signal material. The RTP run crosses the sequence-number wrap.",
+  "master_key": "404142434445464748494a4b4c4d4e4f",
+  "master_salt": "b0b1b2b3b4b5b6b7b8b9babb",
+  "cases": [
+    {
+      "kind": "rtp",
+      "plain": "8066fffd0000000000000030000000000000000000000000000000000000",
+      "protected": "8066fffd0000000000000030f18f028d4a5dbd6fa05564c470edec89dc75e6146029b8e926c3590fe22c18b0f1f9"
+    },
+    {
+      "kind": "rtp",
+      "plain": "8066fffe00000b400000003001010101010101010101010101010101010101",
+      "protected": "8066fffe00000b400000003007f7b30308080938e5fa776b68e255f720fcbc4d71949c4c68136497ba6487a0012460"
+    },
+    {
+      "kind": "rtp",
+      "plain": "8066ffff00001680000000300202020202020202020202020202020202020202",
+      "protected": "8066ffff0000168000000030aa4551d1e10ea6f8c7ed81d2ca69829c26ee8f9780e1546e5eaa40c5d916b27ed952dbc4"
+    },
+    {
+      "kind": "rtp",
+      "plain": "80660000000021c000000030030303030303030303030303030303030303030303",
+      "protected": "80660000000021c0000000305cd88cf84c225dbf51d6243ad94a7f17ec10a29ffa1f6807862bb9472a1c6d372489da02c9"
+    },
+    {
+      "kind": "rtp",
+      "plain": "8066000100002d000000003004040404040404040404040404040404040404040404",
+      "protected": "8066000100002d000000003017c25eef9c0764984d13c7d9504e0dc605441ff5f586eb903dffc7c2dd1dd629d7549255d524"
+    },
+    {
+      "kind": "rtcp",
+      "plain": "80c900010000003081ca0003000000300102343800000000",
+      "protected": "80c90001000000300397c176dd483e60549935186fdcbf0f0158dafff7d8079007993b10e075690e80000001"
+    },
+    {
+      "kind": "rtcp",
+      "plain": "80c900010000003081ca0003000000300102343800000000",
+      "protected": "80c9000100000030b7353d047f50aefc2f0cd1f4fff2a852fdc5acff9bff7c752d8e73a2fbb273e580000002"
+    }
+  ]
+}

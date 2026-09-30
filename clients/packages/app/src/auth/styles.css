@@ -1,0 +1,212 @@
+.app-login-shell {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+  padding: 24px 16px;
+  color: var(--color-text-primary);
+}
+
+.app-login-stage {
+  display: flex;
+  width: 100%;
+  max-width: 360px;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  transform: translateY(var(--spacing-3xl));
+}
+
+.app-login-container {
+  display: flex;
+  width: 100%;
+  max-width: 320px;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.app-login-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+}
+
+.app-login-panel {
+  display: flex;
+  width: 100%;
+  min-height: 384px;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.app-login-title {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 1.75rem;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.app-login-copy-group {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 0 4px;
+  text-align: center;
+}
+
+.app-login-copy,
+.app-login-email {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.app-login-copy {
+  color: var(--color-text-tertiary);
+}
+
+.app-login-email {
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary);
+}
+
+.app-login-form {
+  display: grid;
+  width: 100%;
+  gap: 20px;
+  padding: 0 8px;
+}
+
+.app-login-google-button {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.app-login-google-button[data-busy="true"] {
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+.app-login-google-button[data-state="unavailable"] {
+  display: none;
+}
+
+.app-login-google-status {
+  margin: -12px 0 0;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.app-login-divider {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.app-login-divider::before,
+.app-login-divider::after {
+  height: 1px;
+  background: #e3e6ea;
+  content: "";
+}
+
+.app-login-field {
+  display: grid;
+  gap: 6px;
+}
+
+.app-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  border: 0;
+  margin: -1px;
+  padding: 0;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.app-login-input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #d7dce2;
+  border-radius: 12px;
+  outline: none;
+  background: #ffffff;
+  padding: 0 14px;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 2.75rem;
+  letter-spacing: 0;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.app-login-input:focus {
+  border-color: #aab3bd;
+  box-shadow: 0 0 0 3px rgb(23 32 38 / 8%);
+}
+
+.app-login-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.app-login-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.app-login-code-input {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 1rem;
+  letter-spacing: 0.24em;
+  text-align: center;
+}
+
+.app-login-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.app-login-primary,
+.app-login-secondary {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 16px;
+}
+
+.app-login-primary span,
+.app-login-secondary span {
+  min-width: 0;
+}
+
+.app-login-secondary {
+  background: transparent;
+}
+
+.app-login-message {
+  margin: 0;
+  padding: 0 8px;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  text-align: center;
+}

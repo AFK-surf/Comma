@@ -1,0 +1,53 @@
+Output: message_id, argMin(tuple(channel_id, day, unit_ordinal, connect_id), _distance), min(_distance)
+
+Limit (preliminary LIMIT)
+│  Limit 20
+│  Offset 0
+└──Sorting (Sorting for ORDER BY)
+   │  Sort description: min(_distance) ASC
+   │  Limit 20
+   └──Aggregating
+      │  Keys: message_id
+      │  Aggregates: argMin(tuple(channel_id, day, unit_ordinal, connect_id), _distance), min(_distance)
+      │  Skip merging: 0
+      └──JoinLazyColumnsStep
+         ├──Limit (preliminary LIMIT)
+         │  │  Limit 200
+         │  │  Offset 0
+         │  └──Sorting (Sorting for ORDER BY)
+         │     │  Sort description: _distance ASC
+         │     │  Limit 200
+         │     └──Filter
+         │        │  Filter column: tenant_id = 1
+         │        └──ReadFromMergeTree (comma_capacity_balanced.units)
+         │              Read type: Default
+         │              Parts: 5 | Granules: 94
+         │              Output: _part_offset, _part_starting_offset, tenant_id, _distance
+         │              Indexes:
+         │                Min-Max
+         │                  Keys:
+         │                    tenant_id
+         │                  Condition: (tenant_id in [1, 1])
+         │                  Parts: 5/12
+         │                  Granules: 119/131
+         │                Partition
+         │                  Keys:
+         │                    tenant_id
+         │                  Condition: (tenant_id in [1, 1])
+         │                  Parts: 5/5
+         │                  Granules: 119/119
+         │                PrimaryKey
+         │                  Keys:
+         │                    tenant_id
+         │                  Condition: (tenant_id in [1, 1])
+         │                  Parts: 5/5
+         │                  Granules: 119/119
+         │                  Search Algorithm: binary search
+         │                Skip
+         │                  Name: vector_idx
+         │                  Description: vector_similarity GRANULARITY 100000000
+         │                  Parts: 5/5
+         │                  Granules: 94/119
+         │                Ranges: 20
+         └──LazilyReadFromMergeTree
+               Lazily read columns: message_id, channel_id, day, connect_id, unit_ordinal

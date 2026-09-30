@@ -1,0 +1,36 @@
+{
+  "data": {
+    "route": "杭州东 → 上海南",
+    "queryTime": "2026-09-16 09:08 UTC",
+    "source": "铁路查询评测数据（非实时）",
+    "trains": [
+      {
+        "id": "G101",
+        "depart": "19:10",
+        "arrive": "20:00",
+        "duration": "50分钟",
+        "price": 86,
+        "availability": "有票"
+      },
+      {
+        "id": "G103",
+        "depart": "20:00",
+        "arrive": "20:42",
+        "duration": "42分钟",
+        "price": 92,
+        "availability": "有票"
+      },
+      {
+        "id": "G105",
+        "depart": "21:00",
+        "arrive": "21:55",
+        "duration": "55分钟",
+        "price": 80,
+        "availability": "候补"
+      }
+    ]
+  },
+  "html": "<section class=\"card stack\" aria-label=\"晚间杭州东到上海南高铁比较\"><div class=\"widget-head\"><div><h2 class=\"widget-title\">杭州东 → 上海南 · 晚间高铁</h2><small class=\"widget-meta\">铁路查询评测数据（非实时） · 查询于 2026-09-16 09:08 UTC</small></div></div><div class=\"widget-body stack\"><div class=\"row\"><strong class=\"hero\">3 班</strong><span class=\"sub\">19:10–21:55 出发</span></div><p class=\"sub\">最快为 G103（42分钟）；最低二等座为 G105（80元，候补）。</p><label for=\"availabilityFilter\">按席位状态筛选</label><select id=\"availabilityFilter\" aria-label=\"按席位状态筛选\"><option value=\"all\" selected>全部班次</option><option value=\"available\">仅显示有票</option><option value=\"waitlist\">仅显示候补</option></select><div class=\"stack\"><div id=\"train0\" class=\"list-item stack\"><div class=\"row\"><strong>G101</strong><span class=\"badge success\">有票</span><span class=\"grow\"></span><strong>¥86</strong></div><div class=\"row\"><span>19:10 杭州东</span><span class=\"muted\">→ 50分钟 →</span><span>20:00 上海南</span></div><small class=\"muted\">二等座</small></div><div id=\"train1\" class=\"list-item stack\"><div class=\"row\"><strong>G103</strong><span class=\"badge success\">有票</span><span class=\"grow\"></span><strong>¥92</strong></div><div class=\"row\"><span>20:00 杭州东</span><span class=\"muted\">→ 42分钟 →</span><span>20:42 上海南</span></div><small class=\"muted\">二等座 · 全部班次中最快</small></div><div id=\"train2\" class=\"list-item stack\"><div class=\"row\"><strong>G105</strong><span class=\"badge\">候补</span><span class=\"grow\"></span><strong>¥80</strong></div><div class=\"row\"><span>21:00 杭州东</span><span class=\"muted\">→ 55分钟 →</span><span>21:55 上海南</span></div><small class=\"muted\">二等座 · 全部班次中最低价</small></div></div></div><div class=\"widget-footer\"><button id=\"askMore\" type=\"button\">查询更多班次或席别</button></div></section>",
+  "script": "const applyFilter=(value)=>{ const showAvailable=value==='all'||value==='available'; const showWaitlist=value==='all'||value==='waitlist'; comma.visible('train0',showAvailable); comma.visible('train1',showAvailable); comma.visible('train2',showWaitlist); comma.save({filter:value}); }; const initial=(comma.state&&comma.state.filter)||'all'; comma.value('availabilityFilter',initial); applyFilter(initial); comma.on('availabilityFilter','change',(e)=>applyFilter(e.value)); comma.on('askMore','click',()=>comma.request('查询杭州东到上海南当晚更多班次、席别或实时余票')); comma.onState((state)=>{if(state&&state.filter){comma.value('availabilityFilter',state.filter); applyFilter(state.filter);}});",
+  "summary": "杭州东→上海南晚间高铁比较（铁路查询评测数据，非实时；查询时间：2026-09-16 09:08 UTC）：\n• G101：19:10→20:00，50分钟，二等座86元，有票。\n• G103：20:00→20:42，42分钟，二等座92元，有票；最快。\n• G105：21:00→21:55，55分钟，二等座80元，候补；最低价。\n若优先速度，选G103；若希望有票且价格较低，选G101；若接受候补且优先低价，选G105。"
+}

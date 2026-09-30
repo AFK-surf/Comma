@@ -1,0 +1,65 @@
+{
+  "section": "CRS-02",
+  "name": "username-link",
+  "description": "Username link ciphertext (usernameLinkEncryptedValue). The encryptor chooses a random IV, so these are decrypt-check vectors: decrypting encrypted_username with entropy must give username. link_url is the shareable link built from entropy (32 bytes) followed by the 16-byte link handle, base64url without padding. The last case has a corrupted MAC and must fail.",
+  "pin": "libsignal 0.103.0",
+  "cases": [
+    {
+      "inputs": {
+        "entropy": "3333333333333333333333333333333333333333333333333333333333333333",
+        "encrypted_username": "1998617da12d6ed7cb08abea4433ec499933a30f9b599afab4dd2228a2d793bce336180d586d9d614219ad5a3db1545e52eef72cd53f735cce9e3ab81b0913fc67b9a6b759b61d9c2a5544943d0c1bf1caec7acef30b8f6347a4a7b2c0fa289361becdd683a9e4df251500c89d6a03df",
+        "link_handle_uuid_bytes": "5e1a0b9c3d2f4e8a9b7c6d5e4f3a2b1c"
+      },
+      "outputs": {
+        "username": "vectorbot.42",
+        "encrypted_username_length": 112,
+        "link_url": "https://signal.me/#eu/MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzNeGgucPS9Oipt8bV5POisc"
+      }
+    },
+    {
+      "inputs": {
+        "entropy": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "encrypted_username": "330201b144f0eb76cc682afe5074fa258c808ccbd659d2ea01aa907d0867126f0771e7f970c4a650dd5acb2ef776abdf3b7207669ab3de735668815ac02f1e6489c488ec72ac7eaaf562ce191d6d2bdf8e82ddf813e33cb1b39fdcdde7edc93b96a2f88e86435140e6d195d195f88b45",
+        "link_handle_uuid_bytes": "5e1a0b9c3d2f4e8a9b7c6d5e4f3a2b1c"
+      },
+      "outputs": {
+        "username": "signal_ai.987654321",
+        "encrypted_username_length": 112,
+        "link_url": "https://signal.me/#eu/ABEiM0RVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v9eGgucPS9Oipt8bV5POisc"
+      }
+    },
+    {
+      "inputs": {
+        "entropy": "0000000000000000000000000000000000000000000000000000000000000000",
+        "encrypted_username": "9956055e49f1a7b574c111d19a3f52ae8f24b9b53b187f549d70184e955a84ee12690b7fb800cbb7d3ea626e19744f45a91f2900fc09a1e69155ed2af70a0abcfc31ddae817bcfa1f104d30777abffc5f8aeb95783365edc60a9c2c2943538290c2f0499231d2608ea1dd4f434c6d37f",
+        "link_handle_uuid_bytes": "5e1a0b9c3d2f4e8a9b7c6d5e4f3a2b1c"
+      },
+      "outputs": {
+        "username": "abc.99",
+        "encrypted_username_length": 112,
+        "link_url": "https://signal.me/#eu/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABeGgucPS9Oipt8bV5POisc"
+      }
+    },
+    {
+      "inputs": {
+        "entropy": "abababababababababababababababababababababababababababababababab",
+        "encrypted_username": "58809ebb0aca98dff5e809ea26c9ed32278e9b3c00a50c2261faeb036e6628708d7036e0e88e987ea4caaadbb34b4bc7ea3facb7b0531e6641251a26aba2c692eab0b06bcf335d49bb3901fe680f33f21e3447f489167898cbfe20eab1c03567a0d6392ae21eefe0329b7759b899451a",
+        "link_handle_uuid_bytes": "5e1a0b9c3d2f4e8a9b7c6d5e4f3a2b1c"
+      },
+      "outputs": {
+        "username": "x2345678901234567890123456789012.55",
+        "encrypted_username_length": 112,
+        "link_url": "https://signal.me/#eu/q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6teGgucPS9Oipt8bV5POisc"
+      }
+    },
+    {
+      "inputs": {
+        "entropy": "3333333333333333333333333333333333333333333333333333333333333333",
+        "encrypted_username": "1998617da12d6ed7cb08abea4433ec499933a30f9b599afab4dd2228a2d793bce336180d586d9d614219ad5a3db1545e52eef72cd53f735cce9e3ab81b0913fc67b9a6b759b61d9c2a5544943d0c1bf1caec7acef30b8f6347a4a7b2c0fa289361becdd683a9e4df251500c89d6a03de"
+      },
+      "outputs": {
+        "error": "rejected: MAC does not verify"
+      }
+    }
+  ]
+}

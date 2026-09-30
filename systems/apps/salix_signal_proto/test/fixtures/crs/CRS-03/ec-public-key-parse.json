@@ -1,0 +1,68 @@
+{
+ "section": "CRS-03",
+ "name": "ec-public-key-parse",
+ "description": "Parsing of serialized EC public keys by the oracle: type byte 0x05 is required; trailing bytes after the 32-byte key are accepted and dropped on re-serialization.",
+ "pin": "libsignal 0.103.0",
+ "cases": [
+  {
+   "inputs": {
+    "label": "valid",
+    "bytes": "05e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658"
+   },
+   "outputs": {
+    "accepted": true,
+    "reserialized": "05e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658"
+   }
+  },
+  {
+   "inputs": {
+    "label": "trailing-bytes",
+    "bytes": "05e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658aabb"
+   },
+   "outputs": {
+    "accepted": true,
+    "reserialized": "05e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658"
+   }
+  },
+  {
+   "inputs": {
+    "label": "missing-type-byte",
+    "bytes": "e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658"
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "unknown EC type byte"
+   }
+  },
+  {
+   "inputs": {
+    "label": "wrong-type-byte-06",
+    "bytes": "06e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f658"
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "unknown EC type byte"
+   }
+  },
+  {
+   "inputs": {
+    "label": "truncated-32",
+    "bytes": "05e2d4c319471632b1c4f86864513bd7e218d446023d21bf261083344354f4f6"
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "too short for EC type 0x05"
+   }
+  },
+  {
+   "inputs": {
+    "label": "empty",
+    "bytes": ""
+   },
+   "outputs": {
+    "accepted": false,
+    "reason": "empty input"
+   }
+  }
+ ]
+}

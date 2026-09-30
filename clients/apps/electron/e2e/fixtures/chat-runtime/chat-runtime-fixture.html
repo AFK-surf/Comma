@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https: ws: wss:; img-src 'self' data: blob:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat runtime ownership E2E fixture</title>
+  </head>
+  <body>
+    <main>
+      <h1>Chat runtime ownership fixture</h1>
+      <label>
+        Attachment
+        <input id="attachment" type="file" />
+      </label>
+      <button id="pick-local" type="button">Pick local-index attachment</button>
+      <label>
+        Prompt
+        <input id="prompt" value="Send the delayed attachment" />
+      </label>
+      <button id="send" type="button">Send immediately</button>
+      <output id="send-state">idle</output>
+      <pre id="snapshot"></pre>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

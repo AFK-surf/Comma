@@ -1,0 +1,1595 @@
+{
+  "kinds": {
+    "forecast": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "location": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "current": {
+          "type": "object",
+          "properties": {
+            "temperature": {
+              "type": "number"
+            },
+            "condition": {
+              "type": "string",
+              "enum": [
+                "clear",
+                "clear-night",
+                "partly-cloudy",
+                "cloudy",
+                "rain",
+                "snow"
+              ],
+              "title": "condition"
+            },
+            "label": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "feelsLike": {
+              "type": "number"
+            },
+            "humidity": {
+              "description": "percent",
+              "type": "number"
+            },
+            "wind": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "temperature"
+          ]
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "condition": {
+                "type": "string",
+                "enum": [
+                  "clear",
+                  "clear-night",
+                  "partly-cloudy",
+                  "cloudy",
+                  "rain",
+                  "snow"
+                ],
+                "title": "condition"
+              },
+              "conditionLabel": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "high": {
+                "type": "number"
+              },
+              "low": {
+                "type": "number"
+              },
+              "precipitation": {
+                "description": "percent",
+                "type": "number"
+              }
+            },
+            "required": [
+              "label",
+              "condition",
+              "conditionLabel",
+              "high",
+              "low"
+            ]
+          },
+          "limit": 7
+        },
+        "highlight": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "needs": [
+        "days",
+        "current"
+      ],
+      "layouts": "today (needs current), week, compact (current and <= 2 days)"
+    },
+    "options": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "items": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "primary": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "secondary": {
+                "description": "arrival time",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "span": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "meta": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "price": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "priceNote": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "status": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "tone": {
+                    "type": "string",
+                    "enum": [
+                      "neutral",
+                      "brand",
+                      "success",
+                      "warning",
+                      "error"
+                    ],
+                    "title": "tone"
+                  }
+                },
+                "required": [
+                  "label"
+                ],
+                "title": "status"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "limit": 3
+              },
+              "reason": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "recommended": {
+                "type": "boolean"
+              },
+              "filterKeys": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "limit": 8
+              }
+            },
+            "required": [
+              "primary"
+            ]
+          },
+          "limit": 8
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "key",
+              "label"
+            ]
+          },
+          "limit": 4
+        }
+      },
+      "required": [
+        "title",
+        "items"
+      ],
+      "layouts": "timetable and list (every item has secondary), pick (no item has secondary)"
+    },
+    "metric": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "\\S",
+                "description": "display text"
+              },
+              "unit": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "delta": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "direction": {
+                    "type": "string",
+                    "enum": [
+                      "up",
+                      "down",
+                      "flat"
+                    ]
+                  },
+                  "good": {
+                    "description": "true when the change is good",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "title": "delta"
+              },
+              "caption": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "series": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "limit": 64
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ]
+          },
+          "limit": 4
+        },
+        "goal": {
+          "type": "object",
+          "properties": {
+            "current": {
+              "type": "number"
+            },
+            "target": {
+              "type": "number"
+            },
+            "valueLabel": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "targetLabel": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "note": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "current",
+            "target",
+            "valueLabel",
+            "targetLabel"
+          ]
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "needs": [
+        "metrics",
+        "goal"
+      ],
+      "layouts": "single (1 metric), grid (2 to 4), goal"
+    },
+    "trend": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "delta": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "up",
+                "down",
+                "flat"
+              ]
+            },
+            "good": {
+              "description": "true when the change is good",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "title": "delta"
+        },
+        "ranges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "points": {
+                "minItems": 2,
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "limit": 64
+              },
+              "axis": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "limit": 6
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "points",
+              "axis"
+            ]
+          },
+          "limit": 4
+        },
+        "bars": {
+          "type": "object",
+          "properties": {
+            "labels": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "limit": 31
+            },
+            "values": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "limit": 31
+            },
+            "valueLabels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "limit": 31
+            },
+            "averageLabel": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "labels",
+            "values"
+          ]
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "points": {
+                "minItems": 2,
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "limit": 64
+              },
+              "brand": {
+                "type": "string"
+              },
+              "delta": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "direction": {
+                    "type": "string",
+                    "enum": [
+                      "up",
+                      "down",
+                      "flat"
+                    ]
+                  },
+                  "good": {
+                    "description": "true when the change is good",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "title": "delta"
+              }
+            },
+            "required": [
+              "label",
+              "value",
+              "points"
+            ]
+          },
+          "limit": 6
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "needs": [
+        "ranges",
+        "bars",
+        "series"
+      ],
+      "sameLength": [
+        [
+          "bars.labels",
+          "bars.values"
+        ]
+      ],
+      "layouts": "area (ranges), bars, watchlist (series)"
+    },
+    "comparison": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "subjects": {
+          "minItems": 2,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "caption": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "recommended": {
+                "type": "boolean"
+              },
+              "brand": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "limit": 3
+        },
+        "rows": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limit": 3,
+                "description": "one per subject; null shows a dash"
+              },
+              "best": {
+                "description": "subject index",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "scores": {
+                "minItems": 2,
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 10
+                },
+                "limit": 2
+              }
+            },
+            "required": [
+              "label",
+              "values"
+            ]
+          },
+          "limit": 8
+        },
+        "verdict": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title",
+        "subjects",
+        "rows"
+      ],
+      "sameLength": [
+        [
+          "rows[].values",
+          "subjects"
+        ]
+      ],
+      "layouts": "columns, table (<= 4 rows), versus (2 subjects, scores on every row)"
+    },
+    "schedule": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "now": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "title": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "end": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "detail": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "done",
+                  "current",
+                  "upcoming"
+                ],
+                "title": "state"
+              },
+              "tone": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "brand",
+                  "success",
+                  "warning",
+                  "error"
+                ],
+                "title": "tone"
+              }
+            },
+            "required": [
+              "start",
+              "title"
+            ]
+          },
+          "limit": 8
+        },
+        "stages": {
+          "minItems": 2,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "done",
+                  "current",
+                  "upcoming"
+                ],
+                "title": "state"
+              },
+              "detail": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "state"
+            ]
+          },
+          "limit": 6
+        },
+        "summary": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "needs": [
+        "events",
+        "stages"
+      ],
+      "layouts": "agenda and timeline (events), stages"
+    },
+    "checklist": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "groups": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "items": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "detail": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "done": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "items"
+            ]
+          },
+          "limit": 4,
+          "description": "at most 12 items in total"
+        }
+      },
+      "required": [
+        "title",
+        "groups"
+      ],
+      "layouts": "progress, grouped (2 or more groups)"
+    },
+    "composition": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "total": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "totalLabel": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "segments": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0
+              },
+              "valueLabel": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "muted": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ]
+          },
+          "limit": 6
+        }
+      },
+      "required": [
+        "title",
+        "total",
+        "segments"
+      ],
+      "layouts": "stacked, donut"
+    },
+    "place": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "places": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "category": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "rating": {
+                "type": "number"
+              },
+              "reviews": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "status": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "tone": {
+                    "type": "string",
+                    "enum": [
+                      "neutral",
+                      "brand",
+                      "success",
+                      "warning",
+                      "error"
+                    ],
+                    "title": "tone"
+                  }
+                },
+                "required": [
+                  "label"
+                ],
+                "title": "status"
+              },
+              "address": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "distance": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "eta": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "href": {
+                "type": "string",
+                "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+                "title": "url",
+                "description": "an HTTPS URL"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "limit": 5
+        }
+      },
+      "required": [
+        "title",
+        "places"
+      ],
+      "layouts": "single (1 place), nearby (2 or more)"
+    },
+    "feed": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "title": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "brand": {
+                "type": "string"
+              },
+              "excerpt": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "time": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "status": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "tone": {
+                    "type": "string",
+                    "enum": [
+                      "neutral",
+                      "brand",
+                      "success",
+                      "warning",
+                      "error"
+                    ],
+                    "title": "tone"
+                  }
+                },
+                "required": [
+                  "label"
+                ],
+                "title": "status"
+              },
+              "href": {
+                "type": "string",
+                "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+                "title": "url",
+                "description": "an HTTPS URL"
+              }
+            },
+            "required": [
+              "source",
+              "title"
+            ]
+          },
+          "limit": 6
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "summary": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "brand": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "tone": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "brand",
+                  "success",
+                  "warning",
+                  "error"
+                ],
+                "title": "tone"
+              }
+            },
+            "required": [
+              "source",
+              "summary"
+            ]
+          },
+          "limit": 6
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "description": "news, updates and status lists such as pull requests or CI runs",
+      "needs": [
+        "items",
+        "groups"
+      ],
+      "layouts": "news (items), digest (groups)"
+    },
+    "timer": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "display text such as \"17:05\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "label": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "endsAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "remainingSeconds": {
+          "type": "number"
+        },
+        "daysLeft": {
+          "type": "number"
+        },
+        "totalSeconds": {
+          "type": "number"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "focus",
+            "break"
+          ]
+        },
+        "cycle": {
+          "type": "object",
+          "properties": {
+            "current": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            }
+          },
+          "required": [
+            "current",
+            "total"
+          ]
+        },
+        "date": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "elapsedRatio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "note": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title",
+        "label"
+      ],
+      "needs": [
+        "endsAt",
+        "remainingSeconds",
+        "daysLeft"
+      ],
+      "layouts": "countdown, event (daysLeft)"
+    }
+  },
+  "manual": [
+    "Fields are text unless a type follows the name. ? marks an optional field.",
+    "Every kind accepts {title, meta? (short header context), source?, sourceBrand?, updatedAt? (display text such as \"17:05\"), actions?: [{label, prompt}] (<= 2; a click proposes the prompt like comma.request)}.",
+    "tone: neutral | brand | success | warning | error",
+    "condition: clear | clear-night | partly-cloudy | cloudy | rain | snow",
+    "state: done | current | upcoming",
+    "status: {label, tone?}",
+    "delta: {value, direction?: up | down | flat, good?: boolean (true when the change is good)}",
+    "url: an HTTPS URL",
+    "forecast: {location?, current?: {temperature: number, condition?, label?, feelsLike?: number, humidity?: number (percent), wind?}, days?: [{label, condition, conditionLabel, high: number, low: number, precipitation?: number (percent)}] (<= 7), highlight?}; needs days or current; layouts: today (needs current), week, compact (current and <= 2 days)",
+    "options: {items: [{primary, id?, secondary? (arrival time), span?, meta?, price?, priceNote?, status?, tags?: [text] (<= 3), reason?, recommended?: boolean, filterKeys?: [text] (<= 8)}] (1 to 8), filters?: [{key, label}] (<= 4)}; layouts: timetable and list (every item has secondary), pick (no item has secondary)",
+    "metric: {metrics?: [{label, value (display text), unit?, delta?, caption?, series?: [number] (<= 64)}] (<= 4), goal?: {current: number, target: number, valueLabel, targetLabel, note?}}; needs metrics or goal; layouts: single (1 metric), grid (2 to 4), goal",
+    "trend: {brand?, value?, delta?, ranges?: [{key, label, points: [number] (2 to 64), axis: [text] (<= 6)}] (<= 4), bars?: {labels: [text] (1 to 31), values: [number] (1 to 31), valueLabels?: [text] (<= 31), averageLabel?}, series?: [{label, value, points: [number] (2 to 64), brand?, delta?}] (<= 6)}; needs ranges, bars or series; bars.labels has as many entries as bars.values; layouts: area (ranges), bars, watchlist (series)",
+    "comparison: {subjects: [{name, caption?, recommended?: boolean, brand?}] (2 to 3), rows: [{label, values: [text or null] (<= 3; one per subject; null shows a dash), best?: integer >= 0 (subject index), scores?: [number from 0 to 10] (2 entries)}] (1 to 8), verdict?}; rows[].values has as many entries as subjects; layouts: columns, table (<= 4 rows), versus (2 subjects, scores on every row)",
+    "schedule: {now?, events?: [{start, title, end?, detail?, state?, tone?}] (<= 8), stages?: [{label, state, detail?}] (2 to 6), summary?}; needs events or stages; layouts: agenda and timeline (events), stages",
+    "checklist: {groups: [{label?, items: [{label, id?, detail?, done?: boolean}] (>= 1)}] (1 to 4; at most 12 items in total)}; layouts: progress, grouped (2 or more groups)",
+    "composition: {total, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
+    "place: {places: [{name, category?, rating?: number, reviews?, status?, address?, distance?, eta?, href?: url}] (1 to 5)}; layouts: single (1 place), nearby (2 or more)",
+    "feed (news, updates and status lists such as pull requests or CI runs): {items?: [{source, title, brand?, excerpt?, time?, status?, href?: url}] (<= 6), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (items), digest (groups)",
+    "timer: {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "salix-vm-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:image": "./scripts/build-connector.sh",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "types": "wrangler types src/env.d.ts"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.12.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260630.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15",
+    "wrangler": "^4.102.0"
+  }
+}

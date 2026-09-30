@@ -1,0 +1,36 @@
+{
+  "data": {
+    "place": "杭州",
+    "source": "天气服务评测数据",
+    "observationTime": "2026-09-16 09:08 UTC",
+    "days": [
+      {
+        "date": "9/16",
+        "condition": "多云",
+        "high": 30,
+        "low": 21
+      },
+      {
+        "date": "9/17",
+        "condition": "晴",
+        "high": 31,
+        "low": 22
+      },
+      {
+        "date": "9/18",
+        "condition": "小雨",
+        "high": 26,
+        "low": 20
+      },
+      {
+        "date": "9/19",
+        "condition": "阴",
+        "high": 27,
+        "low": 21
+      }
+    ]
+  },
+  "html": "<section class=\"card stack\" aria-label=\"杭州未来四天天气预报\"><div class=\"widget-head\"><h2 class=\"widget-title\">杭州未来四天天气</h2><small id=\"source\" class=\"widget-meta\"></small></div><div class=\"widget-body stack\"><div class=\"row\"><strong id=\"todayHigh\" class=\"hero\"></strong><span class=\"unit\">°C</span><span id=\"todayCondition\" class=\"badge\"></span></div><p id=\"todayRange\" class=\"sub\"></p><comma-chart id=\"highTrend\" aria-label=\"未来四天最高气温趋势\"></comma-chart><div class=\"widget-grid\"><div class=\"stack\"><small id=\"date0\" class=\"muted\"></small><strong id=\"weather0\"></strong></div><div class=\"stack\"><small id=\"date1\" class=\"muted\"></small><strong id=\"weather1\"></strong></div><div class=\"stack\"><small id=\"date2\" class=\"muted\"></small><strong id=\"weather2\"></strong></div><div class=\"stack\"><small id=\"date3\" class=\"muted\"></small><strong id=\"weather3\"></strong></div></div></div><div class=\"widget-footer\"><small>9/18 有小雨，出行可备雨具。</small></div></section>",
+  "script": "comma.text('source',comma.data.source+' · '+comma.data.observationTime);const d=comma.data.days[0];comma.text('todayHigh',String(d.high));comma.text('todayCondition',d.date+' '+d.condition);comma.text('todayRange','今日 '+d.low+'–'+d.high+'°C');comma.data.days.forEach((day,i)=>{comma.text('date'+i,day.date);comma.text('weather'+i,day.condition+' '+day.high+' / '+day.low+'°C');});comma.chart('highTrend',{labels:comma.data.days.map(d=>d.date),values:comma.data.days.map(d=>d.high),type:'line'});",
+  "summary": "杭州未来四天天气（来源：天气服务评测数据；观测时间：2026-09-16 09:08 UTC）：\n- 9/16：多云，21–30°C\n- 9/17：晴，22–31°C\n- 9/18：小雨，20–26°C\n- 9/19：阴，21–27°C\n\n9/18 有小雨，出行可备雨具。"
+}

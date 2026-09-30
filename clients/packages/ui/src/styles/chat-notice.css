@@ -1,0 +1,170 @@
+/* Figma "chat input item" (nodes 1408-15257 / 1408-15321): radius-xl,
+   border-primary, bg-popup-secondary, 20px leading status icon, Text sm.
+
+   Every notice the chat prints under a turn wears this one frame — the
+   send-failure row in the thread and the failed activity line are the same
+   card and must read as one component. They were written from this node twice
+   and drifted into two different-looking cards; the frame lives here once so
+   they cannot drift again.
+
+   What each notice puts inside the frame differs: the activity line is a
+   single row (copy, then its disclosure chevron), while the send-failure row
+   stacks copy over a row of actions. That is the content, not the frame — the
+   padding, ground, radius, gap and icon below stay shared.
+
+   Imported after the component sheets on purpose: the class is composed onto
+   elements whose own sheet already sets width, alignment and radius at the
+   same specificity, so it wins on source order. */
+.comma-chat-notice-card {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: var(--spacing-lg);
+  overflow: clip;
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-secondary);
+  /* Asymmetric by design: 12px on the icon side, 8px on the side that ends in
+     a button, whose own border carries an optical inset that copy does not. */
+  padding: var(--spacing-md) var(--spacing-md) var(--spacing-md) var(--spacing-lg);
+  color: var(--color-text-primary);
+  /* Same type ramp as the composer input: text-sm token (13px/20px). */
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  letter-spacing: var(--text-sm--letter-spacing);
+}
+
+/* Same 20px (--spacing-2xl) status icon in both notices — the size the toast
+   system uses too. Figma draws the send-failure glyph at 24; both notices are
+   kept at 20 on purpose, so the model failure and the send failure carry the
+   same visual weight. Change it here or not at all. */
+.comma-chat-notice-card-icon {
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  flex: none;
+  color: var(--color-fg-error-primary);
+}
+
+/* The copy owns the row and wraps inside it, so trailing controls — the
+   activity's disclosure chevron — stay pinned to the end. */
+.comma-chat-notice-card-copy {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+/* Copy stacked over actions, for the notices that carry both. */
+.comma-chat-notice-card-content {
+  display: flex;
+  min-width: 0;
+  flex: 1 0 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--spacing-xxs);
+}
+
+.comma-chat-notice-card-content .comma-chat-notice-card-copy {
+  width: 100%;
+  flex: none;
+  font-weight: var(--font-weight-medium);
+}
+
+/* A second, quieter line under the copy: what to do next. Same pairing as a
+   toast's title and description. */
+.comma-chat-notice-card-detail {
+  width: 100%;
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-regular);
+  overflow-wrap: anywhere;
+}
+
+/* ── Actions ──────────────────────────────────────────────────────────────
+   The recovering action sits opposite the pair that leaves the message
+   behind, so the two outcomes never land under one thumb. When the row runs
+   out of width the groups wrap instead of letting a label truncate: every
+   action here has to stay readable. */
+.comma-chat-notice-card-actions {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+}
+
+.comma-chat-notice-card-actions-group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* space-between only separates items that share a line, so once the row wraps
+   the trailing action would fall back to the start. The auto margin keeps it
+   at the end on its own line too. */
+.comma-chat-notice-card-actions-group ~ .comma-chat-notice-card-action {
+  margin-inline-start: auto;
+}
+
+/* Figma "Buttons/Button": 28px tall, label inset 10px from each edge (px-md
+   plus the 2px the inner text frame adds).
+
+   Figma strokes don't occupy layout space but CSS borders do, so the border
+   width comes back out of the padding — otherwise the button lands 2px over
+   on both axes. This is why the treatment is 2px shorter than the toast's
+   shared action (which pays its border on top of py-xs); the two should be
+   reconciled once the toast has a matching Figma node. */
+.comma-chat-notice-card-action {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  overflow: clip;
+  border: var(--border-width-default) solid var(--color-button-secondary-border);
+  border-radius: var(--radius-md);
+  background: var(--color-button-secondary-bg);
+  box-shadow: var(--shadow-xs);
+  padding: calc(var(--spacing-xs) - var(--border-width-default))
+    calc(var(--spacing-md) + var(--spacing-xxs) - var(--border-width-default));
+  color: var(--color-button-secondary-fg);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  transition: background-color var(--motion-duration-feedback-in)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-chat-notice-card-action:hover {
+  background: var(--color-bg-secondary);
+}
+
+.comma-chat-notice-card-action:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray-shadow-xs);
+}
+
+/* Discard drops the border and the shadow — it is the one action that throws
+   the message away, so it must not read as equally weighted. The border stays
+   at the same width in transparent so both buttons keep the same height. */
+.comma-chat-notice-card-action-quiet {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text-tertiary);
+  transition: color var(--motion-duration-feedback-in) var(--motion-easing-smooth-out);
+}
+
+.comma-chat-notice-card-action-quiet:hover {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.comma-chat-notice-card-action-quiet:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-notice-card-action {
+    transition: none;
+  }
+}

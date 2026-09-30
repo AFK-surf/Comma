@@ -1,0 +1,15 @@
+{
+  "data": {
+    "days": [
+      { "condition": "晴", "date": "2026-09-16", "high": 28, "low": 22 },
+      { "condition": "雨", "date": "2026-09-17", "high": 26, "low": 21 }
+    ],
+    "location": "杭州",
+    "observedAt": "2026-09-16T08:00:00+08:00",
+    "source": "Evaluation weather fixture"
+  },
+  "html": "<section class=\"stack\">\n  <h2 id=\"city\"></h2>\n  <small id=\"meta\" class=\"muted\"></small>\n  <table id=\"forecast\" aria-label=\"未来两天天气\"></table>\n  <small id=\"note\" class=\"muted\"></small>\n</section>",
+  "script": "comma.text('city', comma.data.location + ' · 未来两天天气');\ncomma.text('meta', '数据源：' + comma.data.source + ' · 基准时间：' + comma.data.observedAt);\ncomma.table('forecast', {\n  columns: ['日期', '天气', '最高/最低(°C)'],\n  rows: comma.data.days.map(d => [d.date, d.condition, d.high + ' / ' + d.low])\n});\ncomma.text('note', '说明：这是评测用的固定天气数据（fixture），非实时观测。');",
+  "summary": "杭州未来两天天气（评测固定数据，非实时）：\n- 2026-09-16：晴，28°C / 22°C\n- 2026-09-17：雨，26°C / 21°C\n数据源：Evaluation weather fixture（基准时间：2026-09-16T08:00:00+08:00）",
+  "version": 1
+}

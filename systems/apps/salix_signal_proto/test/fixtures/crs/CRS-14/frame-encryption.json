@@ -1,0 +1,99 @@
+{
+  "section": "CRS-14",
+  "name": "frame-encryption",
+  "description": "Group-call media frame encryption. aes_key and hmac_key come from the frame key schedule (frame-key-schedule.json) after ratchet_counter ratchet steps from secret_at_ratchet_0. iv = frame counter as 8-byte big-endian followed by 8 zero bytes; encrypted_payload = AES-256-CTR(aes_key, iv, plaintext) with the counter in the low 64 bits; mac = first 16 bytes of HMAC-SHA256(hmac_key, mac_input) where mac_input = iv || payload length (4 bytes big-endian) || encrypted_payload || 4 zero bytes; frame = encrypted_payload || ratchet counter (1 byte) || frame counter (4 bytes big-endian) || mac. Every HKDF, AES-256-CTR and HMAC-SHA256 step was run by the oracle process (its standard-primitive operations, with the HKDF steps also matched against the oracle library HKDF) on Comma-chosen secrets, counters and plaintexts. The IV construction, the MAC input, the 16-byte truncation and the frame layout are the CRS-14 rules [source].",
+  "pin": "libsignal v0.103.0",
+  "evidence": "HKDF-SHA256, AES-256-CTR and HMAC-SHA256 [oracle] (standard primitives run by the oracle process) in every case; IV construction, MAC input, truncation and frame layout [source]",
+  "cases": [
+    {
+      "inputs": {
+        "secret_at_ratchet_0": "f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0",
+        "ratchet_counter": 0,
+        "frame_counter": 1,
+        "plaintext": "f8fffe"
+      },
+      "outputs": {
+        "aes_key": "6ad82851d9cb2ddca361ab0a77065593f940b0b07ff300aadd0a3096106d52b3",
+        "hmac_key": "7bc7c2af335e4420500bf1c8d4803a28c8161d97e247434dd16b34a8dd50987d",
+        "iv": "00000000000000010000000000000000",
+        "encrypted_payload": "46a755",
+        "mac_input": "000000000000000100000000000000000000000346a75500000000",
+        "hmac_sha256_full": "3b1601f2ff9dc40e6253c4c0365d935abc6422e5eefa2c451512a859561533f9",
+        "mac": "3b1601f2ff9dc40e6253c4c0365d935a",
+        "frame": "46a75500000000013b1601f2ff9dc40e6253c4c0365d935a"
+      }
+    },
+    {
+      "inputs": {
+        "secret_at_ratchet_0": "f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0",
+        "ratchet_counter": 0,
+        "frame_counter": 2,
+        "plaintext": "161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3"
+      },
+      "outputs": {
+        "aes_key": "6ad82851d9cb2ddca361ab0a77065593f940b0b07ff300aadd0a3096106d52b3",
+        "hmac_key": "7bc7c2af335e4420500bf1c8d4803a28c8161d97e247434dd16b34a8dd50987d",
+        "iv": "00000000000000020000000000000000",
+        "encrypted_payload": "7700a198d688c5067a6119590c602ca44315a7113d8af74807ef24a8b356bc8ffa06d654fdf32a31d27a1c335981ab0cd1dcf15b310744d99e70f845",
+        "mac_input": "000000000000000200000000000000000000003c7700a198d688c5067a6119590c602ca44315a7113d8af74807ef24a8b356bc8ffa06d654fdf32a31d27a1c335981ab0cd1dcf15b310744d99e70f84500000000",
+        "hmac_sha256_full": "b88c9d96641e1059ac5fb40018d94fc857458c40d45c5f26a8fe4eb4dd94a6e4",
+        "mac": "b88c9d96641e1059ac5fb40018d94fc8",
+        "frame": "7700a198d688c5067a6119590c602ca44315a7113d8af74807ef24a8b356bc8ffa06d654fdf32a31d27a1c335981ab0cd1dcf15b310744d99e70f8450000000002b88c9d96641e1059ac5fb40018d94fc8"
+      }
+    },
+    {
+      "inputs": {
+        "secret_at_ratchet_0": "353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e",
+        "ratchet_counter": 1,
+        "frame_counter": 1,
+        "plaintext": "545b626970777e858c939aa1a8afb6bdc4"
+      },
+      "outputs": {
+        "aes_key": "f09b4b0bcc3f87f0bded0e6c3e12ea0bfff672994be516db3e015856856e5842",
+        "hmac_key": "3e00bcec7bc62d6927cd73d4f9a8dc0403f938e25c8d12e42aff727f64e4cb0e",
+        "iv": "00000000000000010000000000000000",
+        "encrypted_payload": "ddd576a2d00aa46a2ab8859462cd68e858",
+        "mac_input": "0000000000000001000000000000000000000011ddd576a2d00aa46a2ab8859462cd68e85800000000",
+        "hmac_sha256_full": "be0ab1ad3b9182aeb700511cc125c61e125497020145ce905e89243bc6659ef5",
+        "mac": "be0ab1ad3b9182aeb700511cc125c61e",
+        "frame": "ddd576a2d00aa46a2ab8859462cd68e8580100000001be0ab1ad3b9182aeb700511cc125c61e"
+      }
+    },
+    {
+      "inputs": {
+        "secret_at_ratchet_0": "737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c",
+        "ratchet_counter": 3,
+        "frame_counter": 65536,
+        "plaintext": "9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3"
+      },
+      "outputs": {
+        "aes_key": "2cc81307fd322a88df9be946262258c5af9bc0676f3095001bc73830acf391b6",
+        "hmac_key": "def3f8ad59acad0555842d16b12cbf413ffd6a0d9794ea9a2a553d475885f371",
+        "iv": "00000000000100000000000000000000",
+        "encrypted_payload": "33cbdec208776a6c7ecb51f9daed6282f2fc580040f7cf1c88fa632707069da78bd27fe4aaaa7c2c1e1106b49a0e77f35fabd26f61c43f7c574a03dd3d5b81a1a6e554d00ee95020e0fad837a27a06ce1a87b0ffc6fd77ba1d17d977c4154797a02814f00b98f7557cf5abfb74f3dc501c61e5dc94890675",
+        "mac_input": "000000000001000000000000000000000000007833cbdec208776a6c7ecb51f9daed6282f2fc580040f7cf1c88fa632707069da78bd27fe4aaaa7c2c1e1106b49a0e77f35fabd26f61c43f7c574a03dd3d5b81a1a6e554d00ee95020e0fad837a27a06ce1a87b0ffc6fd77ba1d17d977c4154797a02814f00b98f7557cf5abfb74f3dc501c61e5dc9489067500000000",
+        "hmac_sha256_full": "cfb9fb9b604e67761bf227da316fd4d163071f7505a98cde8fe8c38bd2398120",
+        "mac": "cfb9fb9b604e67761bf227da316fd4d1",
+        "frame": "33cbdec208776a6c7ecb51f9daed6282f2fc580040f7cf1c88fa632707069da78bd27fe4aaaa7c2c1e1106b49a0e77f35fabd26f61c43f7c574a03dd3d5b81a1a6e554d00ee95020e0fad837a27a06ce1a87b0ffc6fd77ba1d17d977c4154797a02814f00b98f7557cf5abfb74f3dc501c61e5dc948906750300010000cfb9fb9b604e67761bf227da316fd4d1"
+      }
+    },
+    {
+      "inputs": {
+        "secret_at_ratchet_0": "b1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a",
+        "ratchet_counter": 0,
+        "frame_counter": 4294967295,
+        "plaintext": ""
+      },
+      "outputs": {
+        "aes_key": "b04c29e503ce6f32df79a1c0374b04ad623b08de39d430c2591dd0f2f3bee048",
+        "hmac_key": "15ef41945e6da4947b9546fbe16d398fe6c047efff45fade09054a85f845d071",
+        "iv": "00000000ffffffff0000000000000000",
+        "encrypted_payload": "",
+        "mac_input": "00000000ffffffff00000000000000000000000000000000",
+        "hmac_sha256_full": "6fff6f11d506e80bb9995edcfa947c6cc516f7594959acf63fb2d31e8391dc63",
+        "mac": "6fff6f11d506e80bb9995edcfa947c6c",
+        "frame": "00ffffffff6fff6f11d506e80bb9995edcfa947c6c"
+      }
+    }
+  ]
+}

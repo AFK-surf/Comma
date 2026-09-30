@@ -1,15 +1,39 @@
 # Comma
 
-Comma is a personal agent that works 24/7. You ask once, and Comma carries the
-work to done.
+### The sessionless, relentless personal agent.
 
-Comma runs in the Mac app, in the browser, and in your chats on Signal,
-Telegram, and WeChat. It works in your connected apps and files, on your Mac,
-and on its own cloud computer. The agent harness, Salix, keeps your agent
-running and calls a large model only when the work needs one.
+Comma is an open-source personal agent built to be sessionless. Your work, memory, and context stay continuous across your computer, phone, cloud environment, applications, and connected devices.
 
-You can use the hosted service at [comma.surf](https://comma.surf), or run your
-own instance from this repository.
+It breaks down your goals into Tasks and keeps working through agentic loops until the job is done.
+
+Built by AFK Inc., Comma is our attempt to create an open agentic system that keeps you away from software — and away from the keyboard.
+
+You can use the hosted service at [comma.surf](https://comma.surf), or run your own instance from this repository.
+
+## Philosophy
+
+- **Sessionless**
+  - Conversations are just interfaces. **Tasks are the persistent execution state.**
+  - Your memory, context, and ongoing Tasks continue across devices, conversations, and interfaces.
+  - You should never have to choose the “right” session, or worry that starting a new conversation will lose unfinished work.
+
+- **Relentless**
+  - Comma is always on and works 24/7.
+  - Tasks are automatically turned into independent agent loops that plan, execute, review, and verify until the goal is completed.
+  - The goal stays alive until it's done.
+
+- **Swarm Intelligence**
+  - Comma automatically distributes work across agents and models with different strengths.
+  - Smaller independent contexts reduce compression, drift, and context corruption.
+  - You manage the goal, not the swarm.
+
+- **Works with your existing agents**
+  - Codex, Claude Code, and other agents can be invoked like applications or registered as Workers and Sub-agents.
+  - Keep your existing tools and workflows; let Comma orchestrate and automate them.
+
+- **Cloud for work. Your device for identity.**
+  - Comma uses its own environment for long-running work, while sensitive identity, sessions, payments, and private data can stay on your devices.
+  - When needed, Comma hands the Task to your computer or phone and continues from where it left off.
 
 ## What Comma does
 
@@ -32,21 +56,26 @@ own instance from this repository.
   start a summary Task.
 - **Uses your models.** Bring your own API key, or a ChatGPT or Claude plan.
 
-## How Salix is built
+## Built with Elixir and Go. Verified with Lean and TLA+.
 
-Salix is written in Elixir and Lean. Each agent runs as its own process on the
-Erlang VM. When one part fails, it restarts, and the other agents keep running.
-Messages that Salix has accepted survive the restart. An interrupted action that
-changes something does not run again on its own.
+Comma is built for long-running, fault-tolerant agent workloads. Its runtime is primarily built with **Elixir/OTP**, with **Go** used for systems components and tooling. Critical runtime properties are specified and machine-checked with **Lean**, with **TLA+** models for core distributed protocols.
 
-The core of the agent loop is Lean code, and a machine checks its proofs. The
-proofs show that Salix keeps accepted work through failures and restarts. They
-show that a failed reply does not count as done, and that Salix records each
-action that changes something before it starts that action. Salix starts each
-such action at most once. The proofs also check that data goes only where it is
-allowed. They rest on stated assumptions about the code around the kernel. They
-do not prove storage, model judgment, or task success. See
-[Verification](docs/verification.md).
+Each agent runs as its own process on the Erlang VM. When one part fails, it restarts, and the other agents keep running. Messages that Salix has accepted survive the restart. An interrupted action that changes something does not run again on its own.
+
+The formal models check properties such as:
+
+- accepted work is not silently lost across failures and restarts;
+- a failed reply does not count as completed work;
+- side-effecting actions are recorded before they start;
+- an interrupted mutating action is not accidentally executed twice;
+- stale workers cannot overwrite newer agent state;
+- data only crosses boundaries where policy allows it.
+
+Formal verification does not prove model judgment or task success. It verifies something more fundamental: **the runtime behaves according to the rules we designed, even when things fail.**
+
+For a sessionless agent, reliability is not an infrastructure detail. **It is part of the product.**
+
+See [Verification](docs/verification.md) and the [TLA+ models](tla/).
 
 ## Self-host with Docker Compose
 

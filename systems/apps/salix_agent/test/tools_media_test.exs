@@ -196,20 +196,6 @@ defmodule SalixAgent.ToolsMediaTest do
       assert "[Generated image available at: https://cdn/img-1.png]" =
                Media.generate_image(%{"prompt" => "a red fox"}, ctx)
     end
-
-    test "an empty prompt raises", %{ctx: ctx} do
-      assert_raise RuntimeError, "prompt is required", fn ->
-        Media.generate_image(%{}, ctx)
-      end
-    end
-
-    test "a malformed provider response raises the opaque willow error", %{ctx: ctx} do
-      MockMedia.set("/v1/images/generations", %{"unexpected" => true})
-
-      assert_raise RuntimeError, "image generation failed", fn ->
-        Media.generate_image(%{"prompt" => "x"}, ctx)
-      end
-    end
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
@@ -233,12 +219,6 @@ defmodule SalixAgent.ToolsMediaTest do
       assert MockMedia.last_request()["prompt"] == "waves at dusk"
     end
 
-    test "an empty prompt raises", %{ctx: ctx} do
-      assert_raise RuntimeError, "prompt is required", fn ->
-        Media.generate_video(%{}, ctx)
-      end
-    end
-
     test "a provider 4xx surfaces the actionable message (willow client-error behavior)", %{
       ctx: ctx
     } do
@@ -252,12 +232,25 @@ defmodule SalixAgent.ToolsMediaTest do
         Media.generate_video(%{"prompt" => "waves"}, ctx)
       end
     end
+  end
 
-    test "a malformed provider response raises the opaque willow error", %{ctx: ctx} do
-      MockMedia.set("/v1/videos/generations", %{"unexpected" => true})
+  describe "image.generate and video.generate failures" do
+    for {kind, generate, endpoint} <- [
+          {"image", :generate_image, "/v1/images/generations"},
+          {"video", :generate_video, "/v1/videos/generations"}
+        ] do
+      test "#{kind}: an empty prompt raises", %{ctx: ctx} do
+        assert_raise RuntimeError, "prompt is required", fn ->
+          apply(Media, unquote(generate), [%{}, ctx])
+        end
+      end
 
-      assert_raise RuntimeError, "video generation failed", fn ->
-        Media.generate_video(%{"prompt" => "x"}, ctx)
+      test "#{kind}: a malformed provider response raises the opaque willow error", %{ctx: ctx} do
+        MockMedia.set(unquote(endpoint), %{"unexpected" => true})
+
+        assert_raise RuntimeError, "#{unquote(kind)} generation failed", fn ->
+          apply(Media, unquote(generate), [%{"prompt" => "x"}, ctx])
+        end
       end
     end
   end

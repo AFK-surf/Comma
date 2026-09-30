@@ -250,13 +250,14 @@
   animation: none;
 }
 
+/* The real Notch sweeps a shimmer across this title. The preview keeps its
+   resting color only: a text-clip sweep repaints the title every frame, and
+   Settings stuttered when the Notch was turned on or off. */
 .comma-notch-width__title {
-  --comma-shiny-text-base: var(--color-alpha-white-60);
-  --comma-shiny-text-highlight: var(--color-base-white);
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--comma-shiny-text-base);
+  color: var(--color-alpha-white-60);
   font-size: calc(12 * var(--notch-pt));
   font-weight: var(--font-weight-semibold);
   line-height: calc(18 * var(--notch-pt));

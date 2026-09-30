@@ -27,9 +27,6 @@
   --modal-open-dur: 250ms;
   --modal-close-dur: 150ms;
   --modal-scale: 0.96;
-  /* The chat sheet stack moves Linear-fast: most of the travel lands in the
-     first frames (smooth-out is expo-flavored), done well under 200ms. */
-  --sheet-open-dur: 180ms;
 }
 
 /* Inter via system fallback; in dev/prod a self-hosted Inter could be added.
@@ -204,21 +201,6 @@
     }
   }
 
-  /* iOS-style sheet stack, scoped to the work panel: the chat card slides up
-     while the board card recedes upward (top-anchored scale), its top edge
-     peeking above the sheet. Compositor props only; exit runs faster ease-in
-     via phx-remove on the LiveView side. */
-  .t-sheet {
-    animation: t-sheet-in var(--sheet-open-dur) var(--ease-smooth-out) both;
-  }
-
-  @keyframes t-sheet-in {
-    from {
-      opacity: 0;
-      transform: translateY(24px) scale(0.98);
-    }
-  }
-
   /* Toast entrance: a quiet rise from the corner, Linear-style. Exit runs
      through phx-remove (ease-in 150ms) on the LiveView side. */
   .t-toast {
@@ -232,89 +214,13 @@
     }
   }
 
-  .t-stack-base {
-    transform-origin: top center;
-    transition: transform var(--sheet-open-dur) var(--ease-smooth-out);
-  }
-
-  .t-stack-base.is-stacked {
-    transform: scale(0.98);
-  }
-
-  /* transitions.dev: tabs sliding (CSS-only 2-option variant) — the white
-     pill slides under the active segment; the server sets data-view. */
-  .t-seg {
-    position: relative;
-  }
-
-  .t-seg::before {
-    content: "";
-    position: absolute;
-    top: 2px;
-    bottom: 2px;
-    left: 2px;
-    width: calc(50% - 2px);
-    border-radius: 4px;
-    background: white;
-    box-shadow:
-      0px 1px 1px rgba(23, 24, 26, 0.04),
-      0px 3px 6px -2px rgba(23, 24, 26, 0.02);
-    transition: transform var(--duration-fast) var(--ease-smooth-out);
-  }
-
-  .t-seg[data-view="markdown"]::before {
-    transform: translateX(100%);
-  }
-
-  /* /-skill mention composer: the contenteditable editor and its inline
-     skill chips. The menu/popover layers are built by the SkillComposer hook
-     (fixed-position on body — the composer lives inside clipped scroll
-     columns) and reuse t-dropdown-enter for their entrance. */
-  .skill-editor {
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .skill-editor:empty::before {
-    content: attr(data-placeholder);
-    @apply pointer-events-none text-neutral-400;
-  }
-
-  .skill-editor--single {
-    white-space: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .skill-editor--single::-webkit-scrollbar {
-    display: none;
-  }
-
-  .skill-chip {
-    @apply mx-px inline-flex items-center gap-0.5 whitespace-nowrap rounded-md bg-brand-50 px-1 font-medium text-brand-600;
-  }
-
-  .skill-chip-remove {
-    @apply -mr-0.5 grid h-3.5 w-3.5 flex-none cursor-pointer place-items-center rounded leading-none text-brand-400 opacity-0 hover:bg-brand-100 hover:text-brand-600;
-    transition: opacity var(--duration-micro) var(--ease-out);
-  }
-
-  .skill-chip:hover .skill-chip-remove {
-    opacity: 1;
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .t-dropdown-enter,
     .t-drawer-panel,
     .t-drawer-overlay,
     .t-skeleton,
-    .t-sheet,
     .t-toast {
       animation: none !important;
-    }
-
-    .t-stack-base {
-      transition: none !important;
     }
 
     /* The check must still be visible — undo the draw setup, not just the
@@ -325,8 +231,7 @@
       stroke-dashoffset: 0;
     }
 
-    .t-settle,
-    .t-seg::before {
+    .t-settle {
       transition: none !important;
     }
   }

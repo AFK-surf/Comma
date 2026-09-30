@@ -4,59 +4,39 @@ defmodule SalixIM.SlackMarkdownTest do
   alias SalixIM.SlackMarkdown
 
   describe "to_mrkdwn/1" do
-    test "preserves inline and fenced code while converting prose" do
-      source =
-        "`**literal** [x](https://e.test)` and **prose**\n\n" <>
-          "```text\n**literal** [x](https://e.test)\n```"
-
-      assert SlackMarkdown.to_mrkdwn(source) ==
-               "`**literal** [x](https://e.test)` and *prose*\n\n" <>
-                 "```\n**literal** [x](https://e.test)\n```"
-    end
-
-    test "escapes Slack control characters without escaping generated links" do
-      source =
-        "A < B & C > D <@U123> <!here> " <>
-          "[docs](https://e.test/path?a=1&b=2)"
-
-      assert SlackMarkdown.to_mrkdwn(source) ==
-               "A &lt; B &amp; C &gt; D &lt;@U123&gt; &lt;!here&gt; " <>
-                 "<https://e.test/path?a=1&amp;b=2|docs>"
-    end
-
-    test "preserves standard emphasis semantics" do
-      source =
-        "__bold__ _italic_ *also italic* ***both*** " <>
-          "**bold and *nested italic*** *italic and **nested bold***"
-
-      assert SlackMarkdown.to_mrkdwn(source) ==
-               "*bold* _italic_ _also italic_ *_both_* " <>
-                 "*bold and _nested italic_* _italic and *nested bold*_"
-    end
-
-    test "keeps escaped, intraword, and unmatched markers literal" do
-      assert SlackMarkdown.to_mrkdwn(~S(config_one_name and \*literal\* and broken **marker)) ==
-               "config`_`one`_`name and `*`literal`*` and broken `**`marker"
-    end
-
-    test "only treats double tildes as strikethrough" do
-      assert SlackMarkdown.to_mrkdwn(~S(~x~ a~b~c ~~x~~ \~escaped\~)) ==
-               "`~`x`~` a`~`b`~`c ~x~ `~`escaped`~`"
-    end
-
-    test "keeps outer styles around protected literal markers" do
-      assert SlackMarkdown.to_mrkdwn("~~a~b~~") == "~a~`~`~b~"
-      assert SlackMarkdown.to_mrkdwn("**a~b~c**") == "*a*`~`*b*`~`*c*"
-    end
-
-    test "degrades nested lists and tables to readable mrkdwn" do
-      source =
-        "- parent\n  - **child**\n\n" <>
-          "| Name | State |\n| --- | --- |\n| Build | **ready** |"
-
-      assert SlackMarkdown.to_mrkdwn(source) ==
-               "- parent\n  - *child*\n\n" <>
-                 "| Name | State |\n| --- | --- |\n| Build | *ready* |"
+    for {name, source, expected} <- [
+          {"preserves inline and fenced code while converting prose",
+           "`**literal** [x](https://e.test)` and **prose**\n\n" <>
+             "```text\n**literal** [x](https://e.test)\n```",
+           "`**literal** [x](https://e.test)` and *prose*\n\n" <>
+             "```\n**literal** [x](https://e.test)\n```"},
+          {"escapes Slack control characters without escaping generated links",
+           "A < B & C > D <@U123> <!here> " <> "[docs](https://e.test/path?a=1&b=2)",
+           "A &lt; B &amp; C &gt; D &lt;@U123&gt; &lt;!here&gt; " <>
+             "<https://e.test/path?a=1&amp;b=2|docs>"},
+          {"preserves standard emphasis semantics",
+           "__bold__ _italic_ *also italic* ***both*** " <>
+             "**bold and *nested italic*** *italic and **nested bold***",
+           "*bold* _italic_ _also italic_ *_both_* " <>
+             "*bold and _nested italic_* _italic and *nested bold*_"},
+          {"keeps escaped, intraword, and unmatched markers literal",
+           ~S(config_one_name and \*literal\* and broken **marker),
+           "config`_`one`_`name and `*`literal`*` and broken `**`marker"},
+          {"only treats double tildes as strikethrough", ~S(~x~ a~b~c ~~x~~ \~escaped\~),
+           "`~`x`~` a`~`b`~`c ~x~ `~`escaped`~`"},
+          {"keeps outer strikethrough around a protected literal marker", "~~a~b~~", "~a~`~`~b~"},
+          {"keeps outer bold around protected literal markers", "**a~b~c**", "*a*`~`*b*`~`*c*"},
+          {"degrades nested lists and tables to readable mrkdwn",
+           "- parent\n  - **child**\n\n" <>
+             "| Name | State |\n| --- | --- |\n| Build | **ready** |",
+           "- parent\n  - *child*\n\n" <>
+             "| Name | State |\n| --- | --- |\n| Build | *ready* |"}
+        ] do
+      @source source
+      @expected expected
+      test name do
+        assert SlackMarkdown.to_mrkdwn(@source) == @expected
+      end
     end
   end
 
@@ -145,54 +125,45 @@ defmodule SalixIM.SlackMarkdownTest do
              )
   end
 
-  test "turns ordinary Markdown task markers into non-interactive list items" do
-    source = "- [ ] Todo\n* [x] Done\n+ [X] Also done\n  - [ ] Nested\n- ordinary"
+  # Each row renders to one Markdown block; only task markers outside code are
+  # rewritten, and an H1 that cannot be a plain header stays in the block.
+  fenced_source = """
+  Before
 
-    assert {:ok, [%{"type" => "markdown", "text" => text}]} =
-             SlackMarkdown.render_blocks(source)
+      - [ ] indented literal
 
-    assert text == "- Todo\n* Done\n+ Also done\n  - Nested\n- ordinary"
-  end
+  ```md
+  - [ ] fenced literal
+  ```
 
-  test "leaves task-like source inside fenced and indented code unchanged" do
-    source = """
-    Before
+  ~~~~
+  * [x] alternate fence
+  ~~~~
 
-        - [ ] indented literal
+  - [ ] visible item
+  """
 
-    ```md
-    - [ ] fenced literal
-    ```
+  for {name, source, expected} <- [
+        {"turns ordinary Markdown task markers into non-interactive list items",
+         "- [ ] Todo\n* [x] Done\n+ [X] Also done\n  - [ ] Nested\n- ordinary",
+         "- Todo\n* Done\n+ Also done\n  - Nested\n- ordinary"},
+        {"leaves task-like source inside fenced and indented code unchanged", fenced_source,
+         String.replace(fenced_source, "- [ ] visible item", "- visible item")},
+        {"does not rewrite inline brackets or non-task list syntax",
+         "Text [ ] stays\n- [later] stays\n- [x](https://example.com) linked label", :same},
+        {"keeps a non-plain H1 source inside the Markdown block", "# **Styled title**\n\nBody",
+         :same},
+        {"keeps an overlong H1 source inside the Markdown block",
+         "# " <> String.duplicate("a", 151) <> "\n\nBody", :same}
+      ] do
+    @source source
+    @expected if expected == :same, do: source, else: expected
+    test name do
+      assert {:ok, [%{"type" => "markdown", "text" => text}]} =
+               SlackMarkdown.render_blocks(@source)
 
-    ~~~~
-    * [x] alternate fence
-    ~~~~
-
-    - [ ] visible item
-    """
-
-    expected = String.replace(source, "- [ ] visible item", "- visible item")
-
-    assert {:ok, [%{"type" => "markdown", "text" => ^expected}]} =
-             SlackMarkdown.render_blocks(source)
-  end
-
-  test "does not rewrite inline brackets or non-task list syntax" do
-    source = "Text [ ] stays\n- [later] stays\n- [x](https://example.com) linked label"
-
-    assert {:ok, [%{"type" => "markdown", "text" => ^source}]} =
-             SlackMarkdown.render_blocks(source)
-  end
-
-  test "keeps non-plain and overlong H1 source inside the Markdown block" do
-    styled = "# **Styled title**\n\nBody"
-    overlong = "# " <> String.duplicate("a", 151) <> "\n\nBody"
-
-    assert {:ok, [%{"type" => "markdown", "text" => ^styled}]} =
-             SlackMarkdown.render_blocks(styled)
-
-    assert {:ok, [%{"type" => "markdown", "text" => ^overlong}]} =
-             SlackMarkdown.render_blocks(overlong)
+      assert text == @expected
+    end
   end
 
   test "removes only the title separator and preserves additional source whitespace" do

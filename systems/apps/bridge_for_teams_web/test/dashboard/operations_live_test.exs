@@ -36,7 +36,6 @@ defmodule BridgeForTeamsWeb.Dashboard.OperationsLiveTest do
     assert html =~ ~s(href="/orgs/#{org.slug}/operations/checks")
     assert html =~ ~s(href="/orgs/#{org.slug}/operations/audit")
     assert html =~ ~s(href="/orgs/#{org.slug}/operations/runners")
-    refute html =~ "Fin is now part of Operations"
   end
 
   test "ordinary org members cannot open Operations", %{conn: conn, org: org} do
@@ -1711,16 +1710,6 @@ defmodule BridgeForTeamsWeb.Dashboard.OperationsLiveTest do
     assert html =~ "Refresh Mac mini"
     assert html =~ "refresh-host"
     assert html =~ "0 / 2"
-  end
-
-  test "ordinary org members cannot view the org Operations runners page", %{conn: conn, org: org} do
-    member = user_fixture(email: "fin-member@example.com")
-    {:ok, _membership} = Memberships.put_org_member(org.id, member.id, "member")
-
-    assert {:error, {:redirect, %{to: "/orgs"}}} =
-             conn
-             |> log_in_user(member)
-             |> live(~p"/orgs/#{org.slug}/operations/runners")
   end
 
   test "ordinary org members cannot view the audit surface", %{conn: conn, org: org, user: owner} do

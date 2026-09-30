@@ -76,15 +76,27 @@ defmodule BridgeForTeamsWeb.Dashboard.Locale do
   # The org default for the org in the URL (`/orgs/:slug/...`) when present,
   # otherwise the default of the user's first org.
   defp org_default_locale(conn, user) do
-    case conn.path_info do
-      ["orgs", slug | _] ->
-        case Orgs.get_org_by_slug(slug) do
-          {:ok, %{default_locale: locale}} when is_binary(locale) -> locale
-          _ -> Orgs.default_locale_for_user(user.id)
-        end
+    with slug when is_binary(slug) <- org_slug(conn),
+         {:ok, %{default_locale: locale}} when is_binary(locale) <- Orgs.get_org_by_slug(slug) do
+      locale
+    else
+      _ -> Orgs.default_locale_for_user(user.id)
+    end
+  end
+
+  # Pages carry the org as the first path segment (`/orgs/:org/...`); the
+  # dashboard JSON API nests it (`/dashboard/api/v1/orgs/:org/...`) but routes
+  # it to the same `:org` path parameter.
+  defp org_slug(conn) do
+    case conn.path_params do
+      %{"org" => slug} ->
+        slug
 
       _ ->
-        Orgs.default_locale_for_user(user.id)
+        case conn.path_info do
+          ["orgs", slug | _] -> slug
+          _ -> nil
+        end
     end
   end
 

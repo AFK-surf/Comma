@@ -14,32 +14,46 @@ function check(text: string, hrefs: string[]) {
 }
 
 describe("plainTextWithLinks", () => {
-  it("preserves Chinese paths, queries, fragments and English/CJK punctuation", () => {
-    check(
-      "查看（https://example.com/中文?q=1&b=2#part），再看 https://example.org/a(b).",
-      ["https://example.com/中文?q=1&b=2#part", "https://example.org/a(b)"]
-    );
-  });
-
-  it("recognizes adjacent URLs separated by Chinese punctuation", () => {
-    check("https://example.com/a，https://example.org/b。", [
-      "https://example.com/a",
-      "https://example.org/b",
-    ]);
-  });
-
-  it("keeps Markdown literal, with no nested anchors", () => {
-    check("[Docs](https://example.com/docs) and https://example.org/", [
-      "https://example.com/docs",
-      "https://example.org/",
-    ]);
-  });
-
-  it("does not turn code spans into links", () => {
-    check(
-      "`https://code.example` ``https://two.example ` inside`` https://example.com",
-      ["https://example.com"]
-    );
+  it.each(
+    [
+      {
+        name: "preserves Chinese paths, queries, fragments and English/CJK punctuation",
+        text: "查看（https://example.com/中文?q=1&b=2#part），再看 https://example.org/a(b).",
+        hrefs: ["https://example.com/中文?q=1&b=2#part", "https://example.org/a(b)"],
+      },
+      {
+        name: "recognizes adjacent URLs separated by Chinese punctuation",
+        text: "https://example.com/a，https://example.org/b。",
+        hrefs: ["https://example.com/a", "https://example.org/b"],
+      },
+      {
+        name: "keeps Markdown literal, with no nested anchors",
+        text: "[Docs](https://example.com/docs) and https://example.org/",
+        hrefs: ["https://example.com/docs", "https://example.org/"],
+      },
+      {
+        name: "does not turn code spans into links",
+        text: "`https://code.example` ``https://two.example ` inside`` https://example.com",
+        hrefs: ["https://example.com"],
+      },
+      {
+        name: "does not link indented code or multiline code spans",
+        text: "    https://code.example\r\n\r\n`code\nhttps://span.example`\nhttps://example.com",
+        hrefs: ["https://example.com"],
+      },
+      {
+        name: "accepts explicit HTTP(S) only",
+        text: "javascript:alert(1) data:text/html,hello file:///tmp/a ftp://example.com mailto:a@example.com www.example.com comma:task/cnv1_test",
+        hrefs: [],
+      },
+      {
+        name: "keeps encoded punctuation and avoids linking an invalid hostname",
+        text: "https://example.com/a%EF%BC%8Cb https://",
+        hrefs: ["https://example.com/a%EF%BC%8Cb"],
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { text, hrefs }) => {
+    check(text, hrefs);
   });
 
   it.each(["```", "~~~"])(
@@ -50,13 +64,6 @@ describe("plainTextWithLinks", () => {
       ]);
     }
   );
-
-  it("does not link indented code or multiline code spans", () => {
-    check(
-      "    https://code.example\r\n\r\n`code\nhttps://span.example`\nhttps://example.com",
-      ["https://example.com"]
-    );
-  });
 
   it.each(["\n", "\r\n", "\r"])(
     "preserves code boundaries with %j line endings",
@@ -78,25 +85,12 @@ describe("plainTextWithLinks", () => {
     }
   );
 
-  it("accepts explicit HTTP(S) only", () => {
-    check(
-      "javascript:alert(1) data:text/html,hello file:///tmp/a ftp://example.com mailto:a@example.com www.example.com comma:task/cnv1_test",
-      []
-    );
-  });
-
   it("does not interpret HTML or event handler text", () => {
     const container = check(
       '<img src=x onerror="alert(1)"> https://example.com/?q=%22%3E%3Cscript%3E',
       ["https://example.com/?q=%22%3E%3Cscript%3E"]
     );
     expect(container.querySelector("img, script")).toBeNull();
-  });
-
-  it("keeps encoded punctuation and avoids linking an invalid hostname", () => {
-    check("https://example.com/a%EF%BC%8Cb https://", [
-      "https://example.com/a%EF%BC%8Cb",
-    ]);
   });
 
   it("keeps ordinary text on the fast path", () => {

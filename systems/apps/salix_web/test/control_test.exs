@@ -63,7 +63,7 @@ defmodule SalixWeb.ControlTest do
     assert :ok = SalixIM.ProviderIdentity.ensure_available("feishu", app_id)
   end
 
-  test "create_agent uses its canonical id without allocating a second reference" do
+  test "create_agent generates distinct group-bound canonical ids" do
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Agents"}, tenant_id())
 
     {:ok, first} =
@@ -80,6 +80,7 @@ defmodule SalixWeb.ControlTest do
 
     assert first["agent_id"] != second["agent_id"]
     assert SalixStore.Ids.valid_agent_id_for_group?(first["agent_id"], group["group_id"])
+    assert SalixStore.Ids.valid_agent_id_for_group?(second["agent_id"], group["group_id"])
   end
 
   test "a group's information-flow mode is writable, validated, and off by default" do

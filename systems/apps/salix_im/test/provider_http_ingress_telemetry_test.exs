@@ -119,34 +119,23 @@ defmodule SalixIM.ProviderHTTPIngressTelemetryTest do
     end
   end
 
-  describe "handle_slack_request/4" do
-    test "counts an unknown app_id as unattributed before any handler runs" do
-      assert {:error, :not_found} =
-               ProviderHTTP.handle_slack_request(
-                 "A-no-such-app-#{System.unique_integer([:positive])}",
-                 %{"event" => %{}},
-                 [],
-                 ""
-               )
+  describe "unknown app_id ingress" do
+    for {name, handler, app_prefix, payload} <- [
+          {"handle_slack_request/4", :handle_slack_request, "A-no-such-app-",
+           Macro.escape(%{"event" => %{}})},
+          {"handle_feishu_request/4", :handle_feishu_request, "cli-no-such-app-",
+           Macro.escape(%{"header" => %{}})}
+        ] do
+      test "#{name} counts an unknown app_id as unattributed before any handler runs" do
+        app_id = unquote(app_prefix) <> Integer.to_string(System.unique_integer([:positive]))
 
-      assert_receive {:im_ingress, %{duration: duration}, %{outcome: "unattributed"}}
-      assert duration > 0
-      refute_receive {:im_ingress, _measurements, _metadata}
-    end
-  end
+        assert {:error, :not_found} =
+                 apply(ProviderHTTP, unquote(handler), [app_id, unquote(payload), [], ""])
 
-  describe "handle_feishu_request/4" do
-    test "counts an unknown app_id as unattributed before any handler runs" do
-      assert {:error, :not_found} =
-               ProviderHTTP.handle_feishu_request(
-                 "cli-no-such-app-#{System.unique_integer([:positive])}",
-                 %{"header" => %{}},
-                 [],
-                 ""
-               )
-
-      assert_receive {:im_ingress, _measurements, %{outcome: "unattributed"}}
-      refute_receive {:im_ingress, _measurements, _metadata}
+        assert_receive {:im_ingress, %{duration: duration}, %{outcome: "unattributed"}}
+        assert duration > 0
+        refute_receive {:im_ingress, _measurements, _metadata}
+      end
     end
   end
 

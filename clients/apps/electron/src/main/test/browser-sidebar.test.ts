@@ -15,7 +15,11 @@ import {
   installBrowserSidebarSecurity,
   type BrowserSidebarViewLike,
 } from "../modules/browser-sidebar";
-import { maxBrowserSidebarSessionsPerOwner } from "@comma/native-bridge";
+import {
+  browserSidebarStateSchema,
+  maxBrowserSidebarFaviconBytes,
+  maxBrowserSidebarSessionsPerOwner,
+} from "@comma/native-bridge";
 import { NativeSurfaceService } from "../modules/surfaces";
 
 describe("NativeBrowserSidebarService", () => {
@@ -160,6 +164,88 @@ describe("NativeBrowserSidebarService", () => {
         },
       ],
     });
+  });
+
+  it("publishes the document's icon from the tab's session until a new icon list replaces it", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      sessionId: "host-a",
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      url: "https://example.com/one",
+    });
+    const view = harness.views[0]!;
+    view.webContents.session.fetch.mockImplementation(async (url) =>
+      url === "https://example.com/favicon.ico"
+        ? iconResponse("image/x-icon")
+        : url === "https://example.com/huge.png"
+          ? iconResponse("image/png", maxBrowserSidebarFaviconBytes + 1)
+          : url === "https://example.com/long-type.png"
+            ? iconResponse(`image/${"x".repeat(200)}`, maxBrowserSidebarFaviconBytes)
+            : url === "https://example.com/empty.png"
+              ? iconResponse("image/png", 0)
+              : url === "https://example.com/missing.png"
+                ? new Response("gone", {
+                    headers: { "content-type": "image/png" },
+                    status: 404,
+                  })
+                : new Response("<html>", { headers: { "content-type": "text/html" } })
+    );
+    const lastState = () => harness.sidebarStates.at(-1);
+
+    // Oversized, failed, over-long, empty and non-image candidates are skipped for the
+    // next candidate.
+    view.emitStateChange("page-favicon-updated", {}, [
+      "https://example.com/huge.png",
+      "https://example.com/missing.png",
+      "https://example.com/long-type.png",
+      "https://example.com/empty.png",
+      "https://example.com/page.html",
+      "https://example.com/favicon.ico",
+    ]);
+    await vi.waitFor(() =>
+      expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==")
+    );
+    expect(browserSidebarStateSchema.parse(lastState())).toMatchObject({
+      favicon: "data:image/x-icon;base64,BwcHBw==",
+    });
+
+    // Chromium sends no new list when a reloaded document declares the same
+    // icons, so the navigation alone keeps the icon.
+    const published = harness.sidebarStates.length;
+    view.emitStateChange("did-navigate", {}, "https://example.com/one");
+    await vi.waitFor(() =>
+      expect(harness.sidebarStates.length).toBeGreaterThan(published)
+    );
+    expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==");
+
+    // A new list replaces the icon: `data:,` declares that there is none, and an
+    // inline icon is used as is.
+    view.emitStateChange("page-favicon-updated", {}, ["data:,"]);
+    await vi.waitFor(() => expect(lastState()).not.toHaveProperty("favicon"));
+    view.emitStateChange("page-favicon-updated", {}, ["data:image/svg+xml,%3Csvg/%3E"]);
+    await vi.waitFor(() =>
+      expect(lastState()?.favicon).toBe("data:image/svg+xml,%3Csvg/%3E")
+    );
+
+    // A newer list aborts an older list's slow request, and its late response
+    // never lands over the newer list's icon.
+    let finishStale!: (response: Response) => void;
+    let staleSignal: AbortSignal | null | undefined;
+    view.webContents.session.fetch.mockImplementationOnce((_url, init) => {
+      staleSignal = init?.signal;
+      return new Promise<Response>((resolve) => (finishStale = resolve));
+    });
+    view.emitStateChange("page-favicon-updated", {}, ["https://example.org/old.png"]);
+    view.emitStateChange("page-favicon-updated", {}, [
+      "https://example.com/favicon.ico",
+    ]);
+    await vi.waitFor(() =>
+      expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==")
+    );
+    expect(staleSignal?.aborted).toBe(true);
+    finishStale(iconResponse("image/png"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==");
   });
 
   it("captures PNG bytes only for the current visible browser session", async () => {
@@ -1839,6 +1925,12 @@ async function createHarness({
   };
 }
 
+function iconResponse(type: string, size = 4) {
+  return new Response(new Uint8Array(size).fill(7), {
+    headers: { "content-type": type },
+  });
+}
+
 function createOwnerWindow() {
   const children: BrowserSidebarViewLike[] = [];
   const lifecycleListeners = new Map<
@@ -2013,6 +2105,9 @@ function createTestView(
     }),
     reload: vi.fn(),
     session: {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) => new Response(null, { status: 404 })
+      ),
       setPermissionCheckHandler: vi.fn(),
       setPermissionRequestHandler: vi.fn(),
     },

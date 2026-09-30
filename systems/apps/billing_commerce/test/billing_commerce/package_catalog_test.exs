@@ -24,6 +24,62 @@ defmodule BillingCommerce.PackageCatalogTest do
     assert {:error, :package_version_immutable} = PackageCatalog.create_package_version(changed)
   end
 
+  test "provider lookup keys and descriptions do not change immutable commercial terms" do
+    attrs = version_attrs("comma_monthly", "2026-06")
+
+    old = %{
+      attrs
+      | usage_policy:
+          Map.merge(attrs.usage_policy, %{
+            "stripe_lookup_key" => "cue_value_v1",
+            "description" => "Old name"
+          })
+    }
+
+    assert {:ok, version} = PackageCatalog.create_package_version(old)
+
+    current = %{
+      attrs
+      | usage_policy:
+          Map.merge(attrs.usage_policy, %{
+            "stripe_lookup_key" => "comma_value_v1",
+            "description" => "Comma name"
+          })
+    }
+
+    assert {:ok, %{id: id}} = PackageCatalog.create_package_version(current)
+    assert id == version.id
+    assert {:ok, _} = BillingCommerce.sync_local_pricing_catalog(%{versions: [current]})
+    assert {:ok, stored} = PackageCatalog.get_package_version(current)
+    assert stored.usage_policy == old.usage_policy
+    assert BillingCommerce.pricing_catalog_current?(%{versions: [current]})
+
+    for changed <- [
+          %{current | amount_minor: 3_000},
+          %{current | grant_credits: 2_000},
+          %{current | effective_at: ~U[2026-06-18 00:00:00Z]},
+          Map.put(current, :expires_at, ~U[2026-07-01 00:00:00Z]),
+          %{current | status: "inactive"}
+        ] do
+      refute BillingCommerce.pricing_catalog_current?(%{versions: [changed]})
+      assert {:error, :package_version_immutable} = PackageCatalog.create_package_version(changed)
+    end
+
+    restricted = %{
+      current
+      | usage_policy:
+          Map.put(current.usage_policy, "llm_models", %{
+            "mode" => "allowlist",
+            "models" => ["model_one"]
+          })
+    }
+
+    refute BillingCommerce.pricing_catalog_current?(%{versions: [restricted]})
+
+    assert {:error, :package_version_immutable} =
+             PackageCatalog.create_package_version(restricted)
+  end
+
   test "lists only latest issuable package versions" do
     assert {:ok, _} =
              PackageCatalog.create_package_version(version_attrs("comma_monthly", "2026-05"))

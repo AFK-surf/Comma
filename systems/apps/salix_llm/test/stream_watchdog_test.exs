@@ -282,40 +282,36 @@ defmodule SalixLlm.StreamWatchdogTest do
     assert deltas(rec) == ["Hello", " world"]
   end
 
-  test "chat-completions streams are watched", %{base: base} do
-    StallServer.stall_after(
-      "/chat/completions",
-      "data: {\"choices\":[{\"delta\":{\"content\":\"started\"},\"finish_reason\":null}]}\n\n",
-      5_000
-    )
+  # {name, stream path, first chunk, llm config builder, provider}
+  @watched_stream_cases [
+    {"chat-completions streams are watched", "/chat/completions",
+     "data: {\"choices\":[{\"delta\":{\"content\":\"started\"},\"finish_reason\":null}]}\n\n",
+     :chat, "openai_chat"},
+    {"responses streams are watched", "/responses",
+     "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"started\"}\n\n",
+     :responses, "openai_responses"}
+  ]
 
-    {rec, on_delta} = recorder()
+  for {name, path, chunk, config, provider} <- @watched_stream_cases do
+    test name, %{base: base} do
+      StallServer.stall_after(unquote(path), unquote(chunk), 5_000)
 
-    {result, _log} =
-      with_log(fn ->
-        Provider.complete_stream([%{role: "user", content: "hi"}], [], on_delta, chat(base))
-      end)
+      llm =
+        case unquote(config) do
+          :chat -> chat(base)
+          :responses -> responses(base)
+        end
 
-    assert_stalled(result, "openai_chat", :streaming)
-    assert deltas(rec) == ["started"]
-  end
+      {rec, on_delta} = recorder()
 
-  test "responses streams are watched", %{base: base} do
-    StallServer.stall_after(
-      "/responses",
-      "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"started\"}\n\n",
-      5_000
-    )
+      {result, _log} =
+        with_log(fn ->
+          Provider.complete_stream([%{role: "user", content: "hi"}], [], on_delta, llm)
+        end)
 
-    {rec, on_delta} = recorder()
-
-    {result, _log} =
-      with_log(fn ->
-        Provider.complete_stream([%{role: "user", content: "hi"}], [], on_delta, responses(base))
-      end)
-
-    assert_stalled(result, "openai_responses", :streaming)
-    assert deltas(rec) == ["started"]
+      assert_stalled(result, unquote(provider), :streaming)
+      assert deltas(rec) == ["started"]
+    end
   end
 
   test "site proxy streams report the stall with the usage observed so far", %{base: base} do

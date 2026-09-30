@@ -43,6 +43,7 @@ export type ChatSidebarBrowserTarget = {
 
 export type ChatSidebarBrowserPage = {
   closeBeforeOpenSessionIds?: string[] | undefined;
+  favicon?: string | undefined;
   id: string;
   navigationRevision: number;
   title?: string | undefined;
@@ -208,6 +209,7 @@ const sameConsumedBrowserState = (
   previous.canGoForward === next.canGoForward &&
   previous.loading === next.loading &&
   previous.title === next.title &&
+  previous.favicon === next.favicon &&
   previous.visible === next.visible &&
   previous.url === next.url &&
   previous.reason === next.reason &&
@@ -1436,11 +1438,21 @@ function updateBrowserPageFromNativeState(
 
     const nextUrl = state.url && state.url !== page.url ? state.url : page.url;
     const nextTitle = state.title === undefined ? page.title : state.title;
-    if (nextUrl === page.url && nextTitle === page.title) return current;
+    // An active page reports its current icon, so a missing one clears it; an
+    // inactive page reports nothing and keeps the last icon.
+    const nextFavicon = state.active ? state.favicon : page.favicon;
+    if (
+      nextUrl === page.url &&
+      nextTitle === page.title &&
+      nextFavicon === page.favicon
+    ) {
+      return current;
+    }
 
     const browserPages = session.browserPages.slice();
     browserPages[pageIndex] = {
       ...page,
+      favicon: nextFavicon,
       title: nextTitle,
       url: nextUrl,
     };

@@ -29,6 +29,23 @@ defmodule BillingCommerce.Subscriptions do
          :ok <- ensure_account(repo, sql, account_id, attrs),
          :ok <- PackageCatalog.ensure_issuable(package_version, first_period_start(periods)) do
       case repo.transaction(fn ->
+             Ecto.Adapters.SQL.query!(
+               repo,
+               "SELECT id FROM billing_accounts WHERE id = $1 FOR UPDATE",
+               [account_id]
+             )
+
+             if source_type == "stripe_subscription" do
+               Ecto.Adapters.SQL.query!(
+                 repo,
+                 "UPDATE billing_accounts SET subscription_checkout = NULL WHERE id = $1 AND subscription_checkout->>'key' = $2",
+                 [
+                   account_id,
+                   attrs[:subscription_checkout_key] || attrs["subscription_checkout_key"]
+                 ]
+               )
+             end
+
              case insert_subscription(repo, sql, attrs, package_version) do
                {:inserted, subscription} ->
                  cycles = insert_cycles(repo, sql, subscription, package_version, periods)
@@ -172,7 +189,7 @@ defmodule BillingCommerce.Subscriptions do
       result =
         sql(%{}).query!(
           repo,
-          "SELECT id FROM billing_subscriptions WHERE source_type = 'stripe_subscription' AND source_id = $1 FOR UPDATE",
+          "SELECT billing_account_id, id FROM billing_subscriptions WHERE source_type = 'stripe_subscription' AND source_id = $1",
           [source_id]
         )
 
@@ -182,7 +199,15 @@ defmodule BillingCommerce.Subscriptions do
           # reads current provider state; an early cancellation is not lost.
           %{ignored: true, reason: :subscription_not_recorded}
 
-        [_row] ->
+        [[account_id, subscription_id]] ->
+          sql(%{}).query!(repo, "SELECT id FROM billing_accounts WHERE id = $1 FOR UPDATE", [
+            account_id
+          ])
+
+          sql(%{}).query!(repo, "SELECT id FROM billing_subscriptions WHERE id = $1 FOR UPDATE", [
+            subscription_id
+          ])
+
           with {:ok, attrs} <- read_current.(),
                {:ok, subscription} <-
                  set_provider_subscription_status(Map.put(attrs, :source_id, source_id)) do
@@ -207,15 +232,20 @@ defmodule BillingCommerce.Subscriptions do
          (not is_nil(package_code) and is_nil(package_version)) do
       {:error, :invalid_subscription_package_change}
     else
-      update_provider_subscription_status(
-        repo,
-        sql,
-        attrs,
-        source_id,
-        status,
-        package_code,
-        package_version
-      )
+      repo.transaction(fn ->
+        {:ok, result} =
+          update_provider_subscription_status(
+            repo,
+            sql,
+            attrs,
+            source_id,
+            status,
+            package_code,
+            package_version
+          )
+
+        result
+      end)
     end
   end
 
@@ -228,6 +258,22 @@ defmodule BillingCommerce.Subscriptions do
          package_code,
          package_version
        ) do
+    metadata =
+      case sql.query!(
+             repo,
+             "SELECT source_metadata FROM billing_subscriptions WHERE source_type = 'stripe_subscription' AND source_id = $1 FOR UPDATE",
+             [source_id]
+           ).rows do
+        [[existing]] ->
+          Map.merge(
+            BillingCore.Metadata.object(existing),
+            attrs[:source_metadata] || attrs["source_metadata"] || %{}
+          )
+
+        [] ->
+          %{}
+      end
+
     result =
       sql.query!(
         repo,
@@ -235,7 +281,7 @@ defmodule BillingCommerce.Subscriptions do
         UPDATE billing_subscriptions
         SET status = $2,
             source_event_id = $3,
-            source_metadata = source_metadata || $4::jsonb,
+            source_metadata = $4::jsonb,
             package_code = COALESCE($5, package_code),
             package_version = COALESCE($6, package_version),
             updated_at = now()
@@ -248,15 +294,20 @@ defmodule BillingCommerce.Subscriptions do
           source_id,
           status,
           required(attrs, :source_event_id),
-          Jason.encode!(attrs[:source_metadata] || attrs["source_metadata"] || %{}),
+          metadata,
           package_code,
           package_version
         ]
       )
 
     case result.rows do
-      [row | _] -> {:ok, row_to_subscription(row)}
-      [] -> {:ok, %{ignored: true, reason: :subscription_not_recorded}}
+      [row | _] ->
+        subscription = row_to_subscription(row)
+
+        {:ok, subscription}
+
+      [] ->
+        {:ok, %{ignored: true, reason: :subscription_not_recorded}}
     end
   end
 
@@ -269,7 +320,7 @@ defmodule BillingCommerce.Subscriptions do
         SET package_code = $2,
             package_version = $3,
             source_event_id = $4,
-            source_metadata = source_metadata || $5::jsonb,
+            source_metadata = $5::jsonb,
             status = 'active',
             updated_at = now()
         WHERE id = $1
@@ -282,7 +333,10 @@ defmodule BillingCommerce.Subscriptions do
           package_version.package_code,
           package_version.version,
           required(attrs, :source_event_id),
-          Jason.encode!(attrs[:source_metadata] || attrs["source_metadata"] || %{})
+          Map.merge(
+            subscription.source_metadata,
+            attrs[:source_metadata] || attrs["source_metadata"] || %{}
+          )
         ]
       )
 
@@ -306,7 +360,7 @@ defmodule BillingCommerce.Subscriptions do
         grant = lock_purchase_grant!(repo, sql, purchase.credit_grant_id)
 
         target_refunded_credits =
-          div(grant.original_credits * refunded_amount + payment_amount - 1, payment_amount)
+          if refunded_amount == payment_amount, do: grant.original_credits, else: 0
 
         credits_to_reduce = max(target_refunded_credits - purchase.refunded_credits, 0)
 
@@ -424,6 +478,21 @@ defmodule BillingCommerce.Subscriptions do
   end
 
   defp issue_cycle(repo, sql, cycle) do
+    [[raw]] =
+      sql.query!(repo, "SELECT source_metadata FROM billing_subscription_cycles WHERE id = $1", [
+        cycle.id
+      ]).rows
+
+    metadata = BillingCore.Metadata.object(raw)
+
+    if map_size(metadata["payment_sources"] || %{}) > 0 do
+      BillingCommerce.PaidCycles.issue(cycle)
+    else
+      issue_original_cycle(repo, sql, cycle)
+    end
+  end
+
+  defp issue_original_cycle(repo, sql, cycle) do
     with {:ok, package_version} <-
            PackageCatalog.get_package_version(%{
              repo: repo,
@@ -496,7 +565,7 @@ defmodule BillingCommerce.Subscriptions do
           required(attrs, :source_id),
           required(attrs, :source_event_id),
           idempotency_key,
-          Jason.encode!(attrs[:source_metadata] || attrs["source_metadata"] || %{})
+          attrs[:source_metadata] || attrs["source_metadata"] || %{}
         ]
       )
 
@@ -519,11 +588,11 @@ defmodule BillingCommerce.Subscriptions do
           INSERT INTO billing_subscription_cycles (
             id, subscription_id, billing_account_id, package_code, package_version,
             cycle_key, period_start, period_end, grant_idempotency_key,
-            source_event_id, grant_source_type, status, inserted_at, updated_at
+            source_event_id, grant_source_type, source_metadata, status, inserted_at, updated_at
           ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8, $9,
-            $10, $11, 'pending', now(), now()
+            $10, $11, $12, 'pending', now(), now()
           )
           ON CONFLICT (subscription_id, cycle_key) DO NOTHING
           RETURNING id, subscription_id, billing_account_id, package_code, package_version,
@@ -541,7 +610,8 @@ defmodule BillingCommerce.Subscriptions do
             period[:expires_at] || period["expires_at"],
             grant_idempotency_key,
             source_event_id,
-            period[:grant_source_type] || period["grant_source_type"] || "subscription_cycle"
+            period[:grant_source_type] || period["grant_source_type"] || "subscription_cycle",
+            period[:source_metadata] || period["source_metadata"] || %{}
           ]
         )
 
@@ -590,7 +660,7 @@ defmodule BillingCommerce.Subscriptions do
           required(attrs, :source_id),
           required(attrs, :source_event_id),
           idempotency_key,
-          Jason.encode!(attrs[:source_metadata] || attrs["source_metadata"] || %{}),
+          attrs[:source_metadata] || attrs["source_metadata"] || %{},
           period.valid_from,
           period.expires_at,
           attrs[:provider_payment_intent_id] || attrs["provider_payment_intent_id"]
@@ -1054,8 +1124,7 @@ defmodule BillingCommerce.Subscriptions do
 
   defp sql(attrs), do: attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
 
-  defp decode_json(value) when is_binary(value), do: Jason.decode!(value)
-  defp decode_json(value), do: value
+  defp decode_json(value), do: BillingCore.Metadata.object(value)
 
   defp required(attrs, key) do
     attrs[key] || attrs[to_string(key)] ||

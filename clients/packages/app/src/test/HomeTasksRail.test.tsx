@@ -129,28 +129,25 @@ describe("HomeTasksRail", () => {
     }
   );
 
-  it("opens on a status that holds tasks instead of the default bucket", async () => {
-    const projection = createProductInboxProjectionHarness({
-      initial: liveResult([taskItem("running", 1, "active")]),
-    });
-    installNativeBridgeMock({ platform: "electron" });
-    renderHomeTasksRail(projection.controller);
-
-    // The first list a rail receives is a baseline, not an arrival, so nothing
-    // follows it — but "backlog" is empty and the Task is not.
-    await waitFor(() => {
-      expect(currentCard()).toHaveTextContent("Task running");
-    });
-  });
-
-  it("prefers a bucket that is still working over the archive", async () => {
-    // The freshest Task is often the one that just finished; opening Home on
-    // "done" would hide the one still running.
-    const projection = createProductInboxProjectionHarness({
-      initial: liveResult([
+  // The first list a rail receives is a baseline, not an arrival, so nothing
+  // follows it. Home opens on a status that holds work rather than the empty
+  // default bucket, and the freshest Task is often the one that just finished:
+  // opening on "done" would hide the one still running.
+  it.each([
+    {
+      name: "opens on a status that holds tasks instead of the default bucket",
+      items: () => [taskItem("running", 1, "active")],
+    },
+    {
+      name: "prefers a bucket that is still working over the archive",
+      items: () => [
         taskItem("finished", 9, "completed"),
         taskItem("running", 2, "active"),
-      ]),
+      ],
+    },
+  ])("$name", async ({ items }) => {
+    const projection = createProductInboxProjectionHarness({
+      initial: liveResult(items()),
     });
     installNativeBridgeMock({ platform: "electron" });
     renderHomeTasksRail(projection.controller);

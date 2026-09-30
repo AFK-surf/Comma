@@ -13,64 +13,31 @@ const panel = {
 };
 
 describe("positionInspectorPanel", () => {
-  it("places the panel beside the active element when the preferred side fits", () => {
-    expect(
-      positionInspectorPanel({
-        anchor: {
-          height: 120,
-          left: 120,
-          top: 80,
-          width: 240,
-        },
+  it.each(
+    [
+      {
+        name: "places the panel beside the active element when the preferred side fits",
+        anchor: { height: 120, left: 120, top: 80, width: 240 },
         panel,
-        viewport,
-      })
-    ).toEqual({
-      left: 368,
-      side: "right",
-      top: 80,
-    });
-  });
-
-  it("flips to the left when the preferred side does not fit", () => {
-    expect(
-      positionInspectorPanel({
-        anchor: {
-          height: 120,
-          left: 720,
-          top: 80,
-          width: 240,
-        },
+        expected: { left: 368, side: "right", top: 80 },
+      },
+      {
+        name: "flips to the left when the preferred side does not fit",
+        anchor: { height: 120, left: 720, top: 80, width: 240 },
         panel,
-        viewport,
-      })
-    ).toEqual({
-      left: 352,
-      side: "left",
-      top: 80,
-    });
-  });
-
-  it("uses a vertical side and shifts along the viewport edge", () => {
-    expect(
-      positionInspectorPanel({
-        anchor: {
-          height: 60,
-          left: 390,
-          top: 60,
-          width: 250,
-        },
-        panel: {
-          height: 240,
-          width: 520,
-        },
-        viewport,
-      })
-    ).toEqual({
-      left: 390,
-      side: "bottom",
-      top: 128,
-    });
+        expected: { left: 352, side: "left", top: 80 },
+      },
+      {
+        name: "uses a vertical side and shifts along the viewport edge",
+        anchor: { height: 60, left: 390, top: 60, width: 250 },
+        panel: { height: 240, width: 520 },
+        expected: { left: 390, side: "bottom", top: 128 },
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { anchor, panel: panelSize, expected }) => {
+    expect(positionInspectorPanel({ anchor, panel: panelSize, viewport })).toEqual(
+      expected
+    );
   });
 
   it("falls back inside a large element when no outer side can contain it", () => {

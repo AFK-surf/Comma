@@ -1476,6 +1476,143 @@ defmodule CommaWeb.ProactiveMailTest do
     task["conversation_id"]
   end
 
+  test "an owned Task that needs its owner reaches the Router once and closes when it moves on",
+       f do
+    worker =
+      SalixAgent.TestSupport.create_control_agent!(Ids.new_agent_id(f.ctx.group_id), %{
+        "tenant_id" => f.ctx.tenant_id,
+        "group_id" => f.ctx.group_id,
+        "role" => "worker"
+      })
+
+    {:ok, task} =
+      SalixCluster.TaskSchedules.create_task_conversation(
+        f.ctx.group_id,
+        f.ctx.agent_id,
+        worker["agent_id"],
+        %{
+          "title" => "Connector fix scope",
+          "content" => "Fix the connector test",
+          "owner_user_id" => f.user["id"],
+          "client_request_id" => "task-attention"
+        }
+      )
+
+    id = task["conversation_id"]
+    key = SalixIM.MailInteraction.key("task", id)
+
+    set_status = fn status ->
+      assert {:ok, _} =
+               SalixIM.Provider.call_api(
+                 f.ctx.agent_id,
+                 "internal",
+                 "internal.update_conversation",
+                 %{
+                   "connect_id" => "internal",
+                   "params" => %{"conversation_id" => id, "status" => status}
+                 }
+               )
+
+      job = %Oban.Job{args: %{"group_id" => f.ctx.group_id, "task_id" => id}}
+      assert :ok = CommaWeb.ProactiveTask.perform(job)
+      {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+      Enum.find(status["sources"], &(&1["key"] == key))
+    end
+
+    before = length(router_inputs(f))
+
+    # The escalation reaches the Router as automatic evidence with a read recipe.
+    assert %{"state" => "active", "automatic" => true, "task_id" => ^id} =
+             set_status.("escalated")
+
+    assert [%{"agent_input" => %{"content" => text}}] = Enum.drop(router_inputs(f), before)
+    assert text =~ "Connector fix scope"
+    assert text =~ "im_api.internal.read_conversation"
+
+    # The same escalation, observed again, hands over nothing new.
+    assert :ok =
+             CommaWeb.ProactiveTask.perform(%Oban.Job{
+               args: %{"group_id" => f.ctx.group_id, "task_id" => id}
+             })
+
+    assert length(router_inputs(f)) == before + 1
+
+    # The Task moves on: the matter closes. A new escalation starts new attention.
+    assert %{"state" => "handled"} = set_status.("active")
+    assert %{"state" => "active"} = set_status.("failed")
+    assert length(router_inputs(f)) == before + 2
+
+    # Handled while the Task still failed, then the same status again later:
+    # the Task left in between, so the new failure reaches the Router.
+    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    value = Enum.find(status["sources"], &(&1["key"] == key))
+
+    assert {:ok, %{"state" => "handled"}} =
+             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
+               "key" => key,
+               "action" => "handled",
+               "generation" => value["generation"],
+               "request_id" => "owner-handled"
+             })
+
+    # Only escalated or failed statuses queue a check; the collection chain
+    # records the leave, also for a handled matter.
+    assert {:ok, _} =
+             SalixIM.Provider.call_api(
+               f.ctx.agent_id,
+               "internal",
+               "internal.update_conversation",
+               %{
+                 "connect_id" => "internal",
+                 "params" => %{"conversation_id" => id, "status" => "active"}
+               }
+             )
+
+    {:ok, _, ctx, home} = CommaWeb.HomeMail.context(f.user, %{}, f.ctx.group_id)
+    assert :ok = CommaWeb.ProactiveTask.reconcile(ctx, home, f.user["id"])
+    assert %{"state" => "active"} = set_status.("failed")
+    assert length(router_inputs(f)) == before + 3
+  end
+
+  test "status publication recovery checks one Task status version once" do
+    snapshot = %{
+      "agent_group_id" => "grp_recovery",
+      "conversation_id" => "cnv_recovery",
+      "status" => "escalated",
+      "provider_status_version" => 3
+    }
+
+    jobs = fn ->
+      Comma.Repo.all(from(job in Oban.Job, where: job.worker == "CommaWeb.ProactiveTask"))
+    end
+
+    assert :ok = CommaWeb.ProactiveTask.task_status_changed(snapshot)
+    [job] = jobs.()
+
+    # Recovery replays the same version after the check ran: nothing new.
+    Comma.Repo.update_all(from(j in Oban.Job, where: j.id == ^job.id), set: [state: "completed"])
+    assert :ok = CommaWeb.ProactiveTask.task_status_changed(snapshot)
+    assert [_] = jobs.()
+
+    assert :ok =
+             CommaWeb.ProactiveTask.task_status_changed(%{
+               snapshot
+               | "provider_status_version" => 4
+             })
+
+    assert length(jobs.()) == 2
+
+    # Other statuses, of any product's Tasks, touch no Comma state.
+    assert :ok =
+             CommaWeb.ProactiveTask.task_status_changed(%{
+               snapshot
+               | "status" => "ready_for_review",
+                 "provider_status_version" => 5
+             })
+
+    assert length(jobs.()) == 2
+  end
+
   test "a due append failure preserves its schedule and resumes the exact saved result", f do
     decision!()
     present!(f)

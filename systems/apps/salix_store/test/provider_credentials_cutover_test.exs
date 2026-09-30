@@ -128,67 +128,67 @@ defmodule SalixStore.ProviderCredentialsCutoverTest do
     assert {:error, :not_found} = FeishuTenantApps.get("ten_x")
   end
 
-  test "a composio record whose body does not round-trip to its key aborts the cutover" do
-    lying = %{
-      "tenant_id" => "ten_other",
-      "api_key" => "ck",
-      "base_url" => "",
-      "enabled" => true,
-      "updated_at" => 1
-    }
+  # {name, key function and args, stored body, expected enumerate reason}
+  @invalid_records [
+    {"a composio record whose body does not round-trip to its key aborts the cutover",
+     {:ctl_composio_settings, ["ten_actual"]},
+     %{
+       "tenant_id" => "ten_other",
+       "api_key" => "ck",
+       "base_url" => "",
+       "enabled" => true,
+       "updated_at" => 1
+     }, :record_address_mismatch},
+    {"a composio tenant record with a non-integer updated_at fails closed",
+     {:ctl_composio_settings, ["ten_bad"]},
+     %{
+       "tenant_id" => "ten_bad",
+       "api_key" => "ck_bad",
+       "base_url" => "",
+       "enabled" => true,
+       "updated_at" => "2026-07-28T00:00:00Z"
+     }, :invalid_record},
+    {"the composio default record with a non-integer updated_at fails closed",
+     {:ctl_composio_default_settings, []},
+     %{"api_key" => "ck_default", "base_url" => "", "enabled" => true, "updated_at" => "nope"},
+     :invalid_record},
+    {"a feishu record with a non-integer updated_at fails closed",
+     {:ctl_feishu_tenant_app, ["ten_bad"]},
+     %{
+       "tenant_id" => "ten_bad",
+       "app_id" => "cli_bad",
+       "app_secret" => "s",
+       "verification_token" => "",
+       "encrypt_key" => "",
+       "updated_at" => "2026-07-28T00:00:00Z"
+     }, :invalid_record},
+    {"a non-map (top-level array) body fails closed as enumerate_failed, not a raise",
+     {:ctl_composio_settings, ["ten_arr"]}, [1, 2, 3], :invalid_record},
+    {"a non-string typed field (feishu app_secret as a number) fails closed",
+     {:ctl_feishu_tenant_app, ["ten_ns"]},
+     %{
+       "tenant_id" => "ten_ns",
+       "app_id" => "cli",
+       "app_secret" => 12_345,
+       "verification_token" => "",
+       "encrypt_key" => "",
+       "updated_at" => 1_753_300_100
+     }, :invalid_record}
+  ]
 
-    key = Keys.ctl_composio_settings("ten_actual")
-    {:ok, _} = S3.put(key, Jason.encode!(lying), [])
+  for {name, {key_fun, key_args}, body, reason} <- @invalid_records do
+    test "#{name} (audit + run, no crash, no marker)" do
+      key = apply(Keys, unquote(key_fun), unquote(key_args))
+      {:ok, _} = S3.put(key, Jason.encode!(unquote(Macro.escape(body))), [])
 
-    assert {:error, {:enumerate_failed, ^key, :record_address_mismatch}} =
-             ProviderCredentialsCutover.run()
-  end
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} =
+               ProviderCredentialsCutover.importable_count()
 
-  test "a composio tenant record with a non-integer updated_at fails closed (audit + run, no crash)" do
-    # Legacy/malformed shape: an ISO-8601 string where epoch seconds are
-    # expected. from_record/2 would do arithmetic on this and raise.
-    seed_composio_tenant("ten_bad", "ck_bad", %{"updated_at" => "2026-07-28T00:00:00Z"})
-    key = Keys.ctl_composio_settings("ten_bad")
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} =
+               ProviderCredentialsCutover.run()
 
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-             ProviderCredentialsCutover.importable_count()
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = ProviderCredentialsCutover.run()
-    refute ProviderCredentialsCutover.marker_present?()
-  end
-
-  test "the composio default record with a non-integer updated_at fails closed" do
-    key = Keys.ctl_composio_default_settings()
-
-    bad = %{
-      "api_key" => "ck_default",
-      "base_url" => "",
-      "enabled" => true,
-      "updated_at" => "nope"
-    }
-
-    {:ok, _} = S3.put(key, Jason.encode!(bad), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = ProviderCredentialsCutover.run()
-    refute ProviderCredentialsCutover.marker_present?()
-  end
-
-  test "a feishu record with a non-integer updated_at fails closed" do
-    key = Keys.ctl_feishu_tenant_app("ten_bad")
-
-    bad = %{
-      "tenant_id" => "ten_bad",
-      "app_id" => "cli_bad",
-      "app_secret" => "s",
-      "verification_token" => "",
-      "encrypt_key" => "",
-      "updated_at" => "2026-07-28T00:00:00Z"
-    }
-
-    {:ok, _} = S3.put(key, Jason.encode!(bad), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = ProviderCredentialsCutover.run()
-    refute ProviderCredentialsCutover.marker_present?()
+      refute ProviderCredentialsCutover.marker_present?()
+    end
   end
 
   test "a malformed updated_at aborts run/0 before any PG write (no partial import)" do
@@ -216,35 +216,6 @@ defmodule SalixStore.ProviderCredentialsCutoverTest do
     assert {:error, {:enumerate_failed, _key, :invalid_record}} = ProviderCredentialsCutover.run()
     refute ProviderCredentialsCutover.marker_present?()
     assert {:error, :not_found} = ComposioSettings.get("ten_a")
-  end
-
-  test "a non-map (top-level array) body fails closed as enumerate_failed, not a raise" do
-    key = Keys.ctl_composio_settings("ten_arr")
-    {:ok, _} = S3.put(key, Jason.encode!([1, 2, 3]), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-             ProviderCredentialsCutover.importable_count()
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = ProviderCredentialsCutover.run()
-    refute ProviderCredentialsCutover.marker_present?()
-  end
-
-  test "a non-string typed field (feishu app_secret as a number) fails closed" do
-    key = Keys.ctl_feishu_tenant_app("ten_ns")
-
-    bad = %{
-      "tenant_id" => "ten_ns",
-      "app_id" => "cli",
-      "app_secret" => 12_345,
-      "verification_token" => "",
-      "encrypt_key" => "",
-      "updated_at" => 1_753_300_100
-    }
-
-    {:ok, _} = S3.put(key, Jason.encode!(bad), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = ProviderCredentialsCutover.run()
-    refute ProviderCredentialsCutover.marker_present?()
   end
 
   test "enumeration is fail-closed on a GET fault" do

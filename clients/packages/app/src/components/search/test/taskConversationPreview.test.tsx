@@ -62,14 +62,11 @@ describe("task conversation preview", () => {
   it.each([
     [1_788_177_000, 1_788_177_000_000],
     [1_788_177_000_000, 1_788_177_000_000],
-  ])("normalizes Unix timestamp %s to milliseconds", (timestamp, expected) => {
+    [undefined, undefined],
+    [Number.NaN, undefined],
+    [Number.POSITIVE_INFINITY, undefined],
+  ])("normalizes Unix timestamp %s to milliseconds %s", (timestamp, expected) => {
     expect(normalizeUnixTimestampMs(timestamp)).toBe(expected);
-  });
-
-  it("rejects missing and non-finite Unix timestamps", () => {
-    expect(normalizeUnixTimestampMs(undefined)).toBeUndefined();
-    expect(normalizeUnixTimestampMs(Number.NaN)).toBeUndefined();
-    expect(normalizeUnixTimestampMs(Number.POSITIVE_INFINITY)).toBeUndefined();
   });
 
   it("projects the complete visible canonical snapshot", () => {

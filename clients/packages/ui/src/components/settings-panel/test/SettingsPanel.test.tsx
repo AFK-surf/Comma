@@ -3,6 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SettingsPanel } from "../SettingsPanel";
 
+type LoopNode = { label: string; self?: LoopNode };
+const ShowLoop = ({ node }: { node: LoopNode }) => <p>{node.label}</p>;
+
 describe("SettingsPanel", () => {
   afterEach(() => {
     document.documentElement.removeAttribute("data-comma-reduced-motion");
@@ -385,5 +388,24 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("Custom theme")).toHaveClass("sr-only");
     expect(row).toHaveClass("flex-col", "w-full");
     expect(control).toHaveClass("w-full");
+  });
+
+  it("renders a row again when its content takes an object that refers to itself", () => {
+    const sections = () => {
+      const node: LoopNode = { label: "Loop" };
+      node.self = node;
+      return [
+        {
+          id: "general",
+          title: "General",
+          items: [{ id: "loop", title: "Loop row", content: <ShowLoop node={node} /> }],
+        },
+      ];
+    };
+    const { rerender } = render(
+      <SettingsPanel sections={sections()} title="Settings" />
+    );
+    rerender(<SettingsPanel sections={sections()} title="Settings" />);
+    expect(screen.getByText("Loop")).toBeInTheDocument();
   });
 });

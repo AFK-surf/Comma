@@ -1143,80 +1143,47 @@ defmodule BridgeForTeams.TriageContextTest do
     assert imported_fact["source_ref"] in frozen["team_project_memory"]["source_refs"]
   end
 
-  test "refuses sourced context when the current Slack audience cannot be reverified" do
-    authority = %{
-      "connect_id" => "imc-native-triage",
-      "connect_generation" => "generation-7",
-      "workspace_id" => "T1",
-      "channel_id" => "C1",
-      "thread_ts" => "200.001"
-    }
+  for {name, product_source} <- [
+        {"refuses sourced context when the current Slack audience cannot be reverified",
+         IneligibleGroundingProductSource},
+        {"refuses sourced context from another Slack app installation",
+         DriftedGroundingProductSource}
+      ] do
+    test name do
+      input = %{
+        "schema" => "comma.triage-input-snapshot.v1",
+        "source_mode" => "callback",
+        "source_authority" => %{
+          "connect_id" => "imc-native-triage",
+          "connect_generation" => "generation-7",
+          "workspace_id" => "T1",
+          "channel_id" => "C1",
+          "thread_ts" => "200.001"
+        },
+        "events" => [
+          %{
+            "event_id" => "Ev-ungrounded",
+            "message_ts" => "200.002",
+            "actor_id" => "member-peng",
+            "text" => "Should imported context be visible here?"
+          }
+        ]
+      }
 
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v1",
-      "source_mode" => "callback",
-      "source_authority" => authority,
-      "events" => [
-        %{
-          "event_id" => "Ev-unverified-audience",
-          "message_ts" => "200.002",
-          "actor_id" => "member-peng",
-          "text" => "Should imported context be visible here?"
-        }
-      ]
-    }
+      assert {:ok, frozen} =
+               BridgeForTeams.TriageContext.freeze(input,
+                 product_source: unquote(product_source),
+                 thread_reader: {ThreadReader, test_pid: self()},
+                 sourced_context_grounder: SourcedContextGrounder
+               )
 
-    assert {:ok, frozen} =
-             BridgeForTeams.TriageContext.freeze(input,
-               product_source: IneligibleGroundingProductSource,
-               thread_reader: {ThreadReader, test_pid: self()},
-               sourced_context_grounder: SourcedContextGrounder
+      refute_receive {:sourced_context_grounding, _, _, _}
+
+      refute Enum.any?(
+               frozen["team_project_memory"]["facts"],
+               &(&1["kind"] == "slack_history_decision")
              )
-
-    refute_receive {:sourced_context_grounding, _, _, _}
-
-    refute Enum.any?(
-             frozen["team_project_memory"]["facts"],
-             &(&1["kind"] == "slack_history_decision")
-           )
-  end
-
-  test "refuses sourced context from another Slack app installation" do
-    authority = %{
-      "connect_id" => "imc-native-triage",
-      "connect_generation" => "generation-7",
-      "workspace_id" => "T1",
-      "channel_id" => "C1",
-      "thread_ts" => "200.001"
-    }
-
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v1",
-      "source_mode" => "callback",
-      "source_authority" => authority,
-      "events" => [
-        %{
-          "event_id" => "Ev-other-installation",
-          "message_ts" => "200.002",
-          "actor_id" => "member-peng",
-          "text" => "Should another Slack app's imported context be visible here?"
-        }
-      ]
-    }
-
-    assert {:ok, frozen} =
-             BridgeForTeams.TriageContext.freeze(input,
-               product_source: DriftedGroundingProductSource,
-               thread_reader: {ThreadReader, test_pid: self()},
-               sourced_context_grounder: SourcedContextGrounder
-             )
-
-    refute_receive {:sourced_context_grounding, _, _, _}
-
-    refute Enum.any?(
-             frozen["team_project_memory"]["facts"],
-             &(&1["kind"] == "slack_history_decision")
-           )
+    end
   end
 
   test "a truncated member roster remains explicit in the model decision context" do
@@ -1308,58 +1275,38 @@ defmodule BridgeForTeams.TriageContextTest do
            })
   end
 
-  test "fails closed before Slack projection when connect generation or workspace is stale" do
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v1",
-      "source_authority" => %{
-        "connect_id" => "imc-native-triage",
-        "connect_generation" => "generation-7",
-        "workspace_id" => "T1",
-        "channel_id" => "C1",
-        "thread_ts" => "200.001"
-      },
-      "events" => []
-    }
+  for {name, channel_id, product_source} <- [
+        {"fails closed before Slack projection when connect generation or workspace is stale",
+         "C1", StaleProductSource},
+        {"fails closed before product or Slack reads when the approved channel changed", "C-old",
+         ChannelDriftProductSource}
+      ] do
+    test name do
+      input = %{
+        "schema" => "comma.triage-input-snapshot.v1",
+        "source_authority" => %{
+          "connect_id" => "imc-native-triage",
+          "connect_generation" => "generation-7",
+          "workspace_id" => "T1",
+          "channel_id" => unquote(channel_id),
+          "thread_ts" => "200.001"
+        },
+        "events" => []
+      }
 
-    assert {:error, :stale_source_authority} =
-             BridgeForTeams.TriageContext.freeze(input,
-               product_source: StaleProductSource,
-               test_pid: self(),
-               thread_reader: {ForbiddenThreadReader, test_pid: self()}
-             )
+      assert {:error, :stale_source_authority} =
+               BridgeForTeams.TriageContext.freeze(input,
+                 product_source: unquote(product_source),
+                 test_pid: self(),
+                 thread_reader: {ForbiddenThreadReader, test_pid: self()}
+               )
 
-    assert_receive :current_connect_read, 100
-    refute_receive :forbidden_project_read, 40
-    refute_receive :forbidden_memberships_read, 40
-    refute_receive :forbidden_meetings_read, 40
-    refute_receive :forbidden_thread_read, 40
-  end
-
-  test "fails closed before product or Slack reads when the approved channel changed" do
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v1",
-      "source_authority" => %{
-        "connect_id" => "imc-native-triage",
-        "connect_generation" => "generation-7",
-        "workspace_id" => "T1",
-        "channel_id" => "C-old",
-        "thread_ts" => "200.001"
-      },
-      "events" => []
-    }
-
-    assert {:error, :stale_source_authority} =
-             BridgeForTeams.TriageContext.freeze(input,
-               product_source: ChannelDriftProductSource,
-               test_pid: self(),
-               thread_reader: {ForbiddenThreadReader, test_pid: self()}
-             )
-
-    assert_receive :current_connect_read, 100
-    refute_receive :forbidden_project_read, 40
-    refute_receive :forbidden_memberships_read, 40
-    refute_receive :forbidden_meetings_read, 40
-    refute_receive :forbidden_thread_read, 40
+      assert_receive :current_connect_read, 100
+      refute_receive :forbidden_project_read, 40
+      refute_receive :forbidden_memberships_read, 40
+      refute_receive :forbidden_meetings_read, 40
+      refute_receive :forbidden_thread_read, 40
+    end
   end
 
   test "rejects Slack context timestamps with more than six fractional digits" do

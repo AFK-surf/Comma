@@ -67,6 +67,7 @@ import { useOptionalChatActionRegistry } from "./chat/ChatProvider";
 import { UserAvatar } from "./UserAvatar";
 import { LinkProviderIcon } from "./links/linkPreviewCards";
 import { useProfileAvatarUrl } from "./useProfileAvatarUrl";
+import { ProfileAvatarImageError, prepareProfileAvatar } from "./profileAvatarImage";
 import { useOptionalCommandPalette } from "./search/CommandPaletteContext";
 import { useCommaSettingsOverlay } from "./settingsOverlay";
 import {
@@ -91,8 +92,6 @@ const fontSizePreferences = ["small", "default", "large"] as const;
 // Font menu keys. The prefix keeps a family named "default" apart from Comma's own.
 const defaultFontFamilyKey = "default";
 const fontFamilyKeyPrefix = "family:";
-const avatarTypes = ["image/jpeg", "image/png", "image/webp"];
-const maxAvatarBytes = 102_400;
 // Initial source discovery is one provider listing with an 8-second transport
 // budget; wait it out here instead of reporting a load failure early.
 const recommendationSourcePollAttempts = 15;
@@ -809,8 +808,12 @@ export function AppSettingsRoute({
     setAvatarError(undefined);
     try {
       publishProfile(await operation());
-    } catch {
-      setAvatarError(m.settings_profile_save_failed());
+    } catch (error) {
+      setAvatarError(
+        error instanceof ProfileAvatarImageError
+          ? m.settings_profile_avatar_invalid()
+          : m.settings_profile_save_failed()
+      );
     } finally {
       setAvatarPending(false);
     }
@@ -818,11 +821,9 @@ export function AppSettingsRoute({
 
   const uploadAvatar = (file?: File) => {
     if (!file) return;
-    if (!avatarTypes.includes(file.type) || file.size > maxAvatarBytes) {
-      setAvatarError(m.settings_profile_avatar_help());
-      return;
-    }
-    void runAvatarOperation(() => api.uploadAvatar(file));
+    void runAvatarOperation(async () =>
+      api.uploadAvatar(await prepareProfileAvatar(file))
+    );
   };
 
   const saveName = async () => {
@@ -1231,7 +1232,7 @@ export function AppSettingsRoute({
                             </Button>
                             <input
                               ref={fileInput}
-                              accept={avatarTypes.join(",")}
+                              accept="image/*"
                               aria-label={m.settings_profile_choose_avatar()}
                               className="hidden"
                               onChange={(event) => {

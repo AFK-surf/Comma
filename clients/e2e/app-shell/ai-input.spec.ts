@@ -308,6 +308,62 @@ test("AI Input still pastes text with Cmd/Ctrl+V", async ({ page, context }) => 
   await expect(page.getByTestId("attachment-count")).toHaveText("Attachments: 5");
 });
 
+test("AI Input insets every attachment's close control inside its tile", async ({
+  page,
+}) => {
+  await page.goto(fixtureUrl);
+  await page.waitForFunction(() => Boolean(window.aiInputFixture));
+
+  const tiles = page
+    .getByTestId("primary-ai-input")
+    .locator(
+      '[data-slot="file-attachment"], [data-slot="image-attachment"], [data-slot="quote-attachment"]'
+    );
+  await expect(tiles).toHaveCount(5);
+
+  const placements = await tiles.evaluateAll((elements) =>
+    elements.map((tile) => {
+      const close = tile.querySelector<HTMLElement>(".comma-ai-input-attachment-close");
+      if (!close) throw new Error("Attachment tile has no close control.");
+      const inset = parseFloat(
+        getComputedStyle(tile).getPropertyValue("--spacing-xxs")
+      );
+      const tileRect = tile.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      return {
+        height: tileRect.height,
+        inset,
+        right: tileRect.right - closeRect.right,
+        slot: tile.getAttribute("data-slot"),
+        top: closeRect.top - tileRect.top,
+      };
+    })
+  );
+  for (const placement of placements) {
+    expect(placement.inset).toBeGreaterThan(0);
+    expect(placement, placement.slot ?? "").toMatchObject({
+      right: placement.inset,
+      top: placement.inset,
+    });
+  }
+  // A mixed row keeps one baseline: the file chip matches the square tiles.
+  expect(new Set(placements.map((placement) => placement.height)).size).toBe(1);
+
+  // The file name shares its line with the control and must end before it.
+  const fileTile = tiles.and(page.locator('[data-slot="file-attachment"]'));
+  const clearance = await fileTile.evaluate((tile) => {
+    const name = tile.querySelector<HTMLElement>(".truncate");
+    const close = tile.querySelector<HTMLElement>(".comma-ai-input-attachment-close");
+    if (!name || !close)
+      throw new Error("File attachment is missing its name or close.");
+    const nameTextRight =
+      name.getBoundingClientRect().right -
+      parseFloat(getComputedStyle(name).paddingRight);
+    return close.getBoundingClientRect().left - nameTextRight;
+  });
+  expect(clearance).toBeGreaterThan(0);
+});
+
 test("AI Input keeps attachment close motion scoped and respects both reduced-motion modes", async ({
   page,
 }) => {

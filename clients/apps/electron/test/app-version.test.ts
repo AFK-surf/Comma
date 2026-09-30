@@ -5,52 +5,42 @@ import {
 } from "../src/app-version";
 
 describe("resolveElectronDisplayVersion", () => {
-  it("uses the stable package version for a local production build", () => {
-    expect(
-      resolveElectronDisplayVersion({
-        flavor: "prod",
-        packageVersion: "1.2.3",
-      })
-    ).toBe("1.2.3");
-  });
-
-  it("uses the release version for a published production build", () => {
-    expect(
-      resolveElectronDisplayVersion({
-        flavor: "prod",
-        packageVersion: "1.2.3",
-        releaseVersion: "2.0.0",
-      })
-    ).toBe("2.0.0");
-  });
-
-  it("uses the GitHub run-bearing release version for staging", () => {
-    expect(
-      resolveElectronDisplayVersion({
-        flavor: "staging",
-        packageVersion: "1.2.3",
-        releaseVersion: "1.2.4-staging.280",
-      })
-    ).toBe("1.2.4-staging.280");
-  });
-
-  it("marks a Forge-only local staging build without inventing a run number", () => {
-    expect(
-      resolveElectronDisplayVersion({
-        flavor: "staging",
-        packageVersion: "1.2.3",
-      })
-    ).toBe("1.2.3-staging.local");
-  });
-
-  it("adds the development suffix without accepting release metadata", () => {
-    expect(
-      resolveElectronDisplayVersion({
-        flavor: "dev",
-        packageVersion: "1.2.3",
-        releaseVersion: "9.9.9",
-      })
-    ).toBe("1.2.3-dev");
+  it.each(
+    (
+      [
+        {
+          name: "uses the stable package version for a local production build",
+          input: { flavor: "prod", packageVersion: "1.2.3" },
+          expected: "1.2.3",
+        },
+        {
+          name: "uses the release version for a published production build",
+          input: { flavor: "prod", packageVersion: "1.2.3", releaseVersion: "2.0.0" },
+          expected: "2.0.0",
+        },
+        {
+          name: "uses the GitHub run-bearing release version for staging",
+          input: {
+            flavor: "staging",
+            packageVersion: "1.2.3",
+            releaseVersion: "1.2.4-staging.280",
+          },
+          expected: "1.2.4-staging.280",
+        },
+        {
+          name: "marks a Forge-only local staging build without inventing a run number",
+          input: { flavor: "staging", packageVersion: "1.2.3" },
+          expected: "1.2.3-staging.local",
+        },
+        {
+          name: "adds the development suffix without accepting release metadata",
+          input: { flavor: "dev", packageVersion: "1.2.3", releaseVersion: "9.9.9" },
+          expected: "1.2.3-dev",
+        },
+      ] as const
+    ).map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { input, expected }) => {
+    expect(resolveElectronDisplayVersion(input)).toBe(expected);
   });
 
   it.each([

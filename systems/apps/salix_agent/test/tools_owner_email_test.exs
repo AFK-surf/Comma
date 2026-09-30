@@ -194,19 +194,16 @@ defmodule SalixAgent.ToolsOwnerEmailTest do
       end
     end
 
-    test "errors when the Postmark sender is not configured", %{ctx: ctx} do
-      Application.put_env(:salix_store, :postmark_server_token, "")
+    for {name, app, key} <- [
+          {"the Postmark sender", :salix_store, :postmark_server_token},
+          {"the tool's from address", :salix_agent, :owner_notification_from_email}
+        ] do
+      test "errors when #{name} is not configured", %{ctx: ctx} do
+        Application.put_env(unquote(app), unquote(key), "")
 
-      assert_raise RuntimeError, ~r/set the Postmark server token/, fn ->
-        OwnerEmail.send_to_owners(%{"subject" => "s", "body" => "b"}, ctx)
-      end
-    end
-
-    test "errors when the tool's from address is not configured", %{ctx: ctx} do
-      Application.put_env(:salix_agent, :owner_notification_from_email, "")
-
-      assert_raise RuntimeError, ~r/set the Postmark server token/, fn ->
-        OwnerEmail.send_to_owners(%{"subject" => "s", "body" => "b"}, ctx)
+        assert_raise RuntimeError, ~r/set the Postmark server token/, fn ->
+          OwnerEmail.send_to_owners(%{"subject" => "s", "body" => "b"}, ctx)
+        end
       end
     end
   end

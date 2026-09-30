@@ -1,6 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { toast } from "@comma/ui";
-import { useNavigate } from "@tanstack/react-router";
 import {
   createContext,
   useCallback,
@@ -12,7 +11,6 @@ import {
 } from "react";
 import { CommaApiError, type CommaApiClient, type CommaPlugin } from "../../api";
 import { openNativePlatformExternalUrl } from "../../runtime-chat/nativePlatformActions";
-import { readActiveWorkspaceId } from "../activeWorkspace";
 
 const requestTimeoutMs = 30_000;
 const authorizationTimeoutMs = 120_000;
@@ -49,7 +47,6 @@ export function PluginInstallProvider({
   sessionSignal?: AbortSignal;
 }) {
   const messages = useCommaMessages();
-  const navigate = useNavigate();
   const requestRef = useRef<Request | undefined>(undefined);
   const continuationRef = useRef<Continuation | undefined>(undefined);
   const [continuation, setContinuation] = useState<Continuation>();
@@ -152,15 +149,10 @@ export function PluginInstallProvider({
         } else {
           continuationRef.current = undefined;
           setContinuation(undefined);
+          // The owner stays where they added the connection, usually Plugins
+          // opened from Routine settings, and sees it installed there.
           if (operation === "reauthorize")
             setCompletionVersion((version) => version + 1);
-          if (
-            operation === "install" &&
-            response.plugin.installed &&
-            readActiveWorkspaceId() === target.workspaceId
-          ) {
-            void navigate({ to: "/" });
-          }
         }
       } catch (error) {
         if (requestRef.current !== request || sessionSignal?.aborted) return;
@@ -191,7 +183,7 @@ export function PluginInstallProvider({
         }
       }
     },
-    [api, messages, navigate, reset, sessionSignal]
+    [api, messages, reset, sessionSignal]
   );
 
   const install = useCallback(

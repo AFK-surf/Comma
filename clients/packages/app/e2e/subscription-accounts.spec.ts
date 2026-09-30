@@ -383,6 +383,8 @@ test("imports, authorizes, manages and deletes subscription accounts without per
   await expect(page.getByRole("button", { name: "worker", exact: true })).toContainText(
     "high"
   );
+  // A click outside a menu that is still open only closes it.
+  await expect(page.getByRole("menu")).toHaveCount(0);
   expect(modelWrites).toHaveLength(1);
   expect(modelDiscoveries).toHaveLength(4);
   await page.screenshot({

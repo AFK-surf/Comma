@@ -153,41 +153,33 @@ func TestComputerUseOpenPermissionFlowSendsControlRequest(t *testing.T) {
 	}
 }
 
-func TestComputerUsePermissionsStatusSendsDaemonAction(t *testing.T) {
+func TestComputerUseQueriesSendDaemonAction(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("computer_use daemon launch is macOS-only")
 	}
 
-	socketPath, requests := startFakeComputerUseSocket(t, `{"kind":"final","response":{"ok":true,"permissions":{"accessibility":true,"screenRecording":true}}}`+"\n")
-	c := newComputerUseTestConnector(t, socketPath)
+	for _, test := range []struct {
+		action       string
+		response     string
+		daemonAction string
+	}{
+		{"permissions-status", `{"kind":"final","response":{"ok":true,"permissions":{"accessibility":true,"screenRecording":true}}}`, "permissions_status"},
+		{"list-applications", `{"kind":"final","response":{"ok":true,"text":"[]"}}`, "list_applications"},
+	} {
+		t.Run(test.action, func(t *testing.T) {
+			socketPath, requests := startFakeComputerUseSocket(t, test.response+"\n")
+			c := newComputerUseTestConnector(t, socketPath)
 
-	result := c.methodComputerUse(context.Background(), map[string]any{"action": "permissions-status"})
+			result := c.methodComputerUse(context.Background(), map[string]any{"action": test.action})
 
-	assertCapability(t, result, "ok", true)
-	request := receiveComputerUseRequest(t, requests)
-	assertComputerUseAuthToken(t, request)
-	action := request["action"].(map[string]any)
-	if _, ok := action["permissions_status"]; !ok {
-		t.Fatalf("daemon action = %v, want permissions_status", action)
-	}
-}
-
-func TestComputerUseListApplicationsSendsDaemonAction(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("computer_use daemon launch is macOS-only")
-	}
-
-	socketPath, requests := startFakeComputerUseSocket(t, `{"kind":"final","response":{"ok":true,"text":"[]"}}`+"\n")
-	c := newComputerUseTestConnector(t, socketPath)
-
-	result := c.methodComputerUse(context.Background(), map[string]any{"action": "list-applications"})
-
-	assertCapability(t, result, "ok", true)
-	request := receiveComputerUseRequest(t, requests)
-	assertComputerUseAuthToken(t, request)
-	action := request["action"].(map[string]any)
-	if _, ok := action["list_applications"]; !ok {
-		t.Fatalf("daemon action = %v, want list_applications", action)
+			assertCapability(t, result, "ok", true)
+			request := receiveComputerUseRequest(t, requests)
+			assertComputerUseAuthToken(t, request)
+			action := request["action"].(map[string]any)
+			if _, ok := action[test.daemonAction]; !ok {
+				t.Fatalf("daemon action = %v, want %s", action, test.daemonAction)
+			}
+		})
 	}
 }
 

@@ -156,77 +156,57 @@ defmodule SalixIM.SlackMessageMirrorBlockTextTest do
     # own label and hint, a button says `text`, a select says `placeholder` and
     # names its choices in `options`. Reading `elements[].text` for both finds
     # the button and silently misses everything else.
-    test "a select in an actions block contributes its placeholder and options" do
-      flattened =
-        BlockText.flatten(%{
-          "blocks" => [
-            %{
-              "type" => "actions",
-              "elements" => [
-                %{
-                  "type" => "static_select",
-                  "placeholder" => %{"type" => "plain_text", "text" => "Choose a severity"},
-                  "options" => [
-                    %{"text" => %{"type" => "plain_text", "text" => "Sev1 outage"}},
-                    %{"text" => %{"type" => "plain_text", "text" => "Sev2 degraded"}}
-                  ]
-                }
-              ]
-            }
-          ]
-        })
+    for {name, block, fragments} <- [
+          {"a select in an actions block contributes its placeholder and options",
+           %{
+             "type" => "actions",
+             "elements" => [
+               %{
+                 "type" => "static_select",
+                 "placeholder" => %{"type" => "plain_text", "text" => "Choose a severity"},
+                 "options" => [
+                   %{"text" => %{"type" => "plain_text", "text" => "Sev1 outage"}},
+                   %{"text" => %{"type" => "plain_text", "text" => "Sev2 degraded"}}
+                 ]
+               }
+             ]
+           }, ["Choose a severity", "Sev1 outage", "Sev2 degraded"]},
+          {"an input block contributes its label, hint and element",
+           %{
+             "type" => "input",
+             "label" => %{"type" => "plain_text", "text" => "Rollback reason"},
+             "hint" => %{"type" => "plain_text", "text" => "Shown to the on-call"},
+             "element" => %{
+               "type" => "plain_text_input",
+               "placeholder" => %{"type" => "plain_text", "text" => "why are we reverting"}
+             }
+           }, ["Rollback reason", "Shown to the on-call", "why are we reverting"]},
+          {"grouped options and a preselected choice are reachable too",
+           %{
+             "type" => "actions",
+             "elements" => [
+               %{
+                 "type" => "static_select",
+                 "initial_option" => %{"text" => %{"text" => "current pick"}},
+                 "option_groups" => [
+                   %{
+                     "label" => %{"text" => "regions"},
+                     "options" => [%{"text" => %{"text" => "eu-west-1"}}]
+                   }
+                 ]
+               }
+             ]
+           }, ["current pick", "regions", "eu-west-1"]}
+        ] do
+      @block block
+      @fragments fragments
+      test name do
+        flattened = BlockText.flatten(%{"blocks" => [@block]})
 
-      assert flattened =~ "Choose a severity"
-      assert flattened =~ "Sev1 outage"
-      assert flattened =~ "Sev2 degraded"
-    end
-
-    test "an input block contributes its label, hint and element" do
-      flattened =
-        BlockText.flatten(%{
-          "blocks" => [
-            %{
-              "type" => "input",
-              "label" => %{"type" => "plain_text", "text" => "Rollback reason"},
-              "hint" => %{"type" => "plain_text", "text" => "Shown to the on-call"},
-              "element" => %{
-                "type" => "plain_text_input",
-                "placeholder" => %{"type" => "plain_text", "text" => "why are we reverting"}
-              }
-            }
-          ]
-        })
-
-      assert flattened =~ "Rollback reason"
-      assert flattened =~ "Shown to the on-call"
-      assert flattened =~ "why are we reverting"
-    end
-
-    test "grouped options and a preselected choice are reachable too" do
-      flattened =
-        BlockText.flatten(%{
-          "blocks" => [
-            %{
-              "type" => "actions",
-              "elements" => [
-                %{
-                  "type" => "static_select",
-                  "initial_option" => %{"text" => %{"text" => "current pick"}},
-                  "option_groups" => [
-                    %{
-                      "label" => %{"text" => "regions"},
-                      "options" => [%{"text" => %{"text" => "eu-west-1"}}]
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        })
-
-      assert flattened =~ "current pick"
-      assert flattened =~ "regions"
-      assert flattened =~ "eu-west-1"
+        for fragment <- @fragments do
+          assert flattened =~ fragment
+        end
+      end
     end
   end
 

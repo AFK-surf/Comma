@@ -141,97 +141,41 @@ defmodule Salix.Bindings.TriageNativeEvaluatorTest do
              model_input["canonical_snapshot_bytes"]
   end
 
-  test "rejects a non-enumerated model decision", %{
-    model_input: model_input,
-    server: server,
-    base_url: base_url
-  } do
-    Agent.update(server, fn state ->
-      %{
-        state
-        | response_content: Jason.encode!(%{"action" => "post_everywhere", "text" => "oops"})
-      }
-    end)
+  for {label, decision} <- [
+        {"a non-enumerated model decision", %{"action" => "post_everywhere", "text" => "oops"}},
+        {"a sourced reply without source refs",
+         %{"action" => "reply", "text" => "Atlas login owner is Lin."}},
+        {"a sourced reply that invents a ref outside the frozen closure",
+         %{
+           "action" => "reply",
+           "text" => "Atlas login owner is Lin.",
+           "source_refs" => ["meeting://invented/owner/0"]
+         }}
+      ] do
+    @decision decision
+    test "rejects #{label}", %{
+      model_input: model_input,
+      server: server,
+      base_url: base_url
+    } do
+      Agent.update(server, fn state -> %{state | response_content: Jason.encode!(@decision)} end)
 
-    assert {:error, :invalid_triage_decision} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input,
-               provider: SalixLlm.Provider,
-               provider_name: "loopback-openai-chat",
-               provider_opts: %{
-                 "protocol" => "chat_completions",
-                 "base_url" => base_url,
-                 "api_key" => "test-only",
-                 "model" => "gpt-5.6-luna"
-               },
-               transport_receipt: fn bytes ->
-                 assert [^bytes] = Agent.get(server, & &1.requests)
-                 %{payload_sha256: sha256(bytes), request_count: 1}
-               end
-             )
-  end
-
-  test "rejects a sourced reply without source refs", %{
-    model_input: model_input,
-    server: server,
-    base_url: base_url
-  } do
-    Agent.update(server, fn state ->
-      %{
-        state
-        | response_content:
-            Jason.encode!(%{"action" => "reply", "text" => "Atlas login owner is Lin."})
-      }
-    end)
-
-    assert {:error, :invalid_triage_decision} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input,
-               provider: SalixLlm.Provider,
-               provider_name: "loopback-openai-chat",
-               provider_opts: %{
-                 "protocol" => "chat_completions",
-                 "base_url" => base_url,
-                 "api_key" => "test-only",
-                 "model" => "gpt-5.6-luna"
-               },
-               transport_receipt: fn bytes ->
-                 assert [^bytes] = Agent.get(server, & &1.requests)
-                 %{payload_sha256: sha256(bytes), request_count: 1}
-               end
-             )
-  end
-
-  test "rejects a sourced reply that invents a ref outside the frozen closure", %{
-    model_input: model_input,
-    server: server,
-    base_url: base_url
-  } do
-    Agent.update(server, fn state ->
-      %{
-        state
-        | response_content:
-            Jason.encode!(%{
-              "action" => "reply",
-              "text" => "Atlas login owner is Lin.",
-              "source_refs" => ["meeting://invented/owner/0"]
-            })
-      }
-    end)
-
-    assert {:error, :invalid_triage_decision} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input,
-               provider: SalixLlm.Provider,
-               provider_name: "loopback-openai-chat",
-               provider_opts: %{
-                 "protocol" => "chat_completions",
-                 "base_url" => base_url,
-                 "api_key" => "test-only",
-                 "model" => "gpt-5.6-luna"
-               },
-               transport_receipt: fn bytes ->
-                 assert [^bytes] = Agent.get(server, & &1.requests)
-                 %{payload_sha256: sha256(bytes), request_count: 1}
-               end
-             )
+      assert {:error, :invalid_triage_decision} =
+               Salix.Bindings.TriageEvaluator.evaluate(model_input,
+                 provider: SalixLlm.Provider,
+                 provider_name: "loopback-openai-chat",
+                 provider_opts: %{
+                   "protocol" => "chat_completions",
+                   "base_url" => base_url,
+                   "api_key" => "test-only",
+                   "model" => "gpt-5.6-luna"
+                 },
+                 transport_receipt: fn bytes ->
+                   assert [^bytes] = Agent.get(server, & &1.requests)
+                   %{payload_sha256: sha256(bytes), request_count: 1}
+                 end
+               )
+    end
   end
 
   test "fails before provider egress when receiver-side transport evidence is absent", %{

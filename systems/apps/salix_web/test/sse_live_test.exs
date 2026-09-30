@@ -198,43 +198,30 @@ defmodule SalixWeb.SSELiveTest do
     assert frame["id"] == Integer.to_string(session["last_ack"])
   end
 
-  test "session_updated notification emits an update without server settled summary", %{
-    agent: a,
-    session_id: session_id
-  } do
-    client = open_stream(a, session_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
+  # Server settled summaries are refresh hints. They may be incomplete or stale
+  # for the subscriber's target session, so SSE must hydrate through
+  # SalixAgent.Runtime rather than indexing into the notification payload.
+  for {label, notification} <- [
+        {"session_updated notification emits an update without server settled summary",
+         :session_updated},
+        {"settled notification hydrates the target session instead of trusting summary payload",
+         :settled}
+      ] do
+    @notification notification
+    test label, %{agent: a, session_id: session_id} do
+      client = open_stream(a, session_id)
+      on_exit(fn -> Process.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, _headers}, 3_000
-    assert_receive {:sse_frame, %{"event" => "snapshot"}}, 3_000
+      assert_receive {:sse_headers, _headers}, 3_000
+      assert_receive {:sse_frame, %{"event" => "snapshot"}}, 3_000
 
-    :ok = SalixAgent.Notifier.notify(a, {:session_updated, session_id})
+      :ok = SalixAgent.Notifier.notify(a, notification_message(@notification, session_id))
 
-    assert_receive {:sse_frame, %{"event" => "update", "data" => data}}, 3_000
-    assert data["type"] == "update"
-    assert data["session"]["status"] == "idle"
-    assert data["session"]["message_count"] == 0
-  end
-
-  test "settled notification hydrates the target session instead of trusting summary payload", %{
-    agent: a,
-    session_id: session_id
-  } do
-    client = open_stream(a, session_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
-
-    assert_receive {:sse_headers, _headers}, 3_000
-    assert_receive {:sse_frame, %{"event" => "snapshot"}}, 3_000
-
-    # Server settled summaries are refresh hints. They may be incomplete or
-    # stale for the subscriber's target session, so SSE must hydrate through
-    # SalixAgent.Runtime rather than indexing into this payload.
-    :ok = SalixAgent.Notifier.notify(a, {:settled, %{}})
-
-    assert_receive {:sse_frame, %{"event" => "update", "data" => data}}, 3_000
-    assert data["type"] == "update"
-    assert data["session"]["status"] == "idle"
-    assert data["session"]["message_count"] == 0
+      assert_receive {:sse_frame, %{"event" => "update", "data" => data}}, 3_000
+      assert data["type"] == "update"
+      assert data["session"]["status"] == "idle"
+      assert data["session"]["message_count"] == 0
+    end
   end
 
   test "frames stay well-formed when chunk boundaries split them (1-byte recv)", %{
@@ -272,6 +259,9 @@ defmodule SalixWeb.SSELiveTest do
     assert List.last(persisted_messages).content == "tiny"
     refute_received {:sse_client_error, _}
   end
+
+  defp notification_message(:session_updated, session_id), do: {:session_updated, session_id}
+  defp notification_message(:settled, _session_id), do: {:settled, %{}}
 
   defp assert_update_matching(predicate, timeout \\ 4_000) do
     deadline = System.monotonic_time(:millisecond) + timeout

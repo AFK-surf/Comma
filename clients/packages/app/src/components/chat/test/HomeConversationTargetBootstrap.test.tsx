@@ -138,28 +138,26 @@ describe("HomeConversationTargetBootstrap", () => {
     expect(harness.rememberHomeConversationTarget).not.toHaveBeenCalled();
   });
 
-  it("stands down while Home is on screen", async () => {
-    await renderBootstrapAt("/");
+  it.each([
+    { name: "stands down while Home is on screen", path: "/", remembered: undefined },
+    {
+      name: "stands down under the Settings overlay",
+      path: "/settings",
+      remembered: undefined,
+    },
+    {
+      name: "stands down once a target is already remembered",
+      path: "/plugins",
+      remembered: {
+        conversationId: "cnv_kept",
+        groupId: "grp_test",
+        workspaceId: "wsp_kept",
+      },
+    },
+  ])("$name", async ({ path, remembered }) => {
+    if (remembered) harness.homeConversationTarget = remembered;
 
-    expect(harness.useWorkspaceChat).not.toHaveBeenCalled();
-    expect(harness.rememberHomeConversationTarget).not.toHaveBeenCalled();
-  });
-
-  it("stands down under the Settings overlay", async () => {
-    await renderBootstrapAt("/settings");
-
-    expect(harness.useWorkspaceChat).not.toHaveBeenCalled();
-    expect(harness.rememberHomeConversationTarget).not.toHaveBeenCalled();
-  });
-
-  it("stands down once a target is already remembered", async () => {
-    harness.homeConversationTarget = {
-      conversationId: "cnv_kept",
-      groupId: "grp_test",
-      workspaceId: "wsp_kept",
-    };
-
-    await renderBootstrapAt("/plugins");
+    await renderBootstrapAt(path);
 
     expect(harness.useWorkspaceChat).not.toHaveBeenCalled();
     expect(harness.rememberHomeConversationTarget).not.toHaveBeenCalled();

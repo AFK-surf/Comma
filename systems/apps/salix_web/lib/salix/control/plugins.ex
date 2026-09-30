@@ -37,6 +37,7 @@ defmodule Salix.Control.Plugins do
     https://www.googleapis.com/auth/chat.messages.readonly
   )
   @slack_mcp_scopes ~w(
+    search:read
     search:read.public
     search:read.private
     search:read.mpim

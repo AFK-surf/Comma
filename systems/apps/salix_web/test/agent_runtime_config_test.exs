@@ -63,32 +63,13 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
   test "runtime role and prompts come from control record instead of stale state", %{
     agent: agent
   } do
-    state =
-      commit_state_events!(agent["agent_id"], [
-        %{
-          "type" => "agent_config",
-          "role" => "worker",
-          "system_prompt" => "stale worker prompt"
-        }
-      ])
-
-    refute Map.has_key?(state, :role)
-    refute Map.has_key?(state, :prompts)
-
-    assert {:ok,
-            %{
-              role: "router",
-              prompts: %{
-                "system_prompt" => "control system",
-                "router_system_prompt" => "control router"
-              }
-            }} = AgentRuntimeConfig.resolve(agent["agent_id"])
-  end
-
-  test "control-created agents keep role and prompts in the control record", %{agent: agent} do
-    {:ok, state} = Agent.read_state(agent["agent_id"], SalixAgent.State)
-
-    refute Map.has_key?(state, :prompts)
+    commit_state_events!(agent["agent_id"], [
+      %{
+        "type" => "agent_config",
+        "role" => "worker",
+        "system_prompt" => "stale worker prompt"
+      }
+    ])
 
     assert {:ok,
             %{
@@ -101,18 +82,15 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
   end
 
   test "runtime llm config comes from the live template instead of stale state", %{agent: agent} do
-    state =
-      commit_state_events!(agent["agent_id"], [
-        %{
-          "type" => "llm_config",
-          "llm" => %{
-            "model" => "stale-state-model",
-            "protocol" => "stale"
-          }
+    commit_state_events!(agent["agent_id"], [
+      %{
+        "type" => "llm_config",
+        "llm" => %{
+          "model" => "stale-state-model",
+          "protocol" => "stale"
         }
-      ])
-
-    refute Map.has_key?(state, :llm)
+      }
+    ])
 
     assert {:ok, llm} = LlmResolver.resolve_runtime(agent["agent_id"])
     assert llm["model"] == "template-model"
@@ -124,7 +102,5 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
     {:ok, owned} = Agent.claim(agent_id, "runtime-config-test", SalixAgent.State, steal: true)
     {:ok, owned} = Agent.commit(owned, events)
     :ok = Agent.release(owned)
-    {:ok, state} = Agent.read_state(agent_id, SalixAgent.State)
-    state
   end
 end

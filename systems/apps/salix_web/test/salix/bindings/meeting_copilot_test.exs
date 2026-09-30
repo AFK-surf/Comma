@@ -4,28 +4,20 @@ defmodule Salix.Bindings.MeetingCopilotTest do
   alias Salix.Bindings.MeetingCopilot, as: C
 
   describe "parse_say/1" do
-    test "extracts say from a bare JSON object" do
-      assert C.parse_say(~s|{"say":"稍等，我记一下。"}|) == "稍等，我记一下。"
-    end
-
-    test "strips ```json fences" do
-      assert C.parse_say("```json\n{\"say\":\"ok\"}\n```") == "ok"
-    end
-
-    test "extracts the JSON from surrounding prose" do
-      assert C.parse_say("Sure:\n{\"say\":\"done\"}\nhope that helps") == "done"
-    end
-
-    test "empty say means stay silent" do
-      assert C.parse_say(~s|{"say":""}|) == ""
-    end
-
-    test "non-JSON content stays silent" do
-      assert C.parse_say("I think I should stay quiet") == ""
-    end
-
-    test "non-string say stays silent" do
-      assert C.parse_say(~s|{"say":123}|) == ""
+    for {label, raw, expected} <- [
+          {"extracts say from a bare JSON object", ~s|{"say":"稍等，我记一下。"}|, "稍等，我记一下。"},
+          {"strips ```json fences", "```json\n{\"say\":\"ok\"}\n```", "ok"},
+          {"extracts the JSON from surrounding prose",
+           "Sure:\n{\"say\":\"done\"}\nhope that helps", "done"},
+          {"empty say means stay silent", ~s|{"say":""}|, ""},
+          {"non-JSON content stays silent", "I think I should stay quiet", ""},
+          {"non-string say stays silent", ~s|{"say":123}|, ""}
+        ] do
+      @raw raw
+      @expected expected
+      test label do
+        assert C.parse_say(@raw) == @expected
+      end
     end
   end
 

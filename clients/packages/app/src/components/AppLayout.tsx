@@ -188,6 +188,8 @@ function CommaAuthenticatedSession() {
   );
 }
 
+const productSessionLayout = <CommaProductSessionLayout />;
+
 // Product session host: the window bar, the icon rail and the content panel.
 // Every product location — Settings included — is a surface inside that
 // panel. Once Home has been mounted it stays in one React slot and in layout
@@ -198,14 +200,24 @@ function CommaAuthenticatedSession() {
 // with `content-visibility`, which freezes the animations it skips. Product
 // portals render into the host below, outside every chat-consumer boundary.
 export function CommaProductLayout() {
-  const productPortalHost = useRef<HTMLDivElement>(null);
-  const getProductPortalHost = useCallback(() => productPortalHost.current, []);
+  // State, not a ref: an overlay mounted in the host's own commit, such as
+  // Settings opened by a `/#/settings` link, finds no host on its first render
+  // and renders nothing. The host arriving changes the portal context, which
+  // renders every overlay again, memoized ones included. The session layout
+  // is one constant element, so the rest of the app does not render for it.
+  const [productPortalHost, setProductPortalHost] = useState<HTMLDivElement | null>(
+    null
+  );
+  const getProductPortalHost = useCallback(
+    () => productPortalHost,
+    [productPortalHost]
+  );
 
   return (
     <OverlayPortalProvider getContainer={getProductPortalHost}>
       <div className="h-screen min-h-0 w-full">
-        <div data-comma-product-portal-host="" ref={productPortalHost} />
-        <CommaProductSessionLayout />
+        <div data-comma-product-portal-host="" ref={setProductPortalHost} />
+        {productSessionLayout}
       </div>
     </OverlayPortalProvider>
   );

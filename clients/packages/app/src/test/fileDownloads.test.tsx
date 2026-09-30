@@ -183,10 +183,25 @@ describe("file downloads", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("says the file has moved when it can no longer be revealed", async () => {
+  it.each([
+    {
+      name: "says the file has moved when it can no longer be revealed",
+      refused: { revealDownload: async () => ({ status: "unavailable" as const }) },
+      button: "Reveal in Finder",
+      title: "That file has moved",
+      body: "report (1).csv is no longer in your Downloads folder.",
+    },
+    {
+      name: "says the file could not be opened when the system refuses it",
+      refused: { openDownload: async () => ({ status: "unavailable" as const }) },
+      button: "Open file",
+      title: "Could not open the file",
+      body: "report (1).csv could not be opened on this device.",
+    },
+  ])("$name", async ({ body, button, refused, title }) => {
     installNativeBridgeMock({
       files: {
-        revealDownload: vi.fn(async () => ({ status: "unavailable" as const })),
+        ...refused,
         saveDownload: vi.fn(async () => savedReport),
       },
       os: "macos",
@@ -197,41 +212,27 @@ describe("file downloads", () => {
     await runDownload({ fileName: "report.csv", resolve: resolveReport });
     expect(await screen.findByText("Download complete")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Reveal in Finder" }));
+    fireEvent.click(screen.getByRole("button", { name: button }));
 
-    expect(await screen.findByText("That file has moved")).toBeInTheDocument();
-    expect(
-      screen.getByText("report (1).csv is no longer in your Downloads folder.")
-    ).toBeInTheDocument();
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByText(body)).toBeInTheDocument();
     expect(screen.queryByText("Download complete")).not.toBeInTheDocument();
   });
 
-  it("says the file could not be opened when the system refuses it", async () => {
-    installNativeBridgeMock({
-      files: {
-        openDownload: vi.fn(async () => ({ status: "unavailable" as const })),
-        saveDownload: vi.fn(async () => savedReport),
+  it.each([
+    {
+      name: "reports a save Main declines as a retryable failure",
+      saveDownload: async () => ({ status: "unavailable" as const }),
+    },
+    {
+      name: "reports a save that throws as the same retryable failure",
+      saveDownload: async (): Promise<never> => {
+        throw new Error("the disk is full");
       },
-      os: "macos",
-      platform: "electron",
-    });
-    renderToasts();
-
-    await runDownload({ fileName: "report.csv", resolve: resolveReport });
-    expect(await screen.findByText("Download complete")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open file" }));
-
-    expect(await screen.findByText("Could not open the file")).toBeInTheDocument();
-    expect(
-      screen.getByText("report (1).csv could not be opened on this device.")
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Download complete")).not.toBeInTheDocument();
-  });
-
-  it("reports a save Main declines as a retryable failure", async () => {
+    },
+  ])("$name", async ({ saveDownload }) => {
     installNativeBridgeMock({
-      files: { saveDownload: vi.fn(async () => ({ status: "unavailable" as const })) },
+      files: { saveDownload: vi.fn(saveDownload) },
       os: "macos",
       platform: "electron",
     });
@@ -248,28 +249,6 @@ describe("file downloads", () => {
     expect(
       screen.queryByRole("button", { name: "Reveal in Finder" })
     ).not.toBeInTheDocument();
-  });
-
-  it("reports a save that throws as the same retryable failure", async () => {
-    installNativeBridgeMock({
-      files: {
-        saveDownload: vi.fn(async () => {
-          throw new Error("the disk is full");
-        }),
-      },
-      os: "macos",
-      platform: "electron",
-    });
-    renderToasts();
-
-    await expect(
-      runDownload({ fileName: "report.csv", resolve: resolveReport })
-    ).resolves.toEqual({ code: "unknown", retryable: true, status: "error" });
-
-    expect(await screen.findByText("Download failed")).toBeInTheDocument();
-    expect(
-      screen.getByText("report.csv could not be saved to your Downloads folder.")
-    ).toBeInTheDocument();
   });
 
   it("never reaches Main when the bytes cannot be resolved", async () => {

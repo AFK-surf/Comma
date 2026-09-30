@@ -86,7 +86,7 @@ defmodule SalixWeb.Dashboard.AgentSessionLiveTest do
 
     assert changed =~ "codex / #{device_runtime_id}"
     assert changed =~ device_id
-    refute changed =~ other_env_id
+    refute changed =~ device_id(other_env_id)
 
     {:ok, _show, html} =
       view
@@ -336,12 +336,6 @@ defmodule SalixWeb.Dashboard.AgentSessionLiveTest do
       |> render_submit()
 
     refute html =~ "Search failed"
-  end
-
-  test "agents index renders", %{} do
-    {:ok, _view, html} = live(authed_conn(), "/dash/agents")
-    assert html =~ "Agents"
-    assert html =~ "Status"
   end
 
   test "archived agents are hidden on the index unless the toggle is on", %{

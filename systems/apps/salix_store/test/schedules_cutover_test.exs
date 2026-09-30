@@ -182,113 +182,76 @@ defmodule SalixStore.SchedulesCutoverTest do
     assert {:error, :not_found} = Schedules.get("sch_x")
   end
 
-  test "a body whose id does not round-trip to its key aborts the cutover" do
-    key = Keys.schedule("sch_actual")
+  # {name, schedule id in the key, stored body, expected reason}
+  @invalid_records [
+    {"a body whose id does not round-trip to its key aborts the cutover", "sch_actual",
+     %{
+       "id" => "sch_other",
+       "agent_id" => "a",
+       "prompt" => "p",
+       "interval_minutes" => 5,
+       "created_at" => 1
+     }, :record_address_mismatch},
+    {"a non-string column value (list prompt) fails closed as invalid_record", "sch_badcol",
+     %{
+       "agent_id" => "a",
+       "prompt" => ["not", "a", "string"],
+       "interval_minutes" => 5,
+       "created_at" => 1
+     }, :invalid_record},
+    {"a non-map (top-level array) body fails closed as enumerate_failed, not a raise", "sch_arr",
+     [1, 2, 3], :invalid_record}
+  ]
 
-    {:ok, _} =
-      S3.put(
-        key,
-        Jason.encode!(%{
-          "id" => "sch_other",
-          "agent_id" => "a",
-          "prompt" => "p",
-          "interval_minutes" => 5,
-          "created_at" => 1
-        }),
-        []
-      )
+  for {name, id, body, reason} <- @invalid_records do
+    test "#{name} (audit + run, no marker)" do
+      key = Keys.schedule(unquote(id))
+      {:ok, _} = S3.put(key, Jason.encode!(unquote(Macro.escape(body))), [])
 
-    assert {:error, {:enumerate_failed, ^key, :record_address_mismatch}} = SchedulesCutover.run()
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} =
+               SchedulesCutover.importable_count()
+
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} = SchedulesCutover.run()
+      refute SchedulesCutover.marker_present?()
+    end
   end
 
-  test "a missing created_at aborts run/0 before any PG write, even sorting after a valid record" do
-    # sch_a sorts before sch_z: the valid record is enumerated first; the whole
-    # enumeration must still abort with zero PG writes (no partial import).
-    seed("sch_a", %{
-      "agent_id" => "a",
-      "prompt" => "p",
-      "interval_minutes" => 5,
-      "created_at" => 1_753_300_000_000,
-      "last_run" => nil
-    })
+  # A valid record sorts first (sch_a < sch_z); the whole enumeration must
+  # still abort with zero PG writes (no partial import).
+  @partial_import_records [
+    {"a missing created_at aborts run/0 before any PG write, even sorting after a valid record",
+     %{"agent_id" => "a", "prompt" => "p", "interval_minutes" => 5}},
+    # One past the largest value a Postgres bigint column materializes; the
+    # insert would raise mid-import.
+    {"an int8-overflow timestamp fails closed with no partial import",
+     %{
+       "agent_id" => "a",
+       "prompt" => "p",
+       "interval_minutes" => 5,
+       "created_at" => 9_223_372_036_854_775_808
+     }}
+  ]
 
-    bad_key = Keys.schedule("sch_z")
+  for {name, bad_body} <- @partial_import_records do
+    test name do
+      seed("sch_a", %{
+        "agent_id" => "a",
+        "prompt" => "p",
+        "interval_minutes" => 5,
+        "created_at" => 1_753_300_000_000,
+        "last_run" => nil
+      })
 
-    {:ok, _} =
-      S3.put(
-        bad_key,
-        Jason.encode!(%{"agent_id" => "a", "prompt" => "p", "interval_minutes" => 5}),
-        []
-      )
+      bad_key = Keys.schedule("sch_z")
+      {:ok, _} = S3.put(bad_key, Jason.encode!(unquote(Macro.escape(bad_body))), [])
 
-    assert {:error, {:enumerate_failed, ^bad_key, :invalid_record}} =
-             SchedulesCutover.importable_count()
+      assert {:error, {:enumerate_failed, ^bad_key, :invalid_record}} =
+               SchedulesCutover.importable_count()
 
-    assert {:error, {:enumerate_failed, ^bad_key, :invalid_record}} = SchedulesCutover.run()
-    refute SchedulesCutover.marker_present?()
-    assert {:error, :not_found} = Schedules.get("sch_a")
-  end
-
-  test "an int8-overflow timestamp fails closed with no partial import" do
-    seed("sch_a", %{
-      "agent_id" => "a",
-      "prompt" => "p",
-      "interval_minutes" => 5,
-      "created_at" => 1_753_300_000_000,
-      "last_run" => nil
-    })
-
-    bad_key = Keys.schedule("sch_z")
-
-    {:ok, _} =
-      S3.put(
-        bad_key,
-        Jason.encode!(%{
-          "agent_id" => "a",
-          "prompt" => "p",
-          "interval_minutes" => 5,
-          # One past the largest value a Postgres bigint column materializes;
-          # the insert would raise mid-import.
-          "created_at" => 9_223_372_036_854_775_808
-        }),
-        []
-      )
-
-    assert {:error, {:enumerate_failed, ^bad_key, :invalid_record}} =
-             SchedulesCutover.importable_count()
-
-    assert {:error, {:enumerate_failed, ^bad_key, :invalid_record}} = SchedulesCutover.run()
-    refute SchedulesCutover.marker_present?()
-    assert {:error, :not_found} = Schedules.get("sch_a")
-  end
-
-  test "a non-string column value (list prompt) fails closed as invalid_record" do
-    key = Keys.schedule("sch_badcol")
-
-    {:ok, _} =
-      S3.put(
-        key,
-        Jason.encode!(%{
-          "agent_id" => "a",
-          "prompt" => ["not", "a", "string"],
-          "interval_minutes" => 5,
-          "created_at" => 1
-        }),
-        []
-      )
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = SchedulesCutover.run()
-  end
-
-  test "a non-map (top-level array) body fails closed as enumerate_failed, not a raise" do
-    key = Keys.schedule("sch_arr")
-    {:ok, _} = S3.put(key, Jason.encode!([1, 2, 3]), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-             SchedulesCutover.importable_count()
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = SchedulesCutover.run()
-    refute SchedulesCutover.marker_present?()
+      assert {:error, {:enumerate_failed, ^bad_key, :invalid_record}} = SchedulesCutover.run()
+      refute SchedulesCutover.marker_present?()
+      assert {:error, :not_found} = Schedules.get("sch_a")
+    end
   end
 
   test "enumeration is fail-closed on a GET fault" do

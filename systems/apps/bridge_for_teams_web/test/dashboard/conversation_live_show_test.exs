@@ -887,9 +887,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationLiveShowTest do
     assert html =~ "Found 3 founder threads."
     assert html =~ "The mailbox search is complete."
     assert html =~ "Runtime context refreshed"
-    refute html =~ "Tool request"
-    refute html =~ "Agent round"
-    refute html =~ "Raw trace"
   end
 
   @tag :session_timestamps

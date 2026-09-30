@@ -28,7 +28,7 @@ async function setup(page: Page) {
   return stub;
 }
 
-test("Add returns Home only after installation is confirmed", async ({ page }) => {
+test("Add stays in Plugins and shows the confirmed installation", async ({ page }) => {
   const stub = await setup(page);
   let finish!: () => void;
   const response = new Promise<void>((resolve) => {
@@ -48,8 +48,10 @@ test("Add returns Home only after installation is confirmed", async ({ page }) =
     ).toBeDisabled();
     await expect(page).toHaveURL(/#\/plugins$/);
     finish();
-    await expect(page).toHaveURL(/#\/$/);
-    await expect(page.getByRole("region", { name: "Comma assistant" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Add Linear", exact: true })
+    ).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/plugins$/);
   } finally {
     finish?.();
     await stub.close();
@@ -82,7 +84,10 @@ test("pending authorization survives leaving Plugins and returning", async ({
     await expect.poll(() => checks.length).toBeGreaterThan(0);
     await page.getByRole("link", { name: "Plugins", exact: true }).click();
     authorized = true;
-    await expect(page).toHaveURL(/#\/$/);
+    await expect(
+      page.getByRole("button", { name: "Add Linear", exact: true })
+    ).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/plugins$/);
     expect(checks.every((state) => state === "pending-linear")).toBe(true);
   } finally {
     await stub.close();
@@ -114,7 +119,10 @@ test("a stalled initial Add releases its button and a retry can finish", async (
       page.getByRole("button", { name: "Add Linear", exact: true })
     ).toBeEnabled();
     await page.getByRole("button", { name: "Add Linear", exact: true }).click();
-    await expect(page).toHaveURL(/#\/$/);
+    await expect(
+      page.getByRole("button", { name: "Add Linear", exact: true })
+    ).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/plugins$/);
     expect(attempts).toBe(2);
   } finally {
     await stub.close();

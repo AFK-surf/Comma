@@ -201,20 +201,17 @@ describe("chat follow-up placeholder", () => {
     expect(api.generateChatSuggestions).toHaveBeenCalledTimes(2);
   });
 
-  it("renders nothing when the generation comes back empty", async () => {
-    const api = stubApi([]);
-    renderConversation({ api, state: settled() });
-
-    await waitFor(() => {
-      expect(api.generateChatSuggestions).toHaveBeenCalledTimes(1);
-    });
-    expect(suggestionInput()).toBeNull();
-  });
-
-  it("renders nothing when the generation fails", async () => {
-    const api = {
-      generateChatSuggestions: vi.fn().mockRejectedValue(new Error("boom")),
-    } as unknown as CommaApiClient & {
+  it.each([
+    {
+      name: "renders nothing when the generation comes back empty",
+      generate: () => vi.fn().mockResolvedValue([]),
+    },
+    {
+      name: "renders nothing when the generation fails",
+      generate: () => vi.fn().mockRejectedValue(new Error("boom")),
+    },
+  ])("$name", async ({ generate }) => {
+    const api = { generateChatSuggestions: generate() } as unknown as CommaApiClient & {
       generateChatSuggestions: ReturnType<typeof vi.fn>;
     };
     renderConversation({ api, state: settled() });

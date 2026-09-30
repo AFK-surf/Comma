@@ -165,11 +165,11 @@ func (p Plan) validate(legacyUpgrade bool) error {
 	if !slices.IsSorted(p.ProviderPendingIDs) {
 		return errors.New("provider pending IDs must use canonical order")
 	}
-	if len(p.ProviderPendingIDs) > 1 {
+	if len(p.ProviderPendingIDs) != len(slices.Compact(slices.Clone(p.ProviderPendingIDs))) {
 		return errors.New("provider pending IDs contain duplicates")
 	}
 	for _, id := range p.ProviderPendingIDs {
-		if id != "billing-provider" {
+		if id != "billing-provider" && id != "comma-signup-credits" {
 			return fmt.Errorf("unsupported provider pending ID %q", id)
 		}
 	}

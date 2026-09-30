@@ -836,13 +836,15 @@ defmodule SalixWeb.CloudVMTest do
     end
 
     test "rejects retired provider without leaving a workload" do
-      assert {:error, {:bad_request, reason}} =
+      assert {:error, {:bad_request, "vm.provider must be cloudflare"}} =
                SalixAgent.Control.create(
-                 %{"group_id" => group_id(), "vm" => %{"enabled" => true}},
+                 %{
+                   "group_id" => group_id(),
+                   "vm" => %{"enabled" => true, "provider" => "sprites"}
+                 },
                  tenant_id()
                )
 
-      assert reason =~ "cloudflare"
       assert {:error, :not_found} = SalixStore.Compute.group_workload(group_id())
 
       assert {:error, :unsupported_provider} =
@@ -2999,7 +3001,6 @@ defmodule SalixWeb.CloudVMTest do
 
       assert {:ok, rec} = SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
       refute Map.has_key?(rec, "last_metered_at")
-      refute_received {:vm_fact, _}
     end
 
     test "advances VM metering checkpoint for unattributed typed rows" do

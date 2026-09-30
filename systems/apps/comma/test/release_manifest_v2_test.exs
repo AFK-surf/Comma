@@ -641,36 +641,81 @@ defmodule Comma.ReleaseManifestV2Test do
     assert Enum.all?(step["postconditions"], &String.starts_with?(&1, "postgres."))
   end
 
-  test "published participant-state relocation is blocked from automatic release execution" do
-    step = Enum.find(Manifest.manifest()["steps"], &(&1["id"] == "salix-20260728000103"))
+  # {name, step id, source, step checks}. A `true` check must be truthy,
+  # `false` falsy, and any other value equal.
+  @published_release_migration_cases [
+    {"published participant-state relocation is blocked from automatic release execution",
+     "salix-20260728000103",
+     "systems/apps/salix_store/priv/release_migrations/20260728000103_conversation_participant_states_flat.exs",
+     [
+       {["phase"], "legacy"},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["compatibility", "newRuntimeRead"], true},
+       {["compatibility", "newRuntimeWrite"], true},
+       {["execution", "idempotent"], true},
+       {["safety", "destructive"], true},
+       {["safety", "backupRequired"], true}
+     ]},
+    {"published Task Conversation status projection is blocked from automatic release execution",
+     "salix-20260729000001",
+     "systems/apps/salix_store/priv/release_migrations/20260729000001_task_conversation_status.exs",
+     [
+       {["phase"], "legacy"},
+       {["compatibility", "oldRuntimeRead"], true},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["compatibility", "newRuntimeRead"], true},
+       {["compatibility", "newRuntimeWrite"], true},
+       {["execution", "idempotent"], true},
+       {["safety", "destructive"], false},
+       {["safety", "backupRequired"], true}
+     ]},
+    {"published participant notification-filter cutover is blocked from automatic release execution",
+     "salix-20260729000002",
+     "systems/apps/salix_store/priv/release_migrations/20260729000002_participant_notification_filter.exs",
+     [
+       {["phase"], "legacy"},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["compatibility", "newRuntimeRead"], true},
+       {["compatibility", "newRuntimeWrite"], true},
+       {["execution", "idempotent"], true},
+       {["safety", "destructive"], true},
+       {["safety", "backupRequired"], true}
+     ]},
+    {"historical Workflow Router filters use rolling participant-owner convergence",
+     "salix-20260810000101",
+     "systems/apps/salix_store/priv/release_migrations/20260810000101_workflow_router_notification_filter.exs",
+     [
+       {["phase"], "expand"},
+       {["compatibility", "oldRuntimeRead"], true},
+       {["compatibility", "oldRuntimeWrite"], true},
+       {["compatibility", "newRuntimeRead"], true},
+       {["compatibility", "newRuntimeWrite"], true},
+       {["execution", "transactional"], true},
+       {["execution", "idempotent"], true},
+       {["safety", "destructive"], false},
+       {["safety", "backupRequired"], false}
+     ]}
+  ]
 
-    assert step["source"] ==
-             "systems/apps/salix_store/priv/release_migrations/20260728000103_conversation_participant_states_flat.exs"
+  for {name, id, source, checks} <- @published_release_migration_cases do
+    test name do
+      id = unquote(id)
+      step = Enum.find(Manifest.manifest()["steps"], &(&1["id"] == id))
 
-    assert step["phase"] == "legacy"
-    refute step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-    assert step["compatibility"]["newRuntimeRead"]
-    assert step["compatibility"]["newRuntimeWrite"]
-    assert step["execution"]["idempotent"]
-    assert step["safety"]["destructive"]
-    assert step["safety"]["backupRequired"]
-  end
+      assert step["source"] == unquote(source)
 
-  test "published Task Conversation status projection is blocked from automatic release execution" do
-    step = Enum.find(Manifest.manifest()["steps"], &(&1["id"] == "salix-20260729000001"))
+      for {path, expected} <- unquote(Macro.escape(checks)) do
+        actual = get_in(step, path)
 
-    assert step["source"] ==
-             "systems/apps/salix_store/priv/release_migrations/20260729000001_task_conversation_status.exs"
-
-    assert step["phase"] == "legacy"
-    assert step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-    assert step["compatibility"]["newRuntimeRead"]
-    assert step["compatibility"]["newRuntimeWrite"]
-    assert step["execution"]["idempotent"]
-    refute step["safety"]["destructive"]
-    assert step["safety"]["backupRequired"]
+        case expected do
+          true -> assert actual, "expected #{inspect(path)} to be truthy"
+          false -> refute actual, "expected #{inspect(path)} to be falsy"
+          value -> assert actual == value
+        end
+      end
+    end
   end
 
   test "external Session Activity revision certification is an exclusive forward-only cutover" do
@@ -693,39 +738,6 @@ defmodule Comma.ReleaseManifestV2Test do
     assert "postgres.salix_store.cutover/external_session_activity_schema_v#{schema_version}=legacy-writers-drained-and-old-restore-forbidden" in step[
              "postconditions"
            ]
-  end
-
-  test "published participant notification-filter cutover is blocked from automatic release execution" do
-    step = Enum.find(Manifest.manifest()["steps"], &(&1["id"] == "salix-20260729000002"))
-
-    assert step["source"] ==
-             "systems/apps/salix_store/priv/release_migrations/20260729000002_participant_notification_filter.exs"
-
-    assert step["phase"] == "legacy"
-    refute step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-    assert step["compatibility"]["newRuntimeRead"]
-    assert step["compatibility"]["newRuntimeWrite"]
-    assert step["execution"]["idempotent"]
-    assert step["safety"]["destructive"]
-    assert step["safety"]["backupRequired"]
-  end
-
-  test "historical Workflow Router filters use rolling participant-owner convergence" do
-    step = Enum.find(Manifest.manifest()["steps"], &(&1["id"] == "salix-20260810000101"))
-
-    assert step["source"] ==
-             "systems/apps/salix_store/priv/release_migrations/20260810000101_workflow_router_notification_filter.exs"
-
-    assert step["phase"] == "expand"
-    assert step["compatibility"]["oldRuntimeRead"]
-    assert step["compatibility"]["oldRuntimeWrite"]
-    assert step["compatibility"]["newRuntimeRead"]
-    assert step["compatibility"]["newRuntimeWrite"]
-    assert step["execution"]["transactional"]
-    assert step["execution"]["idempotent"]
-    refute step["safety"]["destructive"]
-    refute step["safety"]["backupRequired"]
   end
 
   test "MeetingPlan provider purge is audited staging-only ledger evidence" do

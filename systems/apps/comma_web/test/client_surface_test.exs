@@ -104,90 +104,47 @@ defmodule CommaWeb.ClientSurfaceTest do
            )
   end
 
-  test "startup rejects missing, multiple, invalid, or unlisted Web Cookie origins" do
-    put_valid_configuration()
-    Application.delete_env(:comma_web, :web_cookie_origin)
+  for {key, origin} <- [
+        web_cookie_origin: @canonical_origin,
+        admin_cookie_origin: @admin_origin
+      ] do
+    @key key
+    @origin origin
+    test "startup rejects missing, multiple, invalid, unlisted, or duplicated #{key}" do
+      exactly_one = ~r/:#{@key} must be exactly one/
+      appear_once = ~r/:#{@key} must appear exactly once/
 
-    assert_raise ArgumentError, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
+      for {label, allowed_origins, value, expected} <- [
+            {"missing", nil, :delete, exactly_one},
+            {"multiple", nil, [@origin, @secondary_origin], exactly_one},
+            {"with a path", nil, "#{@origin}/path", exactly_one},
+            {"unlisted", nil, "https://unlisted.comma.surf", appear_once},
+            {"listed twice", [@canonical_origin, @admin_origin, @origin], @origin, appear_once}
+          ] do
+        put_valid_configuration()
 
-    Application.put_env(:comma_web, :web_cookie_origin, [
-      @canonical_origin,
-      @secondary_origin
-    ])
+        if allowed_origins do
+          Application.put_env(:comma_web, :allowed_origins, allowed_origins)
+        end
 
-    assert_raise ArgumentError, ~r/must be exactly one/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
+        case value do
+          :delete -> Application.delete_env(:comma_web, @key)
+          value -> Application.put_env(:comma_web, @key, value)
+        end
 
-    Application.put_env(:comma_web, :web_cookie_origin, "#{@canonical_origin}/path")
+        error =
+          assert_raise ArgumentError, fn ->
+            CommaWeb.ClientSurface.validate_configuration!()
+          end
 
-    assert_raise ArgumentError, ~r/must be exactly one/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
-    Application.put_env(:comma_web, :web_cookie_origin, "https://unlisted.comma.surf")
-
-    assert_raise ArgumentError, ~r/must appear exactly once/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
-    Application.put_env(:comma_web, :allowed_origins, [
-      @canonical_origin,
-      @canonical_origin,
-      @admin_origin
-    ])
-
-    Application.put_env(:comma_web, :web_cookie_origin, @canonical_origin)
-
-    assert_raise ArgumentError, ~r/must appear exactly once/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
+        assert error.message =~ expected, "#{label}: #{error.message}"
+      end
     end
   end
 
-  test "startup rejects missing, invalid, duplicate, unlisted, or shared Admin Cookie origins" do
-    put_valid_configuration()
-    Application.delete_env(:comma_web, :admin_cookie_origin)
-
-    assert_raise ArgumentError, ~r/admin_cookie_origin must be exactly one/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
-    Application.put_env(:comma_web, :admin_cookie_origin, [
-      @admin_origin,
-      @secondary_origin
-    ])
-
-    assert_raise ArgumentError, ~r/admin_cookie_origin must be exactly one/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
-    Application.put_env(:comma_web, :admin_cookie_origin, "#{@admin_origin}/path")
-
-    assert_raise ArgumentError, ~r/admin_cookie_origin must be exactly one/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
-    Application.put_env(:comma_web, :admin_cookie_origin, "https://unlisted.comma.surf")
-
-    assert_raise ArgumentError, ~r/admin_cookie_origin must appear exactly once/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
-    Application.put_env(:comma_web, :allowed_origins, [
-      @canonical_origin,
-      @admin_origin,
-      @admin_origin
-    ])
-
-    Application.put_env(:comma_web, :admin_cookie_origin, @admin_origin)
-
-    assert_raise ArgumentError, ~r/admin_cookie_origin must appear exactly once/, fn ->
-      CommaWeb.ClientSurface.validate_configuration!()
-    end
-
+  test "startup rejects an Admin Cookie origin shared with the Web Cookie origin" do
     Application.put_env(:comma_web, :allowed_origins, [@canonical_origin])
+    Application.put_env(:comma_web, :web_cookie_origin, @canonical_origin)
     Application.put_env(:comma_web, :admin_cookie_origin, @canonical_origin)
 
     assert_raise ArgumentError, ~r/admin_cookie_origin must differ/, fn ->

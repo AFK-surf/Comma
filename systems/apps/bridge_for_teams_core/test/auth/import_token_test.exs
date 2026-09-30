@@ -47,31 +47,34 @@ defmodule BridgeForTeams.Auth.ImportTokenTest do
       assert record.project_id == project.id
     end
 
-    test "org owner may mint", %{org: org, project: project} do
-      user = user!(fn u -> {:ok, _} = Memberships.put_org_member(org.id, u.id, "owner") end)
-      assert {:ok, _} = Auth.create_import_token(user, org, project)
-    end
+    for {name, grant, expected} <- [
+          {"org owner may mint", {:org, "owner"}, :ok},
+          {"org admin may mint", {:org, "admin"}, :ok},
+          {"plain project user is forbidden", {:project, "user"}, {:error, :forbidden}},
+          {"plain org member with no project grant is forbidden", {:org, "member"},
+           {:error, :forbidden}},
+          {"non-member is forbidden", :none, {:error, :forbidden}}
+        ] do
+      test name, %{org: org, project: project} do
+        user =
+          user!(fn u ->
+            case unquote(grant) do
+              {:org, role} ->
+                {:ok, _} = Memberships.put_org_member(org.id, u.id, role)
 
-    test "org admin may mint", %{org: org, project: project} do
-      user = user!(fn u -> {:ok, _} = Memberships.put_org_member(org.id, u.id, "admin") end)
-      assert {:ok, _} = Auth.create_import_token(user, org, project)
-    end
+              {:project, role} ->
+                {:ok, _} = Memberships.put_project_member(project.id, u.id, role)
 
-    test "plain project user is forbidden", %{org: org, project: project} do
-      user =
-        user!(fn u -> {:ok, _} = Memberships.put_project_member(project.id, u.id, "user") end)
+              :none ->
+                :ok
+            end
+          end)
 
-      assert {:error, :forbidden} = Auth.create_import_token(user, org, project)
-    end
-
-    test "plain org member with no project grant is forbidden", %{org: org, project: project} do
-      user = user!(fn u -> {:ok, _} = Memberships.put_org_member(org.id, u.id, "member") end)
-      assert {:error, :forbidden} = Auth.create_import_token(user, org, project)
-    end
-
-    test "non-member is forbidden", %{org: org, project: project} do
-      user = user!(fn _ -> :ok end)
-      assert {:error, :forbidden} = Auth.create_import_token(user, org, project)
+        case unquote(Macro.escape(expected)) do
+          :ok -> assert {:ok, _} = Auth.create_import_token(user, org, project)
+          error -> assert Auth.create_import_token(user, org, project) == error
+        end
+      end
     end
 
     test "mint is forbidden when the project belongs to another org", %{project: project} do

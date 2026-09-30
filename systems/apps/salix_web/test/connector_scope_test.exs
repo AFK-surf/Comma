@@ -1030,7 +1030,7 @@ defmodule SalixWeb.ConnectorScopeTest do
       assert {:ok, disconnected} = Registry.get_device(tenant_id, group_id, device_id)
       assert disconnected["status"] == "disconnected"
 
-      # Revoking an unknown or foreign credential leaks nothing.
+      # Revoking an already revoked credential is idempotent.
       assert :ok = ConnectorTokens.revoke_group_connector_token(group_id, tenant_id, raw)
     end
 

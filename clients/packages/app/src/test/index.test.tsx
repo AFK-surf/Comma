@@ -1346,7 +1346,6 @@ describe("CommaApp", () => {
     const settingsButton = screen.getByRole("button", { name: "Settings" });
     expect(sidebar).toContainElement(settingsButton);
     expect(settingsButton).not.toHaveAttribute("aria-current");
-    expect(screen.queryByRole("button", { name: /Account menu/ })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull();
 
     await userEvent.click(settingsButton);
@@ -1805,7 +1804,7 @@ describe("CommaApp", () => {
     expect(screen.queryByRole("link", { name: "Search" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Comma assistant" })).toBeNull();
     // The profile avatar opens Settings from the foot of the rail, outside
-    // primary navigation and without a separate account menu.
+    // primary navigation.
     const settingsButton = within(sidebar).getByRole("button", { name: "Settings" });
     expect(nav).not.toContainElement(settingsButton);
     // Settings opens a modal, so its item is a button with no location of its own.
@@ -1814,8 +1813,6 @@ describe("CommaApp", () => {
     expect(settingsButton).toHaveClass("comma-sidebar-link");
     expect(settingsButton).not.toHaveAttribute("aria-current");
     expect(settingsButton).toHaveAttribute("data-selected", "false");
-    expect(screen.queryByRole("button", { name: /Account menu/ })).toBeNull();
-    expect(sidebar.querySelector(".comma-sidebar-account")).toBeNull();
     expect(settingsButton.querySelector(".comma-user-avatar")).toHaveTextContent("PE");
 
     fireEvent.keyDown(window, { code: "KeyG" });

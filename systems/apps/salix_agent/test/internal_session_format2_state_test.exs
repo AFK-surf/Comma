@@ -844,16 +844,22 @@ defmodule SalixAgent.InternalSessionFormat2StateTest do
     assert format2.llm_failure_streak == %{"count" => 3, "hwm" => 1, "terminal" => false}
   end
 
-  test "any other fact breaks the streak under both formats" do
-    events = [deliver(1, "hi"), llm_failed(1), session_event("connector_reconnected")]
+  for {name, events, streak} <- [
+        {"any other fact breaks the streak under both formats",
+         quote(do: [deliver(1, "hi"), llm_failed(1), session_event("connector_reconnected")]), 0},
+        {"an hwm-less failure blocks the streak, a following match restarts it",
+         quote(do: [deliver(1, "hi"), session_event("llm_call_failed"), llm_failed(1)]), 1}
+      ] do
+    test name do
+      events = unquote(events)
 
-    format1 = SessionData.apply_events(base_state(), events)
+      for state <- [base_state(), %State{base_state() | storage_format: 2}] do
+        applied = SessionData.apply_events(state, events)
 
-    format2 =
-      SessionData.apply_events(%State{base_state() | storage_format: 2}, events)
-
-    assert SessionData.query(format1, :consecutive_llm_failures) == 0
-    assert SessionData.query(format2, :consecutive_llm_failures) == 0
+        assert SessionData.query(applied, :consecutive_llm_failures) == unquote(streak),
+               "storage format #{inspect(state.storage_format)}"
+      end
+    end
   end
 
   test "a message append moves the position and zeroes the streak read" do
@@ -888,22 +894,6 @@ defmodule SalixAgent.InternalSessionFormat2StateTest do
     kept = Map.keys(state.compact_results)
     assert "session:compact:manual-12" in kept
     refute "session:compact:manual-1" in kept
-  end
-
-  test "an hwm-less failure blocks the streak, a following match restarts it" do
-    events = [
-      deliver(1, "hi"),
-      session_event("llm_call_failed"),
-      llm_failed(1)
-    ]
-
-    format1 = SessionData.apply_events(base_state(), events)
-
-    format2 =
-      SessionData.apply_events(%State{base_state() | storage_format: 2}, events)
-
-    assert SessionData.query(format1, :consecutive_llm_failures) == 1
-    assert SessionData.query(format2, :consecutive_llm_failures) == 1
   end
 
   describe "runaway guard persisted counter and independent source scope" do

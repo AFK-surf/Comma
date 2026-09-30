@@ -120,6 +120,50 @@ defmodule BridgeForTeams.Environments do
     end)
   end
 
+  @doc """
+  Runner health for an org overview in two bounded queries: the total and
+  online counts, plus at most `:attention_limit` runners whose effective status
+  is `offline` or `degraded`, oldest heartbeat first. Runners inside the
+  recently-lost window are neither online nor listed. The heartbeat windows are
+  the same as `effective_mac_mini_provisioner_status/2`.
+  """
+  @spec mac_mini_health_summary(Ecto.UUID.t(), keyword()) :: %{
+          total: non_neg_integer(),
+          online: non_neg_integer(),
+          unhealthy: [MacMiniProvisioner.t()]
+        }
+  def mac_mini_health_summary(org_id, opts \\ []) do
+    now = DateTime.utc_now()
+    online_since = DateTime.add(now, -@mac_mini_online_ttl_seconds, :second)
+    lost_since = DateTime.add(now, -@mac_mini_recently_lost_ttl_seconds, :second)
+    limit = Keyword.get(opts, :attention_limit, 5)
+
+    %{total: total, online: online} =
+      from(p in MacMiniProvisioner,
+        where: p.org_id == ^org_id,
+        select: %{
+          total: count(p.id),
+          online: filter(count(p.id), p.status == "online" and p.last_seen_at >= ^online_since)
+        }
+      )
+      |> Repo.one()
+
+    unhealthy =
+      from(p in MacMiniProvisioner,
+        where: p.org_id == ^org_id,
+        where:
+          p.status in ["offline", "degraded"] or
+            (p.status == "online" and
+               (is_nil(p.last_seen_at) or p.last_seen_at < ^lost_since)),
+        order_by: [asc_nulls_first: p.last_seen_at, asc: p.name],
+        limit: ^limit
+      )
+      |> Repo.all()
+      |> Enum.map(&with_effective_mac_mini_status(&1, now))
+
+    %{total: total, online: online, unhealthy: unhealthy}
+  end
+
   @doc "List org-scoped runners in dashboard order."
   @spec list_mac_mini_provisioners(Ecto.UUID.t()) :: [MacMiniProvisioner.t()]
   def list_mac_mini_provisioners(org_id) do

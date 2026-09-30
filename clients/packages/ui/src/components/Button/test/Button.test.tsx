@@ -53,4 +53,17 @@ describe("Button", () => {
     );
     expect(iconSlot?.querySelector("svg[data-comma-icon]")).toBeInTheDocument();
   });
+
+  it("renders a success status dot instead of an icon when dotLeading is set", () => {
+    render(
+      <Button size="lg" dotLeading>
+        Status
+      </Button>
+    );
+
+    const button = screen.getByRole("button", { name: "Status" });
+    const dot = button.querySelector("span.rounded-full");
+    expect(dot).toHaveClass("bg-fg-success-primary", "size-2");
+    expect(button.querySelector("svg")).not.toBeInTheDocument();
+  });
 });

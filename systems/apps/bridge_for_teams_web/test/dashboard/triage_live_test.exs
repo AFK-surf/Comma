@@ -940,7 +940,7 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
   } do
     use_legacy_workbench_flag(false)
 
-    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}")
+    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
 
     assert html =~ "/orgs/#{org.slug}/triage"
   end
@@ -959,7 +959,7 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
     member = user_fixture(email: "triage-nav-member-#{unique()}@example.com")
     {:ok, _} = Memberships.put_org_member(org.id, member.id, "member")
 
-    {:ok, _view, html} = conn |> log_in_user(member) |> live(~p"/orgs/#{org.slug}")
+    {:ok, _view, html} = conn |> log_in_user(member) |> live(~p"/orgs/#{org.slug}/members")
 
     refute html =~ "/orgs/#{org.slug}/triage"
   end
@@ -5472,51 +5472,35 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
     refute html =~ "private_runtime.ex"
   end
 
-  test "timeline does not claim no processing when the bounded sample is incomplete", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-      :window => {:ok, window([])},
-      :processing => {:ok, processing_page([], %{truncated: true})}
-    })
+  for {label, overrides, extra} <- [
+        {"the bounded sample is incomplete", %{truncated: true}, []},
+        {"a recent receipt is unreadable",
+         %{scope_complete: true, truncated: false, unavailable_count: 1},
+         ["Some recent receipt status could not be verified"]}
+      ] do
+    @overrides overrides
+    @extra extra
 
-    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/timeline")
-    refute :processing in Stub.calls()
-    html = view |> element("[phx-click='load-triage-processing-diagnostics']") |> render_click()
+    test "timeline does not claim no processing when #{label}", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      use_stub(%{
+        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
+        :window => {:ok, window([])},
+        :processing => {:ok, processing_page([], @overrides)}
+      })
 
-    assert has_element?(view, "#triage-recent-processing")
-    assert html =~ "No matching processing was found in this bounded sample"
-    refute html =~ "No recent Triage processing"
-  end
+      {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/timeline")
+      refute :processing in Stub.calls()
+      html = view |> element("[phx-click='load-triage-processing-diagnostics']") |> render_click()
 
-  test "timeline does not claim no processing when a recent receipt is unreadable", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-      :window => {:ok, window([])},
-      :processing =>
-        {:ok,
-         processing_page([], %{
-           scope_complete: true,
-           truncated: false,
-           unavailable_count: 1
-         })}
-    })
-
-    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/timeline")
-    refute :processing in Stub.calls()
-    html = view |> element("[phx-click='load-triage-processing-diagnostics']") |> render_click()
-
-    assert has_element?(view, "#triage-recent-processing")
-    assert html =~ "Some recent receipt status could not be verified"
-    assert html =~ "No matching processing was found in this bounded sample"
-    refute html =~ "No recent Triage processing"
+      assert has_element?(view, "#triage-recent-processing")
+      for text <- @extra, do: assert(html =~ text, "expected #{inspect(text)}")
+      assert html =~ "No matching processing was found in this bounded sample"
+      refute html =~ "No recent Triage processing"
+    end
   end
 
   test "timeline filters activity by a configured Slack channel", %{
@@ -5607,7 +5591,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
            cells: [
              cell.("C123", 0, %{silence: 3, total: 3}),
              cell.("C123", 1, %{reply: 1, total: 1}),
-             cell.("C-OTHER", 30, %{silence: 1, total: 1})
+             cell.("C-OTHER", 30, %{silence: 1, total: 1}),
+             cell.("C123", 165, %{silence: 2, total: 2})
            ]
          }}
     })
@@ -5619,26 +5604,35 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
     heatmap_reads = fn -> Enum.count(Stub.calls(), &(&1 == :heatmap_read)) end
     assert heatmap_reads.() == 1
 
-    # The two C123 hours share the first 3-hour cell; its reply is marked.
-    assert has_element?(
-             view,
-             "#triage-activity-heatmap [data-role='heatmap-channel']",
-             "#triage-room"
-           )
+    # With activity in the last day, the heatmap opens on 24h and counts
+    # only that window.
+    assert has_element?(view, "[data-role='heatmap-range'][aria-pressed='true']", "24h")
+    assert has_element?(view, "[data-role='heatmap-channel']", "#triage-room")
+    refute has_element?(view, "[data-role='heatmap-channel']", "C-OTHER")
+    assert has_element?(view, "[data-role='heatmap-total']", "2")
+    assert has_element?(view, "[data-role='heatmap-silent']", "100%")
 
-    assert has_element?(view, "#triage-activity-heatmap [data-role='heatmap-channel']", "C-OTHER")
+    # 7d groups hours into 6-hour cells; the reply turns its cell green.
+    view |> element("[data-role='heatmap-range'][phx-value-range='7d']") |> render_click()
+
+    assert has_element?(view, "[data-role='heatmap-channel']", "C-OTHER")
+    assert has_element?(view, "[data-role='heatmap-total']", "6")
+    assert has_element?(view, "[data-role='heatmap-replied']", "1")
+    assert has_element?(view, "[data-role='heatmap-silent']", "83%")
 
     assert view
-           |> element("#triage-activity-heatmap button[phx-value-channel='C123']")
+           |> element(
+             "#triage-activity-heatmap button[phx-value-channel='C123'][data-acted='true']"
+           )
            |> render() =~ "4 outcomes · Reply 1 · Reaction 0 · Stayed silent 3"
 
     # A channel outside the Agent's configured sources is shown but cannot filter.
     refute has_element?(view, "#triage-activity-heatmap button[phx-value-channel='C-OTHER']")
 
-    before_ms = since_ms + 3 * hour_ms
+    before_ms = since_ms + 6 * hour_ms
 
     view
-    |> element("#triage-activity-heatmap button[phx-value-channel='C123']")
+    |> element("#triage-activity-heatmap button[phx-value-channel='C123'][data-acted='true']")
     |> render_click()
 
     assert {:activity_opts, opts} =
@@ -6250,73 +6244,41 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
     assert html =~ "Connect posture could not be read for"
   end
 
-  # The empty-and-truncated case: the first page was all poison and the budget
-  # ran out, so there is nothing to show *and* nothing was finished. Rendering
-  # the truncation warning next to "the scan completed" says both at once.
-  test "an empty window that ran out of budget is never called a completed scan", %{
-    conn: conn,
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    use_namespace(namespace)
+  for {label, overrides, present, absent} <- [
+        # The empty-and-truncated case: the first page was all poison and the budget
+        # ran out, so there is nothing to show *and* nothing was finished. Rendering
+        # the truncation warning next to "the scan completed" says both at once.
+        {"an empty window that ran out of budget is never called a completed scan",
+         %{truncated: true, invalid_count: 25, scanned_pages: 1},
+         ["The scan budget ran out", "The scan did not complete"],
+         ["The scan completed and found no typed receipts"]},
+        # Same shape, different cause: a one-page scan whose only recent receipt had
+        # a transient GET failure. `unavailable_count` is the only thing separating
+        # "nothing was received" from "we could not read what was received".
+        {"an empty window with an unreadable object is a partial read, not a completed scan",
+         %{unavailable_count: 1}, ["could not be read", "The scan did not complete"],
+         ["The scan completed and found no typed receipts", "The scan budget ran out"]},
+        {"a complete, untruncated, fully readable empty window says so plainly", %{},
+         ["The scan completed and found no typed receipts"], ["The scan did not complete"]}
+      ] do
+    @overrides overrides
+    @present present
+    @absent absent
 
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-      :window => {:ok, window([], %{truncated: true, invalid_count: 25, scanned_pages: 1})}
-    })
+    test label, %{conn: conn, org: org, project: project, namespace: namespace} do
+      use_namespace(namespace)
 
-    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/data")
-    html = render_async(view)
+      use_stub(%{
+        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
+        :window => {:ok, window([], @overrides)}
+      })
 
-    assert html =~ "The scan budget ran out"
-    assert html =~ "The scan did not complete"
-    refute html =~ "The scan completed and found no typed receipts"
-  end
+      {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/data")
+      html = render_async(view)
 
-  # Same shape, different cause: a one-page scan whose only recent receipt had
-  # a transient GET failure. `unavailable_count` is the only thing separating
-  # "nothing was received" from "we could not read what was received".
-  test "an empty window with an unreadable object is a partial read, not a completed scan", %{
-    conn: conn,
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    use_namespace(namespace)
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-      :window => {:ok, window([], %{unavailable_count: 1})}
-    })
-
-    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/data")
-    html = render_async(view)
-
-    assert html =~ "could not be read"
-    assert html =~ "The scan did not complete"
-    refute html =~ "The scan completed and found no typed receipts"
-    refute html =~ "The scan budget ran out"
-  end
-
-  test "a complete, untruncated, fully readable empty window says so plainly", %{
-    conn: conn,
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    use_namespace(namespace)
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-      :window => {:ok, window([])}
-    })
-
-    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/triage/data")
-    html = render_async(view)
-
-    assert html =~ "The scan completed and found no typed receipts"
-    refute html =~ "The scan did not complete"
+      for text <- @present, do: assert(html =~ text, "expected #{inspect(text)}")
+      for text <- @absent, do: refute(html =~ text, "unexpected #{inspect(text)}")
+    end
   end
 
   # ---- memory ----
@@ -6344,6 +6306,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
 
     assert html =~ "/memory/semantic/team.md"
     assert html =~ "Team facts"
+    # A known ?agent= is honoured, so no fallback notice is rendered.
+    refute html =~ "The requested agent is not one of"
 
     memory_agent_link =
       view
@@ -6406,48 +6370,6 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
              Enum.find(Stub.calls(), &match?({:list_files, _, _}, &1))
 
     assert salix_agent_id == router.salix_agent_id
-  end
-
-  test "a known ?agent= renders no fallback notice", %{
-    conn: conn,
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    use_namespace(namespace)
-    agent = insert_router_agent(project)
-
-    use_stub(%{{:list_files, agent.salix_agent_id, "/memory"} => {:ok, []}})
-
-    {:ok, _view, html} =
-      live(conn, ~p"/orgs/#{org.slug}/triage/memory?#{%{"agent" => agent.id}}")
-
-    refute html =~ "The requested agent is not one of"
-  end
-
-  test "an oversized memory file is cut short and says so", %{
-    conn: conn,
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    use_namespace(namespace)
-    agent = insert_router_agent(project)
-
-    body = String.duplicate("a", 200_001)
-
-    use_stub(%{
-      {:list_files, agent.salix_agent_id, "/memory"} => {:ok, []},
-      {:read_file, agent.salix_agent_id, "/memory/huge.md"} => {:ok, body}
-    })
-
-    {:ok, _view, html} =
-      live(
-        conn,
-        ~p"/orgs/#{org.slug}/triage/memory?#{%{"agent" => agent.id, "file" => "/memory/huge.md"}}"
-      )
-
-    assert html =~ "longer than the render limit"
   end
 
   test "an oversized CJK memory file stays valid UTF-8 the socket can encode", %{
@@ -6717,11 +6639,22 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLiveTest do
          %{buckets: [bucket("c-1")], invalid_count: 1, next_cursor: nil, scan_complete: true}}
     })
 
-    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/triage/data")
+    {:ok, view, html} = live(conn, ~p"/orgs/#{org.slug}/triage/data")
 
-    assert html =~ "unavailable"
-    assert html =~ "7"
-    assert html =~ "scanned"
+    # Each count sits in its own labelled chip, value right after its label.
+    # Text extraction joins adjacent spans, so compare with whitespace removed.
+    counts_text =
+      view
+      |> element("#triage-scan-counts")
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.text()
+      |> String.replace(~r/\s+/, "")
+
+    assert counts_text =~ "scanned12"
+    assert counts_text =~ "legacy3"
+    assert counts_text =~ "invalid2"
+    assert counts_text =~ "unavailable7"
     assert html =~ "s3://receipt-c-1"
     assert html =~ "scope-c-1"
     # Raw message text is never rendered until it is revealed and audited.

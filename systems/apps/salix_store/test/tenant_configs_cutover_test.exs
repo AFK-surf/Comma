@@ -92,56 +92,6 @@ defmodule SalixStore.TenantConfigsCutoverTest do
     assert {:error, :not_found} = TenantConfigs.get("ten_x", "conversation_links")
   end
 
-  test "a body whose tenant_id does not round-trip to its key aborts the cutover" do
-    lying = %{
-      "tenant_id" => "ten_other",
-      "name" => "conversation_links",
-      "value" => %{"conversation_url_template" => "https://x/{id}"},
-      "updated_at" => 1
-    }
-
-    key = Keys.ctl_tenant_config("ten_actual", "conversation_links")
-    {:ok, _} = S3.put(key, Jason.encode!(lying), [])
-
-    assert {:error, {:enumerate_failed, ^key, :record_address_mismatch}} =
-             TenantConfigsCutover.run()
-  end
-
-  test "a non-map value aborts the cutover fail-closed" do
-    key = Keys.ctl_tenant_config("ten_scalar", "weird")
-
-    body = %{
-      "tenant_id" => "ten_scalar",
-      "name" => "weird",
-      "value" => "not-a-map",
-      "updated_at" => 1
-    }
-
-    {:ok, _} = S3.put(key, Jason.encode!(body), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = TenantConfigsCutover.run()
-  end
-
-  test "a non-integer updated_at fails the audit preflight closed (no crash)" do
-    key = Keys.ctl_tenant_config("ten_bad", "conversation_links")
-
-    body = %{
-      "tenant_id" => "ten_bad",
-      "name" => "conversation_links",
-      "value" => %{"conversation_url_template" => "https://b/{id}"},
-      # Legacy/malformed shape: an ISO-8601 string where epoch seconds are
-      # expected. from_record/1 would do arithmetic on this and raise.
-      "updated_at" => "2026-07-28T00:00:00Z"
-    }
-
-    {:ok, _} = S3.put(key, Jason.encode!(body), [])
-
-    # importable_count/0 backs the audit preflight: it must fail closed, not
-    # report the record as importable and let run/0 crash later.
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-             TenantConfigsCutover.importable_count()
-  end
-
   test "a malformed updated_at aborts run/0 before any PG write, even when it sorts after a valid record" do
     # ten_a sorts before ten_z, so the valid record is enumerated first; the
     # whole enumeration must still abort with zero PG writes (no partial import).
@@ -219,14 +169,45 @@ defmodule SalixStore.TenantConfigsCutoverTest do
     assert {:error, :not_found} = TenantConfigs.get("ten_a", "conversation_links")
   end
 
-  test "a non-map (top-level array) body fails closed as enumerate_failed, not a raise" do
-    key = Keys.ctl_tenant_config("ten_arr", "conversation_links")
-    {:ok, _} = S3.put(key, Jason.encode!([1, 2, 3]), [])
+  # {name, key tenant, key name, stored body, expected reason}
+  @invalid_records [
+    {"a body whose tenant_id does not round-trip to its key aborts the cutover", "ten_actual",
+     "conversation_links",
+     %{
+       "tenant_id" => "ten_other",
+       "name" => "conversation_links",
+       "value" => %{"conversation_url_template" => "https://x/{id}"},
+       "updated_at" => 1
+     }, :record_address_mismatch},
+    {"a non-map value aborts the cutover fail-closed", "ten_scalar", "weird",
+     %{"tenant_id" => "ten_scalar", "name" => "weird", "value" => "not-a-map", "updated_at" => 1},
+     :invalid_record},
+    # Legacy/malformed shape: an ISO-8601 string where epoch seconds are
+    # expected. from_record/1 would do arithmetic on this and raise.
+    {"a non-integer updated_at fails the audit preflight closed (no crash)", "ten_bad",
+     "conversation_links",
+     %{
+       "tenant_id" => "ten_bad",
+       "name" => "conversation_links",
+       "value" => %{"conversation_url_template" => "https://b/{id}"},
+       "updated_at" => "2026-07-28T00:00:00Z"
+     }, :invalid_record},
+    {"a non-map (top-level array) body fails closed as enumerate_failed, not a raise", "ten_arr",
+     "conversation_links", [1, 2, 3], :invalid_record}
+  ]
 
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-             TenantConfigsCutover.importable_count()
+  for {name, tenant_id, config_name, body, reason} <- @invalid_records do
+    test "#{name} (audit + run, no marker)" do
+      key = Keys.ctl_tenant_config(unquote(tenant_id), unquote(config_name))
+      {:ok, _} = S3.put(key, Jason.encode!(unquote(Macro.escape(body))), [])
 
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = TenantConfigsCutover.run()
-    refute TenantConfigsCutover.marker_present?()
+      # importable_count/0 backs the audit preflight: it must fail closed, not
+      # report the record as importable and let run/0 crash later.
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} =
+               TenantConfigsCutover.importable_count()
+
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} = TenantConfigsCutover.run()
+      refute TenantConfigsCutover.marker_present?()
+    end
   end
 end

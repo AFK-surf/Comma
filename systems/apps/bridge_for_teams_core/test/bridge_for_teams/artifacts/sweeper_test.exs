@@ -266,27 +266,6 @@ defmodule BridgeForTeams.Artifacts.SweeperTest do
     assert Enum.find(user_b_tasks, &(&1.title == "B")).user_id == user_b.id
   end
 
-  test "a slug no member matches is skipped with a log line, not a row", %{
-    user: user,
-    project: project,
-    agent: agent
-  } do
-    slug = "daily-briefing-ffffffff"
-    run_path = Reports.run_path(slug, ~D[2026-07-06])
-    script_run(agent, slug, run_path, "---\ntitle: Orphan\n---\nBody")
-
-    sweeper = start_sweeper()
-
-    log =
-      capture_log([level: :info], fn ->
-        assert Sweeper.sweep_once(sweeper) == 0
-      end)
-
-    assert log =~ "artifacts_sweeper_unmatched_slug"
-    assert log =~ slug
-    assert tasks(user, project, "reports") == []
-  end
-
   test "an archived index row still counts as indexed (no resurrection)", %{
     user: user,
     org: org,
@@ -324,7 +303,7 @@ defmodule BridgeForTeams.Artifacts.SweeperTest do
   } do
     # The series directory name is agent-controlled and unbounded; this run
     # path exceeds the 200-char provenance-column slice.
-    slug = String.duplicate("x", 220) <> "-" <> Reports.user_suffix(user.id)
+    slug = String.duplicate("x", 220) <> "-" <> Artifacts.user_suffix(user.id)
     run_path = Reports.run_path(slug, ~D[2026-07-06])
     assert String.length(run_path) > 200
 
@@ -646,25 +625,32 @@ defmodule BridgeForTeams.Artifacts.SweeperTest do
     assert [%{title: "Scan", category: "general"}] = tasks(user, project, "general")
   end
 
-  test "an artifact slug no member matches is skipped with a log line, not a row", %{
-    user: user,
-    project: project,
-    agent: agent
-  } do
-    slug = "competitor-scan-ffffffff"
-    doc_path = Artifacts.path(slug, ~D[2026-07-06])
-    script_artifact(agent, slug, doc_path, "---\ntitle: Orphan\n---\nBody")
+  for {name, root, slug, category} <- [
+        {"a slug no member matches is skipped with a log line, not a row", :reports,
+         "daily-briefing-ffffffff", "reports"},
+        {"an artifact slug no member matches is skipped with a log line, not a row", :artifacts,
+         "competitor-scan-ffffffff", "general"}
+      ] do
+    test name, %{user: user, project: project, agent: agent} do
+      slug = unquote(slug)
+      body = "---\ntitle: Orphan\n---\nBody"
 
-    sweeper = start_sweeper()
+      case unquote(root) do
+        :reports -> script_run(agent, slug, Reports.run_path(slug, ~D[2026-07-06]), body)
+        :artifacts -> script_artifact(agent, slug, Artifacts.path(slug, ~D[2026-07-06]), body)
+      end
 
-    log =
-      capture_log([level: :info], fn ->
-        assert Sweeper.sweep_once(sweeper) == 0
-      end)
+      sweeper = start_sweeper()
 
-    assert log =~ "artifacts_sweeper_unmatched_slug"
-    assert log =~ slug
-    assert tasks(user, project, "general") == []
+      log =
+        capture_log([level: :info], fn ->
+          assert Sweeper.sweep_once(sweeper) == 0
+        end)
+
+      assert log =~ "artifacts_sweeper_unmatched_slug"
+      assert log =~ slug
+      assert tasks(user, project, unquote(category)) == []
+    end
   end
 
   test "a projection row under the task's own category still counts as indexed", %{

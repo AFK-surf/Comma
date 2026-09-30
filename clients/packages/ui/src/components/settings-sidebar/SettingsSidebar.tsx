@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { memo, useCallback, useLayoutEffect, useRef } from "react";
 import {
   SettingsSidebarItemControl,
   type SettingsSidebarItem,
@@ -86,7 +86,11 @@ const SettingsTab = ({ item }: { item: SettingsSidebarItem }) => {
   );
 };
 
-export const SettingsSidebar = ({
+/**
+ * Memoized: Settings rebuilds its registry on every change inside a category,
+ * and the page passes the same props until the categories or search change.
+ */
+export const SettingsSidebar = memo(function SettingsSidebar({
   ariaLabel = "Settings sections",
   className,
   groups,
@@ -100,7 +104,7 @@ export const SettingsSidebar = ({
   searchPlaceholder = "Search settings",
   searchValue,
   title,
-}: SettingsSidebarProps) => {
+}: SettingsSidebarProps) {
   const resolvedGroups =
     groups ??
     (items.length > 0
@@ -264,4 +268,4 @@ export const SettingsSidebar = ({
       </ScrollArea>
     </aside>
   );
-};
+});

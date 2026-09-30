@@ -1093,60 +1093,27 @@ defmodule SalixAgent.ToolsTest do
       assert r.content =~ "vision_describer_config"
     end
 
-    test "read_file on an unsupported binary returns an explicit unsupported-format error", %{
-      ctx: ctx,
-      agent: agent
-    } do
-      {:ok, ev} = AgentWorkspace.prepare_write(agent, "/src/blob.bin", <<0xFF, 0xD8, 0, 16>>)
-      commit_workspace!(agent, "binary-unsupported", [ev])
+    for {name, path, body, fragments} <- [
+          {"read_file on an unsupported binary returns an explicit unsupported-format error",
+           "/src/blob.bin", <<0xFF, 0xD8, 0, 16>>, ["unsupported bin file", "dedicated reader"]},
+          {"read_file does not decode framed content without a text extension", "/src/framed.bin",
+           <<1, 0, 0, 0, 0, 0, 0, 13, "looks textual">>, ["unsupported bin file"]},
+          {"read_file does not decode framed text with invalid UTF-8", "/src/framed-invalid.txt",
+           <<1, 0, 0, 0, 0, 0, 0, 1, 0xFF>>, ["unsupported txt file"]},
+          {"read_file does not decode framed text with a mismatched length",
+           "/src/framed-mismatch.txt", <<1, 0, 0, 0, 0, 0, 0, 4, "abc">>,
+           ["unsupported txt file"]}
+        ] do
+      test name, %{ctx: ctx, agent: agent} do
+        path = unquote(path)
+        {:ok, ev} = AgentWorkspace.prepare_write(agent, path, unquote(body))
+        commit_workspace!(agent, "unsupported-read-" <> Path.basename(path), [ev])
 
-      [r] = Tools.execute([call("fs.read_file", %{"path" => "/src/blob.bin"})], ctx)
+        [r] = Tools.execute([call("fs.read_file", %{"path" => path})], ctx)
 
-      assert r.error == true
-      assert r.content =~ "unsupported bin file"
-      assert r.content =~ "dedicated reader"
-    end
-
-    test "read_file does not decode framed content without a text extension", %{
-      ctx: ctx,
-      agent: agent
-    } do
-      body = <<1, 0, 0, 0, 0, 0, 0, 13, "looks textual">>
-      {:ok, ev} = AgentWorkspace.prepare_write(agent, "/src/framed.bin", body)
-      commit_workspace!(agent, "framed-binary", [ev])
-
-      [r] = Tools.execute([call("fs.read_file", %{"path" => "/src/framed.bin"})], ctx)
-
-      assert r.error == true
-      assert r.content =~ "unsupported bin file"
-    end
-
-    test "read_file does not decode framed text with invalid UTF-8", %{
-      ctx: ctx,
-      agent: agent
-    } do
-      body = <<1, 0, 0, 0, 0, 0, 0, 1, 0xFF>>
-      {:ok, ev} = AgentWorkspace.prepare_write(agent, "/src/framed-invalid.txt", body)
-      commit_workspace!(agent, "framed-invalid-text", [ev])
-
-      [r] = Tools.execute([call("fs.read_file", %{"path" => "/src/framed-invalid.txt"})], ctx)
-
-      assert r.error == true
-      assert r.content =~ "unsupported txt file"
-    end
-
-    test "read_file does not decode framed text with a mismatched length", %{
-      ctx: ctx,
-      agent: agent
-    } do
-      body = <<1, 0, 0, 0, 0, 0, 0, 4, "abc">>
-      {:ok, ev} = AgentWorkspace.prepare_write(agent, "/src/framed-mismatch.txt", body)
-      commit_workspace!(agent, "framed-mismatch-text", [ev])
-
-      [r] = Tools.execute([call("fs.read_file", %{"path" => "/src/framed-mismatch.txt"})], ctx)
-
-      assert r.error == true
-      assert r.content =~ "unsupported txt file"
+        assert r.error == true
+        for fragment <- unquote(fragments), do: assert(r.content =~ fragment)
+      end
     end
 
     test "edit_file rejects decoded stdcopy views without corrupting raw framing", %{

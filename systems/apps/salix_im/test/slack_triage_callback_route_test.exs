@@ -166,17 +166,30 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
     {:ok, connect: connect}
   end
 
-  test "an ambient callback is mirrored but cannot create Triage authority or a receipt", %{
-    connect: connect
-  } do
-    envelope = root_envelope(connect, "Ev-ambient-observation-only")
+  # Neither an ambient root nor an agent's explicit mention may create Triage
+  # authority or a receipt from the callback; both are mirrored for the CH patrol.
+  for {name, envelope, ts} <- [
+        {"an ambient callback is mirrored but cannot create Triage authority or a receipt",
+         :ambient_root, "1787019000.000001"},
+        {"an explicit agent mention is mirrored but waits for the CH patrol", :agent_mention,
+         "1787019020.000001"}
+      ] do
+    @envelope envelope
+    @ts ts
+    test name, %{connect: connect} do
+      envelope =
+        case @envelope do
+          :ambient_root -> root_envelope(connect, "Ev-ambient-observation-only")
+          :agent_mention -> agent_mention_envelope(connect, "Ev-agent-directed", @ts)
+        end
 
-    assert callback(connect, envelope) == {:error, :ignored}
-    assert_receive {:mirrored, %{"message_ts" => "1787019000.000001"}}
-    assert ThreadRouteOwner.lookup(route_scope(connect, envelope)) == :unbound
-    assert CasRecord.get(receipt_key(connect, envelope)) == {:error, :not_found}
-    refute_received {:triage_consumer_called, _, _}
-    refute_received {:explicit_mention_delivery, _, _, _}
+      assert callback(connect, envelope) == {:error, :ignored}
+      assert_receive {:mirrored, %{"message_ts" => @ts}}
+      assert ThreadRouteOwner.lookup(route_scope(connect, envelope)) == :unbound
+      assert CasRecord.get(receipt_key(connect, envelope)) == {:error, :not_found}
+      refute_received {:triage_consumer_called, _, _}
+      refute_received {:explicit_mention_delivery, _, _, _}
+    end
   end
 
   test "an ambient reply stays observation-only even on a CH-owned Triage thread", %{
@@ -210,17 +223,6 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
     assert agent_id == connect["inbound_agent_id"]
     assert ThreadRouteOwner.lookup(route_scope(connect, envelope)) == {:ok, :legacy}
     refute_received {:triage_consumer_called, _, _}
-  end
-
-  test "an explicit agent mention is mirrored but waits for the CH patrol", %{connect: connect} do
-    envelope = agent_mention_envelope(connect, "Ev-agent-directed", "1787019020.000001")
-
-    assert callback(connect, envelope) == {:error, :ignored}
-    assert_receive {:mirrored, %{"message_ts" => "1787019020.000001"}}
-    assert ThreadRouteOwner.lookup(route_scope(connect, envelope)) == :unbound
-    assert CasRecord.get(receipt_key(connect, envelope)) == {:error, :not_found}
-    refute_received {:triage_consumer_called, _, _}
-    refute_received {:explicit_mention_delivery, _, _, _}
   end
 
   test "another app's reply in a command thread reaches the Router", %{connect: connect} do

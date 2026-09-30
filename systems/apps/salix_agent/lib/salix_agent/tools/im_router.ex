@@ -108,7 +108,7 @@ defmodule SalixAgent.Tools.ImRouter do
   def defs do
     [
       {"im.connects_list",
-       "List IM connects available to the current group. Each connect is one provider instance with provider and connect_id. This is discovery only; known connect_id/provider facts can be used directly.",
+       "List IM messaging connects available to the current group. Each connect is one provider instance with provider and connect_id. This list excludes Plugins OAuth credentials and MCP bindings. For connected Slack accounts, also check oauth.list_credentials and mcp.list before concluding that Slack is not connected. Known connect_id/provider facts can be used directly.",
        &__MODULE__.list_im_connects/2, @normal_auto_wait_seconds},
       {"im.provider_apis_list",
        "List provider API operation ids exposed by Comma for a visible IM connect. callable=true means the local adapter and session policy allow dispatch; for operations with declared OAuth scopes, scope_availability reports granted, missing, or unknown for the exact connect. Slack's current API result remains authoritative for workspace features, channel access, payload validity, and permission drift. This is discovery only; known operation ids can be called directly. Use call(tool=\"help\", params={\"tool\":\"im_api.<provider>.<api>\"}) for one API's full schema.",

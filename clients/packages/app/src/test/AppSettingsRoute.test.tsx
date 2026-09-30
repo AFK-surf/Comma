@@ -35,6 +35,17 @@ import { legacyCommaSideChatShortcutStorageKey } from "../components/readLegacyC
 import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShortcuts";
 import type { AppShortcutPlatform } from "../components/shortcuts/appShortcutRegistry";
 
+// jsdom cannot decode or encode images; the browser path is covered by the
+// profile-settings Playwright spec.
+const preparedAvatar = new File(["prepared"], "avatar.webp", { type: "image/webp" });
+const { prepareProfileAvatar } = vi.hoisted(() => ({
+  prepareProfileAvatar: vi.fn(),
+}));
+vi.mock("../components/profileAvatarImage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../components/profileAvatarImage")>()),
+  prepareProfileAvatar,
+}));
+
 const telegramSettings = () => within(screen.getByRole("region", { name: "Telegram" }));
 
 const testSessionTransport = (signal: AbortSignal): CommaApiSessionTransport => ({
@@ -770,6 +781,7 @@ describe("AppSettingsRoute", () => {
       selector: 'input[type="file"]',
     });
     const avatar = new File(["avatar"], "avatar.png", { type: "image/png" });
+    prepareProfileAvatar.mockResolvedValueOnce(preparedAvatar);
     await userEvent.upload(fileInput, avatar);
 
     await waitFor(() =>
@@ -783,7 +795,8 @@ describe("AppSettingsRoute", () => {
     if (!(upload?.body instanceof FormData)) {
       throw new Error("Expected avatar upload multipart form data");
     }
-    expect(upload.body.get("avatar")).toBe(avatar);
+    expect(prepareProfileAvatar).toHaveBeenCalledWith(avatar);
+    expect(upload.body.get("avatar")).toBe(preparedAvatar);
     expect(publishProfile).toHaveBeenCalledWith({
       avatar_id: "avt_ada",
       email: "ada@example.com",
@@ -1466,20 +1479,6 @@ describe("AppSettingsRoute", () => {
     expect(readStoredClientSettings().sideChatShortcut).toEqual(
       defaultCommaClientSettings.sideChatShortcut
     );
-  });
-
-  it("omits unsupported permission controls and their search results", async () => {
-    const scope = vi.fn();
-    installNativeBridgeMock({ platform: "electron", connectorRuntime: { scope } });
-    renderSettings();
-    for (const name of ["Default permissions", "Auto-review", "Full access"]) {
-      expect(screen.queryByText(name)).not.toBeInTheDocument();
-      const search = screen.getByRole("searchbox", { name: "Search settings" });
-      await userEvent.clear(search);
-      await userEvent.type(search, name);
-      expect(screen.queryByText(name)).not.toBeInTheDocument();
-    }
-    expect(scope).not.toHaveBeenCalled();
   });
 
   it("keeps unavailable settings controls disabled", async () => {

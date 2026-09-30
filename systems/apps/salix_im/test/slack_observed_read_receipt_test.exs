@@ -607,40 +607,64 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     refute receipt_text =~ "private redirect body"
   end
 
-  test "observed decode failure returns one closed receipt without malformed bytes", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :invalid_json)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
+  # Every rejected page is one closed decode_error receipt: one request, no
+  # canonical page, the typed rejection, and none of the rejected bytes.
+  for {name, mode, stage, path, response_id, secrets} <- [
+        {"observed decode failure returns one closed receipt without malformed bytes",
+         :invalid_json, "json_decode", "response", {200, "req-decode-error-1"},
+         ["private-U-broken"]},
+        {"observed decoded body with an invalid page shape returns decode error", :invalid_shape,
+         "response_shape", "response", {200, "req-shape-error-1"}, ["private-U-not-a-list"]},
+        {"observed replies reject credential-shaped message content before page persistence",
+         :unsafe_message, "credential_material", "messages[]", nil,
+         ["safe visible text", "private-metadata-credential"]},
+        {"observed replies still reject credentials nested in dropped attachment structures",
+         :forbidden_attachment, "credential_material", "messages[]", nil,
+         ["private-attachment-credential"]}
+      ] do
+    @mode mode
+    @stage stage
+    @path path
+    @tag response_id: response_id
+    @secrets secrets
+    test name, %{base_url: base_url, response_id: response_id} do
+      Application.put_env(:salix_im, :slack_receipt_test_response, @mode)
+      selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
+      origin_sha256 = origin_sha256(base_url)
 
-    assert {:error, :decode_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
+      assert {:error, :decode_error, receipt} =
+               API.conversation_replies(
+                 "xoxb-private-token",
+                 "C_THREAD",
+                 "1786693124.936679",
+                 receipt: :return,
+                 limit: 200,
+                 request_selector_sha256: selector_sha256,
+                 slack_api_origin_sha256: origin_sha256
+               )
 
-    assert_receive {:slack_request, _conn}
-    refute_receive {:slack_request, _conn}, 50
-    assert receipt["outcome"] == "decode_error"
-    assert receipt["typed_reason"] == "decode_error"
-    assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
+      assert_receive {:slack_request, _conn}
+      refute_receive {:slack_request, _conn}, 50
+      assert receipt["outcome"] == "decode_error"
+      assert receipt["typed_reason"] == "decode_error"
+      assert receipt["canonical_page_sha256"] == nil
+      assert receipt["message_count"] == nil
+      assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
 
-    assert receipt["rejection"] == %{
-             "schema" => "comma.slack-read-rejection.v1",
-             "stage" => "json_decode",
-             "path" => "response",
-             "unknown_keys" => []
-           }
+      assert receipt["rejection"] == %{
+               "schema" => "comma.slack-read-rejection.v1",
+               "stage" => @stage,
+               "path" => @path,
+               "unknown_keys" => []
+             }
 
-    assert receipt["http_status"] == 200
-    assert receipt["slack_request_id_sha256"] == CanonicalJSON.sha256("req-decode-error-1")
-    refute inspect(receipt) =~ "private-U-broken"
+      with {http_status, request_id} <- response_id do
+        assert receipt["http_status"] == http_status
+        assert receipt["slack_request_id_sha256"] == CanonicalJSON.sha256(request_id)
+      end
+
+      for secret <- @secrets, do: refute(inspect(receipt) =~ secret)
+    end
   end
 
   test "observed transport failure returns one closed receipt without retry", %{
@@ -671,79 +695,6 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     assert receipt["slack_request_id_sha256"] == nil
     refute Map.has_key?(receipt, "url")
     refute Map.has_key?(receipt, "transport_error")
-  end
-
-  test "observed decoded body with an invalid page shape returns decode error", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :invalid_shape)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :decode_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert_receive {:slack_request, _conn}
-    refute_receive {:slack_request, _conn}, 50
-    assert receipt["outcome"] == "decode_error"
-    assert receipt["typed_reason"] == "decode_error"
-    assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
-
-    assert receipt["rejection"] == %{
-             "schema" => "comma.slack-read-rejection.v1",
-             "stage" => "response_shape",
-             "path" => "response",
-             "unknown_keys" => []
-           }
-
-    assert receipt["http_status"] == 200
-    assert receipt["slack_request_id_sha256"] == CanonicalJSON.sha256("req-shape-error-1")
-    refute inspect(receipt) =~ "private-U-not-a-list"
-  end
-
-  test "observed replies reject credential-shaped message content before page persistence", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :unsafe_message)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :decode_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert_receive {:slack_request, _conn}
-    refute_receive {:slack_request, _conn}, 50
-    assert receipt["outcome"] == "decode_error"
-    assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
-
-    assert receipt["rejection"] == %{
-             "schema" => "comma.slack-read-rejection.v1",
-             "stage" => "credential_material",
-             "path" => "messages[]",
-             "unknown_keys" => []
-           }
-
-    assert receipt["canonical_page_sha256"] == nil
-    assert receipt["message_count"] == nil
-
-    refute inspect(receipt) =~ "safe visible text"
-    refute inspect(receipt) =~ "private-metadata-credential"
   end
 
   test "observed replies allow and drop ordinary message metadata", %{
@@ -1088,37 +1039,6 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     refute inspect(page) =~ "display-only-task"
     refute inspect(receipt) =~ display_only_sentinel
     refute inspect(receipt) =~ "display-only-task"
-  end
-
-  test "observed replies still reject credentials nested in dropped attachment structures", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :forbidden_attachment)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :decode_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert receipt["canonical_page_sha256"] == nil
-    assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
-
-    assert receipt["rejection"] == %{
-             "schema" => "comma.slack-read-rejection.v1",
-             "stage" => "credential_material",
-             "path" => "messages[]",
-             "unknown_keys" => []
-           }
-
-    refute inspect(receipt) =~ "private-attachment-credential"
   end
 
   test "observed replies drop non-authoritative Slack structures after credential scan", %{

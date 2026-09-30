@@ -3715,14 +3715,16 @@ defmodule SalixIM.TriageIdentityFenceTest do
     assert_receive {:identity_model_authorization, ^worker_pid, :proceed}, 500
     assert_receive {:identity_model_attempt, ^worker_pid}, 500
 
-    deadline_at = System.system_time(:millisecond) + 250
+    assert {:ok, %{"deadline_at" => deadline_at}} = CasRecord.get(fence_key)
 
-    assert {:ok, %{"deadline_at" => ^deadline_at}} =
-             CasRecord.update(
-               fence_key,
-               &Map.put(&1, "deadline_at", deadline_at),
-               create: false
-             )
+    expire_deadline = fn ->
+      assert {:ok, _} =
+               CasRecord.update(
+                 fence_key,
+                 &Map.put(&1, "deadline_at", System.system_time(:millisecond) - 1),
+                 create: false
+               )
+    end
 
     timeout_message = {:triage_evaluation_timeout, scope, generation, run_id}
 
@@ -3763,11 +3765,11 @@ defmodule SalixIM.TriageIdentityFenceTest do
         assert map_size(state_after_down.late_wait) == 0
         assert System.system_time(:millisecond) < deadline_at
 
-        wait_until_ms(deadline_at)
+        expire_deadline.()
         send(runtime, timeout_message)
 
       :timeout_then_down ->
-        wait_until_ms(deadline_at)
+        expire_deadline.()
         send(runtime, timeout_message)
 
         assert eventually(fn ->
@@ -3885,10 +3887,6 @@ defmodule SalixIM.TriageIdentityFenceTest do
       },
       "settled_at" => System.system_time(:millisecond)
     }
-  end
-
-  defp wait_until_ms(deadline_at) do
-    Process.sleep(max(0, deadline_at - System.system_time(:millisecond) + 5))
   end
 
   defp recovery_observation("unused", _sentinel) do

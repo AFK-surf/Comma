@@ -181,166 +181,105 @@ test("local runs without PR waiver text can use commit message waivers", () => {
   );
 });
 
-test("Swift native client source changes require tests", () => {
-  withGitFixture(
+test("source changes without tests fail test policy", async (t) => {
+  const cases = [
     {
-      "clients/apps/electron/native/macos/NotchKit/Sources/NotchKit/NotchRuntimeModel.swift":
-        "let value = 1\n",
+      name: "Swift native client source",
+      file: "clients/apps/electron/native/macos/NotchKit/Sources/NotchKit/NotchRuntimeModel.swift",
+      initial: "let value = 1\n",
+      changed: "let value = 2\n",
+      match: /NotchRuntimeModel\.swift/,
     },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "clients/apps/electron/native/macos/NotchKit/Sources/NotchKit/NotchRuntimeModel.swift",
-        "let value = 2\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyFailed(result);
-      assert.match(result.stderr, /NotchRuntimeModel\.swift/);
+    {
+      name: "Go connector source",
+      file: "systems/connector/salix-connect/main.go",
+      initial: "package main\n",
+      changed: "package main\n\nfunc main() {}\n",
+      match: /salix-connect\/main\.go/,
     },
-  );
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, () => {
+      withGitFixture({ [testCase.file]: testCase.initial }, (cwd) => {
+        writeFixtureFile(cwd, testCase.file, testCase.changed);
+
+        const result = runPolicy(cwd);
+
+        assertPolicyFailed(result);
+        assert.match(result.stderr, testCase.match);
+      });
+    });
+  }
 });
 
-test("Go connector source changes require tests", () => {
-  withGitFixture(
+test("source changes paired with their accepted test location satisfy test policy", async (t) => {
+  const cases = [
     {
-      "systems/connector/salix-connect/main.go": "package main\n",
+      name: "Go connector source with Go tests",
+      file: "systems/connector/salix-connect/main.go",
+      initial: "package main\n",
+      changed: "package main\n\nfunc main() {}\n",
+      testFile: "systems/connector/salix-connect/main_test.go",
+      testContent: "package main\n\nfunc TestMain(t *testing.T) {}\n",
     },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "systems/connector/salix-connect/main.go",
-        "package main\n\nfunc main() {}\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyFailed(result);
-      assert.match(result.stderr, /salix-connect\/main\.go/);
-    },
-  );
-});
-
-test("Go connector source changes can be paired with Go tests", () => {
-  withGitFixture(
     {
-      "systems/connector/salix-connect/main.go": "package main\n",
-    },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "systems/connector/salix-connect/main.go",
-        "package main\n\nfunc main() {}\n",
-      );
-      writeFixtureFile(
-        cwd,
-        "systems/connector/salix-connect/main_test.go",
-        "package main\n\nfunc TestMain(t *testing.T) {}\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyPassed(result);
-    },
-  );
-});
-
-test("Swift native client source changes can be paired with SwiftPM tests", () => {
-  withGitFixture(
-    {
-      "clients/apps/electron/native/macos/NotchKit/Sources/NotchKit/Foo.swift":
-        "let value = 1\n",
-    },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "clients/apps/electron/native/macos/NotchKit/Sources/NotchKit/Foo.swift",
-        "let value = 2\n",
-      );
-      writeFixtureFile(
-        cwd,
+      name: "Swift native client source with SwiftPM tests",
+      file: "clients/apps/electron/native/macos/NotchKit/Sources/NotchKit/Foo.swift",
+      initial: "let value = 1\n",
+      changed: "let value = 2\n",
+      testFile:
         "clients/apps/electron/native/macos/NotchKit/Tests/NotchKitTests/FooTests.swift",
-        "import Testing\n\n@Test func foo() {}\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyPassed(result);
+      testContent: "import Testing\n\n@Test func foo() {}\n",
     },
-  );
-});
-
-test("Python connector source changes can be paired with Python tests", () => {
-  withGitFixture(
     {
-      "systems/connector/salix_connect.py": "VALUE = 1\n",
+      name: "Python connector source with Python tests",
+      file: "systems/connector/salix_connect.py",
+      initial: "VALUE = 1\n",
+      changed: "VALUE = 2\n",
+      testFile: "systems/connector/test_salix_connect.py",
+      testContent: "def test_value():\n    assert True\n",
     },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "systems/connector/salix_connect.py",
-        "VALUE = 2\n",
-      );
-      writeFixtureFile(
-        cwd,
-        "systems/connector/test_salix_connect.py",
-        "def test_value():\n    assert True\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyPassed(result);
-    },
-  );
-});
-
-test("client app source changes can be paired with a colocated e2e spec", () => {
-  withGitFixture(
     {
-      "clients/apps/electron/src/main/index.ts": "export const value = 1;\n",
-    },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "clients/apps/electron/src/main/index.ts",
-        "export const value = 2;\n",
-      );
-      writeFixtureFile(
-        cwd,
-        "clients/apps/electron/e2e/shell.spec.ts",
+      name: "client app source with a colocated e2e spec",
+      file: "clients/apps/electron/src/main/index.ts",
+      initial: "export const value = 1;\n",
+      changed: "export const value = 2;\n",
+      testFile: "clients/apps/electron/e2e/shell.spec.ts",
+      testContent:
         "import { test } from '@playwright/test';\ntest('shell', async () => {});\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyPassed(result);
     },
-  );
-});
-
-test("client package source changes can be paired with a colocated e2e spec", () => {
-  withGitFixture(
     {
-      "clients/packages/app/src/index.tsx": "export const value = 1;\n",
-    },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "clients/packages/app/src/index.tsx",
-        "export const value = 2;\n",
-      );
-      writeFixtureFile(
-        cwd,
-        "clients/packages/app/e2e/shell-layout.spec.ts",
+      name: "client package source with a colocated e2e spec",
+      file: "clients/packages/app/src/index.tsx",
+      initial: "export const value = 1;\n",
+      changed: "export const value = 2;\n",
+      testFile: "clients/packages/app/e2e/shell-layout.spec.ts",
+      testContent:
         "import { test } from '@playwright/test';\ntest('shell', async () => {});\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyPassed(result);
     },
-  );
+    {
+      name: "Helm chart template with its shell harness",
+      file: "k8s/comma/chart/templates/application.yaml",
+      initial: "apiVersion: apps/v1\nkind: Deployment\n",
+      changed: "apiVersion: apps/v1\nkind: StatefulSet\n",
+      testFile: "k8s/comma/chart/test-chart.sh",
+      testContent: "#!/usr/bin/env bash\nset -euo pipefail\n",
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, () => {
+      withGitFixture({ [testCase.file]: testCase.initial }, (cwd) => {
+        writeFixtureFile(cwd, testCase.file, testCase.changed);
+        writeFixtureFile(cwd, testCase.testFile, testCase.testContent);
+
+        const result = runPolicy(cwd);
+
+        assertPolicyPassed(result);
+      });
+    });
+  }
 });
 
 test("client runtime source changes require e2e even when unit tests change", () => {
@@ -568,31 +507,6 @@ test("critical non-runtime paths require tests or a waiver", async (t) => {
       );
     });
   }
-});
-
-test("Helm chart shell harnesses satisfy test policy", () => {
-  withGitFixture(
-    {
-      "k8s/comma/chart/templates/application.yaml":
-        "apiVersion: apps/v1\nkind: Deployment\n",
-    },
-    (cwd) => {
-      writeFixtureFile(
-        cwd,
-        "k8s/comma/chart/templates/application.yaml",
-        "apiVersion: apps/v1\nkind: StatefulSet\n",
-      );
-      writeFixtureFile(
-        cwd,
-        "k8s/comma/chart/test-chart.sh",
-        "#!/usr/bin/env bash\nset -euo pipefail\n",
-      );
-
-      const result = runPolicy(cwd);
-
-      assertPolicyPassed(result);
-    },
-  );
 });
 
 function withGitFixture(files: FixtureFiles, fn: FixtureCallback): void {

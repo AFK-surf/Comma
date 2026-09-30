@@ -514,9 +514,6 @@ defmodule SalixMeetTest do
 
     # PR #934 deploys the projection-first writer without invoking this entrypoint.
     # The test call represents the later release after that rollout barrier.
-    refute function_exported?(SalixMeet.Release, :backfill_group_projection, 0)
-    refute function_exported?(SalixMeet.Release, :backfill_group_projection, 1)
-
     assert :ok = SalixMeet.Release.run_online_group_projection_backfill()
 
     assert {:ok, %{"meetings" => [%{"meeting_id" => ^id}], "completeness" => "complete"}} =

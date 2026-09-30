@@ -37,11 +37,12 @@ defmodule SalixAgent.FleetStopTest do
 
           receive do
             :finish_wake ->
-              {:ok, _} =
+              {:ok, session} =
                 SalixAgent.InternalSessionFleet.ensure_started(a, session_id,
                   process_on_init: false
                 )
 
+              send(test_pid, {:woken_session, session})
               state
           after
             5_000 -> raise "coordinator test barrier was not released"
@@ -73,13 +74,17 @@ defmodule SalixAgent.FleetStopTest do
 
     Task.await(callback)
     assert :ok = Task.await(stopper)
-    assert Registry.lookup(SalixAgent.Registry, a) == []
-    assert Registry.lookup(SalixAgent.Registry, SalixAgent.AgentActor.key(a)) == []
+    assert_receive {:woken_session, session}
+    refute Process.alive?(session)
 
-    assert Registry.lookup(
-             SalixAgent.Registry,
-             SalixAgent.InternalSessionActor.key(a, session_id)
-           ) == []
+    assert eventually(fn ->
+             Registry.lookup(SalixAgent.Registry, a) == [] and
+               Registry.lookup(SalixAgent.Registry, SalixAgent.AgentActor.key(a)) == [] and
+               Registry.lookup(
+                 SalixAgent.Registry,
+                 SalixAgent.InternalSessionActor.key(a, session_id)
+               ) == []
+           end)
   end
 
   defp eventually(fun, attempts \\ 50)

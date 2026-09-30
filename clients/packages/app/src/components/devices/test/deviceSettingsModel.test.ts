@@ -16,60 +16,56 @@ describe("device settings model", () => {
     expect(deviceSystem(undefined, undefined)).toBeUndefined();
   });
 
-  it("answers a blocked agent with the switch above it, not the Connector's sentence", () => {
-    expect(
-      describeAgent(permissionBlocked, { reach: "connected", permits: false })
-    ).toEqual({ state: "blocked", detail: "0.52.0" });
-  });
-
-  it("blocks every agent on a read-only computer, however the Connector reported it", () => {
-    expect(
-      describeAgent(
-        { status: "ready", version: "2.0.14" },
-        {
-          reach: "connected",
-          permits: false,
-        }
-      )
-    ).toEqual({ state: "blocked", detail: "2.0.14" });
-  });
-
-  it("keeps a Connector reason the page cannot restate itself", () => {
-    expect(
-      describeAgent(
-        {
-          status: "unavailable",
-          issue: "authentication_required",
-          message: "Codex reports no authenticated account.",
-          version: "0.52.0",
-        },
-        { reach: "connected", permits: true }
-      )
-    ).toEqual({
-      state: "unavailable",
-      detail: "0.52.0 · Codex reports no authenticated account.",
-    });
-  });
-
-  it("drops the disconnect notice an offline computer already carries", () => {
-    expect(
-      describeAgent(
-        {
-          status: "disconnected",
-          issue: "connector_disconnected",
-          message: "The Connector is disconnected from this device.",
-        },
-        { reach: "offline", permits: true }
-      )
-    ).toEqual({ state: "unavailable" });
-  });
-
-  it("reports a ready agent once operations are allowed", () => {
-    expect(
-      describeAgent({ status: "ready" }, { reach: "connected", permits: true })
-    ).toEqual({ state: "available" });
-    expect(
-      describeAgent({ status: "available" }, { reach: "connected", permits: true })
-    ).toEqual({ state: "available" });
+  it.each([
+    {
+      name: "answers a blocked agent with the switch above it, not the Connector's sentence",
+      agent: permissionBlocked,
+      device: { reach: "connected", permits: false },
+      expected: { state: "blocked", detail: "0.52.0" },
+    },
+    {
+      name: "blocks every agent on a read-only computer, however the Connector reported it",
+      agent: { status: "ready", version: "2.0.14" },
+      device: { reach: "connected", permits: false },
+      expected: { state: "blocked", detail: "2.0.14" },
+    },
+    {
+      name: "keeps a Connector reason the page cannot restate itself",
+      agent: {
+        status: "unavailable",
+        issue: "authentication_required",
+        message: "Codex reports no authenticated account.",
+        version: "0.52.0",
+      },
+      device: { reach: "connected", permits: true },
+      expected: {
+        state: "unavailable",
+        detail: "0.52.0 · Codex reports no authenticated account.",
+      },
+    },
+    {
+      name: "drops the disconnect notice an offline computer already carries",
+      agent: {
+        status: "disconnected",
+        issue: "connector_disconnected",
+        message: "The Connector is disconnected from this device.",
+      },
+      device: { reach: "offline", permits: true },
+      expected: { state: "unavailable" },
+    },
+    {
+      name: "reports a ready agent once operations are allowed",
+      agent: { status: "ready" },
+      device: { reach: "connected", permits: true },
+      expected: { state: "available" },
+    },
+    {
+      name: "reports an available agent once operations are allowed",
+      agent: { status: "available" },
+      device: { reach: "connected", permits: true },
+      expected: { state: "available" },
+    },
+  ] as const)("$name", ({ agent, device, expected }) => {
+    expect(describeAgent(agent, device)).toEqual(expected);
   });
 });

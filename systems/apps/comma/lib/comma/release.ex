@@ -500,7 +500,7 @@ defmodule Comma.Release do
           end).(allowed_ids)
 
         "provider" ->
-          Keyword.get(opts, :provider_executor, &run_provider_sequence/0).()
+          Keyword.get(opts, :provider_executor, fn -> run_provider_sequence(allowed_ids) end).()
 
         _ ->
           raise "unknown release stage"
@@ -564,6 +564,13 @@ defmodule Comma.Release do
   def sync_billing_provider_catalog(catalog, opts) when is_map(catalog) do
     Module.concat([BillingStripe, Release])
     |> apply(:sync_catalog, [catalog, opts])
+  end
+
+  @doc "Converge the nondefault Comma portal, or bootstrap it before the first live release."
+  def sync_billing_portal(opts \\ []) do
+    Application.load(:comma_core)
+    catalog = Module.concat([Comma, Billing, PricingV1]) |> apply(:catalog, [])
+    Module.concat([BillingStripe, Release]) |> apply(:sync_portal, [catalog, opts])
   end
 
   defp sync_local_billing_catalog(catalog, opts) do
@@ -969,7 +976,23 @@ defmodule Comma.Release do
 
   defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
-  defp run_provider_sequence do
+  defp run_provider_sequence(allowed_ids) do
+    {:ok, _} = Application.ensure_all_started(:comma_core)
+
+    if "comma-signup-credits" in allowed_ids do
+      case apply(Module.concat([Comma, Billing, SignupCredits]), :converge, []) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          raise "Comma registration credits remain unresolved: #{inspect(reason)}"
+      end
+    end
+
+    if "billing-provider" in allowed_ids, do: run_billing_provider_sequence()
+  end
+
+  defp run_billing_provider_sequence do
     require_provider = System.get_env("REQUIRE_PROVIDER", "false") == "true"
 
     sync_billing_provider_catalog(
@@ -986,5 +1009,11 @@ defmodule Comma.Release do
       verify_local_mapping: true,
       max_attempts: 3
     )
+
+    if require_provider do
+      sync_billing_portal(dry_run: true, max_attempts: 3)
+      sync_billing_portal(max_attempts: 3)
+      sync_billing_portal(dry_run: true, verify: true, max_attempts: 3)
+    end
   end
 end

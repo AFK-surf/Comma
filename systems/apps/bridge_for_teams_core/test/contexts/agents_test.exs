@@ -286,58 +286,49 @@ defmodule BridgeForTeams.AgentsTest do
     assert row.payload["attrs"]["vm"] == vm
   end
 
-  test "create_agent rejects VM recreate command fields", %{project: project} do
-    assert {:error, cs} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "vm" => %{"enabled" => true, "provider" => "cloudflare", "recreate" => true}
-             })
+  # {name, create attrs, invalid field, expected messages}
+  @create_rejections [
+    {"create_agent rejects VM recreate command fields",
+     %{
+       "role" => "worker",
+       "vm" => %{"enabled" => true, "provider" => "cloudflare", "recreate" => true}
+     }, :vm, ["recreate is only supported when changing VM provider"]},
+    {"create_agent rejects mismatched stable external runtime identity",
+     %{
+       "role" => "worker",
+       "runtime_config" => %{
+         "kind" => "external",
+         "provider" => "codex",
+         "device_id" => "device_mac",
+         "runtime_id" => RuntimeIds.runtime_id("/usr/local/bin/codex"),
+         "device_runtime_id" => "not-the-derived-device-runtime-id"
+       }
+     }, :runtime_config, ["device_runtime_id must match device_id/provider/runtime_id"]},
+    {"create_agent requires complete stable external runtime binding",
+     %{
+       "role" => "worker",
+       "runtime_config" => %{
+         "kind" => "external",
+         "provider" => "codex",
+         "device_runtime_id" => "incomplete-runtime"
+       }
+     }, :runtime_config, ["must include runtime_id", "must include device_id"]},
+    {"create_agent rejects external runtime config on router agents",
+     %{
+       "role" => "router",
+       "runtime_config" => %{
+         "kind" => "external",
+         "provider" => "codex",
+         "device_runtime_id" => "device_runtime_runtime_codex"
+       }
+     }, :role, ["must be worker for external runtime agents"]}
+  ]
 
-    assert %{vm: ["recreate is only supported when changing VM provider"]} = errors_on(cs)
-  end
-
-  test "create_agent rejects mismatched stable external runtime identity", %{
-    project: project
-  } do
-    assert {:error, cs} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "runtime_config" => %{
-                 "kind" => "external",
-                 "provider" => "codex",
-                 "device_id" => "device_mac",
-                 "runtime_id" => RuntimeIds.runtime_id("/usr/local/bin/codex"),
-                 "device_runtime_id" => "not-the-derived-device-runtime-id"
-               }
-             })
-
-    assert %{
-             runtime_config: [
-               "device_runtime_id must match device_id/provider/runtime_id"
-             ]
-           } =
-             errors_on(cs)
-  end
-
-  test "create_agent requires complete stable external runtime binding", %{
-    project: project
-  } do
-    assert {:error, cs} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "runtime_config" => %{
-                 "kind" => "external",
-                 "provider" => "codex",
-                 "device_runtime_id" => "incomplete-runtime"
-               }
-             })
-
-    assert %{
-             runtime_config: [
-               "must include runtime_id",
-               "must include device_id"
-             ]
-           } = errors_on(cs)
+  for {name, attrs, field, messages} <- @create_rejections do
+    test name, %{project: project} do
+      assert {:error, cs} = Agents.create_agent(project.id, unquote(Macro.escape(attrs)))
+      assert errors_on(cs)[unquote(field)] == unquote(messages)
+    end
   end
 
   test "create_agent normalizes internal runtime config to kind only", %{project: project} do
@@ -351,20 +342,6 @@ defmodule BridgeForTeams.AgentsTest do
              })
 
     assert agent.salix["runtime_config"] == nil
-  end
-
-  test "create_agent rejects external runtime config on router agents", %{project: project} do
-    assert {:error, cs} =
-             Agents.create_agent(project.id, %{
-               "role" => "router",
-               "runtime_config" => %{
-                 "kind" => "external",
-                 "provider" => "codex",
-                 "device_runtime_id" => "device_runtime_runtime_codex"
-               }
-             })
-
-    assert %{role: ["must be worker for external runtime agents"]} = errors_on(cs)
   end
 
   test "validates role", %{project: project} do

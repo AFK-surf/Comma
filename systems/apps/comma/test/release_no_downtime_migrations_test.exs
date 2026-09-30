@@ -21,10 +21,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                                  "salix-20260924000101",
                                  "comma-20260918000000"
                                ])
-  @on_demand_cutover_version 20_260_910_140_000
   @recertification_versions [20_260_910_140_001, 20_260_915_183_001]
-  @routine_generation_cutover_version 20_260_912_000_001
-  @allocation_authority_cutover_version 20_260_921_090_000
 
   test "new ordinary release migrations remain rolling-compatible" do
     violating_steps =
@@ -41,98 +38,88 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
     assert violating_steps == []
   end
 
-  test "Task graph retirement requires exclusive cutover and retained-data backup" do
-    current = facts()
+  # {name, owner, version, expected release mode, step checks}. A `true` check
+  # must be truthy, `false` falsy, and any other value equal.
+  @incompatible_step_cases [
+    {"Task graph retirement requires exclusive cutover and retained-data backup", :salix,
+     20_260_924_000_101, "exclusive",
+     [
+       {["phase"], "exclusive"},
+       {["safety", "backupRequired"], true},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false}
+     ]},
+    {"on-demand workload storage cutover requires the exclusive release path", :salix,
+     20_260_910_140_000, "exclusive",
+     [
+       {["phase"], "exclusive"},
+       {["safety", "destructive"], true},
+       {["safety", "backupRequired"], true}
+     ]},
+    {"run capacity queue removal uses rolling release with command backup evidence", :salix,
+     20_260_916_000_100, "online",
+     [
+       {["safety", "backupRequired"], true},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false}
+     ]},
+    {"disposable Loop grants are removed online without classifying retained Loop rows as destructive",
+     :salix, 20_260_918_090_000, "online",
+     [
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["safety", "destructive"], false},
+       {["safety", "backupRequired"], false},
+       {["execution", "transactional"], true}
+     ]},
+    {"allocation authority replaces disposable lease projections online", :salix,
+     20_260_921_090_000, "online",
+     [
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["safety", "destructive"], false},
+       {["safety", "backupRequired"], false},
+       {["execution", "transactional"], true}
+     ]},
+    {"Routine generation cutover requires writer fencing and backup evidence", :comma,
+     20_260_912_000_001, "exclusive",
+     [
+       {["phase"], "exclusive"},
+       {["execution", "transactional"], true},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["safety", "destructive"], false},
+       {["safety", "backupRequired"], true},
+       {["safety", "rollbackStrategy"], "none"}
+     ]}
+  ]
 
-    assert {:ok, plan} =
-             Comma.ReleasePlan.plan(
-               facts: fn ->
-                 facts(%{salix: set_status(current.salix, 20_260_924_000_101, :down)})
-               end
-             )
+  for {name, owner, version, mode, checks} <- @incompatible_step_cases do
+    test name do
+      owner = unquote(owner)
+      version = unquote(version)
+      current = facts()
 
-    assert plan.requiredMode == "exclusive"
-    assert [%{"id" => "salix-20260924000101"} = step] = plan.pendingSteps
-    assert step["phase"] == "exclusive"
-    assert step["safety"]["backupRequired"]
-    refute step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-  end
+      assert {:ok, plan} =
+               Comma.ReleasePlan.plan(
+                 facts: fn ->
+                   facts(%{owner => set_status(Map.fetch!(current, owner), version, :down)})
+                 end
+               )
 
-  test "on-demand workload storage cutover requires the exclusive release path" do
-    current = facts()
+      assert plan.requiredMode == unquote(mode)
+      assert [step] = plan.pendingSteps
+      assert step["id"] == "#{owner}-#{version}"
 
-    assert {:ok, plan} =
-             Comma.ReleasePlan.plan(
-               facts: fn ->
-                 facts(%{
-                   salix: set_status(current.salix, @on_demand_cutover_version, :down)
-                 })
-               end
-             )
+      for {path, expected} <- unquote(Macro.escape(checks)) do
+        actual = get_in(step, path)
 
-    assert plan.requiredMode == "exclusive"
-    assert [%{"id" => "salix-20260910140000"} = step] = plan.pendingSteps
-    assert step["phase"] == "exclusive"
-    assert step["safety"]["destructive"]
-    assert step["safety"]["backupRequired"]
-  end
-
-  test "run capacity queue removal uses rolling release with command backup evidence" do
-    current = facts()
-
-    assert {:ok, plan} =
-             Comma.ReleasePlan.plan(
-               facts: fn ->
-                 facts(%{salix: set_status(current.salix, 20_260_916_000_100, :down)})
-               end
-             )
-
-    assert plan.requiredMode == "online"
-    assert [%{"id" => "salix-20260916000100"} = step] = plan.pendingSteps
-    assert step["safety"]["backupRequired"]
-    refute step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-  end
-
-  test "disposable Loop grants are removed online without classifying retained Loop rows as destructive" do
-    current = facts()
-
-    assert {:ok, plan} =
-             Comma.ReleasePlan.plan(
-               facts: fn ->
-                 facts(%{salix: set_status(current.salix, 20_260_918_090_000, :down)})
-               end
-             )
-
-    assert plan.requiredMode == "online"
-    assert [%{"id" => "salix-20260918090000"} = step] = plan.pendingSteps
-    refute step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-    refute step["safety"]["destructive"]
-    refute step["safety"]["backupRequired"]
-    assert step["execution"]["transactional"]
-  end
-
-  test "allocation authority replaces disposable lease projections online" do
-    current = facts()
-
-    assert {:ok, plan} =
-             Comma.ReleasePlan.plan(
-               facts: fn ->
-                 facts(%{
-                   salix: set_status(current.salix, @allocation_authority_cutover_version, :down)
-                 })
-               end
-             )
-
-    assert plan.requiredMode == "online"
-    assert [%{"id" => "salix-20260921090000"} = step] = plan.pendingSteps
-    refute step["compatibility"]["oldRuntimeRead"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-    refute step["safety"]["destructive"]
-    refute step["safety"]["backupRequired"]
-    assert step["execution"]["transactional"]
+        case expected do
+          true -> assert actual, "expected #{inspect(path)} to be truthy"
+          false -> refute actual, "expected #{inspect(path)} to be falsy"
+          value -> assert actual == value
+        end
+      end
+    end
   end
 
   test "recovery projection recertification requires an exclusive, non-destructive release" do
@@ -153,28 +140,6 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
       refute step["safety"]["destructive"]
       refute step["safety"]["backupRequired"]
     end
-  end
-
-  test "Routine generation cutover requires writer fencing and backup evidence" do
-    current = facts()
-
-    assert {:ok, plan} =
-             Comma.ReleasePlan.plan(
-               facts: fn ->
-                 facts(%{
-                   comma: set_status(current.comma, @routine_generation_cutover_version, :down)
-                 })
-               end
-             )
-
-    assert plan.requiredMode == "exclusive"
-    assert [%{"id" => "comma-20260912000001"} = step] = plan.pendingSteps
-    assert step["phase"] == "exclusive"
-    assert step["execution"]["transactional"]
-    refute step["compatibility"]["oldRuntimeWrite"]
-    refute step["safety"]["destructive"]
-    assert step["safety"]["backupRequired"]
-    assert step["safety"]["rollbackStrategy"] == "none"
   end
 
   test "meeting projection sealing is a later rolling-compatible release" do
@@ -346,7 +311,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
              )
 
     assert plan.requiredMode == "blocked_legacy"
-    assert plan.providerPendingIDs == ["billing-provider"]
+    assert plan.providerPendingIDs == ["billing-provider", "comma-signup-credits"]
     parent = self()
 
     assert_raise RuntimeError, fn ->

@@ -1,72 +1,68 @@
 import { describe, expect, it } from "vitest";
 import { formatOriginalOptionLabel } from "../property-options";
+import type { AuthoredLayoutValue } from "../authored-values";
 
 describe("formatOriginalOptionLabel", () => {
-  it("shows the authored variable name instead of Original", () => {
-    expect(
-      formatOriginalOptionLabel(
+  it.each(
+    (
+      [
         {
-          computed: "8px",
-          confidence: "authored",
-          expression: "var(--spacing-md)",
-          variables: ["--spacing-md"],
+          name: "shows the authored variable name instead of Original",
+          value: {
+            computed: "8px",
+            confidence: "authored",
+            expression: "var(--spacing-md)",
+            variables: ["--spacing-md"],
+          },
+          restoring: false,
+          expected: "--spacing-md · 8px",
         },
-        false
-      )
-    ).toBe("--spacing-md · 8px");
-  });
-
-  it("shows variables used inside calc expressions", () => {
-    expect(
-      formatOriginalOptionLabel(
         {
-          computed: "32px",
-          confidence: "authored",
-          expression: "calc(var(--spacing) * 8)",
-          variables: ["--spacing"],
+          name: "shows variables used inside calc expressions",
+          value: {
+            computed: "32px",
+            confidence: "authored",
+            expression: "calc(var(--spacing) * 8)",
+            variables: ["--spacing"],
+          },
+          restoring: false,
+          expected: "--spacing · 32px",
         },
-        false
-      )
-    ).toBe("--spacing · 32px");
-  });
-
-  it("keeps uncertainty for inferred variables", () => {
-    expect(
-      formatOriginalOptionLabel(
         {
-          computed: "12px",
-          confidence: "inferred",
-          variables: ["--space-large"],
+          name: "keeps uncertainty for inferred variables",
+          value: {
+            computed: "12px",
+            confidence: "inferred",
+            variables: ["--space-large"],
+          },
+          restoring: false,
+          expected: "≈ --space-large · 12px",
         },
-        false
-      )
-    ).toBe("≈ --space-large · 12px");
-  });
-
-  it("uses Original only when no variable is available", () => {
-    expect(
-      formatOriginalOptionLabel(
         {
-          computed: "270px",
-          confidence: "computed",
-          variables: [],
+          name: "uses Original only when no variable is available",
+          value: { computed: "270px", confidence: "computed", variables: [] },
+          restoring: false,
+          expected: "Original · 270px",
         },
-        false
-      )
-    ).toBe("Original · 270px");
-  });
-
-  it("names the variable when restoring a preview", () => {
-    expect(
-      formatOriginalOptionLabel(
         {
-          computed: "8px",
-          confidence: "authored",
-          expression: "var(--spacing-md)",
-          variables: ["--spacing-md"],
+          name: "names the variable when restoring a preview",
+          value: {
+            computed: "8px",
+            confidence: "authored",
+            expression: "var(--spacing-md)",
+            variables: ["--spacing-md"],
+          },
+          restoring: true,
+          expected: "Restore · --spacing-md · 8px",
         },
-        true
-      )
-    ).toBe("Restore · --spacing-md · 8px");
+      ] satisfies Array<{
+        name: string;
+        value: AuthoredLayoutValue;
+        restoring: boolean;
+        expected: string;
+      }>
+    ).map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { value, restoring, expected }) => {
+    expect(formatOriginalOptionLabel(value, restoring)).toBe(expected);
   });
 });

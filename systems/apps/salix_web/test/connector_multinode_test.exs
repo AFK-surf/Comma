@@ -14,7 +14,8 @@ defmodule SalixWeb.ConnectorMultinodeTest do
       trip to the Go process. There is NO local connector socket on A.
 
   Both nodes share the same MinIO bucket (`salix-test`) so the durable record is
-  visible cross-node. Requires BEAM distribution + MinIO + Go; the module skips itself if distribution is unavailable.
+  visible cross-node. Requires BEAM distribution + MinIO + Go; the module fails
+  if distribution is unavailable.
   """
   use ExUnit.Case, async: false
 
@@ -102,34 +103,30 @@ defmodule SalixWeb.ConnectorMultinodeTest do
         {:ok, node: node, peer_port: peer_port}
 
       {:error, reason} ->
-        {:ok, skip: reason}
+        flunk("BEAM distribution is unavailable: #{inspect(reason)}")
     end
   end
 
-  setup context do
-    if context[:skip] do
-      {:ok, skip: true}
-    else
-      # Node A also talks to the shared MinIO bucket (fakes are per-VM).
-      Application.put_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
-      Application.put_env(:salix_store, :s3_bucket, "salix-test")
-      Application.put_env(:salix_agent, :env_dispatch, SalixWeb.EnvDispatch)
-      File.mkdir_p!(@root)
-      on_exit(fn -> File.rm_rf(@root) end)
-      :ok
-    end
+  setup do
+    # Node A also talks to the shared MinIO bucket (fakes are per-VM).
+    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
+    Application.put_env(:salix_store, :s3_bucket, "salix-test")
+    Application.put_env(:salix_agent, :env_dispatch, SalixWeb.EnvDispatch)
+    File.mkdir_p!(@root)
+    on_exit(fn -> File.rm_rf(@root) end)
+    :ok
   end
 
   test "agent on node A drives a real connector bridged on node B via :erpc", ctx do
-    if ctx[:skip], do: skip(), else: run(ctx)
+    run(ctx)
   end
 
   test "idle archive on node A reaches a Cloudflare Connector owned by node B", ctx do
-    if ctx[:skip], do: skip(), else: run_remote_idle_archive(ctx.node)
+    run_remote_idle_archive(ctx.node)
   end
 
   test "external-event submits from two nodes converge on the stable Ring owner", ctx do
-    if ctx[:skip], do: skip(), else: run_coordinator_route(ctx.node)
+    run_coordinator_route(ctx.node)
   end
 
   defp run_remote_idle_archive(peer_node) do
@@ -729,6 +726,4 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     :ok = :gen_tcp.close(socket)
     port
   end
-
-  defp skip, do: ExUnit.configure(exclude: [])
 end

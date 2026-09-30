@@ -3,6 +3,7 @@ defmodule Comma.Billing.PricingV1 do
 
   @effective_at ~U[2026-06-01 00:00:00Z]
   @annual_effective_at ~U[2026-09-01 00:00:00Z]
+  @pro_plus_effective_at ~U[2026-09-30 00:00:00Z]
   @policy %{"llm_models" => %{"mode" => "unrestricted", "models" => []}}
 
   @spec catalog() :: map()
@@ -13,21 +14,26 @@ defmodule Comma.Billing.PricingV1 do
       packages: [
         package("comma_value", "Comma Value", "Comma subscription for regular personal usage."),
         package("comma_pro", "Comma Pro", "Comma subscription for heavier personal usage."),
+        package(
+          "comma_pro_plus",
+          "Comma Pro Plus",
+          "Comma subscription with 80M credits per month."
+        ),
         package("comma_max", "Comma Max", "Comma subscription for high-volume personal usage."),
         package(
           "comma_addon_4m",
           "Comma 4M Credit Pack",
-          "One-time Comma credits for the current billing period."
+          "One-time Comma credits until the end of the UTC month in which payment completes."
         ),
         package(
           "comma_addon_8m",
           "Comma 8M Credit Pack",
-          "One-time Comma credits for the current billing period."
+          "One-time Comma credits until the end of the UTC month in which payment completes."
         ),
         package(
           "comma_addon_20m",
           "Comma 20M Credit Pack",
-          "One-time Comma credits for the current billing period."
+          "One-time Comma credits until the end of the UTC month in which payment completes."
         )
       ],
       versions: [
@@ -53,6 +59,18 @@ defmodule Comma.Billing.PricingV1 do
           6_000,
           "Comma Pro monthly plan: 60M credits per month."
         ),
+        version(
+          "comma_pro_plus",
+          "Comma Pro Plus",
+          lookup_key("pro_plus_v1"),
+          "subscription",
+          "month",
+          80_000_000,
+          "current_period",
+          8_000,
+          "Comma Pro Plus monthly plan: 80M credits per month."
+        )
+        |> Map.merge(%{version: "2026-09-30", effective_at: @pro_plus_effective_at}),
         version(
           "comma_max",
           "Comma Max",
@@ -89,6 +107,18 @@ defmodule Comma.Billing.PricingV1 do
         )
         |> annual_version(),
         version(
+          "comma_pro_plus",
+          "Comma Pro Plus",
+          lookup_key("pro_plus_annual_v1"),
+          "subscription",
+          "year",
+          80_000_000,
+          "current_period",
+          80_000,
+          "Comma Pro Plus annual plan: billed yearly with 80M credits granted per month."
+        )
+        |> Map.merge(%{version: "2026-09-30-annual", effective_at: @pro_plus_effective_at}),
+        version(
           "comma_max",
           "Comma Max",
           lookup_key("max_annual_v1"),
@@ -109,7 +139,7 @@ defmodule Comma.Billing.PricingV1 do
           4_000_000,
           "current_month",
           499,
-          "Comma 4M one-time credit pack for the current billing period."
+          "Comma 4M one-time credit pack until the end of the UTC month in which payment completes."
         ),
         version(
           "comma_addon_8m",
@@ -120,7 +150,7 @@ defmodule Comma.Billing.PricingV1 do
           8_000_000,
           "current_month",
           999,
-          "Comma 8M one-time credit pack for the current billing period."
+          "Comma 8M one-time credit pack until the end of the UTC month in which payment completes."
         ),
         version(
           "comma_addon_20m",
@@ -131,7 +161,7 @@ defmodule Comma.Billing.PricingV1 do
           20_000_000,
           "current_month",
           1_999,
-          "Comma 20M one-time credit pack for the current billing period."
+          "Comma 20M one-time credit pack until the end of the UTC month in which payment completes."
         )
       ]
     }

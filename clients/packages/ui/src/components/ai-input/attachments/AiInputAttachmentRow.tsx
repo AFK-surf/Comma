@@ -23,6 +23,8 @@ export const AiInputAttachmentRow = ({
 
   return (
     <div className="comma-ai-input-attachment-row w-full" ref={rowRef}>
+      {/* The horizontal scroll viewport clips on both axes; pt-xs and pr-xs
+          keep the tiles' 4px focus ring visible at the top and trailing edge. */}
       <ScrollArea
         aria-label={messages.ui_ai_attachments()}
         className="w-full"

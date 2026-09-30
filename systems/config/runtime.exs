@@ -932,6 +932,21 @@ if is_binary(comma_google_electron_client_secret) and comma_google_electron_clie
   config :comma_core, :google_auth, electron_client_secret: comma_google_electron_client_secret
 end
 
+signup_cap =
+  SalixStore.ConfigJson.integer(salix_config, ~w(comma billing signup_credit_daily_cap_usd)) ||
+    2_000
+
+if signup_cap < 0, do: raise("comma.billing.signup_credit_daily_cap_usd must be nonnegative")
+config :comma_core, signup_credit_daily_cap_usd: signup_cap
+
+if domains =
+     SalixStore.ConfigJson.get(salix_config, ~w(comma billing signup_credit_excluded_domains)) do
+  unless is_list(domains) and Enum.all?(domains, &(is_binary(&1) and &1 != "")),
+    do: raise("comma.billing.signup_credit_excluded_domains must be a list of domains")
+
+  config :comma_core, signup_credit_excluded_domains: Enum.map(domains, &String.downcase/1)
+end
+
 # OAuth IdP key-encryption key (docs/identity-security.md, D3 as revised
 # 2026-08-25): signing key pairs live in the shared comma_oauth_signing_keys
 # table; this KEK (32 bytes, base64) only unwraps their encrypted private

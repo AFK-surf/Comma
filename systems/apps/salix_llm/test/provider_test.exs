@@ -455,44 +455,34 @@ defmodule SalixLlm.ProviderTest do
     assert MockServer.last().body["enable_thinking"] == true
   end
 
-  test "chat-completions uses max_completion_tokens for newer OpenAI models", %{base: base} do
-    MockServer.set("/chat/completions", %{
-      "choices" => [%{"message" => %{"content" => "chat"}, "finish_reason" => "stop"}]
-    })
+  # {name, model, token field sent, token field omitted}
+  @max_token_field_cases [
+    {"chat-completions uses max_completion_tokens for newer OpenAI models", "gpt-5-mini",
+     "max_completion_tokens", "max_tokens"},
+    {"chat-completions keeps max_tokens for legacy chat models", "gpt-4o", "max_tokens",
+     "max_completion_tokens"}
+  ]
 
-    llm = %{
-      "protocol" => "chat_completions",
-      "base_url" => base,
-      "api_key" => "oai-key",
-      "model" => "gpt-5-mini",
-      "max_tokens" => 64
-    }
+  for {name, model, sent, omitted} <- @max_token_field_cases do
+    test name, %{base: base} do
+      MockServer.set("/chat/completions", %{
+        "choices" => [%{"message" => %{"content" => "chat"}, "finish_reason" => "stop"}]
+      })
 
-    assert {:final, "chat"} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
+      llm = %{
+        "protocol" => "chat_completions",
+        "base_url" => base,
+        "api_key" => "oai-key",
+        "model" => unquote(model),
+        "max_tokens" => 64
+      }
 
-    req = MockServer.last()
-    assert req.body["max_completion_tokens"] == 64
-    refute Map.has_key?(req.body, "max_tokens")
-  end
+      assert {:final, "chat"} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
 
-  test "chat-completions keeps max_tokens for legacy chat models", %{base: base} do
-    MockServer.set("/chat/completions", %{
-      "choices" => [%{"message" => %{"content" => "chat"}, "finish_reason" => "stop"}]
-    })
-
-    llm = %{
-      "protocol" => "chat_completions",
-      "base_url" => base,
-      "api_key" => "oai-key",
-      "model" => "gpt-4o",
-      "max_tokens" => 64
-    }
-
-    assert {:final, "chat"} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
-
-    req = MockServer.last()
-    assert req.body["max_tokens"] == 64
-    refute Map.has_key?(req.body, "max_completion_tokens")
+      req = MockServer.last()
+      assert req.body[unquote(sent)] == 64
+      refute Map.has_key?(req.body, unquote(omitted))
+    end
   end
 
   test "chat-completions tool calls parse into the LLM result shape", %{base: base} do
@@ -1235,82 +1225,125 @@ defmodule SalixLlm.ProviderTest do
     assert MockServer.count("/chat/completions") == before_count + 1
   end
 
-  test "provider request timeout is retryable after transport retries are exhausted", %{
-    base: base
-  } do
-    MockServer.set(
-      "/chat/completions",
-      {:status, 408, %{"error" => %{"message" => "request timeout"}}}
-    )
-
-    llm = %{"protocol" => "chat_completions", "base_url" => base, "api_key" => "oai-key"}
-    {_rec, on_delta} = recorder()
-
-    assert {:error,
-            %{
-              "category" => "retryable_provider_error",
-              "provider" => "openai_chat",
-              "retryable" => true,
-              "status" => 408
-            }} = Provider.complete_stream([%{role: "user", content: "hi"}], [], on_delta, llm)
-  end
-
-  test "provider context overflow is classified separately", %{base: base} do
-    MockServer.set("/chat/completions", {
-      :status,
-      400,
-      %{"error" => %{"code" => "context_length_exceeded", "message" => "too many tokens"}}
-    })
-
-    llm = %{"protocol" => "chat_completions", "base_url" => base, "api_key" => "oai-key"}
-
-    assert {:error,
-            %{
-              "category" => "context_overflow",
-              "provider" => "openai_chat",
-              "retryable" => false,
-              "status" => 400
-            }} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
-  end
-
-  test "chat-completions blocking provider errors return structured categories", %{base: base} do
-    MockServer.set("/chat/completions", {:status, 401, %{"error" => %{"message" => "bad key"}}})
-
-    llm = %{"protocol" => "chat_completions", "base_url" => base, "api_key" => "oai-key"}
-
-    assert {:error,
-            %{
-              "category" => "permanent_provider_error",
-              "provider" => "openai_chat",
-              "retryable" => false,
-              "status" => 401
-            }} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
-  end
-
-  test "anthropic blocking context overflow returns structured error", %{base: base} do
-    MockServer.set("/v1/messages", {
-      :status,
-      400,
+  # {name, protocol, credential, provider response, call mode, expected error
+  # fields, body pattern}. Every row fails before any streamed delta.
+  @provider_error_cases [
+    {"provider request timeout is retryable after transport retries are exhausted",
+     "chat_completions", {"api_key", "oai-key"},
+     {:status, 408, %{"error" => %{"message" => "request timeout"}}}, :stream,
+     %{
+       "category" => "retryable_provider_error",
+       "provider" => "openai_chat",
+       "retryable" => true,
+       "status" => 408
+     }, nil},
+    {"provider context overflow is classified separately", "chat_completions",
+     {"api_key", "oai-key"},
+     {:status, 400,
+      %{"error" => %{"code" => "context_length_exceeded", "message" => "too many tokens"}}},
+     :blocking,
+     %{
+       "category" => "context_overflow",
+       "provider" => "openai_chat",
+       "retryable" => false,
+       "status" => 400
+     }, nil},
+    {"chat-completions blocking provider errors return structured categories", "chat_completions",
+     {"api_key", "oai-key"}, {:status, 401, %{"error" => %{"message" => "bad key"}}}, :blocking,
+     %{
+       "category" => "permanent_provider_error",
+       "provider" => "openai_chat",
+       "retryable" => false,
+       "status" => 401
+     }, nil},
+    {"anthropic blocking context overflow returns structured error", "anthropic",
+     {"auth_token", "anth-token"},
+     {:status, 400,
       %{
         "type" => "error",
         "error" => %{
           "type" => "invalid_request_error",
           "message" => "prompt is too long: 233153 tokens > 200000 maximum"
         }
-      }
-    })
+      }}, :blocking,
+     %{
+       "category" => "context_overflow",
+       "provider" => "anthropic",
+       "retryable" => false,
+       "status" => 400
+     }, "prompt is too long"},
+    {"anthropic streaming provider errors return structured categories", "anthropic",
+     {"auth_token", "anth-token"},
+     {:status, 500, %{"type" => "error", "error" => %{"message" => "server busy"}}}, :stream,
+     %{
+       "category" => "retryable_provider_error",
+       "provider" => "anthropic",
+       "retryable" => true,
+       "status" => 500
+     }, nil},
+    {"anthropic streaming context overflow returns structured error", "anthropic",
+     {"auth_token", "anth-token"},
+     {:status, 400,
+      Jason.encode!(%{
+        "type" => "error",
+        "error" => %{"message" => "input exceeds context limit"}
+      })}, :stream,
+     %{
+       "category" => "context_overflow",
+       "provider" => "anthropic",
+       "retryable" => false,
+       "status" => 400
+     }, nil},
+    {"responses incomplete context overflow returns structured error", "responses",
+     {"api_key", "resp-key"},
+     %{
+       "status" => "incomplete",
+       "incomplete_details" => %{"reason" => "max_context_length_exceeded"},
+       "output" => []
+     }, :blocking,
+     %{
+       "category" => "context_overflow",
+       "provider" => "openai_responses",
+       "provider_status" => "incomplete"
+     }, nil}
+  ]
 
-    llm = %{"protocol" => "anthropic", "base_url" => base, "auth_token" => "anth-token"}
+  for {name, protocol, {credential, secret}, response, mode, expected, body_pattern} <-
+        @provider_error_cases do
+    test name, %{base: base} do
+      protocol = unquote(protocol)
 
-    assert {:error,
-            %{
-              "category" => "context_overflow",
-              "provider" => "anthropic",
-              "retryable" => false,
-              "status" => 400
-            } = meta} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
+      path =
+        %{
+          "anthropic" => "/v1/messages",
+          "chat_completions" => "/chat/completions",
+          "responses" => "/responses"
+        }
+        |> Map.fetch!(protocol)
 
-    assert meta["body"] =~ "prompt is too long"
+      MockServer.set(path, unquote(Macro.escape(response)))
+      llm = %{"protocol" => protocol, "base_url" => base, unquote(credential) => unquote(secret)}
+      messages = [%{role: "user", content: "hi"}]
+
+      assert {:error, error} =
+               (case unquote(mode) do
+                  :blocking ->
+                    Provider.complete(messages, [], llm)
+
+                  :stream ->
+                    {rec, on_delta} = recorder()
+                    result = Provider.complete_stream(messages, [], on_delta, llm)
+                    assert deltas(rec) == []
+                    result
+                end)
+
+      expected = unquote(Macro.escape(expected))
+      assert Map.take(error, Map.keys(expected)) == expected
+
+      if pattern = unquote(Macro.escape(body_pattern)) do
+        assert error["body"] =~ pattern
+      end
+    end
   end
 
   test "anthropic blocking provider and transport errors return structured categories", %{
@@ -1344,51 +1377,6 @@ defmodule SalixLlm.ProviderTest do
               "provider" => "anthropic",
               "retryable" => true
             }} = Provider.complete([%{role: "user", content: "hi"}], [], closed_port_llm)
-  end
-
-  test "anthropic streaming provider errors return structured categories", %{base: base} do
-    MockServer.set("/v1/messages", {
-      :status,
-      500,
-      %{"type" => "error", "error" => %{"message" => "server busy"}}
-    })
-
-    llm = %{"protocol" => "anthropic", "base_url" => base, "auth_token" => "anth-token"}
-    {rec, on_delta} = recorder()
-
-    assert {:error,
-            %{
-              "category" => "retryable_provider_error",
-              "provider" => "anthropic",
-              "retryable" => true,
-              "status" => 500
-            }} = Provider.complete_stream([%{role: "user", content: "hi"}], [], on_delta, llm)
-
-    assert deltas(rec) == []
-  end
-
-  test "anthropic streaming context overflow returns structured error", %{base: base} do
-    MockServer.set("/v1/messages", {
-      :status,
-      400,
-      Jason.encode!(%{
-        "type" => "error",
-        "error" => %{"message" => "input exceeds context limit"}
-      })
-    })
-
-    llm = %{"protocol" => "anthropic", "base_url" => base, "auth_token" => "anth-token"}
-    {rec, on_delta} = recorder()
-
-    assert {:error,
-            %{
-              "category" => "context_overflow",
-              "provider" => "anthropic",
-              "retryable" => false,
-              "status" => 400
-            }} = Provider.complete_stream([%{role: "user", content: "hi"}], [], on_delta, llm)
-
-    assert deltas(rec) == []
   end
 
   test "responses protocol streams deltas and preserves raw output metadata", %{base: base} do
@@ -1484,23 +1472,6 @@ defmodule SalixLlm.ProviderTest do
     assert deltas(rec) == []
     assert [%{"type" => "message"}, %{"type" => "function_call"}] = meta["responses_items"]
     assert MockServer.last().body["stream"] == true
-  end
-
-  test "responses incomplete context overflow returns structured error", %{base: base} do
-    MockServer.set("/responses", %{
-      "status" => "incomplete",
-      "incomplete_details" => %{"reason" => "max_context_length_exceeded"},
-      "output" => []
-    })
-
-    llm = %{"protocol" => "responses", "base_url" => base, "api_key" => "resp-key"}
-
-    assert {:error,
-            %{
-              "category" => "context_overflow",
-              "provider" => "openai_responses",
-              "provider_status" => "incomplete"
-            }} = Provider.complete([%{role: "user", content: "go"}], [], llm)
   end
 
   test "responses incomplete output truncation returns the available assistant text", %{

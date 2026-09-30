@@ -88,20 +88,27 @@ defmodule SalixStore.ConfigJsonTest do
   }
 
   describe "comma.synchronicity" do
-    test "maps a complete integration config and normalizes the origin" do
-      secret = String.duplicate("s", 32)
+    for {name, base_url, normalized} <- [
+          {"maps a complete integration config and normalizes the origin",
+           "https://sync.example.test/", "https://sync.example.test"},
+          {"allows HTTP only for loopback development origins", "http://127.0.0.1:4400/",
+           "http://127.0.0.1:4400"}
+        ] do
+      test name do
+        secret = String.duplicate("s", 32)
 
-      assert ConfigJson.synchronicity_env(%{
-               "comma" => %{
-                 "synchronicity" => %{
-                   "base_url" => "https://sync.example.test/",
-                   "provisioning_secret" => secret
+        assert ConfigJson.synchronicity_env(%{
+                 "comma" => %{
+                   "synchronicity" => %{
+                     "base_url" => unquote(base_url),
+                     "provisioning_secret" => secret
+                   }
                  }
-               }
-             }) == [
-               {:comma_core, :synchronicity,
-                [base_url: "https://sync.example.test", provisioning_secret: secret]}
-             ]
+               }) == [
+                 {:comma_core, :synchronicity,
+                  [base_url: unquote(normalized), provisioning_secret: secret]}
+               ]
+      end
     end
 
     test "stays disabled only when the entire section is absent" do
@@ -146,22 +153,6 @@ defmodule SalixStore.ConfigJsonTest do
           ConfigJson.synchronicity_env(%{"comma" => %{"synchronicity" => section}})
         end
       end
-    end
-
-    test "allows HTTP only for loopback development origins" do
-      secret = String.duplicate("s", 32)
-
-      assert ConfigJson.synchronicity_env(%{
-               "comma" => %{
-                 "synchronicity" => %{
-                   "base_url" => "http://127.0.0.1:4400/",
-                   "provisioning_secret" => secret
-                 }
-               }
-             }) == [
-               {:comma_core, :synchronicity,
-                [base_url: "http://127.0.0.1:4400", provisioning_secret: secret]}
-             ]
     end
 
     test "does not echo an invalid provisioning secret in the boot error" do
@@ -351,40 +342,23 @@ defmodule SalixStore.ConfigJsonTest do
     refute Enum.any?(env, fn {_a, k, _v} -> k == :advertise_port end)
   end
 
-  test "Agent VMM multi-scope registration gate is explicit and defaults downstream" do
-    assert {:salix_store, :agent_vmm_multi_scope_registration_enabled, false} in ConfigJson.app_env(
-             %{
-               "agent_vmm" => %{"multi_scope_registration_enabled" => false}
-             }
-           )
+  for {gate, config_key, env_key} <- [
+        {"multi-scope registration", "multi_scope_registration_enabled",
+         :agent_vmm_multi_scope_registration_enabled},
+        {"Environment-scoped binding", "environment_scoped_bindings_enabled",
+         :agent_vmm_environment_scoped_bindings_enabled}
+      ] do
+    test "Agent VMM #{gate} gate is explicit and defaults downstream" do
+      for value <- [false, true] do
+        assert {:salix_store, unquote(env_key), value} in ConfigJson.app_env(%{
+                 "agent_vmm" => %{unquote(config_key) => value}
+               })
+      end
 
-    assert {:salix_store, :agent_vmm_multi_scope_registration_enabled, true} in ConfigJson.app_env(
-             %{
-               "agent_vmm" => %{"multi_scope_registration_enabled" => true}
-             }
-           )
-
-    refute Enum.any?(ConfigJson.app_env(%{}), fn {_app, key, _value} ->
-             key == :agent_vmm_multi_scope_registration_enabled
-           end)
-  end
-
-  test "Agent VMM Environment-scoped binding gate is explicit and defaults downstream" do
-    assert {:salix_store, :agent_vmm_environment_scoped_bindings_enabled, false} in ConfigJson.app_env(
-             %{
-               "agent_vmm" => %{"environment_scoped_bindings_enabled" => false}
-             }
-           )
-
-    assert {:salix_store, :agent_vmm_environment_scoped_bindings_enabled, true} in ConfigJson.app_env(
-             %{
-               "agent_vmm" => %{"environment_scoped_bindings_enabled" => true}
-             }
-           )
-
-    refute Enum.any?(ConfigJson.app_env(%{}), fn {_app, key, _value} ->
-             key == :agent_vmm_environment_scoped_bindings_enabled
-           end)
+      refute Enum.any?(ConfigJson.app_env(%{}), fn {_app, key, _value} ->
+               key == unquote(env_key)
+             end)
+    end
   end
 
   test "Agent VMM install material remains one server-owned catalog object" do
@@ -914,8 +888,8 @@ defmodule SalixStore.ConfigJsonTest do
   end
 
   test "unknown sections are ignored (forward compatibility)" do
-    env = ConfigJson.app_env(@json)
-    refute Enum.any?(env, fn {_a, k, _v} -> k == :unknown end)
+    assert Map.has_key?(@json, "future_section")
+    assert ConfigJson.app_env(@json) == ConfigJson.app_env(Map.delete(@json, "future_section"))
   end
 
   test "load/1: nil path is empty config; bad JSON and non-objects error" do

@@ -36,22 +36,13 @@ const toggleCommandPalette = async (
 const commandPalette = (page: Parameters<typeof installBrowserTestSession>[0]) =>
   page.getByRole("dialog", { name: "Search Comma" });
 
-test("Settings hides media and Drive shortcuts from the page and search", async ({
-  page,
-}) => {
+test("Settings offers no Drive shortcut in the web client", async ({ page }) => {
   await installSession(page);
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
-  await expect(
-    page.getByRole("heading", { level: 2, name: "Navigation" })
-  ).toBeVisible();
-  await expect(page.getByRole("heading", { level: 2, name: "Media" })).toHaveCount(0);
-  await expect(page.locator('[data-setting-id^="keyboard.media"]')).toHaveCount(0);
   // The web client has no Drive entry, so it offers no shortcut to one.
   await expect(page.locator('[data-setting-id="keyboard.go-inbox"]')).toBeVisible();
   await expect(page.locator('[data-setting-id="keyboard.go-drive"]')).toHaveCount(0);
-  await page.getByRole("searchbox", { name: "Search settings" }).fill("Playback speed");
-  await expect(page.getByRole("button", { name: /Playback speed/ })).toHaveCount(0);
 });
 
 test("default navigation shortcuts open Search and reach their destinations", async ({

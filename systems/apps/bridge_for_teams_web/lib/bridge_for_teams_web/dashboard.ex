@@ -13,7 +13,7 @@ defmodule BridgeForTeamsWeb.Dashboard do
   and HTML controllers.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
+  def static_paths, do: ~w(assets bft fonts images favicon.ico robots.txt)
 
   def router do
     quote do

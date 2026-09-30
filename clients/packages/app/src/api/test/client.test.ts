@@ -188,12 +188,12 @@ describe("createCommaApi", () => {
     });
   });
 
-  it("opens an exact Stripe portal flow when changing an existing subscription", async () => {
+  it("confirms the quoted subscription change with its original request identity", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({
         id: "bps_change_1",
         provider: "stripe",
-        url: "https://billing.stripe.com/p/session/change",
+        effect: "upgraded",
       })
     );
     const api = createCommaApi({
@@ -202,7 +202,19 @@ describe("createCommaApi", () => {
       fetch: fetchMock,
     });
 
-    await api.changeBillingSubscription("workspace-1", "comma_pro_v1");
+    await api.changeBillingSubscription(
+      "workspace-1",
+      "comma_pro_v1",
+      {
+        amount_minor: 1000,
+        currency: "usd",
+        effect: "upgrade",
+        current_price_id: "price_current",
+        proration_date: 1234,
+        period_end: 5678,
+      },
+      "confirmed-request"
+    );
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain(
@@ -210,8 +222,10 @@ describe("createCommaApi", () => {
     );
     expect(JSON.parse(String(init.body))).toMatchObject({
       plan_key: "comma_pro_v1",
-      return_url:
-        "http://127.0.0.1:4200/v1/comma/billing/stripe/checkout/return?environment=dev&status=portal",
+      current_price_id: "price_current",
+      proration_date: 1234,
+      period_end: 5678,
+      client_request_id: "confirmed-request",
       success_url:
         "http://127.0.0.1:4200/v1/comma/billing/stripe/checkout/return?environment=dev&status=subscription",
     });

@@ -1195,12 +1195,6 @@ defmodule SalixWeb.RouterTest do
     session
   end
 
-  test "live and ready endpoints have local lifecycle semantics" do
-    assert %{status: 200, body: %{"status" => "ok"}} = req(:get, "/live")
-    assert %{status: 200, body: %{"status" => "ok"}} = req(:get, "/ready")
-    assert %{status: 200, body: %{"status" => "ok"}} = req(:get, "/health")
-  end
-
   test "tenant Workload projection exposes bounded compute-node activity", %{
     tenant_id: tenant_id
   } do
@@ -1305,6 +1299,7 @@ defmodule SalixWeb.RouterTest do
   test "remote dependency configuration does not flap local readiness" do
     Application.put_env(:salix_web, :usage_readiness_mod, :remote_dependency_unavailable)
     assert %{status: 200, body: %{"status" => "ok"}} = req(:get, "/ready")
+    assert %{status: 200, body: %{"status" => "ok"}} = req(:get, "/live")
   end
 
   test "readiness is unavailable while draining but liveness remains healthy" do
@@ -1434,6 +1429,15 @@ defmodule SalixWeb.RouterTest do
       )
 
     assert resp.status == 401
+
+    invalid_resp =
+      Req.request!(
+        method: :get,
+        url: base() <> "/v1/runtime/agents/#{a}/sessions/main/messages",
+        headers: [{"authorization", "Bearer invalid-token"}]
+      )
+
+    assert invalid_resp.status == 401
   end
 
   test "public conversation create cannot persist trusted Task materialization" do
@@ -4543,8 +4547,6 @@ defmodule SalixWeb.RouterTest do
 
     assert Req.request!(method: :get, url: base() <> "/site/#{agent_id}/docs/_api.json").status ==
              404
-
-    assert treq(:get, "/v1/runtime/im-conversations").status == 404
 
     assert treq(:get, "/v1/runtime/im-conversations/telegram/chat-a/topic-a/sessions").status ==
              404

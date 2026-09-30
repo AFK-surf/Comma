@@ -22,6 +22,7 @@ defmodule CommaWeb.Application do
     Application.put_env(:salix_agent, :proactive_mail_adapter, CommaWeb.ProactiveMail)
     Application.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
     Application.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
+    Application.put_env(:salix_im, :task_status_observer, CommaWeb.ProactiveTask)
     Application.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
     Application.put_env(:comma_core, :recommendation_runtime_mod, CommaWeb.RecommendationRuntime)
     Application.put_env(:salix_web, :comma_oauth_commit_mod, CommaWeb.OAuthCommit)

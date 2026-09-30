@@ -996,6 +996,12 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectShowLiveTest do
         assert has_element?(view, "a[href='#{base}/#{path}']")
       end
 
+      assert has_element?(
+               view,
+               "#agent-swarm-navigation-#{project.id} a[href='#{base}/connections']",
+               "Connections"
+             )
+
       refute has_element?(view, "section[aria-label='Access']")
       refute has_element?(view, "a[href='#{base}/access']")
     end
@@ -2843,79 +2849,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectShowLiveTest do
 
       assert to == ~p"/orgs/#{org.slug}/projects"
     end
-
-    test "admin mints a data-import token the import endpoint accepts", %{
-      conn: conn,
-      org: org,
-      project: project,
-      user: admin
-    } do
-      {:ok, view, html} =
-        live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/settings")
-
-      # The affordance is visible to a project admin.
-      assert html =~ "Data import"
-
-      render_click(view, "mint_import_token")
-      shown = render(view)
-
-      # The token is shown once, with a copy-ready curl example.
-      assert shown =~ "Data-import token"
-      assert shown =~ "curl -sS -X POST"
-      token = extract_import_token(shown)
-      assert String.starts_with?(token, "bfti_")
-
-      # A mint audit was recorded.
-      assert [audit] =
-               Observability.list_audit_logs(org.id, action: "dashboard_import_token.created")
-
-      assert audit.actor_user_id == admin.id
-
-      # The import endpoint accepts the freshly minted token (no CLI session).
-      body =
-        Jason.encode!(%{
-          "format" => "bft.myspace.import",
-          "version" => 1,
-          "items" => [%{"external_id" => "ui-1", "category" => "general", "title" => "Card"}]
-        })
-
-      resp =
-        :post
-        |> build_conn("/v1/orgs/#{org.slug}/projects/#{project.slug}/dashboard/import", body)
-        |> put_req_header("accept", "application/json")
-        |> put_req_header("content-type", "application/json")
-        |> put_req_header("authorization", "Bearer #{token}")
-        |> BridgeForTeamsWeb.DashboardEndpoint.call([])
-
-      assert resp.status == 200
-      assert %{"ok" => true, "data" => %{"created" => 1}} = Jason.decode!(resp.resp_body)
-    end
-
-    test "plain project user does not see the Data import affordance", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      user = user_fixture(email: "import-plain@example.com")
-      {:ok, _} = Memberships.put_org_member(org.id, user.id, "member")
-      {:ok, _} = Memberships.put_project_member(project.id, user.id, "user")
-
-      {:ok, view, html} =
-        conn
-        |> log_in_user(user)
-        |> live(~p"/orgs/#{org.slug}/projects/#{project.id}/settings")
-
-      refute html =~ "Data import"
-
-      # Even a forged mint event is denied for a non-admin.
-      assert render_click(view, "mint_import_token") =~
-               "Only Agent Swarm admins can mint a data-import token"
-    end
-  end
-
-  defp extract_import_token(html) do
-    [_, token] = Regex.run(~r/(bfti_[A-Za-z0-9_-]+)/, html)
-    token
   end
 
   describe "Tasks tab" do
@@ -4826,12 +4759,14 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectShowLiveTest do
       {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/integrations")
       open_integration_setup(view, "slack")
 
-      html =
-        view
-        |> form("#create-slack-connect-form", slack_connect: %{app_name: "Acme Bridge Bot"})
-        |> render_change()
+      refute has_element?(view, "#slack-manifest-json", "Acme Bridge Bot")
 
-      assert html =~ "Acme Bridge Bot"
+      view
+      |> form("#create-slack-connect-form", slack_connect: %{app_name: "Acme Bridge Bot"})
+      |> render_change()
+
+      # The rendered manifest itself, not the echoed input, carries the new name.
+      assert has_element?(view, "#slack-manifest-json", ~s("display_name": "Acme Bridge Bot"))
     end
 
     test "integrations load self-heals the group without an explicit reconcile", %{
@@ -5385,11 +5320,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectShowLiveTest do
       assert [event] = Observability.list_events(org.id, audit_log_id: audit.id)
       assert event.status == "denied"
       assert event.reason_class == "forbidden"
-    end
-
-    test "renders the connections tab link", %{conn: conn, org: org, project: project} do
-      {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}")
-      assert has_element?(view, "a", "Connections")
     end
 
     test "renders correct Chinese for a zh_Hans user (no mistranslation)", %{

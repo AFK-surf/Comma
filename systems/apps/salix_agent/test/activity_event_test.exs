@@ -52,47 +52,48 @@ defmodule SalixAgent.ActivityEventTest do
     activity
   end
 
-  test "a direct env.exec call surfaces its description label" do
-    activity =
-      started_activity(%{
-        "id" => "t1",
-        "name" => "env.exec",
-        "args" => %{"environment" => "e1", "command" => "ls", "description" => "Checking logs"}
-      })
-
-    assert activity["phase"] == "execution"
-    assert activity["goal"] == "Checking logs"
-    assert activity["action"] == "Checking logs"
-    assert activity["summary"] == "Checking logs"
-    assert activity["tool_name"] == "env.exec"
-  end
-
-  test "an env.exec call through the call envelope surfaces its description" do
-    activity =
-      started_activity(%{
-        id: "t2",
-        name: "call",
-        args: %{
-          "tool" => "env.exec",
-          "params" => %{"command" => "npm test", "description" => "Testing the app"}
-        }
-      })
-
-    assert activity["goal"] == "Testing the app"
-    assert activity["action"] == "Testing the app"
-    assert activity["tool_name"] == "env.exec"
-  end
-
-  test "an env.exec call without a description keeps the generic text" do
-    activity =
-      started_activity(%{
-        "id" => "t3",
-        "name" => "env.exec",
-        "args" => %{"environment" => "e1", "command" => "ls"}
-      })
-
-    assert activity["action"] == "Running a command"
-    refute Map.has_key?(activity, "goal")
+  for {name, call, expected} <- [
+        {"a direct env.exec call surfaces its description label",
+         %{
+           "id" => "t1",
+           "name" => "env.exec",
+           "args" => %{"environment" => "e1", "command" => "ls", "description" => "Checking logs"}
+         },
+         %{
+           "phase" => "execution",
+           "goal" => "Checking logs",
+           "action" => "Checking logs",
+           "summary" => "Checking logs",
+           "tool_name" => "env.exec"
+         }},
+        {"an env.exec call through the call envelope surfaces its description",
+         %{
+           id: "t2",
+           name: "call",
+           args: %{
+             "tool" => "env.exec",
+             "params" => %{"command" => "npm test", "description" => "Testing the app"}
+           }
+         },
+         %{"goal" => "Testing the app", "action" => "Testing the app", "tool_name" => "env.exec"}},
+        {"an env.exec call without a description keeps the generic text",
+         %{
+           "id" => "t3",
+           "name" => "env.exec",
+           "args" => %{"environment" => "e1", "command" => "ls"}
+         }, %{"action" => "Running a command", "goal" => nil}},
+        {"non-exec tools keep their static labels",
+         %{
+           "id" => "t6",
+           "name" => "fs.read_file",
+           "args" => %{"path" => "/notes.md", "description" => "should be ignored"}
+         }, %{"action" => "Reading a file", "goal" => nil}}
+      ] do
+    test name do
+      unquote(Macro.escape(call))
+      |> started_activity()
+      |> assert_fields(unquote(Macro.escape(expected)))
+    end
   end
 
   test "an oversized description is truncated, a blank one ignored" do
@@ -117,18 +118,6 @@ defmodule SalixAgent.ActivityEventTest do
 
     assert blank["action"] == "Running a command"
     refute Map.has_key?(blank, "goal")
-  end
-
-  test "non-exec tools keep their static labels" do
-    activity =
-      started_activity(%{
-        "id" => "t6",
-        "name" => "fs.read_file",
-        "args" => %{"path" => "/notes.md", "description" => "should be ignored"}
-      })
-
-    assert activity["action"] == "Reading a file"
-    refute Map.has_key?(activity, "goal")
   end
 
   test "an unmapped tool reads as generic work, never as its identifier" do
@@ -178,25 +167,46 @@ defmodule SalixAgent.ActivityEventTest do
     end
   end
 
+  # A nil expectation means the field must be absent from the activity.
+  defp assert_fields(activity, expected) do
+    for {field, value} <- expected do
+      if is_nil(value) do
+        refute Map.has_key?(activity, field), "unexpected #{field}: #{inspect(activity)}"
+      else
+        assert activity[field] == value, "#{field} in #{inspect(activity)}"
+      end
+    end
+  end
+
   defp thinking_activity(reasoning) do
     :ok = ActivityEvent.thinking("agent-1", "im-conv-1", reasoning)
     assert_receive {:notified, "agent-1", {:activity, activity}}
     activity
   end
 
-  test "thinking without reasoning keeps the bare summary" do
-    activity = thinking_activity(nil)
-    assert activity["phase"] == "thinking"
-    assert activity["action"] == "Thinking"
-    assert activity["summary"] == "Thinking"
-    assert activity["summary_class"] == "generic"
-  end
-
-  test "thinking surfaces the last reasoning line as the summary" do
-    activity = thinking_activity("First I looked at the code.\n- Now weighing the tradeoffs")
-    assert activity["action"] == "Thinking"
-    assert activity["summary"] == "Now weighing the tradeoffs"
-    assert activity["summary_class"] == "public"
+  for {name, reasoning, expected} <- [
+        {"thinking without reasoning keeps the bare summary", nil,
+         %{
+           "phase" => "thinking",
+           "action" => "Thinking",
+           "summary" => "Thinking",
+           "summary_class" => "generic"
+         }},
+        {"thinking surfaces the last reasoning line as the summary",
+         "First I looked at the code.\n- Now weighing the tradeoffs",
+         %{
+           "action" => "Thinking",
+           "summary" => "Now weighing the tradeoffs",
+           "summary_class" => "public"
+         }},
+        {"a blank reasoning tail falls back to the bare summary", "   \n  ",
+         %{"summary" => "Thinking"}}
+      ] do
+    test name do
+      unquote(reasoning)
+      |> thinking_activity()
+      |> assert_fields(unquote(Macro.escape(expected)))
+    end
   end
 
   test "execution, platform failure, messaging, and idle classify summary authority" do
@@ -231,10 +241,6 @@ defmodule SalixAgent.ActivityEventTest do
     :ok = ActivityEvent.idle("agent-1", "im-conv-summary-class")
     assert_receive {:notified, "agent-1", {:activity, idle}}
     assert idle["summary_class"] == "none"
-  end
-
-  test "a blank reasoning tail falls back to the bare summary" do
-    assert thinking_activity("   \n  ")["summary"] == "Thinking"
   end
 
   test "an overlong reasoning line keeps its freshest end" do

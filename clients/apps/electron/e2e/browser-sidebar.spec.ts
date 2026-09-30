@@ -19,6 +19,8 @@ import {
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
 const electronMain = resolve(electronAppDir, ".vite/build/main.js");
+const onePixelPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 test("Command-K keeps the browser visible until its stand-in is decoded", async () => {
   // Reuse the real browser/session fixtures: DOM-only tests cannot observe
@@ -2493,6 +2495,67 @@ test("browser sidebar keeps page sessions isolated and remains recoverable durin
   }
 });
 
+test("a browser tab shows the page icon and keeps it across a reload", async () => {
+  const browserStub = await startBrowserStub();
+  const apiStub = await startChatSmokeStub({
+    assistantReply: `[Open icon page](${browserStub.baseUrl}/icon-page)`,
+  });
+  const userDataDir = await mkdtemp(join(tmpdir(), "comma-browser-favicon-e2e-"));
+  const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
+  const app = await electron.launch({
+    args: [electronMain, `--user-data-dir=${userDataDir}`],
+    cwd: electronAppDir,
+    env: {
+      ...hostEnv,
+      COMMA_API_BASE_URL: apiStub.baseUrl,
+      COMMA_ELECTRON_STARTUP_SESSION_EMAIL: "browser-favicon@comma.local",
+      COMMA_ELECTRON_STARTUP_SESSION_TOKEN: "browser-favicon-session-token",
+      NODE_ENV: "test",
+    },
+  });
+  try {
+    const appWindow = await findElectronWindowByNativeRole(app, "main-window");
+    const content = appWindow.getByRole("region", { name: "Content" });
+    const composer = content.locator(".comma-chat-composer");
+    await composer.getByRole("textbox", { name: "AI prompt" }).fill("Open icon page");
+    await composer.getByRole("button", { name: "Send" }).click();
+    await content.getByRole("link", { name: "Open icon page" }).click();
+
+    const tab = content.locator(".comma-right-sidebar-tab").first();
+    const tabIcon = tab.locator("img");
+    const iconDecoded = () =>
+      tabIcon.evaluate(
+        (image: HTMLImageElement) =>
+          image.complete &&
+          image.naturalWidth > 0 &&
+          image.src.startsWith("data:image/png")
+      );
+    await expect(tab).toContainText("Icon page");
+    await expect.poll(iconDecoded).toBe(true);
+
+    // A reloaded document declares the same icons, so Chromium sends no new
+    // icon list. The tab must keep its icon instead of falling back.
+    await content.getByRole("button", { name: "Reload" }).click();
+    await expect.poll(() => browserStub.pageLoads("/icon-page")).toBe(2);
+    await expect(content.getByRole("button", { name: "Reload" })).toBeVisible();
+    await appWindow.waitForTimeout(300);
+    await expect(tabIcon).toHaveCount(1);
+    expect(await iconDecoded()).toBe(true);
+
+    // A page that declares no icon shows the generic icon.
+    const address = content.getByRole("textbox", { name: "Address" });
+    await address.fill(`${browserStub.baseUrl}/no-icon`);
+    await address.press("Enter");
+    await expect(tab).toContainText("No icon");
+    await expect(tabIcon).toHaveCount(0);
+  } finally {
+    await app.close();
+    await apiStub.close();
+    await browserStub.close();
+    await rm(userDataDir, { force: true, recursive: true });
+  }
+});
+
 test("sign-out closes every native browser sidebar session", async () => {
   const browserStub = await startBrowserStub();
   const apiStub = await startChatSmokeStub();
@@ -2756,8 +2819,32 @@ test("a sign-in popup opens on a click, stays in the page's session, and never o
 
 async function startBrowserStub() {
   const hangingResponses = new Set<ServerResponse>();
+  const requestCounts = new Map<string, number>();
   const server = createServer((request, response) => {
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    requestCounts.set(path, (requestCounts.get(path) ?? 0) + 1);
+    if (path === "/icon-page") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(
+        '<!doctype html><title>Icon page</title><link rel="icon" href="/icon.png"><p>icon'
+      );
+      return;
+    }
+    if (path === "/icon.png") {
+      response.writeHead(200, {
+        "cache-control": "max-age=3600",
+        "content-type": "image/png",
+      });
+      response.end(Buffer.from(onePixelPngBase64, "base64"));
+      return;
+    }
+    if (path === "/no-icon") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(
+        '<!doctype html><title>No icon</title><link rel="icon" href="data:,"><p>none'
+      );
+      return;
+    }
     if (path === "/fail") {
       request.socket.destroy();
       return;
@@ -2877,6 +2964,7 @@ async function startBrowserStub() {
   const { port } = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${port}`,
+    pageLoads: (path: string) => requestCounts.get(path) ?? 0,
     close: () =>
       new Promise<void>((resolveClose) => {
         for (const response of hangingResponses) response.destroy();

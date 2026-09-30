@@ -239,8 +239,11 @@ defmodule SalixAgent.ToolDisclosureGatingTest do
   test "a blank or missing tenant fails open" do
     wire(%{result: {:error, :not_configured}}, {:error, :not_configured})
 
-    assert family(disclosed_names(%{tenant_id: "  "}), "oauth.") != []
-    assert family(disclosed_names(%{agent_id: "a1"}), "composio.") != []
+    for ctx <- [%{tenant_id: "  "}, %{agent_id: "a1"}] do
+      names = disclosed_names(ctx)
+      assert family(names, "oauth.") != [], "oauth family hidden for #{inspect(ctx)}"
+      assert family(names, "composio.") != [], "composio family hidden for #{inspect(ctx)}"
+    end
   end
 
   test "unwired store seams fail open" do

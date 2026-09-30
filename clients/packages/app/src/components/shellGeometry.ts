@@ -29,8 +29,6 @@ export const commaHomeGreetFoldWidth =
   commaHomeContentMinWidth + commaHomeRailMinWidth + commaHomeLayoutGutter;
 export const commaHomeTasksFoldWidth =
   commaHomeGreetFoldWidth + commaHomeGreetPreferredMinWidth + commaHomeLayoutGutter;
-export const commaHomeTasksFullWidth =
-  commaHomeTasksFoldWidth + commaHomeTasksPreferredWidth - commaHomeRailMinWidth;
 
 export type CommaHomeRailName = "greet" | "tasks";
 

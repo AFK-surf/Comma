@@ -4,6 +4,7 @@ import {
   appPreferencesSchema,
   commaClientSettingsSchema,
   defaultCommaClientSettings,
+  type AppPreferences,
   type AppPreferencesPatch,
   type CommaClientSettings,
 } from "@comma/native-bridge";
@@ -11,7 +12,7 @@ import {
   createNativeStateBridgeMock,
   installNativeBridgeMock,
 } from "@comma/test-utils/native-bridge";
-import { render, screen, waitFor } from "@comma/test-utils/render";
+import { act, render, screen, waitFor } from "@comma/test-utils/render";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CommaClientSettingsI18nProvider,
@@ -226,5 +227,83 @@ describe("CommaElectronClientSettingsProvider", () => {
     );
     expect(screen.getByRole("button", { name: "enabled" })).toBeInTheDocument();
     expect(settingsRenderCount).toBe(2);
+  });
+
+  it("keeps settings and appearance consumers still when only another preference changes", async () => {
+    let preferences = appPreferencesSchema.parse({
+      clientSettings: structuredClone(defaultCommaClientSettings),
+      launchAtLogin: false,
+      showInDock: true,
+      showInMenuBar: true,
+      showInNotch: true,
+    });
+    const listeners: Array<(snapshot: AppPreferences) => void> = [];
+    const state = createNativeStateBridgeMock(() => preferences);
+    state.subscribe = vi.fn((listener: (snapshot: AppPreferences) => void) => {
+      listeners.push(listener);
+      return () => {};
+    }) as typeof state.subscribe;
+    installNativeBridgeMock({
+      appPreferences: {
+        initializeClientSettings: vi.fn(async () => preferences),
+        state,
+        update: vi.fn(async () => preferences),
+      },
+      platform: "electron",
+    });
+    // Main publishes every change as a whole snapshot; IPC delivers a new copy.
+    const publish = (next: Partial<AppPreferences>) => {
+      preferences = appPreferencesSchema.parse({
+        ...preferences,
+        ...next,
+        revision: preferences.revision + 1,
+      });
+      act(() => {
+        for (const listener of listeners) listener(structuredClone(preferences));
+      });
+    };
+
+    let settingsRenders = 0;
+    let appearanceRenders = 0;
+    function SettingsConsumer() {
+      const { settings } = useCommaClientSettings();
+      settingsRenders += 1;
+      return (
+        <output aria-label="history">{String(settings.sessionHistoryEnabled)}</output>
+      );
+    }
+    function AppearanceConsumer() {
+      useCommaAppearance();
+      appearanceRenders += 1;
+      return null;
+    }
+
+    render(
+      <CommaElectronClientSettingsProvider initialPreferences={preferences}>
+        <CommaAppearanceProvider>
+          <SettingsConsumer />
+          <AppearanceConsumer />
+        </CommaAppearanceProvider>
+      </CommaElectronClientSettingsProvider>
+    );
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    const settledSettings = settingsRenders;
+    const settledAppearance = appearanceRenders;
+
+    publish({ showInNotch: false });
+    publish({ notchSideWidth: 200 });
+    expect(settingsRenders).toBe(settledSettings);
+    expect(appearanceRenders).toBe(settledAppearance);
+
+    publish({
+      clientSettings: {
+        ...preferences.clientSettings!,
+        sessionHistoryEnabled: !preferences.clientSettings!.sessionHistoryEnabled,
+      },
+    });
+    expect(screen.getByLabelText("history")).toHaveTextContent(
+      String(!defaultCommaClientSettings.sessionHistoryEnabled)
+    );
+    expect(settingsRenders).toBe(settledSettings + 1);
   });
 });

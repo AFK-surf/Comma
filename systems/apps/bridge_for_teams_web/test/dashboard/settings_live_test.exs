@@ -528,10 +528,10 @@ defmodule BridgeForTeamsWeb.Dashboard.SettingsLiveTest do
     assert audit.redacted_diff["name"] == %{"from" => org.name, "to" => "Renamed Org"}
   end
 
-  test "updates and renders the org icon", %{conn: conn, org: org} do
+  test "org show page renders the stored org icon", %{conn: conn, org: org} do
     {:ok, _updated} = Orgs.update_org(org, %{icon: @icon})
 
-    {:ok, _show_view, show_html} = live(conn, ~p"/orgs/#{org.slug}")
+    {:ok, _show_view, show_html} = live(conn, ~p"/orgs/#{org.slug}/members")
     assert show_html =~ @icon
   end
 

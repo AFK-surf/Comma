@@ -6,7 +6,17 @@ defmodule BillingStripe.Checkout do
     BillingStripe.Telemetry.observe(
       :stripe_checkout,
       BillingStripe.Telemetry.surface(attrs),
-      fn -> do_create_session(attrs) end
+      fn ->
+        if (attrs[:mode] || attrs["mode"] || "subscription") == "subscription" do
+          BillingCommerce.SubscriptionCheckout.create(
+            attrs,
+            &do_create_session/1,
+            &retrieve_session/1
+          )
+        else
+          do_create_session(attrs)
+        end
+      end
     )
   end
 
@@ -25,7 +35,8 @@ defmodule BillingStripe.Checkout do
           line_items: [%{price: provider_price_id, quantity: 1}],
           customer: attrs[:customer_id] || attrs["customer_id"],
           client_reference_id: required(attrs, :billing_account_id),
-          metadata: metadata
+          metadata: metadata,
+          expires_at: attrs[:expires_at] || attrs["expires_at"]
         }
         |> put_provider_metadata(mode, metadata)
         |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
@@ -56,7 +67,7 @@ defmodule BillingStripe.Checkout do
   end
 
   defp metadata(attrs, mode) do
-    base = %{
+    %{
       "billing_account_id" => required(attrs, :billing_account_id),
       "surface" => required(attrs, :surface),
       "product_owner_type" => required(attrs, :product_owner_type),
@@ -64,33 +75,21 @@ defmodule BillingStripe.Checkout do
       "package_code" => required(attrs, :package_code),
       "package_version" => required(attrs, :package_version)
     }
-
-    if mode == "payment" do
-      period = current_month_period(attrs[:now] || attrs["now"] || DateTime.utc_now())
-
-      Map.merge(base, %{
-        "period_start" => DateTime.to_unix(period.valid_from),
-        "period_end" => DateTime.to_unix(period.expires_at)
-      })
-    else
-      base
-    end
+    |> then(fn metadata ->
+      if mode == "subscription",
+        do: Map.put(metadata, "subscription_checkout_key", required(attrs, :idempotency_key)),
+        else: metadata
+    end)
     |> stringify_metadata()
   end
 
-  defp current_month_period(%DateTime{} = now) do
-    date = DateTime.to_date(now)
-    start_date = Date.new!(date.year, date.month, 1)
-    end_date = add_month(start_date)
-
-    %{
-      valid_from: DateTime.new!(start_date, ~T[00:00:00], "Etc/UTC"),
-      expires_at: DateTime.new!(end_date, ~T[00:00:00], "Etc/UTC")
-    }
+  defp retrieve_session(id) do
+    with {:ok, config} <- config(),
+         {:ok, session} <-
+           config.api.retrieve_checkout_session(id, %{}, api_key: config.secret_key) do
+      {:ok, public_session(session)}
+    end
   end
-
-  defp add_month(%Date{year: year, month: 12}), do: Date.new!(year + 1, 1, 1)
-  defp add_month(%Date{year: year, month: month}), do: Date.new!(year, month + 1, 1)
 
   defp stripe_mode("subscription"), do: :subscription
   defp stripe_mode("payment"), do: :payment
@@ -131,7 +130,9 @@ defmodule BillingStripe.Checkout do
     %{
       "id" => session_value(session, :id),
       "url" => session_value(session, :url),
-      "provider" => "stripe"
+      "provider" => "stripe",
+      "status" => session_value(session, :status),
+      "expires_at" => session_value(session, :expires_at)
     }
   end
 

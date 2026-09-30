@@ -27,12 +27,23 @@ defmodule BillingCommerce.ProviderPrices do
          ) do
       {:ok, price} ->
         with :ok <- validate_existing_provider_price(price, desired) do
-          {:ok, price}
+          update_metadata(repo, sql, price, metadata)
         end
 
       {:error, :not_found} ->
         insert_provider_price(repo, sql, attrs, desired, metadata)
     end
+  end
+
+  defp update_metadata(repo, sql, price, metadata) do
+    merged = Map.merge(price.metadata, metadata)
+
+    sql.query!(repo, "UPDATE billing_provider_prices SET metadata=$1 WHERE id=$2", [
+      merged,
+      price.id
+    ])
+
+    {:ok, %{price | metadata: merged}}
   end
 
   @spec list_provider_plans(map()) :: {:ok, [map()]} | {:error, term()}
@@ -122,7 +133,7 @@ defmodule BillingCommerce.ProviderPrices do
           desired.provider_price_id,
           desired.currency,
           desired.amount_minor,
-          Jason.encode!(metadata)
+          metadata
         ]
       )
 
@@ -134,7 +145,7 @@ defmodule BillingCommerce.ProviderPrices do
         with {:ok, price} <-
                get_provider_price(repo, sql, desired.provider, desired.provider_price_id),
              :ok <- validate_existing_provider_price(price, desired) do
-          {:ok, price}
+          update_metadata(repo, sql, price, metadata)
         end
     end
   end

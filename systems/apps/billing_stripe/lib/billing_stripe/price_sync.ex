@@ -23,7 +23,7 @@ defmodule BillingStripe.PriceSync do
 
       sync_results =
         Enum.reduce_while(versions, {:ok, []}, fn version, {:ok, acc} ->
-          case sync_version(version, config, opts) do
+          case sync_version(version, config, Keyword.put(opts, :catalog_versions, versions)) do
             {:ok, result} -> {:cont, {:ok, [result | acc]}}
             {:error, reason} -> {:halt, {:error, reason}}
           end
@@ -31,7 +31,9 @@ defmodule BillingStripe.PriceSync do
 
       case sync_results do
         {:ok, provider_prices} ->
-          {:ok, %{local: local, provider_prices: Enum.reverse(provider_prices)}}
+          with :ok <- assert_product_groups(provider_prices) do
+            {:ok, %{local: local, provider_prices: Enum.reverse(provider_prices)}}
+          end
 
         {:error, reason} ->
           {:error, reason}
@@ -74,13 +76,15 @@ defmodule BillingStripe.PriceSync do
         {:ok, plan} ->
           plan = Enum.reverse(plan)
 
-          {:ok,
-           %{
-             local: :dry_run,
-             provider_prices: plan |> Enum.flat_map(&existing_price/1),
-             provider_plan: plan,
-             provider_sync: :dry_run
-           }}
+          with :ok <- assert_product_groups(Enum.filter(plan, & &1.provider_price_id)) do
+            {:ok,
+             %{
+               local: :dry_run,
+               provider_prices: plan |> Enum.flat_map(&existing_price/1),
+               provider_plan: plan,
+               provider_sync: :dry_run
+             }}
+          end
 
         {:error, _} = err ->
           err
@@ -91,7 +95,7 @@ defmodule BillingStripe.PriceSync do
   defp sync_version(version, config, opts) do
     lookup_key = required(version, :provider_lookup_key)
 
-    with {:ok, price} <- find_or_create_price(version, lookup_key, config),
+    with {:ok, price} <- find_or_create_price(version, lookup_key, config, opts),
          :ok <- assert_price_matches(price, version, lookup_key),
          {:ok, mapping} <-
            BillingCommerce.put_provider_price(%{
@@ -103,24 +107,37 @@ defmodule BillingStripe.PriceSync do
              provider_price_id: value(price, :id),
              currency: required(version, :currency),
              amount_minor: required(version, :amount_minor),
-             metadata: %{
-               "catalog" => "stripe_price_sync",
-               "stripe_product_id" => product_id(price),
-               "provider_lookup_key" => lookup_key
-             }
+             metadata: provider_metadata(version, price, lookup_key)
            }),
          :ok <- assert_mapping_matches(mapping, price, lookup_key) do
       {:ok, mapping}
     end
   end
 
-  defp find_or_create_price(version, lookup_key, config) do
+  defp provider_metadata(version, price, lookup_key) do
+    metadata = %{
+      "catalog" => "stripe_price_sync",
+      "stripe_product_id" => product_id(price),
+      "provider_lookup_key" => lookup_key
+    }
+
+    if required(version, :surface) == "comma",
+      do:
+        Map.put(
+          metadata,
+          "comma_purchasable",
+          value(value(price, :metadata) || %{}, :comma_purchasable) == "true"
+        ),
+      else: metadata
+  end
+
+  defp find_or_create_price(version, lookup_key, config, opts) do
     case find_existing_price(lookup_key, config) do
       {:ok, price} ->
         {:ok, price}
 
       {:error, {:provider_price_missing, ^lookup_key}} ->
-        create_price(version, lookup_key, config)
+        create_price(version, lookup_key, config, opts)
 
       {:error, reason} ->
         {:error, reason}
@@ -129,7 +146,7 @@ defmodule BillingStripe.PriceSync do
 
   defp find_existing_price(lookup_key, config) do
     case config.api.list_prices(
-           %{lookup_keys: [lookup_key], active: true, limit: 1},
+           %{lookup_keys: [lookup_key], active: true, limit: 1, expand: ["data.product"]},
            stripe_opts(config)
          ) do
       {:ok, prices} ->
@@ -143,16 +160,55 @@ defmodule BillingStripe.PriceSync do
     end
   end
 
-  defp create_price(version, lookup_key, config) do
-    with {:ok, product} <-
-           config.api.create_product(
-             product_params(version, lookup_key),
-             stripe_opts(config, "billing:stripe:product:#{lookup_key}")
-           ) do
-      config.api.create_price(
-        price_params(version, lookup_key, product),
-        stripe_opts(config, "billing:stripe:price:#{lookup_key}")
+  defp create_price(version, lookup_key, config, opts) do
+    siblings =
+      Enum.filter(opts[:catalog_versions] || [version], fn other ->
+        required(other, :package_code) == required(version, :package_code)
+      end)
+
+    keys = Enum.map(siblings, &required(&1, :provider_lookup_key))
+
+    with {:ok, prices} <-
+           config.api.list_prices(
+             %{lookup_keys: keys, active: true, limit: 100, expand: ["data.product"]},
+             stripe_opts(config)
+           ),
+         {:ok, product} <- find_or_create_product(list_data(prices), hd(siblings), config) do
+      with {:ok, price} <-
+             config.api.create_price(
+               price_params(version, lookup_key, product),
+               stripe_opts(config, "billing:stripe:price:#{lookup_key}")
+             ) do
+        {:ok, Map.put(price, :product, product)}
+      end
+    end
+  end
+
+  defp find_or_create_product([], version, config) do
+    config.api.create_product(
+      product_params(version, required(version, :provider_lookup_key)),
+      stripe_opts(
+        config,
+        "billing:stripe:product:#{required(version, :surface)}:#{required(version, :package_code)}"
       )
+    )
+  end
+
+  defp find_or_create_product(prices, version, _config) do
+    products = Enum.map(prices, &value(&1, :product))
+    ids = Enum.uniq(Enum.map(products, &value(&1, :id)))
+
+    if length(ids) == 1 and
+         Enum.all?(products, fn product ->
+           metadata = value(product, :metadata) || %{}
+
+           value(product, :name) == product_name(version) and
+             value(metadata, :package_code) == required(version, :package_code) and
+             value(metadata, :surface) == required(version, :surface)
+         end) do
+      {:ok, hd(products)}
+    else
+      {:error, {:provider_product_drift, required(version, :package_code)}}
     end
   end
 
@@ -217,9 +273,27 @@ defmodule BillingStripe.PriceSync do
       expected_interval && recurring_interval(price) != expected_interval ->
         {:error, {:provider_price_drift, lookup_key, :interval}}
 
+      not is_map(value(price, :product)) or
+          (value(value(price, :product), :name) != product_name(version) or
+             value(value(value(price, :product), :metadata), :package_code) !=
+               required(version, :package_code) or
+             value(value(value(price, :product), :metadata), :surface) !=
+               required(version, :surface)) ->
+        {:error, {:provider_product_drift, required(version, :package_code)}}
+
       true ->
         :ok
     end
+  end
+
+  defp assert_product_groups(mappings) do
+    mappings
+    |> Enum.group_by(& &1.package_code)
+    |> Enum.reduce_while(:ok, fn {code, entries}, :ok ->
+      if entries |> Enum.map(& &1.metadata["stripe_product_id"]) |> Enum.uniq() |> length() == 1,
+        do: {:cont, :ok},
+        else: {:halt, {:error, {:provider_product_drift, code}}}
+    end)
   end
 
   defp assert_mapping_matches(mapping, price, lookup_key) do
@@ -240,7 +314,10 @@ defmodule BillingStripe.PriceSync do
            provider_lookup_key: lookup_key
          }) do
       {:ok, plan} ->
-        if plan.provider_price_id == provider_price_id do
+        if plan.provider_price_id == provider_price_id and
+             (required(version, :surface) != "comma" or
+                plan.provider_metadata["comma_purchasable"] ==
+                  (value(value(price, :metadata) || %{}, :comma_purchasable) == "true")) do
           :ok
         else
           {:error, {:provider_price_mapping_conflict, lookup_key}}
@@ -262,6 +339,8 @@ defmodule BillingStripe.PriceSync do
       amount_minor: required(version, :amount_minor),
       currency: required(version, :currency),
       provider_lookup_key: required(version, :provider_lookup_key),
+      package_code: required(version, :package_code),
+      metadata: %{"stripe_product_id" => price && product_id(price)},
       provider_price_id: price && value(price, :id)
     }
   end
@@ -299,7 +378,12 @@ defmodule BillingStripe.PriceSync do
 
   defp list_data(prices), do: value(prices, :data) || []
 
-  defp product_id(price), do: value(price, :product)
+  defp product_id(price) do
+    case value(price, :product) do
+      product when is_map(product) -> value(product, :id)
+      id -> id
+    end
+  end
 
   defp product_name(version) do
     version[:name] || version["name"] ||

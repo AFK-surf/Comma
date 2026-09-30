@@ -117,6 +117,30 @@ test("Models saves a platform template allowlist and an empty selected list", as
   await expect(panel.getByText("0 selected.", { exact: false })).toBeVisible();
 });
 
+test("Models scrolls as one page when the policy form is taller than the viewport", async ({
+  page,
+}) => {
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes: [],
+  });
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await page.goto("/?section=models");
+
+  const panel = page.getByRole("region", { name: "Model selection policy" });
+  await panel.getByRole("radio", { name: "Selected templates only" }).check();
+  const save = panel.getByRole("button", { name: "Save model choices" });
+  await expect(save).not.toBeInViewport();
+
+  await panel.getByRole("heading", { name: "User choices" }).hover();
+  await page.mouse.wheel(0, 2_000);
+  await expect(save).toBeInViewport();
+  await expect(
+    page.getByRole("heading", { name: "Models", level: 1 })
+  ).toBeInViewport();
+});
+
 test("dashboard navigation is reflected in the URL and browser history", async ({
   page,
 }) => {

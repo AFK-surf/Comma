@@ -79,74 +79,47 @@ defmodule SalixIM.ConversationParticipantStoreTest do
     assert updated["participant_id"] == context.participant_id
   end
 
-  test "participant update adopts an ambiguous write only after exact read-back", context do
-    participant = %{
-      "participant_id" => context.participant_id,
-      "conversation_id" => context.conversation_id,
-      "actor_type" => "provider",
-      "provider" => "slack",
-      "target_key" => "calendar-target",
-      "state" => "active",
-      "notification_filter" => %{"messages" => "all", "statuses" => "none"}
-    }
+  for {name, fault} <- [
+        {"adopts an ambiguous write only after exact read-back", :ambiguous_after},
+        {"retries only after read-back proves an ambiguous write did not land", :ambiguous_before}
+      ] do
+    @fault fault
+    test "participant update #{name}", context do
+      participant = %{
+        "participant_id" => context.participant_id,
+        "conversation_id" => context.conversation_id,
+        "actor_type" => "provider",
+        "provider" => "slack",
+        "target_key" => "calendar-target",
+        "state" => "active",
+        "notification_filter" => %{"messages" => "all", "statuses" => "none"}
+      }
 
-    assert {:ok, :inserted, ^participant} =
-             ConversationParticipantStore.put_new(context.store, participant)
+      assert {:ok, :inserted, ^participant} =
+               ConversationParticipantStore.put_new(context.store, participant)
 
-    key =
-      Keys.ctl_group_conversation_participant_state(
-        context.group_id,
-        context.conversation_id,
-        context.participant_id
-      )
+      key =
+        Keys.ctl_group_conversation_participant_state(
+          context.group_id,
+          context.conversation_id,
+          context.participant_id
+        )
 
-    :ok = S3.Fake.set_fault({:ambiguous_after, :put, key})
+      :ok = S3.Fake.set_fault({@fault, :put, key})
 
-    assert {:ok,
-            %{
-              "state" => "inactive",
-              "notification_filter" => %{"messages" => "none", "statuses" => "none"}
-            } = updated} =
-             ConversationParticipantStore.update(context.store, fn current ->
-               current
-               |> Map.put("state", "inactive")
-               |> Map.put("notification_filter", %{"messages" => "none", "statuses" => "none"})
-             end)
+      assert {:ok,
+              %{
+                "state" => "inactive",
+                "notification_filter" => %{"messages" => "none", "statuses" => "none"}
+              } = updated} =
+               ConversationParticipantStore.update(context.store, fn current ->
+                 current
+                 |> Map.put("state", "inactive")
+                 |> Map.put("notification_filter", %{"messages" => "none", "statuses" => "none"})
+               end)
 
-    assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
-  end
-
-  test "participant update retries only after read-back proves an ambiguous write did not land",
-       context do
-    participant = %{
-      "participant_id" => context.participant_id,
-      "conversation_id" => context.conversation_id,
-      "actor_type" => "provider",
-      "provider" => "slack",
-      "target_key" => "calendar-target",
-      "state" => "active",
-      "notification_filter" => %{"messages" => "all", "statuses" => "none"}
-    }
-
-    assert {:ok, :inserted, ^participant} =
-             ConversationParticipantStore.put_new(context.store, participant)
-
-    key =
-      Keys.ctl_group_conversation_participant_state(
-        context.group_id,
-        context.conversation_id,
-        context.participant_id
-      )
-
-    :ok = S3.Fake.set_fault({:ambiguous_before, :put, key})
-
-    assert {:ok, %{"state" => "inactive"} = updated} =
-             ConversationParticipantStore.update(
-               context.store,
-               &Map.put(&1, "state", "inactive")
-             )
-
-    assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
+      assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
+    end
   end
 
   test "guarded participant upsert restarts both guard reads after a conditional-write loss",
@@ -194,52 +167,41 @@ defmodule SalixIM.ConversationParticipantStoreTest do
     assert count_guard_reads(racing_store, binding_key) >= 4
   end
 
-  test "guarded participant upsert fully restarts after an ambiguous write that did not land",
-       context do
-    {binding_key, guard, participant, transition} = guarded_upsert_fixture!(context)
+  # A write that did not land must restart both guard reads (at least four);
+  # one that landed is adopted after read-back with only the original two.
+  for {name, fault, read_bound} <- [
+        {"fully restarts after an ambiguous write that did not land", :ambiguous_before,
+         {:at_least, 4}},
+        {"adopts an ambiguous write only after exact read-back", :ambiguous_after, {:exactly, 2}}
+      ] do
+    @fault fault
+    @read_bound read_bound
+    test "guarded participant upsert #{name}", context do
+      {binding_key, guard, participant, transition} = guarded_upsert_fixture!(context)
 
-    assert {:ok, :inserted, ^participant} =
-             ConversationParticipantStore.put_new(context.store, participant)
+      assert {:ok, :inserted, ^participant} =
+               ConversationParticipantStore.put_new(context.store, participant)
 
-    participant_key =
-      Keys.ctl_group_conversation_participant_state(
-        context.group_id,
-        context.conversation_id,
-        context.participant_id
-      )
+      participant_key =
+        Keys.ctl_group_conversation_participant_state(
+          context.group_id,
+          context.conversation_id,
+          context.participant_id
+        )
 
-    :ok = S3.Fake.set_fault_for(context.store, {:ambiguous_before, :put, participant_key})
-    :ok = S3.Fake.reset_read_log()
+      :ok = S3.Fake.set_fault_for(context.store, {@fault, :put, participant_key})
+      :ok = S3.Fake.reset_read_log()
 
-    assert {:ok, :repaired, %{"payload" => %{"task_thread_binding_token" => "T1"}} = updated} =
-             ConversationParticipantStore.guarded_upsert(context.store, guard, transition)
+      assert {:ok, :repaired, %{"payload" => %{"task_thread_binding_token" => "T1"}} = updated} =
+               ConversationParticipantStore.guarded_upsert(context.store, guard, transition)
 
-    assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
-    assert count_guard_reads(context.store, binding_key) >= 4
-  end
+      assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
 
-  test "guarded participant upsert adopts an ambiguous write only after exact read-back",
-       context do
-    {binding_key, guard, participant, transition} = guarded_upsert_fixture!(context)
-
-    assert {:ok, :inserted, ^participant} =
-             ConversationParticipantStore.put_new(context.store, participant)
-
-    participant_key =
-      Keys.ctl_group_conversation_participant_state(
-        context.group_id,
-        context.conversation_id,
-        context.participant_id
-      )
-
-    :ok = S3.Fake.set_fault_for(context.store, {:ambiguous_after, :put, participant_key})
-    :ok = S3.Fake.reset_read_log()
-
-    assert {:ok, :repaired, %{"payload" => %{"task_thread_binding_token" => "T1"}} = updated} =
-             ConversationParticipantStore.guarded_upsert(context.store, guard, transition)
-
-    assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
-    assert count_guard_reads(context.store, binding_key) == 2
+      case @read_bound do
+        {:at_least, n} -> assert count_guard_reads(context.store, binding_key) >= n
+        {:exactly, n} -> assert count_guard_reads(context.store, binding_key) == n
+      end
+    end
   end
 
   defp guarded_upsert_fixture!(context) do

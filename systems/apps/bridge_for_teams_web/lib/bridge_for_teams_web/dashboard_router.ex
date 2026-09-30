@@ -54,12 +54,8 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     plug(:authenticate_cli_session)
   end
 
-  # My Space data-import endpoint: a temporary import token (minted from the
-  # Agent Swarm dashboard) is tried first, falling back to the CLI-session auth
-  # so scripted/CLI use keeps working.
-  pipeline :dashboard_import_api do
-    plug(:accepts, ["json"])
-    plug(:authenticate_dashboard_import)
+  pipeline :dashboard_locale do
+    plug(BridgeForTeamsWeb.Dashboard.Locale)
   end
 
   pipeline :cli_auth_api do
@@ -123,6 +119,15 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/cli/install.sh", BFTCLIInstallController, :show)
     get("/cli/release", BFTCLIInstallController, :release)
     get("/orgs/:org_id/runners/install.sh", MacMiniInstallController, :show)
+  end
+
+  # JSON API for the React dashboard; same browser session and locale as the pages.
+  scope "/dashboard/api/v1", BridgeForTeamsWeb do
+    pipe_through([:dashboard_api, :dashboard_locale])
+
+    get("/session", DashboardAPIController, :session)
+    get("/orgs/:org/context", DashboardAPIController, :context)
+    get("/orgs/:org/overview", DashboardAPIController, :overview)
   end
 
   scope "/dashboard", BridgeForTeamsWeb do
@@ -374,12 +379,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     post("/orgs/:org/runners/install-command", RunnerController, :install_command)
   end
 
-  scope "/v1", BridgeForTeamsWeb do
-    pipe_through(:dashboard_import_api)
-
-    post("/orgs/:org/projects/:project/dashboard/import", DashboardImportController, :create)
-  end
-
   scope "/v1/cli", BridgeForTeamsWeb do
     pipe_through(:cli_auth_api)
 
@@ -476,6 +475,11 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     get("/orgs/:org/operations/audit.csv", OperationsExportController, :audit)
 
+    # Pages owned by the React dashboard (clients/apps/bft). Pages move here
+    # from the LiveView live_session one at a time.
+    get("/", SPAController, :index)
+    get("/orgs/:org", SPAController, :index)
+
     get("/impersonate", ImpersonationController, :new)
     post("/impersonate", ImpersonationController, :create)
 
@@ -509,15 +513,7 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
         BridgeForTeamsWeb.Dashboard.Onboarding
       ] do
       # slice "orgs-shell"
-      live("/", HomeLive, :index)
-      live("/new-home", NewHomeLive, :index)
-      live("/new-home/chat", NewHomeLive, :chat)
-      # Retired sheet URL — the wall lives inline on /new-home now; the
-      # LiveView patches stale tabs and bookmarks back to the board.
-      live("/new-home/widgets", NewHomeLive, :widgets)
-      live("/new-home/artifacts/:id", ArtifactLive.Show, :show)
       live("/orgs", OrgLive.Index, :index)
-      live("/orgs/:org", HomeLive, :show)
       live("/cli/device-login", CLIDeviceLoginLive, :new)
       live("/cli/device-login/:user_code", CLIDeviceLoginLive, :show)
 
@@ -652,22 +648,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
       _other ->
         conn
-    end
-  end
-
-  # Try a temporary import token first (project-admin minted, org/project
-  # scoped). If the bearer is not a valid import token, fall back to the
-  # existing CLI-session auth so scripted/CLI imports keep working.
-  defp authenticate_dashboard_import(conn, opts) do
-    with {:ok, token} <- bearer_token(conn),
-         {:ok, %{user: user, org_id: org_id, project_id: project_id}} <-
-           Auth.authenticate_import_token(token) do
-      conn
-      |> assign(:current_user, user)
-      |> assign(:import_token_org_id, org_id)
-      |> assign(:import_token_project_id, project_id)
-    else
-      _ -> authenticate_cli_session(conn, opts)
     end
   end
 

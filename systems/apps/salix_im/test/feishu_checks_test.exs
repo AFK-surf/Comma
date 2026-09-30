@@ -77,35 +77,33 @@ defmodule SalixIM.FeishuChecksTest do
   # ---- pure classification helpers ----
 
   describe "classify_failure/3" do
-    test "401 naming token is a token mismatch regardless of mode" do
-      assert FeishuChecks.classify_failure(401, %{"error" => "invalid Feishu token"}, false) ==
-               :token_mismatch
+    token = %{"error" => "invalid Feishu token"}
+    signature = %{"error" => "invalid Feishu signature"}
 
-      assert FeishuChecks.classify_failure(401, %{"error" => "invalid Feishu token"}, true) ==
-               :token_mismatch
-    end
-
-    test "401 signature in plain mode is a decrypt/signature failure" do
-      assert FeishuChecks.classify_failure(401, %{"error" => "invalid Feishu signature"}, false) ==
-               :decrypt_signature
-    end
-
-    test "401 signature in encrypted mode is the unsupported encrypted envelope (RFC §6.2)" do
-      assert FeishuChecks.classify_failure(401, %{"error" => "invalid Feishu signature"}, true) ==
-               :encrypted_unsupported
-    end
-
-    test "404 and 5xx are callback unreachable" do
-      assert FeishuChecks.classify_failure(404, %{"error" => "not found"}, false) ==
-               :callback_unreachable
-
-      assert FeishuChecks.classify_failure(500, %{"error" => "boom"}, true) ==
-               :callback_unreachable
-    end
-
-    test "a non-round-tripping 200 keeps the failure honest per mode" do
-      assert FeishuChecks.classify_failure(200, %{"ok" => true}, true) == :encrypted_unsupported
-      assert FeishuChecks.classify_failure(200, %{"ok" => true}, false) == :decrypt_signature
+    for {name, status, body, encrypted?, expected} <- [
+          {"401 naming token is a token mismatch in plain mode", 401, token, false,
+           :token_mismatch},
+          {"401 naming token is a token mismatch in encrypted mode", 401, token, true,
+           :token_mismatch},
+          {"401 signature in plain mode is a decrypt/signature failure", 401, signature, false,
+           :decrypt_signature},
+          {"401 signature in encrypted mode is the unsupported encrypted envelope (RFC §6.2)",
+           401, signature, true, :encrypted_unsupported},
+          {"404 is callback unreachable", 404, %{"error" => "not found"}, false,
+           :callback_unreachable},
+          {"5xx is callback unreachable", 500, %{"error" => "boom"}, true, :callback_unreachable},
+          {"a non-round-tripping 200 in encrypted mode is the unsupported envelope", 200,
+           %{"ok" => true}, true, :encrypted_unsupported},
+          {"a non-round-tripping 200 in plain mode is a decrypt/signature failure", 200,
+           %{"ok" => true}, false, :decrypt_signature}
+        ] do
+      @status status
+      @body body
+      @encrypted encrypted?
+      @expected expected
+      test name do
+        assert FeishuChecks.classify_failure(@status, @body, @encrypted) == @expected
+      end
     end
   end
 

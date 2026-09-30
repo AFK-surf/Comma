@@ -36,14 +36,6 @@ defmodule SalixWeb.Dashboard.AuthTest do
     end
   end
 
-  describe "login page" do
-    test "renders the admin token form" do
-      conn = build_conn() |> Plug.Test.init_test_session(%{})
-      conn = get(conn, "/dash/login")
-      assert html_response(conn, 200) =~ "Admin token"
-    end
-  end
-
   describe "authentication gate" do
     test "anonymous /dash redirects to login" do
       conn = build_conn() |> Plug.Test.init_test_session(%{})

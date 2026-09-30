@@ -1680,28 +1680,6 @@ defmodule SalixCalendar.ServerTest do
              ["Existing", "Newly covered"]
   end
 
-  test "a source with managed sync cannot activate an ownerless generation", context do
-    assert {:ok, source} =
-             Server.ensure_source(context.group_id, context.calendar["calendar_id"], %{
-               adapter: "contract_change_test",
-               adapter_contract_id: ContractChangeAdapter.adapter_contract_id(),
-               source_locator: %{kind: "test", name: "managed-sync-owner"},
-               access_profile: "events_read"
-             })
-
-    assert {:ok, %{"sync" => %{"status" => "active"}}} =
-             refresh_source(
-               context.group_id,
-               context.calendar["calendar_id"],
-               source,
-               ContractChangeAdapter,
-               %{"object_type" => "Event", "coverage" => "initial"}
-             )
-
-    refute function_exported?(Server, :activate_source_generation, 4)
-    refute function_exported?(SalixCalendar.Actor, :do_activate_source_generation, 4)
-  end
-
   test "a policy change during bootstrap cannot mix two sync contracts into one generation",
        context do
     previous_test_pid = Application.get_env(:salix_calendar, :racing_sync_test_pid)

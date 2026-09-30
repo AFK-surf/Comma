@@ -19,6 +19,89 @@ defmodule BillingCore.Credits do
     end
   end
 
+  @doc "Pause, restore, or revoke only the unspent rights of the selected payment grant."
+  def payment_rights(attrs) do
+    repo = attrs.repo
+    account = attrs.billing_account_id
+    grant_id = attrs.credit_grant_id
+    action = attrs.payment_action
+
+    repo.transaction(fn ->
+      [[original, remaining, expires_at, status, raw]] =
+        Ecto.Adapters.SQL.query!(
+          repo,
+          """
+          SELECT original_credits, remaining_credits, expires_at, status, metadata
+          FROM credit_grants WHERE id = $1 AND billing_account_id = $2 FOR UPDATE
+          """,
+          [grant_id, account]
+        ).rows
+
+      metadata = BillingCore.Metadata.object(raw)
+      disputes = metadata["stripe_disputes"] || %{}
+
+      disputes =
+        if action.type == :dispute,
+          do: Map.put(disputes, action.id, action.status),
+          else: disputes
+
+      revoke = (action.type == :refund and action.full) or "lost" in Map.values(disputes)
+
+      result =
+        if revoke and metadata["stripe_refunded"] != true do
+          {:ok, reduced} =
+            reduce_grant(%{
+              repo: repo,
+              billing_account_id: account,
+              credit_grant_id: grant_id,
+              credits: original,
+              idempotency_key: "stripe:payment-revoke:#{grant_id}",
+              source_type: "stripe_refund",
+              source_event_id: attrs.source_event_id,
+              reason: "provider_payment_revoked"
+            })
+
+          reduced
+        else
+          %{credit_grant_id: grant_id, applied_credits: 0, unapplied_credits: 0, idempotent: true}
+        end
+
+      metadata =
+        metadata
+        |> Map.put("stripe_disputes", disputes)
+        |> Map.put("stripe_refunded", metadata["stripe_refunded"] == true or revoke)
+
+      suspended = Enum.any?(Map.values(disputes), &(&1 not in ["won", "warning_closed"]))
+
+      new_status =
+        cond do
+          metadata["stripe_refunded"] ->
+            "revoked"
+
+          suspended ->
+            "suspended"
+
+          status in ["active", "suspended"] and remaining > 0 and
+              (is_nil(expires_at) or DateTime.compare(expires_at, DateTime.utc_now()) == :gt) ->
+            "active"
+
+          status == "suspended" ->
+            "expired"
+
+          true ->
+            status
+        end
+
+      Ecto.Adapters.SQL.query!(
+        repo,
+        "UPDATE credit_grants SET metadata = $3, status = $4, updated_at = now() WHERE id = $1 AND billing_account_id = $2",
+        [grant_id, account, metadata, new_status]
+      )
+
+      result
+    end)
+  end
+
   @doc """
   Removes up to the requested credits from one grant lot.
 
@@ -76,14 +159,14 @@ defmodule BillingCore.Credits do
                 attrs[:source_event_id] || attrs["source_event_id"],
                 idempotency_key,
                 -applied_credits,
-                Jason.encode!(%{
+                %{
                   requested_credits: requested_credits,
                   applied_credits: applied_credits,
                   unapplied_credits: requested_credits - applied_credits,
                   remaining_credits: remaining_credits,
                   status: status,
                   reason: attrs[:reason] || attrs["reason"]
-                })
+                }
               ]
             )
 
@@ -142,7 +225,7 @@ defmodule BillingCore.Credits do
                Policy.normalize(attrs[:policy_snapshot] || attrs["policy_snapshot"]) do
           now = attrs[:now] || DateTime.utc_now()
           credits = required(attrs, :credits)
-          expires_at = required(attrs, :expires_at)
+          expires_at = attrs[:expires_at] || attrs["expires_at"]
 
           grant =
             attrs
@@ -198,7 +281,7 @@ defmodule BillingCore.Credits do
     idempotency_key = required(attrs, :idempotency_key)
     credits = required(attrs, :credits)
     valid_from = required(attrs, :valid_from)
-    expires_at = required(attrs, :expires_at)
+    expires_at = attrs[:expires_at] || attrs["expires_at"]
     policy = Policy.normalize!(attrs[:policy_snapshot] || attrs["policy_snapshot"])
 
     repo.transaction(fn ->
@@ -215,7 +298,7 @@ defmodule BillingCore.Credits do
             status, priority, metadata, inserted_at, updated_at
           ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, 'active', $15, $16, now(), now()
+            $11, $12, $13, $14, 'active', $15, $16, COALESCE($17, now()), COALESCE($17, now())
           )
           ON CONFLICT (billing_account_id, idempotency_key) DO NOTHING
           RETURNING id, billing_account_id, remaining_credits, status
@@ -233,10 +316,11 @@ defmodule BillingCore.Credits do
             idempotency_key,
             attrs[:package_code],
             attrs[:package_version],
-            Jason.encode!(attrs[:package_snapshot] || %{}),
-            Jason.encode!(policy),
+            attrs[:package_snapshot] || %{},
+            policy,
             attrs[:priority] || 0,
-            Jason.encode!(attrs[:metadata] || %{})
+            attrs[:metadata] || %{},
+            attrs[:now]
           ]
         )
 
@@ -251,7 +335,7 @@ defmodule BillingCore.Credits do
               id, billing_account_id, credit_grant_id, event_type, source_type,
               source_id, source_event_id, idempotency_key, credits_delta,
               snapshot, inserted_at
-            ) VALUES ($1, $2, $3, 'issued', $4, $5, $6, $7, $8, $9, now())
+            ) VALUES ($1, $2, $3, 'issued', $4, $5, $6, $7, $8, $9, COALESCE($10, now()))
             """,
             [
               event_id,
@@ -262,10 +346,11 @@ defmodule BillingCore.Credits do
               attrs[:source_event_id],
               idempotency_key,
               credits,
-              Jason.encode!(%{
+              %{
                 policy_snapshot: policy,
                 package_snapshot: attrs[:package_snapshot] || %{}
-              })
+              },
+              attrs[:now]
             ]
           )
 

@@ -573,80 +573,36 @@ defmodule Salix.Bindings.MeetingSummaryReplayTest do
              })
   end
 
-  test "an empty or undersized timeline cannot pass a timestamped replay" do
-    assert {:ok, replay} =
-             Replay.build_case(%{
-               "transcript" => transcript_fixture("ordinary evidence"),
-               "duration_seconds" => 900
-             })
+  for {label, step_seconds, duration_seconds, timeline} <- [
+        {"an empty or undersized timeline cannot pass a timestamped replay", 15, 900, :empty},
+        {"a timeline clustered near the start cannot pass a long replay", 100, 6_000,
+         :clustered_at_start},
+        {"timeline entries require a nonempty moment summary", 15, 900, :empty_moment_summary}
+      ] do
+    @step_seconds step_seconds
+    @duration_seconds duration_seconds
+    @timeline timeline
+    test label do
+      assert {:ok, replay} =
+               Replay.build_case(%{
+                 "transcript" => transcript_fixture("ordinary evidence", @step_seconds),
+                 "duration_seconds" => @duration_seconds
+               })
 
-    summary = %{
-      "title" => "Replay",
-      "timeline" => [],
-      "action_items" => valid_actions(replay),
-      "decisions" => valid_decisions(replay)
-    }
+      summary = %{
+        "title" => "Replay",
+        "timeline" => invalid_timeline(@timeline),
+        "action_items" => valid_actions(replay),
+        "decisions" => valid_decisions(replay)
+      }
 
-    evaluation = Replay.evaluate(summary, replay)
-    refute evaluation["passed"]
+      evaluation = Replay.evaluate(summary, replay)
+      refute evaluation["passed"]
 
-    assert %{"name" => "timeline_chronological_and_bounded", "passed" => false} in evaluation[
-             "checks"
-           ]
-  end
-
-  test "a timeline clustered near the start cannot pass a long replay" do
-    assert {:ok, replay} =
-             Replay.build_case(%{
-               "transcript" => transcript_fixture("ordinary evidence", 100),
-               "duration_seconds" => 6_000
-             })
-
-    summary = %{
-      "title" => "Replay",
-      "timeline" => [
-        %{"time" => "00:00:10", "summary" => "head"},
-        %{"time" => "00:00:20", "summary" => "head"},
-        %{"time" => "00:00:30", "summary" => "head"},
-        %{"time" => "00:00:40", "summary" => "head"}
-      ],
-      "action_items" => valid_actions(replay),
-      "decisions" => valid_decisions(replay)
-    }
-
-    evaluation = Replay.evaluate(summary, replay)
-    refute evaluation["passed"]
-
-    assert %{"name" => "timeline_chronological_and_bounded", "passed" => false} in evaluation[
-             "checks"
-           ]
-  end
-
-  test "timeline entries require a nonempty moment summary" do
-    assert {:ok, replay} =
-             Replay.build_case(%{
-               "transcript" => transcript_fixture("ordinary evidence"),
-               "duration_seconds" => 900
-             })
-
-    timeline = List.replace_at(valid_timeline(), 2, %{"time" => "00:10:30", "summary" => ""})
-
-    evaluation =
-      Replay.evaluate(
-        %{
-          "title" => "Replay",
-          "timeline" => timeline,
-          "action_items" => valid_actions(replay),
-          "decisions" => valid_decisions(replay)
-        },
-        replay
-      )
-
-    refute evaluation["passed"]
-
-    assert %{"name" => "timeline_chronological_and_bounded", "passed" => false} in evaluation[
-             "checks"
-           ]
+      assert %{"name" => "timeline_chronological_and_bounded", "passed" => false} in evaluation[
+               "checks"
+             ]
+    end
   end
 
   defp valid_actions(replay) do
@@ -679,6 +635,21 @@ defmodule Salix.Bindings.MeetingSummaryReplayTest do
 
   defp valid_negative_decision(replay) do
     "#{replay.probes.negative_decision} REPLAY_SCOPE_DISABLED REPLAY_POLARITY_REJECT"
+  end
+
+  defp invalid_timeline(:empty), do: []
+
+  defp invalid_timeline(:clustered_at_start) do
+    [
+      %{"time" => "00:00:10", "summary" => "head"},
+      %{"time" => "00:00:20", "summary" => "head"},
+      %{"time" => "00:00:30", "summary" => "head"},
+      %{"time" => "00:00:40", "summary" => "head"}
+    ]
+  end
+
+  defp invalid_timeline(:empty_moment_summary) do
+    List.replace_at(valid_timeline(), 2, %{"time" => "00:10:30", "summary" => ""})
   end
 
   defp valid_timeline do

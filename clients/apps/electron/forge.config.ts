@@ -16,6 +16,7 @@ import {
 } from "./scripts/dev-electron-bundle";
 import { ensureDevNativeAddons } from "./scripts/dev-native-addons";
 import { electronDownloadCache } from "./scripts/electron-download-cache";
+import { macosDisplayNameHook } from "./scripts/macos-display-name";
 import { getCommaReleaseConfig } from "./src/release-config";
 
 const require = createRequire(import.meta.url);
@@ -114,7 +115,6 @@ const config: ForgeConfig = {
       : {}),
     appBundleId: releaseConfig.appBundleId,
     extendInfo: {
-      CFBundleDisplayName: releaseConfig.productName,
       // macOS 14.4+ gates Core Audio process taps on this usage string; without
       // it the tap fails closed instead of prompting.
       NSCameraUsageDescription:
@@ -143,6 +143,7 @@ const config: ForgeConfig = {
       notificationSoundPath,
       ...statusTrayIconPaths,
     ],
+    afterCopyExtraResources: [macosDisplayNameHook(releaseConfig.productName)],
     afterCopy: [
       (buildPath, _electronVersion, platform, arch, callback) => {
         try {

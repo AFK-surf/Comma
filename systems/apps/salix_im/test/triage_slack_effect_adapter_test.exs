@@ -272,42 +272,27 @@ defmodule SalixIM.Triage.SlackEffectAdapterTest do
     refute_receive {:reaction, _claim, _timestamp, _emoji}
   end
 
-  test "reaction fails closed when the cited source is outside the exact Slack target" do
-    claim =
-      put_in(
-        claim("reaction"),
-        [:payload, "communication", "source_refs"],
-        ["slack://T1/C2/100.000001/100.000001"]
-      )
+  for {name, source_ref} <- [
+        {"reaction fails closed when the cited source is outside the exact Slack target",
+         "slack://T1/C2/100.000001/100.000001"},
+        {"reaction rejects an earlier context message instead of the exact decision target",
+         "slack://T1/C1/100.000001/100.000001"}
+      ] do
+    @source_ref source_ref
+    test name do
+      claim =
+        put_in(claim("reaction"), [:payload, "communication", "source_refs"], [@source_ref])
 
-    assert {:error, :invalid_product_obligation, false} =
-             SlackEffectAdapter.apply(claim,
-               freshness_port: __MODULE__.FreshPort,
-               reaction_port: __MODULE__.ReactionPort,
-               port_opts: [test_pid: self()]
-             )
+      assert {:error, :invalid_product_obligation, false} =
+               SlackEffectAdapter.apply(claim,
+                 freshness_port: __MODULE__.FreshPort,
+                 reaction_port: __MODULE__.ReactionPort,
+                 port_opts: [test_pid: self()]
+               )
 
-    refute_receive {:freshness, ^claim}
-    refute_receive {:reaction, _claim, _timestamp, _emoji}
-  end
-
-  test "reaction rejects an earlier context message instead of the exact decision target" do
-    claim =
-      put_in(
-        claim("reaction"),
-        [:payload, "communication", "source_refs"],
-        ["slack://T1/C1/100.000001/100.000001"]
-      )
-
-    assert {:error, :invalid_product_obligation, false} =
-             SlackEffectAdapter.apply(claim,
-               freshness_port: __MODULE__.FreshPort,
-               reaction_port: __MODULE__.ReactionPort,
-               port_opts: [test_pid: self()]
-             )
-
-    refute_receive {:freshness, ^claim}
-    refute_receive {:reaction, _claim, _timestamp, _emoji}
+      refute_receive {:freshness, ^claim}
+      refute_receive {:reaction, _claim, _timestamp, _emoji}
+    end
   end
 
   test "production reaction port binds the obligation identity and does not hot-loop a rate limit" do
@@ -623,24 +608,33 @@ defmodule SalixIM.Triage.SlackEffectAdapterTest do
              Freshness.check(unversioned, freshness_opts())
   end
 
-  test "freshness fails stale when the UI-owned channel authority changes" do
-    put_freshness_fixture([])
-    Process.put(:product_authority, Map.put(product_authority(), "connect_generation", "new"))
+  for {name, change, reason} <- [
+        {"freshness fails stale when the UI-owned channel authority changes",
+         :authority_generation, :stale_source},
+        {"freshness suppresses communication after the thread is handed to a Task",
+         :task_route_owner, :source_route_changed}
+      ] do
+    @change change
+    @reason reason
+    test name do
+      put_freshness_fixture([])
 
-    assert {:ok, %{status: :stale, reason: :stale_source}} =
-             Freshness.check(claim("reply"), freshness_opts())
+      case @change do
+        :authority_generation ->
+          Process.put(
+            :product_authority,
+            Map.put(product_authority(), "connect_generation", "new")
+          )
 
-    refute_receive {:clickhouse_thread_request, _request}
-  end
+        :task_route_owner ->
+          Process.put(:route_owner, {:ok, :task, String.duplicate("d", 64)})
+      end
 
-  test "freshness suppresses communication after the thread is handed to a Task" do
-    put_freshness_fixture([])
-    Process.put(:route_owner, {:ok, :task, String.duplicate("d", 64)})
+      assert {:ok, %{status: :stale, reason: @reason}} =
+               Freshness.check(claim("reply"), freshness_opts())
 
-    assert {:ok, %{status: :stale, reason: :source_route_changed}} =
-             Freshness.check(claim("reply"), freshness_opts())
-
-    refute_receive {:clickhouse_thread_request, _request}
+      refute_receive {:clickhouse_thread_request, _request}
+    end
   end
 
   test "freshness suppresses communication after the frozen source is edited or deleted" do

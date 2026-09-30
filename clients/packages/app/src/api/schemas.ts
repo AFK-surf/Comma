@@ -234,8 +234,24 @@ export const commaBillingSummarySchema = z
       .object({
         package_code: z.string(),
         package_version: z.string(),
-        status: z.enum(["active", "trialing", "past_due"]),
+        status: z.enum(["active", "trialing", "past_due", "unpaid", "paused"]),
         source_id: z.string(),
+        plan: commaBillingPlanSchema.nullable().optional(),
+        source_metadata: z
+          .object({
+            cancel_at_period_end: z.boolean().optional(),
+            current_period_end: z.number().nullable().optional(),
+            scheduled_plan: z
+              .object({
+                package_code: z.string(),
+                package_version: z.string(),
+                effective_at: z.number(),
+              })
+              .nullable()
+              .optional(),
+          })
+          .strip()
+          .optional(),
       })
       .strip()
       .nullable()
@@ -260,6 +276,37 @@ export const commaBillingSummarySchema = z
 export const commaBillingSessionSchema = z
   .object({ id: z.string(), provider: z.literal("stripe"), url: z.url() })
   .strip();
+
+export const commaBillingChangePreviewSchema = z
+  .object({
+    amount_minor: z.number().int(),
+    currency: z.string(),
+    proration_date: z.number().int(),
+    current_price_id: z.string(),
+    period_end: z.number().int(),
+    effect: z.enum(["upgrade", "downgrade", "keep_current"]),
+  })
+  .strip();
+export const commaBillingChangeSchema = z
+  .object({
+    id: z.string(),
+    provider: z.literal("stripe"),
+    effect: z.enum([
+      "upgraded",
+      "upgrade_failed",
+      "payment_required",
+      "downgrade_scheduled",
+      "kept_current",
+      "cancellation_scheduled",
+    ]),
+    url: z.url().nullable().optional(),
+    effective_at: z.number().optional(),
+  })
+  .strip();
+export type CommaBillingChangePreview = z.output<
+  typeof commaBillingChangePreviewSchema
+>;
+export type CommaBillingChange = z.output<typeof commaBillingChangeSchema>;
 
 export const commaRedemptionResultSchema = z
   .object({

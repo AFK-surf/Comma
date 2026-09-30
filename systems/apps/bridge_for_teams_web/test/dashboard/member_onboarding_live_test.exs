@@ -10,6 +10,9 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
 
   alias BridgeForTeams.{Agents, Memberships, Onboarding, OrgOAuthApps}
 
+  # The overlays render in the LiveView shell. The organization Overview is
+  # served by the React dashboard, so these tests land on another org page.
+
   setup %{conn: conn} do
     SalixStore.S3.Fake.reset()
     %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
@@ -24,8 +27,8 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
   end
 
   test "first visit shows the welcome modal; starting the tour reveals the checklist",
-       %{conn: conn} do
-    {:ok, view, html} = live(conn, ~p"/")
+       %{conn: conn, org: org} do
+    {:ok, view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
 
     assert html =~ "onboarding-welcome"
     assert html =~ "Start setup"
@@ -45,17 +48,8 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
     assert html =~ "data-target=\"[data-tour=&#39;nav-swarms&#39;]\""
   end
 
-  test "the welcome modal stays off New Home but still greets elsewhere", %{conn: conn} do
-    {:ok, _view, html} = live(conn, ~p"/new-home")
-
-    refute html =~ "onboarding-welcome"
-    # Not consumed: the next visit to any other page still shows it.
-    {:ok, _view, html} = live(conn, ~p"/")
-    assert html =~ "onboarding-welcome"
-  end
-
-  test "\"maybe later\" collapses the checklist into the pill", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
+  test "\"maybe later\" collapses the checklist into the pill", %{conn: conn, org: org} do
+    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/members")
 
     html = view |> element("button", "Maybe later") |> render_click()
 
@@ -67,24 +61,24 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
     assert html =~ "onboarding-checklist"
   end
 
-  test "skip setup ends onboarding for good — nothing resurfaces on Home", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
+  test "skip setup ends onboarding for good — nothing resurfaces", %{conn: conn, org: org} do
+    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/members")
     view |> element("button", "Start setup") |> render_click()
 
     html = view |> element("button", "Skip setup") |> render_click()
     refute html =~ "onboarding-checklist"
-    refute html =~ "onboarding-resume"
+    refute html =~ "onboarding-collapsed"
 
-    # Gone for good on subsequent visits, Home included.
-    {:ok, _view, html} = live(conn, ~p"/")
+    # Gone for good on subsequent visits.
+    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
     refute html =~ "onboarding-checklist"
     refute html =~ "onboarding-welcome"
-    refute html =~ "onboarding-resume"
+    refute html =~ "onboarding-collapsed"
   end
 
   test "skipping a tour step marks it done and advances the tour",
        %{conn: conn, org: org, user: user} do
-    {:ok, view, _html} = live(conn, ~p"/")
+    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/members")
     view |> element("button", "Start setup") |> render_click()
 
     # The tour starts on the swarm step; skipping it counts as done and the
@@ -97,7 +91,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
 
   test "creating an Agent Swarm completes the swarm step and advances the tour",
        %{conn: conn, org: org} do
-    {:ok, view, _html} = live(conn, ~p"/")
+    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/members")
     view |> element("button", "Start setup") |> render_click()
 
     {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/projects")
@@ -155,7 +149,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
     :ok = Onboarding.observe_connected(org.id, user.id)
     {:ok, _} = Onboarding.mark_welcome_seen(org.id, user.id, active_step: nil)
 
-    {:ok, view, html} = live(conn, ~p"/")
+    {:ok, view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
     assert html =~ "Setup complete!"
 
     assert has_element?(
@@ -165,7 +159,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
            )
 
     use_slack_context_preview(false)
-    {:ok, hidden_view, _html} = live(conn, ~p"/")
+    {:ok, hidden_view, _html} = live(conn, ~p"/orgs/#{org.slug}/members")
     refute has_element?(hidden_view, "#onboarding-slack-context-cta")
 
     snapshot = Onboarding.snapshot(org, user.id, "owner")
@@ -175,7 +169,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
     html = view |> element("button", "Done") |> render_click()
     refute html =~ "onboarding-checklist"
 
-    {:ok, _view, html} = live(conn, ~p"/")
+    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
     refute html =~ "onboarding-checklist"
     refute html =~ "onboarding-welcome"
   end
@@ -184,7 +178,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
        %{conn: _conn, org: org, user: owner} do
     {member_conn, member} = member_conn(org)
 
-    {:ok, view, html} = live(member_conn, ~p"/")
+    {:ok, view, html} = live(member_conn, ~p"/orgs/#{org.slug}/members")
     # Member welcome lists two steps, no OAuth step.
     assert html =~ "Create an Agent Swarm"
     refute html =~ "Configure OAuth clients"
@@ -227,7 +221,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
     {:ok, _} = Onboarding.celebrate(org.id, owner.id)
 
     # Shows for the admin on any page (even with their own onboarding closed)…
-    {:ok, _view, html} = live(conn, ~p"/")
+    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
     assert html =~ "oauth-reminder-toast"
     assert html =~ "member is waiting for OAuth clients"
 
@@ -237,7 +231,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
     assert html =~ "oauth-reminders"
 
     # …and not for members.
-    {:ok, _view, html} = live(member_conn, ~p"/")
+    {:ok, _view, html} = live(member_conn, ~p"/orgs/#{org.slug}/members")
     refute html =~ "oauth-reminder-toast"
 
     # Configuring a client clears it everywhere.
@@ -248,7 +242,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MemberOnboardingLiveTest do
       })
 
     Onboarding.invalidate_oauth_cache(org.id)
-    {:ok, _view, html} = live(conn, ~p"/")
+    {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
     refute html =~ "oauth-reminder-toast"
   end
 

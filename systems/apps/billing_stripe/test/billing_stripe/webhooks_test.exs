@@ -12,7 +12,12 @@ defmodule BillingStripe.WebhooksTest do
     Application.put_env(:billing_stripe, :webhook_secret, "whsec_test")
     Application.put_env(:billing_stripe, :secret_key, "sk_test_secret")
     Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
-    Application.delete_env(:billing_stripe, :test_payment_intents)
+
+    Enum.each(
+      [:test_payment_intents, :test_charges, :test_disputes, :test_prices, :test_invoices],
+      &Application.delete_env(:billing_stripe, &1)
+    )
+
     Application.delete_env(:billing_stripe, :test_subscriptions)
 
     start_supervised!(%{
@@ -29,7 +34,12 @@ defmodule BillingStripe.WebhooksTest do
 
     on_exit(fn ->
       Application.delete_env(:billing_commerce, :billing_source_typed_sink)
-      Application.delete_env(:billing_stripe, :test_payment_intents)
+
+      Enum.each(
+        [:test_payment_intents, :test_charges, :test_disputes, :test_prices, :test_invoices],
+        &Application.delete_env(:billing_stripe, &1)
+      )
+
       Application.delete_env(:billing_stripe, :test_subscriptions)
     end)
 
@@ -38,7 +48,7 @@ defmodule BillingStripe.WebhooksTest do
 
   test "verifies, journals, and maps invoice paid to one subscription cycle grant idempotently" do
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_invoice_paid_1",
         "type" => "invoice.paid",
         "data" => %{
@@ -71,7 +81,7 @@ defmodule BillingStripe.WebhooksTest do
 
   test "invoice paid reads subscription metadata from real Stripe invoice parent shape" do
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_invoice_parent_metadata",
         "type" => "invoice.paid",
         "data" => %{
@@ -141,7 +151,7 @@ defmodule BillingStripe.WebhooksTest do
 
   test "failed Stripe processing emits a source lifecycle projection" do
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_invoice_failed_projection",
         "type" => "invoice.paid",
         "data" => %{
@@ -150,7 +160,8 @@ defmodule BillingStripe.WebhooksTest do
             "subscription" => "sub_failed_projection",
             "period_start" => 1_780_272_000,
             "period_end" => 1_782_691_200,
-            "metadata" => metadata("example-ba-wsp_failed_projection", package_code: "missing_pkg")
+            "metadata" =>
+              metadata("example-ba-wsp_failed_projection", package_code: "missing_pkg")
           }
         }
       })
@@ -256,7 +267,7 @@ defmodule BillingStripe.WebhooksTest do
 
   test "checkout payment maps to one-time purchase grant with explicit period" do
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_checkout_1",
         "type" => "checkout.session.completed",
         "data" => %{
@@ -292,7 +303,7 @@ defmodule BillingStripe.WebhooksTest do
     }
 
     pending =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_checkout_async_pending",
         "type" => "checkout.session.completed",
         "data" => %{"object" => session}
@@ -308,7 +319,7 @@ defmodule BillingStripe.WebhooksTest do
     assert grant_count("example-ba-wsp_async_topup") == 0
 
     paid =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_checkout_async_paid",
         "type" => "checkout.session.async_payment_succeeded",
         "data" => %{"object" => session}
@@ -328,7 +339,7 @@ defmodule BillingStripe.WebhooksTest do
     account_id = "example-ba-wsp_refunded_topup"
 
     checkout =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_checkout_refund_source",
         "type" => "checkout.session.completed",
         "data" => %{
@@ -352,7 +363,7 @@ defmodule BillingStripe.WebhooksTest do
              )
 
     partial =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_refund_partial",
         "type" => "charge.refunded",
         "data" => %{
@@ -365,17 +376,17 @@ defmodule BillingStripe.WebhooksTest do
         }
       })
 
-    assert {:ok, %{result: %{purchase: %{status: "partially_refunded"}}}} =
+    assert {:ok, %{result: %{action: %{type: :refund, full: false}}}} =
              Webhooks.handle_webhook(
                partial,
                signature(partial, "whsec_test", 1_780_272_101),
                now: 1_780_272_101
              )
 
-    assert grant_balance(account_id) == {250, "active"}
+    assert grant_balance(account_id) == {500, "active"}
 
     full =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_refund_full",
         "type" => "charge.refunded",
         "data" => %{
@@ -388,7 +399,7 @@ defmodule BillingStripe.WebhooksTest do
         }
       })
 
-    assert {:ok, %{result: %{purchase: %{status: "refunded"}}}} =
+    assert {:ok, %{result: %{action: %{type: :refund, full: true}}}} =
              Webhooks.handle_webhook(
                full,
                signature(full, "whsec_test", 1_780_272_102),
@@ -405,7 +416,7 @@ defmodule BillingStripe.WebhooksTest do
              )
   end
 
-  test "partial disputes use the original PaymentIntent total and replay idempotently" do
+  test "disputes pause unspent credits without reducing them and replay idempotently" do
     account_id = "example-ba-wsp_partial_dispute"
     payment_intent_id = "pi_partial_dispute"
     Application.put_env(:billing_stripe, :test_payment_intents, %{payment_intent_id => 2_000})
@@ -421,20 +432,14 @@ defmodule BillingStripe.WebhooksTest do
         500
       )
 
-    assert {:ok, %{result: %{purchase: %{status: "partially_refunded"}}}} =
+    assert {:ok, %{result: %{action: %{type: :dispute}}}} =
              Webhooks.handle_webhook(
                dispute,
                signature(dispute, "whsec_test", 1_780_272_101),
                now: 1_780_272_101
              )
 
-    assert grant_balance(account_id) == {375, "active"}
-
-    assert [
-             {:retrieve_payment_intent, ^payment_intent_id, %{}, retrieve_opts}
-           ] = stripe_calls(:retrieve_payment_intent)
-
-    assert retrieve_opts[:api_key] == "sk_test_secret"
+    assert grant_balance(account_id) == {500, "suspended"}
 
     assert {:ok, %{idempotent: true}} =
              Webhooks.handle_webhook(
@@ -443,20 +448,16 @@ defmodule BillingStripe.WebhooksTest do
                now: 1_780_272_101
              )
 
-    assert grant_balance(account_id) == {375, "active"}
-    assert length(stripe_calls(:retrieve_payment_intent)) == 1
+    assert grant_balance(account_id) == {500, "suspended"}
+    assert length(stripe_calls(:retrieve_dispute)) == 1
   end
 
-  test "a failed PaymentIntent lookup leaves a dispute retryable without reducing credits" do
+  test "a failed authoritative dispute read is retryable without pausing credits" do
     account_id = "example-ba-wsp_retryable_dispute"
     payment_intent_id = "pi_retryable_dispute"
 
     assert {:ok, _} =
              one_time_checkout(account_id, payment_intent_id, "evt_checkout_retryable_dispute")
-
-    Application.put_env(:billing_stripe, :test_payment_intents, %{
-      payment_intent_id => {:error, :stripe_temporarily_unavailable}
-    })
 
     dispute =
       dispute_payload(
@@ -465,6 +466,12 @@ defmodule BillingStripe.WebhooksTest do
         payment_intent_id,
         500
       )
+
+    current_dispute = Application.get_env(:billing_stripe, :test_disputes)["dp_retryable"]
+
+    Application.put_env(:billing_stripe, :test_disputes, %{
+      "dp_retryable" => {:error, :stripe_temporarily_unavailable}
+    })
 
     assert {:error, :stripe_temporarily_unavailable} =
              Webhooks.handle_webhook(
@@ -476,9 +483,9 @@ defmodule BillingStripe.WebhooksTest do
     assert event_status("evt_dispute_retryable") == "failed"
     assert grant_balance(account_id) == {500, "active"}
 
-    Application.put_env(:billing_stripe, :test_payment_intents, %{payment_intent_id => 2_000})
+    Application.put_env(:billing_stripe, :test_disputes, %{"dp_retryable" => current_dispute})
 
-    assert {:ok, %{result: %{purchase: %{status: "partially_refunded"}}}} =
+    assert {:ok, %{result: %{action: %{type: :dispute}}}} =
              Webhooks.handle_webhook(
                dispute,
                signature(dispute, "whsec_test", 1_780_272_101),
@@ -486,7 +493,7 @@ defmodule BillingStripe.WebhooksTest do
              )
 
     assert event_status("evt_dispute_retryable") == "processed"
-    assert grant_balance(account_id) == {375, "active"}
+    assert grant_balance(account_id) == {500, "suspended"}
   end
 
   test "webhook customer mismatch fails before granting credits and can retry" do
@@ -502,7 +509,7 @@ defmodule BillingStripe.WebhooksTest do
              })
 
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_customer_mismatch",
         "type" => "checkout.session.completed",
         "data" => %{
@@ -514,7 +521,8 @@ defmodule BillingStripe.WebhooksTest do
             "customer" => "cus_attacker",
             "period_start" => 1_780_272_000,
             "period_end" => 1_782_691_200,
-            "metadata" => metadata("example-ba-wsp_customer_mismatch", package_code: "comma_topup")
+            "metadata" =>
+              metadata("example-ba-wsp_customer_mismatch", package_code: "comma_topup")
           }
         }
       })
@@ -528,7 +536,7 @@ defmodule BillingStripe.WebhooksTest do
     assert grant_count("example-ba-wsp_customer_mismatch") == 0
 
     retry_payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_customer_mismatch",
         "type" => "checkout.session.completed",
         "data" => %{
@@ -540,7 +548,8 @@ defmodule BillingStripe.WebhooksTest do
             "customer" => "cus_expected",
             "period_start" => 1_780_272_000,
             "period_end" => 1_782_691_200,
-            "metadata" => metadata("example-ba-wsp_customer_mismatch", package_code: "comma_topup")
+            "metadata" =>
+              metadata("example-ba-wsp_customer_mismatch", package_code: "comma_topup")
           }
         }
       })
@@ -581,11 +590,10 @@ defmodule BillingStripe.WebhooksTest do
     assert params.payment_intent_data == %{metadata: metadata}
     assert opts[:api_key] == "sk_test_secret"
     assert opts[:idempotency_key] == "checkout-command-1"
-    assert metadata["period_start"] == "1780272000"
-    assert metadata["period_end"] == "1782864000"
+    assert metadata["package_code"] == "comma_topup"
 
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_checkout_from_command",
         "type" => "checkout.session.completed",
         "data" => %{
@@ -610,6 +618,14 @@ defmodule BillingStripe.WebhooksTest do
   end
 
   test "subscription checkout carries billing metadata onto the Stripe subscription" do
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        billing_account_id: "example-ba-wsp_subscription_checkout",
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: "wsp_subscription_checkout"
+      })
+
     assert {:ok, checkout} =
              Checkout.create_session(%{
                billing_account_id: "example-ba-wsp_subscription_checkout",
@@ -708,7 +724,7 @@ defmodule BillingStripe.WebhooksTest do
     })
 
     deleted =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_subscription_deleted",
         "type" => "customer.subscription.deleted",
         "data" => %{
@@ -770,7 +786,7 @@ defmodule BillingStripe.WebhooksTest do
     })
 
     updated =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_subscription_plan_changed",
         "type" => "customer.subscription.updated",
         "data" => %{
@@ -814,7 +830,7 @@ defmodule BillingStripe.WebhooksTest do
     end)
 
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_real_signature",
         "type" => "checkout.session.completed",
         "data" => %{"object" => %{"id" => "cs_real_signature"}}
@@ -917,7 +933,7 @@ defmodule BillingStripe.WebhooksTest do
           {"evt_audit_old_active", "customer.subscription.updated", 100, "active"}
         ] do
       event =
-        Jason.encode!(%{
+        encode_event(%{
           "id" => id,
           "type" => type,
           "created" => created,
@@ -1042,14 +1058,18 @@ defmodule BillingStripe.WebhooksTest do
   end
 
   test "cancellation before the paid invoice is reconciled when the subscription is recorded" do
-    subscription = %{"id" => "sub_early_cancel", "status" => "canceled"}
+    subscription = %{
+      "id" => "sub_early_cancel",
+      "status" => "canceled",
+      "metadata" => metadata("example-ba-wsp_early_cancel")
+    }
 
     Application.put_env(:billing_stripe, :test_subscriptions, %{
       "sub_early_cancel" => subscription
     })
 
     canceled =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => "evt_early_cancel",
         "type" => "customer.subscription.deleted",
         "data" => %{"object" => subscription}
@@ -1090,10 +1110,75 @@ defmodule BillingStripe.WebhooksTest do
         effective_at: ~U[2026-01-01 00:00:00Z],
         status: "active"
       })
+
+    {:ok, _} =
+      BillingCommerce.put_provider_price(%{
+        package_code: code,
+        package_version: "2026-06",
+        provider: "stripe",
+        provider_lookup_key: "fixture_" <> code,
+        provider_price_id: "price_fixture_" <> code,
+        currency: "usd",
+        amount_minor: 2_000
+      })
   end
 
+  defp encode_event(event) do
+    event = Map.put_new(event, "created", 1_780_272_000)
+    object = get_in(event, ["data", "object"])
+
+    object =
+      if event["type"] == "invoice.paid" do
+        metadata = BillingStripe.Events.billing_metadata(object)
+        code = metadata["package_code"] || "comma_monthly"
+
+        period =
+          get_in(object, ["lines", "data", Access.at(0), "period"]) ||
+            %{
+              "start" => object["period_start"] || 1_780_272_000,
+              "end" => object["period_end"] || 1_782_691_200
+            }
+
+        lines = get_in(object, ["lines", "data"]) || [%{}]
+
+        lines =
+          Enum.map(lines, fn line ->
+            line = line |> Map.put_new("amount", 2_000) |> Map.put_new("period", period)
+
+            if get_in(line, ["pricing", "price_details", "price"]) ||
+                 get_in(line, ["price", "id"]),
+               do: line,
+               else: Map.put(line, "price", %{"id" => "price_fixture_" <> code})
+          end)
+
+        object
+        |> Map.put_new("amount_paid", 2_000)
+        |> Map.put_new("status_transitions", %{"paid_at" => period["start"]})
+        |> Map.put_new("payment_intent", "pi_" <> object["id"])
+        |> Map.put("lines", %{"data" => lines, "has_more" => false})
+      else
+        object
+      end
+
+    if event["type"] == "charge.refunded", do: put_provider(:test_charges, object["id"], object)
+
+    if String.starts_with?(event["type"], "charge.dispute."),
+      do:
+        put_provider(:test_disputes, object["id"], Map.put_new(object, "status", "under_review"))
+
+    event |> put_in(["data", "object"], object) |> Jason.encode!()
+  end
+
+  defp put_provider(key, id, object),
+    do:
+      Application.put_env(
+        :billing_stripe,
+        key,
+        Map.put(Application.get_env(:billing_stripe, key, %{}), id, object)
+      )
+
   defp invoice_payload(event_id, invoice) do
-    Jason.encode!(%{
+    encode_event(%{
       "id" => event_id,
       "type" => "invoice.paid",
       "data" => %{"object" => invoice}
@@ -1102,7 +1187,7 @@ defmodule BillingStripe.WebhooksTest do
 
   defp one_time_checkout(account_id, payment_intent_id, event_id) do
     payload =
-      Jason.encode!(%{
+      encode_event(%{
         "id" => event_id,
         "type" => "checkout.session.completed",
         "data" => %{
@@ -1126,7 +1211,7 @@ defmodule BillingStripe.WebhooksTest do
   end
 
   defp dispute_payload(event_id, dispute_id, payment_intent_id, amount) do
-    Jason.encode!(%{
+    encode_event(%{
       "id" => event_id,
       "type" => "charge.dispute.created",
       "data" => %{

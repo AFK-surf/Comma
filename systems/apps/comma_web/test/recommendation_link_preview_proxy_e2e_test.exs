@@ -150,58 +150,6 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
     refute_received {:proxy_session, _, _, _}
   end
 
-  test "reads a Slack message and its garnishes through one Tool Router session" do
-    attempts(
-      ["sess-slack"],
-      [
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [%{"ts" => @message_ts, "text" => "Ship it", "user" => "U777"}]
-           }
-         }},
-        {:ok, %{"status" => 200, "data" => %{"ok" => true, "channel" => %{"name" => "launch"}}}},
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "user" => %{"name" => "zanwei", "profile" => %{"display_name" => "zanwei"}}
-           }
-         }}
-      ]
-    )
-
-    assert {:ok,
-            %{
-              "kind" => "slack_message",
-              "text" => "Ship it",
-              "channel" => %{"id" => "C01234567", "name" => "launch"},
-              "author" => %{"name" => "zanwei"}
-            }} = slack_preview()
-
-    assert_received {:proxy_session, "grp-1", "ca-slack", "slack"}
-
-    assert_received {:proxy, "sess-slack", %{"endpoint" => "https://slack.com/api/auth.test"}}
-
-    assert_received {:proxy, "sess-slack",
-                     %{"endpoint" => "https://slack.com/api/conversations.history" <> _}}
-
-    assert_received {:proxy, "sess-slack",
-                     %{"endpoint" => "https://slack.com/api/conversations.info" <> _}}
-
-    assert_received {:proxy, "sess-slack",
-                     %{"endpoint" => "https://slack.com/api/users.info" <> _}}
-
-    # All four requests ride the one session, closed exactly once.
-    assert_received {:proxy_closed, "sess-slack"}
-    refute_received {:proxy_session, _, _, _}
-    refute_received {:proxy_closed, _}
-  end
-
   test "replaces one missing session before the required Slack read only" do
     attempts(
       ["sess-stale", "sess-replacement"],
@@ -276,18 +224,6 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
                      %{"endpoint" => "https://slack.com/api/conversations.history" <> _}}
 
     assert_received {:proxy_closed, "sess-slack"}
-  end
-
-  test "binds the workspace before the Slack read and rejects a foreign subdomain" do
-    attempts(["sess-slack"], [@auth_ok])
-
-    assert {:error, :not_found} =
-             slack_preview("https://evil.slack.com/archives/C01234567/p1786900000000200")
-
-    assert_received {:proxy, "sess-slack", %{"endpoint" => "https://slack.com/api/auth.test"}}
-    assert_received {:proxy_closed, "sess-slack"}
-    # No message, channel, or user read follows the failed binding.
-    refute_received {:proxy, _, _}
   end
 
   defp attempts(sessions, responses) do

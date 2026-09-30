@@ -284,70 +284,47 @@ defmodule SalixCluster.ScheduleToolTest do
       assert stored["agent_id"] == ctx.agent_id
     end
 
-    test "rejects giving both interval_minutes and cron", %{ctx: ctx} do
-      assert_raise RuntimeError,
-                   "provide exactly one of 'interval_minutes', 'cron', or 'run_at'",
-                   fn ->
-                     Tool.create_schedule(
-                       %{
-                         "prompt" => "p",
-                         "interval_minutes" => 5,
-                         "cron" => "0 9 * * *"
-                       },
-                       ctx
-                     )
-                   end
-    end
+    @cron_rejections [
+      {"rejects giving both interval_minutes and cron",
+       %{"prompt" => "p", "interval_minutes" => 5, "cron" => "0 9 * * *"},
+       "provide exactly one of 'interval_minutes', 'cron', or 'run_at'"},
+      {"rejects an unparseable cron expression", %{"prompt" => "p", "cron" => "not a cron"},
+       "invalid schedule parameters"},
+      {"rejects an unknown timezone",
+       %{"prompt" => "p", "cron" => "0 9 * * *", "timezone" => "Mars/Phobos"},
+       "invalid schedule parameters"}
+    ]
 
-    test "cron wins over a zero interval_minutes filler from the model", %{ctx: ctx} do
-      out =
-        Tool.create_schedule(
-          %{
-            "prompt" => "daily",
-            "cron" => "0 9 * * *",
-            "interval_minutes" => 0
-          },
-          ctx
-        )
-
-      sched = Jason.decode!(out)
-      assert sched["cron"] == "0 9 * * *"
-      refute Map.has_key?(sched, "interval_minutes")
-      assert {:ok, _} = Schedules.get(sched["id"])
-    end
-
-    test "cron wins over an empty-string interval_minutes filler from the model", %{ctx: ctx} do
-      out =
-        Tool.create_schedule(
-          %{
-            "prompt" => "daily",
-            "cron" => "0 9 * * *",
-            "interval_minutes" => ""
-          },
-          ctx
-        )
-
-      sched = Jason.decode!(out)
-      assert sched["cron"] == "0 9 * * *"
-      refute Map.has_key?(sched, "interval_minutes")
-    end
-
-    test "rejects an unparseable cron expression", %{ctx: ctx} do
-      assert_raise RuntimeError, "invalid schedule parameters", fn ->
-        Tool.create_schedule(%{"prompt" => "p", "cron" => "not a cron"}, ctx)
+    for {name, args, message} <- @cron_rejections do
+      test name, %{ctx: ctx} do
+        assert_raise RuntimeError, unquote(message), fn ->
+          Tool.create_schedule(unquote(Macro.escape(args)), ctx)
+        end
       end
     end
 
-    test "rejects an unknown timezone", %{ctx: ctx} do
-      assert_raise RuntimeError, "invalid schedule parameters", fn ->
-        Tool.create_schedule(
-          %{
-            "prompt" => "p",
-            "cron" => "0 9 * * *",
-            "timezone" => "Mars/Phobos"
-          },
-          ctx
-        )
+    # Models fill unused numeric fields with zero or an empty string; cron wins.
+    @interval_fillers [
+      {"cron wins over a zero interval_minutes filler from the model", 0},
+      {"cron wins over an empty-string interval_minutes filler from the model", ""}
+    ]
+
+    for {name, filler} <- @interval_fillers do
+      test name, %{ctx: ctx} do
+        out =
+          Tool.create_schedule(
+            %{
+              "prompt" => "daily",
+              "cron" => "0 9 * * *",
+              "interval_minutes" => unquote(filler)
+            },
+            ctx
+          )
+
+        sched = Jason.decode!(out)
+        assert sched["cron"] == "0 9 * * *"
+        refute Map.has_key?(sched, "interval_minutes")
+        assert {:ok, _} = Schedules.get(sched["id"])
       end
     end
 
@@ -543,33 +520,24 @@ defmodule SalixCluster.ScheduleToolTest do
       assert {:ok, _} = Schedules.get(id)
     end
 
-    test "deleting an unknown id raises schedule not found", %{ctx: ctx} do
-      assert_raise RuntimeError, "schedule not found", fn ->
-        Tool.delete_schedule(%{"schedule_id" => "sched-nope"}, ctx)
-      end
-    end
+    @argument_errors [
+      {"deleting an unknown id raises schedule not found", :delete_schedule,
+       %{"schedule_id" => "sched-nope"}, "schedule not found"},
+      {"create requires prompt", :create_schedule, %{"interval_minutes" => 5},
+       "'prompt' is required"},
+      {"create requires one of interval_minutes, cron, or run_at", :create_schedule,
+       %{"prompt" => "p"}, "provide exactly one of 'interval_minutes', 'cron', or 'run_at'"},
+      {"create requires a positive integer interval_minutes", :create_schedule,
+       %{"prompt" => "p", "interval_minutes" => 0},
+       "'interval_minutes' must be a positive integer"},
+      {"delete requires schedule_id", :delete_schedule, %{}, "'schedule_id' is required"}
+    ]
 
-    test "create validates prompt and interval_minutes", %{ctx: ctx} do
-      assert_raise RuntimeError, "'prompt' is required", fn ->
-        Tool.create_schedule(%{"interval_minutes" => 5}, ctx)
-      end
-
-      # neither interval_minutes nor cron given
-      assert_raise RuntimeError,
-                   "provide exactly one of 'interval_minutes', 'cron', or 'run_at'",
-                   fn ->
-                     Tool.create_schedule(%{"prompt" => "p"}, ctx)
-                   end
-
-      # interval_minutes present but not a positive integer
-      assert_raise RuntimeError, "'interval_minutes' must be a positive integer", fn ->
-        Tool.create_schedule(%{"prompt" => "p", "interval_minutes" => 0}, ctx)
-      end
-    end
-
-    test "delete requires schedule_id", %{ctx: ctx} do
-      assert_raise RuntimeError, "'schedule_id' is required", fn ->
-        Tool.delete_schedule(%{}, ctx)
+    for {name, action, args, message} <- @argument_errors do
+      test name, %{ctx: ctx} do
+        assert_raise RuntimeError, unquote(message), fn ->
+          apply(Tool, unquote(action), [unquote(Macro.escape(args)), ctx])
+        end
       end
     end
   end

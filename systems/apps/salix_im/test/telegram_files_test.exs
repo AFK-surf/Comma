@@ -186,19 +186,31 @@ defmodule SalixIM.TelegramFilesTest do
     end
   end
 
-  test "oversized media captions are rejected without uploading or sending" do
-    connect = %{"provider" => "telegram", "status" => "connected", "bot_token" => "private-token"}
+  for {name, caption} <- [
+        {"oversized media captions are rejected without uploading or sending",
+         String.duplicate("😀", 513)},
+        {"caption quote prefixes count toward the visible limit before upload",
+         "> " <> String.duplicate("a", 1024)}
+      ] do
+    @caption caption
+    test name do
+      connect = %{
+        "provider" => "telegram",
+        "status" => "connected",
+        "bot_token" => "private-token"
+      }
 
-    for api <- ["telegram.send_photo", "telegram.send_document"] do
-      assert {:error, reason} =
-               SalixIM.Provider.Telegram.call("agent", connect, api, %{
-                 "chat_id" => "42",
-                 "path" => "/result.png",
-                 "caption" => String.duplicate("😀", 513)
-               })
+      for api <- ["telegram.send_photo", "telegram.send_document"] do
+        assert {:error, reason} =
+                 SalixIM.Provider.Telegram.call("agent", connect, api, %{
+                   "chat_id" => "42",
+                   "path" => "/result.png",
+                   "caption" => @caption
+                 })
 
-      assert reason =~ "1024"
-      refute_receive {:sent_media, _}, 20
+        assert reason =~ "1024"
+        refute_receive {:sent_media, _}, 20
+      end
     end
   end
 
@@ -260,22 +272,6 @@ defmodule SalixIM.TelegramFilesTest do
 
       assert {:error, _} = SalixIM.Provider.Telegram.call("agent", connect, api, params)
       assert_receive {:sent_media, _}
-      refute_receive {:sent_media, _}, 20
-    end
-  end
-
-  test "caption quote prefixes count toward the visible limit before upload" do
-    connect = %{"provider" => "telegram", "status" => "connected", "bot_token" => "private-token"}
-
-    for api <- ["telegram.send_photo", "telegram.send_document"] do
-      assert {:error, reason} =
-               SalixIM.Provider.Telegram.call("agent", connect, api, %{
-                 "chat_id" => "42",
-                 "path" => "/result.png",
-                 "caption" => "> " <> String.duplicate("a", 1024)
-               })
-
-      assert reason =~ "1024"
       refute_receive {:sent_media, _}, 20
     end
   end

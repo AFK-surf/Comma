@@ -14,32 +14,29 @@ defmodule Salix.SlackMirrorDropScrapeTest do
   @reporter Module.concat(__MODULE__, Reporter)
   @scoped_event [:salix, :slack_mirror, :dropped, :scrape_test]
 
-  test "a drop reaches an operator's scrape, labelled by reason" do
-    start_supervised!(
-      {TelemetryMetricsPrometheus.Core,
-       name: @reporter, metrics: scoped_metrics(), start_async: false}
-    )
-
-    :telemetry.execute(@scoped_event, %{count: 3}, %{reason: :outbox_unavailable})
-
-    scrape = TelemetryMetricsPrometheus.Core.scrape(@reporter)
-
-    assert scrape =~
-             ~r/salix_slack_mirror_dropped_rows_total\{reason="outbox_unavailable"\} 3(\.0)?(\s|$)/
-  end
-
   # An unnamed drop path must not silently create a new label. It lands on
   # `other`, which is visible in the same query rather than absent from it.
-  test "an unclassified reason is normalized instead of widening the label set" do
-    start_supervised!(
-      {TelemetryMetricsPrometheus.Core,
-       name: @reporter, metrics: scoped_metrics(), start_async: false}
-    )
+  for {name, reason, count, label} <- [
+        {"a drop reaches an operator's scrape, labelled by reason", :outbox_unavailable, 3,
+         "outbox_unavailable"},
+        {"an unclassified reason is normalized instead of widening the label set", :something_new,
+         1, "other"}
+      ] do
+    test name do
+      start_supervised!(
+        {TelemetryMetricsPrometheus.Core,
+         name: @reporter, metrics: scoped_metrics(), start_async: false}
+      )
 
-    :telemetry.execute(@scoped_event, %{count: 1}, %{reason: :something_new})
+      :telemetry.execute(@scoped_event, %{count: unquote(count)}, %{reason: unquote(reason)})
 
-    assert TelemetryMetricsPrometheus.Core.scrape(@reporter) =~
-             ~r/salix_slack_mirror_dropped_rows_total\{reason="other"\} 1(\.0)?(\s|$)/
+      scrape = TelemetryMetricsPrometheus.Core.scrape(@reporter)
+      label = unquote(label)
+      count = unquote(count)
+
+      assert scrape =~
+               ~r/salix_slack_mirror_dropped_rows_total\{reason="#{label}"\} #{count}(\.0)?(\s|$)/
+    end
   end
 
   defp scoped_metrics do

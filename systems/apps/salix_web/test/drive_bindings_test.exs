@@ -148,7 +148,7 @@ defmodule Salix.Control.DriveBindingsTest do
   test "retired key ids are kept as a clean list until a caller replaces them", %{
     group_id: group_id
   } do
-    assert {:ok, %{"retired_key_ids" => []}} =
+    assert {:ok, %{"retired_key_ids" => ["key-1"]}} =
              DriveBindings.put(group_id, %{
                "org_slug" => "comma-abc",
                "api_key" => "synch_new",
@@ -156,7 +156,6 @@ defmodule Salix.Control.DriveBindingsTest do
                "retired_key_ids" => [" key-1 ", "", "key-1", nil],
                "source" => "comma"
              })
-             |> then(fn {:ok, view} -> {:ok, Map.put(view, "retired_key_ids", [])} end)
 
     assert {:ok, %{"retired_key_ids" => ["key-1"]}} = DriveBindings.stored(group_id)
     assert %{"retired_key_ids" => ["key-1"]} = DriveBindings.view(group_id)

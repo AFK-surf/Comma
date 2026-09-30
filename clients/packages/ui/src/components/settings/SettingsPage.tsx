@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SettingsPanel } from "../settings-panel";
+import { useLatestCallback } from "../settings-panel/settingsIdentity";
 import {
   SettingsSidebar,
   type SettingsSidebarGroup,
@@ -84,6 +85,8 @@ const renderDetail = (detail?: SettingsCategoryDetail) =>
       {detail.content}
     </SettingsDetailView>
   ) : null;
+
+const noSearchGroups: SettingsSidebarSearchGroup[] = [];
 
 const normalizeSearchText = (value: string) =>
   value.normalize("NFKD").toLocaleLowerCase();
@@ -190,26 +193,46 @@ export const SettingsPage = ({
     onSearchQueryChange?.("");
   };
 
-  const activateCategory = (categoryId: string, itemId?: string) => {
+  // The sidebar renders again only when its categories or the search change,
+  // not on every change inside a category, so its callbacks stay stable.
+  const activateCategory = useLatestCallback((categoryId: string, itemId?: string) => {
     clearSearch();
     setActiveItemId(itemId);
     if (activeCategoryId === undefined) {
       setLocalActiveCategoryId(categoryId);
     }
     onActiveCategoryChange?.(categoryId);
-  };
+  });
 
-  const groups: SettingsSidebarGroup[] = registry.groups.map((group) => ({
-    id: group.id,
-    ...(group.label !== undefined ? { label: group.label } : {}),
-    items: group.categories.map((category) => ({
-      icon: <SettingsCategoryIconView className="size-4.5" icon={category.icon} />,
-      id: category.id,
-      label: category.label,
-      onPress: () => activateCategory(category.id),
-      selected: category.id === activeCategory?.id,
-    })),
-  }));
+  const sidebarCategories = JSON.stringify(
+    registry.groups.map((group) => ({
+      id: group.id,
+      label: group.label,
+      categories: group.categories.map(({ icon, id, label }) => ({ icon, id, label })),
+    }))
+  );
+  const selectedCategoryId = activeCategory?.id;
+  const groups = useMemo(
+    (): SettingsSidebarGroup[] =>
+      (
+        JSON.parse(sidebarCategories) as {
+          categories: Pick<SettingsCategoryDefinition, "icon" | "id" | "label">[];
+          id: string;
+          label?: string;
+        }[]
+      ).map((group) => ({
+        id: group.id,
+        ...(group.label !== undefined ? { label: group.label } : {}),
+        items: group.categories.map((category) => ({
+          icon: <SettingsCategoryIconView className="size-4.5" icon={category.icon} />,
+          id: category.id,
+          label: category.label,
+          onPress: () => activateCategory(category.id),
+          selected: category.id === selectedCategoryId,
+        })),
+      })),
+    [activateCategory, selectedCategoryId, sidebarCategories]
+  );
 
   const searchGroups: SettingsSidebarSearchGroup[] = registry.groups.flatMap((group) =>
     group.categories.flatMap((category) =>
@@ -245,11 +268,11 @@ export const SettingsPage = ({
     )
   );
 
-  const handleSearchQueryChange = (nextQuery: string) => {
+  const handleSearchQueryChange = useLatestCallback((nextQuery: string) => {
     setActiveItemId(undefined);
     if (searchQuery === undefined) setLocalSearchQuery(nextQuery);
     onSearchQueryChange?.(nextQuery);
-  };
+  });
 
   return (
     <div
@@ -273,7 +296,7 @@ export const SettingsPage = ({
           ? { searchEmptyDescription: emptySearchDescription }
           : {})}
         searchEmptyTitle={emptySearchTitle}
-        searchGroups={searchGroups}
+        searchGroups={searchGroups.length > 0 ? searchGroups : noSearchGroups}
         searchPlaceholder={searchPlaceholder}
         searchValue={resolvedSearchQuery}
       />

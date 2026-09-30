@@ -24,6 +24,7 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   let avatarId: string | null = null;
   let avatarFetches = 0;
   let uploadContentType: string | undefined;
+  let uploadBody: Buffer | undefined;
 
   const profile = () => ({
     avatar_id: avatarId,
@@ -45,6 +46,7 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
       name = (request.postDataJSON() as { name: string }).name;
     } else if (request.method() === "PUT" && url.pathname === "/v1/comma/me/avatar") {
       uploadContentType = request.headers()["content-type"];
+      uploadBody = request.postDataBuffer() ?? undefined;
       avatarId = "avt_profile_e2e";
     } else if (
       request.method() === "GET" &&
@@ -151,10 +153,12 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await page.locator('input[type="file"]').setInputFiles({
     buffer: Buffer.alloc(101 * 1024),
     mimeType: "image/png",
-    name: "oversized.png",
+    name: "unreadable.png",
   });
   const avatarError = avatarRow.locator(".text-error-primary");
-  await expect(avatarError).toHaveText("JPEG, PNG, or WebP. Maximum 100 KB.");
+  await expect(avatarError).toHaveText(
+    "This image could not be read. Choose another image."
+  );
   const rowBox = (await avatarRow.boundingBox())!;
   const errorBox = (await avatarError.boundingBox())!;
   const buttonBox = (await avatarRow
@@ -164,13 +168,32 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   expect(errorBox.y).toBeGreaterThanOrEqual(buttonBox.y + buttonBox.height);
   await expect(avatarError).toHaveCSS("text-align", "left");
   await page.screenshot({ path: test.info().outputPath("avatar-error-layout.png") });
+
+  // A large, non-square photo is center-cropped and compressed before upload.
+  // Red side bands fall outside the centered square; noise keeps it over 100 KB.
+  const photo = Buffer.from(
+    await page.evaluate(async () => {
+      const canvas = new OffscreenCanvas(1600, 900);
+      const context = canvas.getContext("2d")!;
+      const pixels = context.createImageData(1600, 900);
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        const x = (index / 4) % 1600;
+        const side = x < 350 || x >= 1250;
+        pixels.data[index] = side ? 255 : 0;
+        pixels.data[index + 1] = side ? 0 : Math.random() * 255;
+        pixels.data[index + 2] = side ? 0 : Math.random() * 255;
+        pixels.data[index + 3] = 255;
+      }
+      context.putImageData(pixels, 0, 0);
+      const blob = await canvas.convertToBlob({ type: "image/png" });
+      return Array.from(new Uint8Array(await blob.arrayBuffer()));
+    })
+  );
+  expect(photo.byteLength).toBeGreaterThan(100 * 1024);
   await page.locator('input[type="file"]').setInputFiles({
-    buffer: Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      "base64"
-    ),
+    buffer: photo,
     mimeType: "image/png",
-    name: "avatar.png",
+    name: "photo.png",
   });
 
   await expect(avatarError).toHaveCount(0);
@@ -195,6 +218,30 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await expect(sidebarAvatar).toHaveCSS("width", "32px");
   await expect(sidebarAvatar).toHaveCSS("height", "32px");
   expect(uploadContentType).toContain("multipart/form-data; boundary=");
+  const boundary = `--${uploadContentType!.split("boundary=")[1]}`;
+  const part = uploadBody!
+    .subarray(0, uploadBody!.lastIndexOf(`\r\n${boundary}--`))
+    .subarray(uploadBody!.indexOf(boundary));
+  const headerEnd = part.indexOf("\r\n\r\n");
+  expect(part.subarray(0, headerEnd).toString()).toContain("Content-Type: image/webp");
+  const uploaded = part.subarray(headerEnd + 4);
+  expect(uploaded.byteLength).toBeLessThanOrEqual(102_400);
+  const uploadedImage = await page.evaluate(async (bytes) => {
+    const bitmap = await createImageBitmap(
+      new Blob([Uint8Array.from(bytes)], { type: "image/webp" })
+    );
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d")!;
+    context.drawImage(bitmap, 0, 0);
+    const edges = [
+      context.getImageData(1, bitmap.height / 2, 1, 1).data[0]!,
+      context.getImageData(bitmap.width - 2, bitmap.height / 2, 1, 1).data[0]!,
+    ];
+    return { edges, height: bitmap.height, width: bitmap.width };
+  }, Array.from(uploaded));
+  expect(uploadedImage.width).toBe(uploadedImage.height);
+  expect(uploadedImage.width).toBeLessThanOrEqual(512);
+  expect(Math.max(...uploadedImage.edges)).toBeLessThan(128);
 });
 
 test("renames from a dialog built to the Figma spec, driven by the keyboard", async ({

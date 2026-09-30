@@ -36,6 +36,9 @@ defmodule CommaWeb.Auth do
       CommaWeb.TaskShareEndpoints.public_path?(conn.request_path) ->
         conn
 
+      conn.method == "GET" and conn.request_path == "/v1/comma/billing/plans" ->
+        conn
+
       CommaWeb.ClientSurface.cookie?(conn) ->
         authenticate_cookie_session(conn, credential)
 

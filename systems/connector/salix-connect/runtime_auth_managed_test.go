@@ -140,49 +140,80 @@ func TestManagedClaudeWorkspaceAuthConflictIsExplicit(t *testing.T) {
 	}
 }
 
-func TestManagedClaudeNativeCredentialsConflictIsExplicit(t *testing.T) {
-	command := fakeClaudeRuntimeCommand(t)
-	directory := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", directory)
-	if err := os.WriteFile(filepath.Join(directory, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"personal"}}`), 0o600); err != nil {
-		t.Fatal(err)
+func TestManagedDeliveryRejectsOnlyPersonalNativeCredentials(t *testing.T) {
+	writeFile := func(name, content string) func(*testing.T, string) {
+		return func(t *testing.T, directory string) {
+			if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	c, err := newConnector(config{name: "managed-claude-conflict", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-	target := runtimeProbeTarget{provider: "claude", identityMaterial: command}
-	m := c.runtimeAuthCoordinator()
-	unlock := m.lockTarget(target.key())
-	err = m.applyManagedDeliveryLocked(context.Background(), target,
-		managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
-	unlock()
-	if err == nil || !strings.Contains(err.Error(), "personal credential conflict") {
-		t.Fatalf("managed delivery with native personal credentials returned %v", err)
-	}
-}
-
-func TestManagedClaudeNativeSettingsAuthConflictIsExplicit(t *testing.T) {
-	command := fakeClaudeRuntimeCommand(t)
-	directory := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", directory)
-	if err := os.WriteFile(filepath.Join(directory, "settings.json"), []byte(`{"env":{"ANTHROPIC_AUTH_TOKEN":"personal"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := newConnector(config{name: "managed-claude-settings-conflict", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-	target := runtimeProbeTarget{provider: "claude", identityMaterial: command}
-	m := c.runtimeAuthCoordinator()
-	unlock := m.lockTarget(target.key())
-	err = m.applyManagedDeliveryLocked(context.Background(), target,
-		managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
-	unlock()
-	if err == nil || !strings.Contains(err.Error(), "personal credential conflict") {
-		t.Fatalf("managed delivery with native auth settings returned %v", err)
+	for _, test := range []struct {
+		name         string
+		provider     string
+		configEnv    string
+		command      func(*testing.T) string
+		seed         func(*testing.T, string)
+		wantConflict bool
+	}{
+		{
+			name: "Claude native OAuth credentials", provider: "claude", configEnv: "CLAUDE_CONFIG_DIR", command: fakeClaudeRuntimeCommand,
+			seed: writeFile(".credentials.json", `{"claudeAiOauth":{"accessToken":"personal"}}`), wantConflict: true,
+		},
+		{
+			name: "Claude native settings auth token", provider: "claude", configEnv: "CLAUDE_CONFIG_DIR", command: fakeClaudeRuntimeCommand,
+			seed: writeFile("settings.json", `{"env":{"ANTHROPIC_AUTH_TOKEN":"personal"}}`), wantConflict: true,
+		},
+		{
+			name: "Pi provider-owned directory without credentials", provider: "pi", configEnv: "PI_CODING_AGENT_DIR", command: fakePiRuntimeAuthCommand,
+			seed: func(*testing.T, string) {},
+		},
+		{
+			name: "Pi empty native auth placeholder", provider: "pi", configEnv: "PI_CODING_AGENT_DIR", command: fakePiRuntimeAuthCommand,
+			seed: writeFile("auth.json", "{}"),
+		},
+		{
+			name: "Pi symlinked empty auth placeholder", provider: "pi", configEnv: "PI_CODING_AGENT_DIR", command: fakePiRuntimeAuthCommand,
+			seed: func(t *testing.T, directory string) {
+				target := filepath.Join(t.TempDir(), "auth.json")
+				if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(directory, "auth.json")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantConflict: true,
+		},
+		{
+			name: "Pi personal credential in provider-owned directory", provider: "pi", configEnv: "PI_CODING_AGENT_DIR", command: fakePiRuntimeAuthCommand,
+			seed: writeFile("auth.json", `{"anthropic":{"type":"api_key","key":"personal"}}`), wantConflict: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := test.command(t)
+			directory := t.TempDir()
+			t.Setenv(test.configEnv, directory)
+			test.seed(t, directory)
+			c, err := newConnector(config{name: "managed-native-credentials", root: t.TempDir(), systemInfoInterval: 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.closeExternalRuntimes()
+			target := runtimeProbeTarget{provider: test.provider, identityMaterial: command}
+			m := c.runtimeAuthCoordinator()
+			unlock := m.lockTarget(target.key())
+			err = m.applyManagedDeliveryLocked(context.Background(), target,
+				managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
+			unlock()
+			if test.wantConflict {
+				if err == nil || !strings.Contains(err.Error(), "personal credential conflict") {
+					t.Fatalf("managed delivery returned %v, want personal credential conflict", err)
+				}
+			} else if err != nil {
+				t.Fatalf("managed delivery was blocked: %v", err)
+			}
+		})
 	}
 }
 
@@ -204,49 +235,6 @@ func TestManagedPiEnvironmentClearsConflictingProviderCredentials(t *testing.T) 
 	}
 }
 
-func TestManagedPiAcceptsProviderOwnedDirectoryWithoutPersonalCredential(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_DIR", directory)
-	command := fakePiRuntimeAuthCommand(t)
-	c, err := newConnector(config{name: "managed-pi-provider-directory", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-	target := runtimeProbeTarget{provider: "pi", identityMaterial: command}
-	m := c.runtimeAuthCoordinator()
-	unlock := m.lockTarget(target.key())
-	err = m.applyManagedDeliveryLocked(context.Background(), target,
-		managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
-	unlock()
-	if err != nil {
-		t.Fatalf("provider-owned Pi directory blocked managed delivery: %v", err)
-	}
-}
-
-func TestManagedPiAcceptsEmptyNativeAuthPlaceholder(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_DIR", directory)
-	if err := os.WriteFile(filepath.Join(directory, "auth.json"), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	command := fakePiRuntimeAuthCommand(t)
-	c, err := newConnector(config{name: "managed-pi-empty-auth-placeholder", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-	target := runtimeProbeTarget{provider: "pi", identityMaterial: command}
-	m := c.runtimeAuthCoordinator()
-	unlock := m.lockTarget(target.key())
-	err = m.applyManagedDeliveryLocked(context.Background(), target,
-		managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
-	unlock()
-	if err != nil {
-		t.Fatalf("empty Pi auth placeholder blocked managed delivery: %v", err)
-	}
-}
-
 func TestManagedPiAuthPlaceholderFailsClosed(t *testing.T) {
 	for name, content := range map[string][]byte{
 		"empty file":     nil,
@@ -262,56 +250,6 @@ func TestManagedPiAuthPlaceholderFailsClosed(t *testing.T) {
 				t.Fatal("invalid Pi auth placeholder did not fail closed")
 			}
 		})
-	}
-}
-
-func TestManagedPiRejectsSymlinkedEmptyAuthPlaceholder(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_DIR", directory)
-	target := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(directory, "auth.json")); err != nil {
-		t.Fatal(err)
-	}
-	command := fakePiRuntimeAuthCommand(t)
-	c, err := newConnector(config{name: "managed-pi-symlinked-auth-placeholder", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-	targetRuntime := runtimeProbeTarget{provider: "pi", identityMaterial: command}
-	m := c.runtimeAuthCoordinator()
-	unlock := m.lockTarget(targetRuntime.key())
-	err = m.applyManagedDeliveryLocked(context.Background(), targetRuntime,
-		managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
-	unlock()
-	if err == nil || !strings.Contains(err.Error(), "personal credential conflict") {
-		t.Fatalf("managed delivery with symlinked Pi auth placeholder returned %v", err)
-	}
-}
-
-func TestManagedPiRejectsPersonalCredentialInProviderOwnedDirectory(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_DIR", directory)
-	if err := os.WriteFile(filepath.Join(directory, "auth.json"), []byte(`{"anthropic":{"type":"api_key","key":"personal"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	command := fakePiRuntimeAuthCommand(t)
-	c, err := newConnector(config{name: "managed-pi-personal-conflict", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-	target := runtimeProbeTarget{provider: "pi", identityMaterial: command}
-	m := c.runtimeAuthCoordinator()
-	unlock := m.lockTarget(target.key())
-	err = m.applyManagedDeliveryLocked(context.Background(), target,
-		managedDelivery("account", "https://models.example", "anthropic_messages", "api_key", "managed", "v1", 1))
-	unlock()
-	if err == nil || !strings.Contains(err.Error(), "personal credential conflict") {
-		t.Fatalf("managed delivery with personal Pi credentials returned %v", err)
 	}
 }
 

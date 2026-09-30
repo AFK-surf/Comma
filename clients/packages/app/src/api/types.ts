@@ -59,6 +59,8 @@ export type {
   CommaBillingPlan,
   CommaBillingSummary,
   CommaBillingSession,
+  CommaBillingChangePreview,
+  CommaBillingChange,
   CommaRedemptionResult,
 } from "./schemas";
 

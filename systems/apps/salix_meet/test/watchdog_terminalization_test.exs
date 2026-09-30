@@ -196,6 +196,61 @@ defmodule SalixMeet.WatchdogTerminalizationTest do
     retire
   end
 
+  # A shadow write that lands while duplicate retirement is paused must win:
+  # either the runtime reports a terminal status or delivery publishes.
+  @shadow_races [
+    {:terminal, "a terminal runtime event racing duplicate retirement wins the shadow CAS",
+     "a terminal runtime event before the first retirement reducer read is preserved",
+     "a terminal race after an ambiguous-lost CAS wins the verified retry"},
+    {:published, "a published summary racing duplicate retirement wins the shadow CAS",
+     "a published summary before the first retirement reducer read is preserved",
+     "a published race after an ambiguous-lost CAS wins the verified retry"}
+  ]
+
+  defp apply_shadow_race!(:terminal, shadow_id, now_s) do
+    assert {:ok, _doc, _etag} =
+             Store.update_state_retrying(shadow_id, fn state ->
+               state
+               |> Map.put("status", "done")
+               |> Map.put("ended_at", now_s)
+             end)
+  end
+
+  defp apply_shadow_race!(:published, shadow_id, now_s) do
+    assert {:ok, _doc, _etag} =
+             Store.update_state_retrying(shadow_id, fn state ->
+               delivery =
+                 Map.merge(state["delivery"] || %{}, %{
+                   "status" => "published",
+                   "published_at" => now_s * 1_000,
+                   "summary_message_ts" => "111.999"
+                 })
+
+               Map.put(state, "delivery", delivery)
+             end)
+  end
+
+  defp assert_shadow_race_won!(race, shadow_id, now_s, retire) do
+    assert :ok = S3.Fake.release_pause()
+    assert :skipped = Task.await(retire)
+    refute_receive {:probe, _payload}, 100
+
+    assert {:ok, shadow, _etag} = Store.get(shadow_id)
+
+    case race do
+      :terminal ->
+        assert shadow["state"]["status"] == "done"
+        assert shadow["state"]["ended_at"] == now_s
+
+      :published ->
+        assert shadow["state"]["status"] == "processing"
+        assert shadow["state"]["delivery"]["status"] == "published"
+        assert shadow["state"]["delivery"]["summary_message_ts"] == "111.999"
+    end
+
+    refute Map.has_key?(shadow["state"], "watchdog")
+  end
+
   describe "watchdog eligibility" do
     test "the predicate demands dispatch, non-abandonment, and an expired anchor" do
       now_s = System.system_time(:second)
@@ -301,110 +356,26 @@ defmodule SalixMeet.WatchdogTerminalizationTest do
       assert canonical["state"] == canonical_state
     end
 
-    test "a terminal runtime event racing duplicate retirement wins the shadow CAS" do
-      now_s = System.system_time(:second)
-      {shadow_id, _canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
-      key = Keys.meet_state(shadow_id)
-      retire = start_paused_retirement(shadow_id, now_s, :put, key)
+    for {race, put_name, read_name, _ambiguous_name} <- @shadow_races do
+      test put_name do
+        now_s = System.system_time(:second)
+        {shadow_id, _canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
+        retire = start_paused_retirement(shadow_id, now_s, :put, Keys.meet_state(shadow_id))
 
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(shadow_id, fn state ->
-                 state
-                 |> Map.put("status", "done")
-                 |> Map.put("ended_at", now_s)
-               end)
+        apply_shadow_race!(unquote(race), shadow_id, now_s)
+        assert_shadow_race_won!(unquote(race), shadow_id, now_s, retire)
+      end
 
-      assert :ok = S3.Fake.release_pause()
-      assert :skipped = Task.await(retire)
-      refute_receive {:probe, _payload}, 100
+      test read_name do
+        now_s = System.system_time(:second)
+        {shadow_id, canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
 
-      assert {:ok, shadow, _etag} = Store.get(shadow_id)
-      assert shadow["state"]["status"] == "done"
-      assert shadow["state"]["ended_at"] == now_s
-      refute Map.has_key?(shadow["state"], "watchdog")
-    end
+        retire =
+          start_paused_retirement(shadow_id, now_s, :get, Keys.meet_state(canonical_id))
 
-    test "a published summary racing duplicate retirement wins the shadow CAS" do
-      now_s = System.system_time(:second)
-      {shadow_id, _canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
-      key = Keys.meet_state(shadow_id)
-      retire = start_paused_retirement(shadow_id, now_s, :put, key)
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(shadow_id, fn state ->
-                 delivery =
-                   Map.merge(state["delivery"] || %{}, %{
-                     "status" => "published",
-                     "published_at" => now_s * 1_000,
-                     "summary_message_ts" => "111.999"
-                   })
-
-                 Map.put(state, "delivery", delivery)
-               end)
-
-      assert :ok = S3.Fake.release_pause()
-      assert :skipped = Task.await(retire)
-      refute_receive {:probe, _payload}, 100
-
-      assert {:ok, shadow, _etag} = Store.get(shadow_id)
-      assert shadow["state"]["status"] == "processing"
-      assert shadow["state"]["delivery"]["status"] == "published"
-      assert shadow["state"]["delivery"]["summary_message_ts"] == "111.999"
-      refute Map.has_key?(shadow["state"], "watchdog")
-    end
-
-    test "a terminal runtime event before the first retirement reducer read is preserved" do
-      now_s = System.system_time(:second)
-      {shadow_id, canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
-
-      retire =
-        start_paused_retirement(shadow_id, now_s, :get, Keys.meet_state(canonical_id))
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(shadow_id, fn state ->
-                 state
-                 |> Map.put("status", "done")
-                 |> Map.put("ended_at", now_s)
-               end)
-
-      assert :ok = S3.Fake.release_pause()
-      assert :skipped = Task.await(retire)
-      refute_receive {:probe, _payload}, 100
-
-      assert {:ok, shadow, _etag} = Store.get(shadow_id)
-      assert shadow["state"]["status"] == "done"
-      assert shadow["state"]["ended_at"] == now_s
-      refute Map.has_key?(shadow["state"], "watchdog")
-    end
-
-    test "a published summary before the first retirement reducer read is preserved" do
-      now_s = System.system_time(:second)
-      {shadow_id, canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
-
-      retire =
-        start_paused_retirement(shadow_id, now_s, :get, Keys.meet_state(canonical_id))
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(shadow_id, fn state ->
-                 delivery =
-                   Map.merge(state["delivery"] || %{}, %{
-                     "status" => "published",
-                     "published_at" => now_s * 1_000,
-                     "summary_message_ts" => "111.999"
-                   })
-
-                 Map.put(state, "delivery", delivery)
-               end)
-
-      assert :ok = S3.Fake.release_pause()
-      assert :skipped = Task.await(retire)
-      refute_receive {:probe, _payload}, 100
-
-      assert {:ok, shadow, _etag} = Store.get(shadow_id)
-      assert shadow["state"]["status"] == "processing"
-      assert shadow["state"]["delivery"]["status"] == "published"
-      assert shadow["state"]["delivery"]["summary_message_ts"] == "111.999"
-      refute Map.has_key?(shadow["state"], "watchdog")
+        apply_shadow_race!(unquote(race), shadow_id, now_s)
+        assert_shadow_race_won!(unquote(race), shadow_id, now_s, retire)
+      end
     end
 
     test "ambiguous-applied duplicate retirement verifies the landed write" do
@@ -460,66 +431,21 @@ defmodule SalixMeet.WatchdogTerminalizationTest do
       assert shadow["state"]["watchdog"]["reason"] == "duplicate_slack_thread"
     end
 
-    test "a terminal race after an ambiguous-lost CAS wins the verified retry" do
-      now_s = System.system_time(:second)
-      {shadow_id, canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
-      key = Keys.meet_state(shadow_id)
-      retire = start_paused_reducer_read(shadow_id, canonical_id, now_s)
+    for {race, _put_name, _read_name, ambiguous_name} <- @shadow_races do
+      test ambiguous_name do
+        now_s = System.system_time(:second)
+        {shadow_id, canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
+        key = Keys.meet_state(shadow_id)
+        retire = start_paused_reducer_read(shadow_id, canonical_id, now_s)
 
-      assert :ok = S3.Fake.set_fault_for(retire.pid, {:ambiguous_before, :put, key})
-      assert :ok = S3.Fake.set_fault_for(retire.pid, {:pause, :get, key})
-      assert :ok = S3.Fake.release_pause()
-      assert wait_until(&S3.Fake.paused?/0)
+        assert :ok = S3.Fake.set_fault_for(retire.pid, {:ambiguous_before, :put, key})
+        assert :ok = S3.Fake.set_fault_for(retire.pid, {:pause, :get, key})
+        assert :ok = S3.Fake.release_pause()
+        assert wait_until(&S3.Fake.paused?/0)
 
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(shadow_id, fn state ->
-                 state
-                 |> Map.put("status", "done")
-                 |> Map.put("ended_at", now_s)
-               end)
-
-      assert :ok = S3.Fake.release_pause()
-      assert :skipped = Task.await(retire)
-      refute_receive {:probe, _payload}, 100
-
-      assert {:ok, shadow, _etag} = Store.get(shadow_id)
-      assert shadow["state"]["status"] == "done"
-      assert shadow["state"]["ended_at"] == now_s
-      refute Map.has_key?(shadow["state"], "watchdog")
-    end
-
-    test "a published race after an ambiguous-lost CAS wins the verified retry" do
-      now_s = System.system_time(:second)
-      {shadow_id, canonical_id, _canonical_state} = seed_duplicate_slack_meetings(now_s)
-      key = Keys.meet_state(shadow_id)
-      retire = start_paused_reducer_read(shadow_id, canonical_id, now_s)
-
-      assert :ok = S3.Fake.set_fault_for(retire.pid, {:ambiguous_before, :put, key})
-      assert :ok = S3.Fake.set_fault_for(retire.pid, {:pause, :get, key})
-      assert :ok = S3.Fake.release_pause()
-      assert wait_until(&S3.Fake.paused?/0)
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(shadow_id, fn state ->
-                 delivery =
-                   Map.merge(state["delivery"] || %{}, %{
-                     "status" => "published",
-                     "published_at" => now_s * 1_000,
-                     "summary_message_ts" => "111.999"
-                   })
-
-                 Map.put(state, "delivery", delivery)
-               end)
-
-      assert :ok = S3.Fake.release_pause()
-      assert :skipped = Task.await(retire)
-      refute_receive {:probe, _payload}, 100
-
-      assert {:ok, shadow, _etag} = Store.get(shadow_id)
-      assert shadow["state"]["status"] == "processing"
-      assert shadow["state"]["delivery"]["status"] == "published"
-      assert shadow["state"]["delivery"]["summary_message_ts"] == "111.999"
-      refute Map.has_key?(shadow["state"], "watchdog")
+        apply_shadow_race!(unquote(race), shadow_id, now_s)
+        assert_shadow_race_won!(unquote(race), shadow_id, now_s, retire)
+      end
     end
 
     test "an unreachable runtime past the cutoff is terminalized as runtime_lost" do

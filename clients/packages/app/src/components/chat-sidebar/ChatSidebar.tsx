@@ -363,7 +363,7 @@ export function ChatSidebarSurface({
     })),
     ...browserPages.map((page) => ({
       closable: true,
-      icon: <GlobeIcon className="size-5" />,
+      icon: <BrowserPageIcon favicon={page.favicon} />,
       id: page.id,
       label: browserPageLabel(page),
       panelId: `chat-sidebar-browser-panel-${page.id}`,
@@ -1926,6 +1926,20 @@ function normalizeBrowserAddress(value: string) {
   } catch {
     return undefined;
   }
+}
+
+function BrowserPageIcon({ favicon }: { favicon: string | undefined }) {
+  const [failed, setFailed] = useState<string>();
+  if (!favicon || failed === favicon) return <GlobeIcon className="size-5" />;
+  return (
+    <img
+      alt=""
+      className="size-4 object-contain"
+      draggable={false}
+      onError={() => setFailed(favicon)}
+      src={favicon}
+    />
+  );
 }
 
 function SidebarTaskIcon({

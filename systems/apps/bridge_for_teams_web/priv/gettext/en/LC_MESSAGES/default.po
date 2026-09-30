@@ -11634,21 +11634,6 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
 #, elixir-autogen, elixir-format
-msgid "Last 7 days by channel"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
-msgid "Fewer"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
-msgid "More"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
 msgid "Replied or reacted"
 msgstr ""
 
@@ -11656,13 +11641,6 @@ msgstr ""
 #, elixir-autogen, elixir-format
 msgid "1 outcome"
 msgid_plural "%{count} outcomes"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
-msgid "1 quieter channel not shown."
-msgid_plural "%{count} quieter channels not shown."
 msgstr[0] ""
 msgstr[1] ""
 
@@ -11679,4 +11657,51 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
 #, elixir-autogen, elixir-format
 msgid "Show latest"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Activity by channel"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "24h"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "7d"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Total"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Replied"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Silent"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Show fewer channels"
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Show 1 more channel"
+msgid_plural "Show %{count} more channels"
+msgstr[0] ""
+msgstr[1] ""
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "No outcomes in this range."
 msgstr ""

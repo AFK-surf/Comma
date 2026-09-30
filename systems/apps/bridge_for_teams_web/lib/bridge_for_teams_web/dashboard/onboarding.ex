@@ -157,11 +157,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
       total: snap.total,
       all_done?: snap.all_done?,
       oauth_configured: snap.oauth_configured,
-      # New Home is the agent's own workspace — the welcome modal stays out of
-      # the way there and greets the user on their next visit to any other
-      # page. The checklist stays keyed to `welcome?`, so it doesn't surface
-      # early on New Home either.
-      show_welcome?: welcome? and page != :new_home,
+      show_welcome?: welcome?,
       show_checklist?: checklist_on? and not state.collapsed,
       show_collapsed?: checklist_on? and state.collapsed,
       tour: if(checklist_on?, do: tour(snap, page, role), else: nil)
@@ -181,8 +177,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
 
   defp page_context(view, live_action) do
     case {view, live_action} do
-      {BridgeForTeamsWeb.Dashboard.HomeLive, _} -> :home
-      {BridgeForTeamsWeb.Dashboard.NewHomeLive, _} -> :new_home
       {BridgeForTeamsWeb.Dashboard.ProjectLive.Index, _} -> :swarms
       {BridgeForTeamsWeb.Dashboard.ProjectLive.Show, :connections} -> :swarm_connections
       {BridgeForTeamsWeb.Dashboard.ProjectLive.Show, _} -> :swarm

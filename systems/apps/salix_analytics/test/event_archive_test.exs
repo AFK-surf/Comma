@@ -619,42 +619,29 @@ defmodule SalixAnalytics.EventArchiveTest do
       assert :ok = EventArchive.record(base_fact())
     end
 
-    test "a returned error counts the batch as lost" do
-      start_supervised!({Worker, writer: FailingWriter, flush_ms: 10_000, batch_size: 10_000})
-      handler = attach_lost_handler()
+    # The batch is already out of the buffer, so a raise or exit loses it
+    # exactly as completely as a returned error — and a malformed ClickHouse URL
+    # raises rather than returning one. Counting only the error tuple left the
+    # other paths with a log line and no metric, which is the "silent" the
+    # archive is not allowed to be.
+    @lost_batch_cases [
+      {"a returned error counts the batch as lost", FailingWriter, 2, :write_error},
+      {"a writer that RAISES counts the batch as lost too", RaisingWriter, 3, :write_raised},
+      {"a writer that EXITS counts the batch as lost too", ExitingWriter, 1, :write_exited}
+    ]
 
-      for _ <- 1..2, do: EventArchive.record(base_fact())
-      Worker.flush()
+    for {name, writer, count, reason} <- @lost_batch_cases do
+      test name do
+        start_supervised!({Worker, writer: unquote(writer), flush_ms: 10_000, batch_size: 10_000})
 
-      assert_receive {:archive_lost, %{count: 2}, %{reason: :write_error}}
-      :telemetry.detach(handler)
-    end
+        handler = attach_lost_handler()
 
-    test "a writer that RAISES counts the batch as lost too" do
-      # The batch is already out of the buffer, so a raise loses it exactly as
-      # completely as a returned error — and a malformed ClickHouse URL raises
-      # rather than returning one. Counting only the error tuple left this path
-      # with a log line and no metric, which is the "silent" the archive is not
-      # allowed to be.
-      start_supervised!({Worker, writer: RaisingWriter, flush_ms: 10_000, batch_size: 10_000})
-      handler = attach_lost_handler()
+        for _ <- 1..unquote(count), do: EventArchive.record(base_fact())
+        Worker.flush()
 
-      for _ <- 1..3, do: EventArchive.record(base_fact())
-      Worker.flush()
-
-      assert_receive {:archive_lost, %{count: 3}, %{reason: :write_raised}}
-      :telemetry.detach(handler)
-    end
-
-    test "a writer that EXITS counts the batch as lost too" do
-      start_supervised!({Worker, writer: ExitingWriter, flush_ms: 10_000, batch_size: 10_000})
-      handler = attach_lost_handler()
-
-      EventArchive.record(base_fact())
-      Worker.flush()
-
-      assert_receive {:archive_lost, %{count: 1}, %{reason: :write_exited}}
-      :telemetry.detach(handler)
+        assert_receive {:archive_lost, %{count: unquote(count)}, %{reason: unquote(reason)}}
+        :telemetry.detach(handler)
+      end
     end
   end
 

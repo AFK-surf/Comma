@@ -371,99 +371,68 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
     assert Enum.map(decoded["facts"], & &1["id"]) == Enum.map(1..20, &"assertion-#{&1}")
   end
 
-  test "the complete runtime payload stays within its aggregate byte budget" do
-    facts =
-      for index <- 1..20 do
-        %{
-          id: "assertion-#{index}",
-          kind: :fact,
-          content: String.duplicate(Integer.to_string(rem(index, 10)), 7_900),
-          source_refs: [
-            %{type: "manual", ref: "manual://fact/#{index}/#{String.duplicate("r", 512)}"}
-          ]
-        }
+  for {name, count, digit_bytes, ref_bytes, expected_ids} <- [
+        {"the complete runtime payload stays within its aggregate byte budget", 20, 7_900, 512,
+         :nonempty_prefix},
+        {"source evidence is included in the complete runtime block byte budget", 4, 6_500, 1_024,
+         ["assertion-1", "assertion-2", "assertion-3"]}
+      ] do
+    test name do
+      facts =
+        for index <- 1..unquote(count) do
+          %{
+            id: "assertion-#{index}",
+            kind: :fact,
+            content: String.duplicate(Integer.to_string(rem(index, 10)), unquote(digit_bytes)),
+            source_refs: [
+              %{
+                type: "manual",
+                ref: "manual://fact/#{index}/#{String.duplicate("r", unquote(ref_bytes))}"
+              }
+            ]
+          }
+        end
+
+      Application.put_env(
+        :salix_agent,
+        :project_knowledge_context_result,
+        {:ok, %{status: :resolved, facts: facts}}
+      )
+
+      session = %{
+        next_message_id: 2,
+        messages: [%{id: 1, role: "user", content: "What do we know?"}]
+      }
+
+      assert {:messages, [payload]} =
+               ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
+
+      runtime_message =
+        %{messages: [payload]}
+        |> SalixAgent.ContextProviders.model_messages()
+        |> then(fn [message] -> message end)
+
+      # Since #1145 a transcript that is entirely system-authored is not folded
+      # into `system` — Anthropic `messages` may not be empty, so the lone
+      # runtime block is demoted to one `<system>`-wrapped user turn. The
+      # aggregate byte budget still governs the runtime block itself.
+      assert {nil, [%{"role" => "user", "content" => "<system>\n" <> demoted}]} =
+               SalixLlm.Convert.to_anthropic([runtime_message])
+
+      runtime_block = String.replace_suffix(demoted, "\n</system>", "")
+      assert byte_size(runtime_block) <= 32 * 1024
+
+      ids = Enum.map(Jason.decode!(payload["content"])["facts"], & &1["id"])
+
+      case unquote(expected_ids) do
+        :nonempty_prefix ->
+          assert ids != []
+          assert ids == Enum.map(1..length(ids), &"assertion-#{&1}")
+
+        expected ->
+          assert ids == expected
       end
-
-    Application.put_env(
-      :salix_agent,
-      :project_knowledge_context_result,
-      {:ok, %{status: :resolved, facts: facts}}
-    )
-
-    session = %{
-      next_message_id: 2,
-      messages: [%{id: 1, role: "user", content: "What do we know?"}]
-    }
-
-    assert {:messages, [payload]} =
-             ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-
-    runtime_message =
-      %{messages: [payload]}
-      |> SalixAgent.ContextProviders.model_messages()
-      |> then(fn [message] -> message end)
-
-    # Since #1145 a transcript that is entirely system-authored is not folded
-    # into `system` — Anthropic `messages` may not be empty, so the lone
-    # runtime block is demoted to one `<system>`-wrapped user turn. The
-    # aggregate byte budget still governs the runtime block itself.
-    assert {nil, [%{"role" => "user", "content" => "<system>\n" <> demoted}]} =
-             SalixLlm.Convert.to_anthropic([runtime_message])
-
-    runtime_block = String.replace_suffix(demoted, "\n</system>", "")
-    assert byte_size(runtime_block) <= 32 * 1024
-
-    decoded = Jason.decode!(payload["content"])
-    assert decoded["facts"] != []
-
-    assert Enum.map(decoded["facts"], & &1["id"]) ==
-             Enum.map(1..length(decoded["facts"]), &"assertion-#{&1}")
-  end
-
-  test "source evidence is included in the complete runtime block byte budget" do
-    facts =
-      for index <- 1..4 do
-        %{
-          id: "assertion-#{index}",
-          kind: :fact,
-          content: String.duplicate(Integer.to_string(index), 6_500),
-          source_refs: [
-            %{type: "manual", ref: "manual://fact/#{index}/#{String.duplicate("r", 1_024)}"}
-          ]
-        }
-      end
-
-    Application.put_env(
-      :salix_agent,
-      :project_knowledge_context_result,
-      {:ok, %{status: :resolved, facts: facts}}
-    )
-
-    session = %{
-      next_message_id: 2,
-      messages: [%{id: 1, role: "user", content: "What do we know?"}]
-    }
-
-    assert {:messages, [payload]} =
-             ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-
-    runtime_message =
-      %{messages: [payload]}
-      |> SalixAgent.ContextProviders.model_messages()
-      |> then(fn [message] -> message end)
-
-    # Since #1145 a transcript that is entirely system-authored is not folded
-    # into `system` — Anthropic `messages` may not be empty, so the lone
-    # runtime block is demoted to one `<system>`-wrapped user turn. The
-    # aggregate byte budget still governs the runtime block itself.
-    assert {nil, [%{"role" => "user", "content" => "<system>\n" <> demoted}]} =
-             SalixLlm.Convert.to_anthropic([runtime_message])
-
-    runtime_block = String.replace_suffix(demoted, "\n</system>", "")
-    assert byte_size(runtime_block) <= 32 * 1024
-
-    decoded = Jason.decode!(payload["content"])
-    assert Enum.map(decoded["facts"], & &1["id"]) == ["assertion-1", "assertion-2", "assertion-3"]
+    end
   end
 
   test "a stalled provider fails open at the configured deadline and emits a bounded outcome" do

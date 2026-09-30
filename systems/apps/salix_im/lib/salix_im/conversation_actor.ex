@@ -2605,12 +2605,33 @@ defmodule SalixIM.ConversationActor do
   defp publish_conversation_status(state, conversation) when is_map(conversation) do
     # API projections omit the publication version. Read the owning Store so
     # every caller publishes the same durable status and idempotency key.
-    with {:ok, current} <- ConversationStore.load_raw(state.store_pid) do
+    with {:ok, current} <- ConversationStore.load_raw(state.store_pid),
+         :ok <- observe_task_status(current) do
       append_conversation_status(state, current)
     end
   end
 
   defp publish_conversation_status(_state, _conversation), do: :ok
+
+  # The product observes owned Task status changes, for example to tell the
+  # owner that a Task needs them. The observer only queues its own work; a
+  # failure leaves the publication recovery row, so the sweeper retries.
+  defp observe_task_status(%{"kind" => "agent_task", "owner_user_id" => owner} = conversation)
+       when is_binary(owner) and owner != "" do
+    case Application.get_env(:salix_im, :task_status_observer) do
+      nil ->
+        :ok
+
+      module ->
+        conversation
+        |> Map.take(
+          ~w(agent_group_id conversation_id title status owner_user_id message_tail_seq provider_status_version)
+        )
+        |> module.task_status_changed()
+    end
+  end
+
+  defp observe_task_status(_conversation), do: :ok
 
   defp append_conversation_status(state, conversation) do
     targets =

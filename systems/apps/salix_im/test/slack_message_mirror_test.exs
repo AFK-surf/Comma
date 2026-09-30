@@ -359,43 +359,38 @@ defmodule SalixIM.SlackMessageMirrorTest do
       :ok
     end
 
-    test "the bot joining a channel makes that installation due now" do
-      connect = Map.put(connect(), "bot_user_id", "U_BOT")
-      :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
-      {:ok, _} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
-      :ok = SlackMirrorBackfillLedger.finish_connect(connect["connect_id"], 60_000, nil)
-      assert :empty = SlackMirrorBackfillLedger.claim_due_connect(60_000)
+    for {name, joined_user, kicks?} <- [
+          {"the bot joining a channel makes that installation due now", "U_BOT", true},
+          {"another user joining a channel does not kick backfill", "U_HUMAN", false}
+        ] do
+      @joined_user joined_user
+      @kicks kicks?
+      test name do
+        connect = Map.put(connect(), "bot_user_id", "U_BOT")
+        :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
+        {:ok, _} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
+        :ok = SlackMirrorBackfillLedger.finish_connect(connect["connect_id"], 60_000, nil)
+        assert :empty = SlackMirrorBackfillLedger.claim_due_connect(60_000)
 
-      envelope = %{
-        "event" => %{
-          "type" => "member_joined_channel",
-          "user" => "U_BOT",
-          "channel" => "C_NEW"
+        envelope = %{
+          "event" => %{
+            "type" => "member_joined_channel",
+            "user" => @joined_user,
+            "channel" => "C_NEW"
+          }
         }
-      }
 
-      assert SlackMessageMirror.observe(connect, envelope) == :ok
-      assert {:ok, %{"connect_id" => id}} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
-      assert id == connect["connect_id"]
-    end
+        assert SlackMessageMirror.observe(connect, envelope) == :ok
 
-    test "another user joining a channel does not kick backfill" do
-      connect = Map.put(connect(), "bot_user_id", "U_BOT")
-      :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
-      {:ok, _} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
-      :ok = SlackMirrorBackfillLedger.finish_connect(connect["connect_id"], 60_000, nil)
-      assert :empty = SlackMirrorBackfillLedger.claim_due_connect(60_000)
+        if @kicks do
+          assert {:ok, %{"connect_id" => id}} =
+                   SlackMirrorBackfillLedger.claim_due_connect(60_000)
 
-      envelope = %{
-        "event" => %{
-          "type" => "member_joined_channel",
-          "user" => "U_HUMAN",
-          "channel" => "C_NEW"
-        }
-      }
-
-      assert SlackMessageMirror.observe(connect, envelope) == :ok
-      assert :empty = SlackMirrorBackfillLedger.claim_due_connect(60_000)
+          assert id == connect["connect_id"]
+        else
+          assert :empty = SlackMirrorBackfillLedger.claim_due_connect(60_000)
+        end
+      end
     end
   end
 
@@ -420,69 +415,44 @@ defmodule SalixIM.SlackMessageMirrorTest do
       {:ok, connect: seed_connect!()}
     end
 
-    # The routing path deliberately ignores `message_deleted`: it carries no
-    # routable body. Slack marks it `hidden: true`, so it is also excluded from
-    # `conversations.history` — which means an ingest point downstream of that
-    # filter could never learn the message was removed, from the webhook or
-    # from the API. This is the regression that pins the seam ABOVE the filter.
-    test "a deletion the router ignores still reaches the mirror", %{connect: connect} do
-      envelope = deleted_envelope("1787019100.000000", connect)
+    # Each authenticated event reaches the mirror outbox even when the router
+    # ignores it. The routing path deliberately ignores `message_deleted`: it
+    # carries no routable body. Slack marks it `hidden: true`, so it is also
+    # excluded from `conversations.history` — which means an ingest point
+    # downstream of that filter could never learn the message was removed, from
+    # the webhook or from the API. The deletion row pins the seam ABOVE the filter.
+    for {name, envelope, kind, expected} <- [
+          {"a deletion the router ignores still reaches the mirror", :deleted, "message",
+           %{"deleted" => true, "message_ts" => "1787019000.000100"}},
+          {"an edit the router ignores still reaches the mirror", :edited, "message",
+           %{"deleted" => false, "text" => "the edited text"}},
+          {"an authenticated reaction reaches only the shared reaction mirror", :reaction,
+           "reaction", %{"reaction" => "eyes"}},
+          {"a pin the router ignores still reaches the mirror", :pin, "pin",
+           %{"pinned_by" => "U_PIN"}}
+        ] do
+      @envelope envelope
+      @kind kind
+      @expected expected
+      test name, %{connect: connect} do
+        envelope =
+          case @envelope do
+            :deleted -> deleted_envelope("1787019100.000000", connect)
+            :edited -> edited_envelope(connect)
+            :reaction -> reaction_envelope("reaction_added", "1787019100.000000", connect)
+            :pin -> pin_envelope(connect)
+          end
 
-      ProviderHTTP.handle_slack_event(
-        connect,
-        envelope,
-        signed_headers(connect, envelope),
-        Jason.encode!(envelope)
-      )
+        ProviderHTTP.handle_slack_event(
+          connect,
+          envelope,
+          signed_headers(connect, envelope),
+          Jason.encode!(envelope)
+        )
 
-      assert [row] = outbox_rows()
-      assert row["deleted"] == true
-      assert row["message_ts"] == "1787019000.000100"
-    end
-
-    test "an edit the router ignores still reaches the mirror", %{connect: connect} do
-      envelope = edited_envelope(connect)
-
-      ProviderHTTP.handle_slack_event(
-        connect,
-        envelope,
-        signed_headers(connect, envelope),
-        Jason.encode!(envelope)
-      )
-
-      assert [row] = outbox_rows()
-      assert row["deleted"] == false
-      assert row["text"] == "the edited text"
-    end
-
-    test "an authenticated reaction reaches only the shared reaction mirror", %{connect: connect} do
-      envelope = reaction_envelope("reaction_added", "1787019100.000000", connect)
-
-      ProviderHTTP.handle_slack_event(
-        connect,
-        envelope,
-        signed_headers(connect, envelope),
-        Jason.encode!(envelope)
-      )
-
-      assert [%{kind: "reaction", row: row}] = outbox_entries()
-      assert row["reaction"] == "eyes"
-    end
-
-    # Signature verification runs before the mirror, so an unauthenticated
-    # payload must never be able to write into the index.
-    test "a pin the router ignores still reaches the mirror", %{connect: connect} do
-      envelope = pin_envelope(connect)
-
-      ProviderHTTP.handle_slack_event(
-        connect,
-        envelope,
-        signed_headers(connect, envelope),
-        Jason.encode!(envelope)
-      )
-
-      assert [%{kind: "pin", row: row}] = outbox_entries()
-      assert row["pinned_by"] == "U_PIN"
+        assert [%{kind: @kind, row: row}] = outbox_entries()
+        assert Map.take(row, Map.keys(@expected)) == @expected
+      end
     end
 
     test "a failed outbox insert fails the Slack callback", %{connect: connect} do
@@ -500,6 +470,8 @@ defmodule SalixIM.SlackMessageMirrorTest do
       assert outbox_rows() == []
     end
 
+    # Signature verification runs before the mirror, so an unauthenticated
+    # payload must never be able to write into the index.
     test "an unsigned callback is never mirrored", %{connect: connect} do
       envelope = message_envelope(connect)
 

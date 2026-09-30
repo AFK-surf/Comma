@@ -246,34 +246,25 @@ describe("ComputeNodeService", () => {
     expect(runtime.calls).toEqual(["install"]);
   });
 
-  it("does not infer Salix readiness from a loaded connector process", async () => {
-    const adapter = new AgentVMMCommandAdapter("/unused/lifecycle", async () =>
-      JSON.stringify({
-        connectorInstalled: true,
-        connectorLoaded: true,
-        hostInstalled: true,
-        hostLoaded: true,
+  it.each(
+    [
+      {
+        name: "does not infer Salix readiness from a loaded connector process",
         salixReady: false,
-        salixRevoked: false,
-      })
-    );
-
-    await expect(adapter.observe()).resolves.toEqual({
-      connector: "ready",
-      host: "stopped",
-      readability: "readable",
-      salix: "unregistered",
-    });
-  });
-
-  it("does not infer readiness from the legacy helper facts shape", async () => {
+      },
+      {
+        name: "does not infer readiness from the legacy helper facts shape",
+        salixReady: true,
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", async (_name, { salixReady }) => {
     const adapter = new AgentVMMCommandAdapter("/unused/lifecycle", async () =>
       JSON.stringify({
         connectorInstalled: true,
         connectorLoaded: true,
         hostInstalled: true,
         hostLoaded: true,
-        salixReady: true,
+        salixReady,
         salixRevoked: false,
       })
     );

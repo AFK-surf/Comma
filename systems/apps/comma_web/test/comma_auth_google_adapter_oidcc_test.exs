@@ -185,48 +185,25 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
     assert {:error, :invalid_google_credential} = verify(forged)
   end
 
-  test "rejects an expired ID token", context do
-    expired =
-      token(
-        context.signing_key,
-        "initial-kid",
-        claims(context.issuer, %{"exp" => System.system_time(:second) - 3_600})
-      )
+  # `{:now_offset, seconds}` resolves against the clock when the token is minted.
+  for {label, overrides} <- [
+        {"that has expired", %{"exp" => {:now_offset, -3_600}}},
+        {"for another audience", %{"aud" => "another-client", "azp" => "another-client"}},
+        {"from another issuer", %{"iss" => "https://attacker.example"}},
+        {"with the wrong nonce", %{"nonce" => "another-login-attempt"}}
+      ] do
+    @overrides overrides
+    test "rejects an ID token #{label}", context do
+      overrides =
+        Map.new(@overrides, fn
+          {key, {:now_offset, seconds}} -> {key, System.system_time(:second) + seconds}
+          pair -> pair
+        end)
 
-    assert {:error, :invalid_google_credential} = verify(expired)
-  end
+      rejected = token(context.signing_key, "initial-kid", claims(context.issuer, overrides))
 
-  test "rejects an ID token for another audience", context do
-    wrong_audience =
-      token(
-        context.signing_key,
-        "initial-kid",
-        claims(context.issuer, %{"aud" => "another-client", "azp" => "another-client"})
-      )
-
-    assert {:error, :invalid_google_credential} = verify(wrong_audience)
-  end
-
-  test "rejects an ID token from another issuer", context do
-    wrong_issuer =
-      token(
-        context.signing_key,
-        "initial-kid",
-        claims(context.issuer, %{"iss" => "https://attacker.example"})
-      )
-
-    assert {:error, :invalid_google_credential} = verify(wrong_issuer)
-  end
-
-  test "rejects an ID token with the wrong nonce", context do
-    wrong_nonce =
-      token(
-        context.signing_key,
-        "initial-kid",
-        claims(context.issuer, %{"nonce" => "another-login-attempt"})
-      )
-
-    assert {:error, :invalid_google_credential} = verify(wrong_nonce)
+      assert {:error, :invalid_google_credential} = verify(rejected)
+    end
   end
 
   test "refreshes JWKS once and accepts a token with a newly published kid", context do

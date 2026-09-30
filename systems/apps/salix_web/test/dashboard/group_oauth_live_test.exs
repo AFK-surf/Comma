@@ -198,50 +198,42 @@ defmodule SalixWeb.Dashboard.GroupOAuthLiveTest do
     assert router_agent_id == agent["agent_id"]
   end
 
-  test "toggle Worker memory consultation from the group overview" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "MemoryGroup"}, tenant_id())
-    gid = group["group_id"]
+  for {label, group_name, toggle_id, field, enabled_msg, disabled_msg} <- [
+        {"Worker memory consultation", "MemoryGroup", "memory-ask-worker-toggle",
+         "memory_ask_worker_enabled", "Worker memory consultation enabled.",
+         "Worker memory consultation disabled."},
+        {"VFS control commands", "VFSGroup", "control-command-vfs-toggle",
+         "control_command_vfs_enabled", "VFS control commands enabled.",
+         "VFS control commands disabled."}
+      ] do
+    @group_name group_name
+    @toggle "#" <> toggle_id
+    @field field
+    @enabled_msg enabled_msg
+    @disabled_msg disabled_msg
 
-    {:ok, view, _html} = live(authed_conn(), "/dash/groups/#{gid}")
-    assert has_element?(view, "#memory-ask-worker-toggle:not(:checked)")
-    assert render(view) =~ "Disabled by default"
+    test "toggle #{label} from the group overview" do
+      {:ok, group} = Salix.Control.Groups.create(%{"name" => @group_name}, tenant_id())
+      gid = group["group_id"]
 
-    html = view |> element("#memory-ask-worker-toggle") |> render_click()
-    assert html =~ "Worker memory consultation enabled."
-    assert has_element?(view, "#memory-ask-worker-toggle:checked")
+      {:ok, view, _html} = live(authed_conn(), "/dash/groups/#{gid}")
+      assert has_element?(view, "#{@toggle}:not(:checked)")
+      assert render(view) =~ "Disabled by default"
 
-    assert {:ok, %{"memory_ask_worker_enabled" => true}} =
-             Salix.Control.Groups.get(gid, tenant_id())
+      html = view |> element(@toggle) |> render_click()
+      assert html =~ @enabled_msg
+      assert has_element?(view, "#{@toggle}:checked")
 
-    html = view |> element("#memory-ask-worker-toggle") |> render_click()
-    assert html =~ "Worker memory consultation disabled."
-    assert has_element?(view, "#memory-ask-worker-toggle:not(:checked)")
+      assert {:ok, enabled} = Salix.Control.Groups.get(gid, tenant_id())
+      assert enabled[@field] == true
 
-    assert {:ok, %{"memory_ask_worker_enabled" => false}} =
-             Salix.Control.Groups.get(gid, tenant_id())
-  end
+      html = view |> element(@toggle) |> render_click()
+      assert html =~ @disabled_msg
+      assert has_element?(view, "#{@toggle}:not(:checked)")
 
-  test "toggle VFS control commands from the group overview" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "VFSGroup"}, tenant_id())
-    gid = group["group_id"]
-
-    {:ok, view, _html} = live(authed_conn(), "/dash/groups/#{gid}")
-    assert has_element?(view, "#control-command-vfs-toggle:not(:checked)")
-    assert render(view) =~ "Disabled by default"
-
-    html = view |> element("#control-command-vfs-toggle") |> render_click()
-    assert html =~ "VFS control commands enabled."
-    assert has_element?(view, "#control-command-vfs-toggle:checked")
-
-    assert {:ok, %{"control_command_vfs_enabled" => true}} =
-             Salix.Control.Groups.get(gid, tenant_id())
-
-    html = view |> element("#control-command-vfs-toggle") |> render_click()
-    assert html =~ "VFS control commands disabled."
-    assert has_element?(view, "#control-command-vfs-toggle:not(:checked)")
-
-    assert {:ok, %{"control_command_vfs_enabled" => false}} =
-             Salix.Control.Groups.get(gid, tenant_id())
+      assert {:ok, disabled} = Salix.Control.Groups.get(gid, tenant_id())
+      assert disabled[@field] == false
+    end
   end
 
   test "oauth provider apps list and save" do

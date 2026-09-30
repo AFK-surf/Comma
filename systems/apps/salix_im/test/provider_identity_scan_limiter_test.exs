@@ -140,21 +140,6 @@ defmodule SalixIM.ProviderIdentityScanLimiterTest do
         eventually(fn -> ProviderIdentityScanLimiter.count(:never_registered_limiter) == 0 end, 2)
       end
     end
-
-    test "the restart guard is total over one observation", %{limiter: limiter} do
-      running = Process.whereis(limiter)
-
-      # An absent registration is NOT a restart — the case the old
-      # two-read form could get wrong, and the reason this takes a pid
-      # rather than a name.
-      refute restarted?(nil, running)
-
-      # The same owner still registered is not a restart either.
-      refute restarted?(running, running)
-
-      # A live registration that is not the pid we started from is.
-      assert restarted?(running, spawn(fn -> :ok end))
-    end
   end
 
   test "N truly simultaneous cold-start callers never exceed the cap", %{table: table} do

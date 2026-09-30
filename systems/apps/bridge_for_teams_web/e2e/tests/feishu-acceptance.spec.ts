@@ -12,8 +12,11 @@ const uniq = () =>
   Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
 
 async function login(page: Page) {
-  await page.goto(`/dev/login?email=${encodeURIComponent(EMAIL)}`);
-  await expect(page).toHaveURL(/\/$/);
+  // Land on a LiveView page: the organization Overview is the React dashboard.
+  await page.goto(
+    `/dev/login?email=${encodeURIComponent(EMAIL)}&to=/orgs/${ORG_SLUG}/projects`,
+  );
+  await expect(page).toHaveURL(new RegExp(`/orgs/${ORG_SLUG}/projects$`));
   await expectLiveViewConnected(page);
 }
 
@@ -107,19 +110,4 @@ test("Feishu bot-half: register a bot binding, then the project card offers it",
   await expect(
     page.getByText("No org Feishu app has bot enabled yet"),
   ).toHaveCount(0);
-
-  // (3) Best-effort: try the connect. Validating bot credentials calls the real
-  // Feishu API, which rejects fake creds locally — so this records the honest
-  // outcome (connect row OR an error flash), never a crash. Not a hard assert.
-  await appSelect.selectOption(appId).catch(() => {});
-  await connectForm
-    .locator('button[type="submit"]')
-    .click()
-    .catch(() => {});
-  await page.waitForTimeout(2000);
-  const outcome =
-    (await page.locator("#feishu-connects").count()) > 0
-      ? "connect-created"
-      : "no-connect (expected with fake creds)";
-  console.log(`[acceptance] connect attempt outcome: ${outcome}`);
 });

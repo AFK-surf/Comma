@@ -5810,77 +5810,45 @@ defmodule SalixAgent.ExternalSessionStoreTest do
     assert log =~ "status=running"
   end
 
-  test "connector lifecycle logs a projection-target write failure" do
-    {agent_id, pid, agent, capability, request} =
-      start_running_execution("input-target-write-failure", "execution-target-write-failure")
+  for {label, key_fun, status, mapping} <- [
+        {"projection-target", :agent_external_runtime_session, %{"status" => "running"},
+         "target_write_failed"},
+        {"status projection", :agent_external_runtime_session_status,
+         %{"status" => "unknown", "issue" => "runtime_status_unknown"}, "projection_failed"}
+      ] do
+    test "connector lifecycle logs a #{label} write failure" do
+      slug = unquote(mapping) |> String.replace("_", "-")
+      execution_id = "execution-" <> slug
 
-    state_key = Keys.agent_external_runtime_session(agent_id, @session_id)
-    :ok = S3.Fake.blackhole({:fail, 503, :put, state_key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
+      {agent_id, pid, agent, capability, request} =
+        start_running_execution("input-" <> slug, execution_id)
 
-    log =
-      ExUnit.CaptureLog.capture_log([level: :debug, metadata: :all], fn ->
-        assert {:error, {:http, 503}} =
-                 ExternalSessionActor.commit_connector_event(pid, capability, %{
-                   "connector_run_id" => request.binding["connector_run_id"],
-                   "event" =>
-                     lifecycle(
-                       request.dispatch_id,
-                       "execution-target-write-failure",
-                       "settled"
-                     )
-                 })
-      end)
+      failing_key = apply(Keys, unquote(key_fun), [agent_id, @session_id])
+      :ok = S3.Fake.blackhole({:fail, 503, :put, failing_key})
+      on_exit(fn -> S3.Fake.clear_blackhole() end)
 
-    :ok = S3.Fake.clear_blackhole()
+      log =
+        ExUnit.CaptureLog.capture_log([level: :debug, metadata: :all], fn ->
+          assert {:error, {:http, 503}} =
+                   ExternalSessionActor.commit_connector_event(pid, capability, %{
+                     "connector_run_id" => request.binding["connector_run_id"],
+                     "event" => lifecycle(request.dispatch_id, execution_id, "settled")
+                   })
+        end)
 
-    assert {:ok, %{"status" => "running"}} =
-             ExternalSessionStore.get_session_status(agent, @session_id)
+      :ok = S3.Fake.clear_blackhole()
 
-    assert log =~ "event=external_session_lifecycle_observation"
-    assert log =~ "mapping=target_write_failed"
-    assert log =~ "agent_id=#{agent_id}"
-    assert log =~ "session_id=#{@session_id}"
-    assert log =~ "dispatch_id=#{request.dispatch_id}"
-    assert log =~ "execution_id=execution-target-write-failure"
-  end
+      expected_status = unquote(Macro.escape(status))
+      assert {:ok, observed} = ExternalSessionStore.get_session_status(agent, @session_id)
+      assert Map.take(observed, Map.keys(expected_status)) == expected_status
 
-  test "connector lifecycle logs a status projection write failure" do
-    {agent_id, pid, agent, capability, request} =
-      start_running_execution(
-        "input-projection-write-failure",
-        "execution-projection-write-failure"
-      )
-
-    status_key = Keys.agent_external_runtime_session_status(agent_id, @session_id)
-    :ok = S3.Fake.blackhole({:fail, 503, :put, status_key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
-
-    log =
-      ExUnit.CaptureLog.capture_log([level: :debug, metadata: :all], fn ->
-        assert {:error, {:http, 503}} =
-                 ExternalSessionActor.commit_connector_event(pid, capability, %{
-                   "connector_run_id" => request.binding["connector_run_id"],
-                   "event" =>
-                     lifecycle(
-                       request.dispatch_id,
-                       "execution-projection-write-failure",
-                       "settled"
-                     )
-                 })
-      end)
-
-    :ok = S3.Fake.clear_blackhole()
-
-    assert {:ok, %{"status" => "unknown", "issue" => "runtime_status_unknown"}} =
-             ExternalSessionStore.get_session_status(agent, @session_id)
-
-    assert log =~ "event=external_session_lifecycle_observation"
-    assert log =~ "mapping=projection_failed"
-    assert log =~ "agent_id=#{agent_id}"
-    assert log =~ "session_id=#{@session_id}"
-    assert log =~ "dispatch_id=#{request.dispatch_id}"
-    assert log =~ "execution_id=execution-projection-write-failure"
+      assert log =~ "event=external_session_lifecycle_observation"
+      assert log =~ "mapping=#{unquote(mapping)}"
+      assert log =~ "agent_id=#{agent_id}"
+      assert log =~ "session_id=#{@session_id}"
+      assert log =~ "dispatch_id=#{request.dispatch_id}"
+      assert log =~ "execution_id=#{execution_id}"
+    end
   end
 
   test "terminal external runtime failure logs its reason and resulting failed status" do
@@ -6222,34 +6190,25 @@ defmodule SalixAgent.ExternalSessionStoreTest do
              ExternalSessionStore.get_session_status(agent, @session_id)
   end
 
-  test "a durable completion never leaves the public status at running" do
-    {agent_id, pid, agent, _capability, _request} =
-      start_running_execution("input-complete-projection", "execution-complete-projection")
+  for {label, terminal} <- [{"completion", :complete_session}, {"failure", :fail_session}] do
+    test "a durable #{label} never leaves the public status at running" do
+      {agent_id, pid, agent, _capability, _request} =
+        start_running_execution(
+          "input-#{unquote(label)}-projection",
+          "execution-#{unquote(label)}-projection"
+        )
 
-    status_key = Keys.agent_external_runtime_session_status(agent_id, @session_id)
-    :ok = S3.Fake.blackhole({:fail, 503, :put, status_key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
+      status_key = Keys.agent_external_runtime_session_status(agent_id, @session_id)
+      :ok = S3.Fake.blackhole({:fail, 503, :put, status_key})
+      on_exit(fn -> S3.Fake.clear_blackhole() end)
 
-    assert {:ok, _state} = ExternalSessionActor.complete_session(pid, %{})
-    :ok = S3.Fake.clear_blackhole()
+      assert {:ok, _state} = settle_durably(unquote(terminal), pid)
 
-    assert {:ok, %{"status" => "unknown", "issue" => "runtime_status_unknown"}} =
-             ExternalSessionStore.get_session_status(agent, @session_id)
-  end
+      :ok = S3.Fake.clear_blackhole()
 
-  test "a durable failure never leaves the public status at running" do
-    {agent_id, pid, agent, _capability, _request} =
-      start_running_execution("input-fail-projection", "execution-fail-projection")
-
-    status_key = Keys.agent_external_runtime_session_status(agent_id, @session_id)
-    :ok = S3.Fake.blackhole({:fail, 503, :put, status_key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
-
-    assert {:ok, _state} = ExternalSessionActor.fail_session(pid, :native_failed, %{})
-    :ok = S3.Fake.clear_blackhole()
-
-    assert {:ok, %{"status" => "unknown", "issue" => "runtime_status_unknown"}} =
-             ExternalSessionStore.get_session_status(agent, @session_id)
+      assert {:ok, %{"status" => "unknown", "issue" => "runtime_status_unknown"}} =
+               ExternalSessionStore.get_session_status(agent, @session_id)
+    end
   end
 
   test "dispatch does not proceed while its starting status is silently stale" do
@@ -6468,7 +6427,6 @@ defmodule SalixAgent.ExternalSessionStoreTest do
              SalixAgent.Runtime.get_session_activity(agent, @session_id)
   end
 
-  @tag :skip
   test "ACK removes only its in-flight snapshot when new input arrives" do
     {agent_id, pid, _agent} = start_external_session()
 
@@ -6485,7 +6443,11 @@ defmodule SalixAgent.ExternalSessionStoreTest do
     send(runtime_pid, {:runtime_return, accepted(first, %{"thread_id" => "thread-1"})})
 
     assert_receive {:runtime_request, runtime_pid, second}, @receive_budget_ms
-    assert Enum.map(second.input_messages, & &1["content"]) == ["arrived while sending"]
+
+    assert Enum.map(queued_inputs(second.input_messages), & &1["content"]) == [
+             "arrived while sending"
+           ]
+
     refute Map.has_key?(second, :runtime_payload)
 
     assert {:ok, state} = ExternalSessionStore.get_session_record(agent_id, @session_id)
@@ -6826,9 +6788,9 @@ defmodule SalixAgent.ExternalSessionStoreTest do
     assert Enum.map(previous, &get_in(&1, ["data", "status"])) == ["sample-254", "sample-255"]
   end
 
-  @tag :skip
   test "session listing ignores retired hex-key state objects" do
-    {agent_id, _pid, _agent} = start_external_session()
+    {agent_id, pid, _agent} = start_external_session()
+    assert {:ok, :committed} = stage(pid, "input-listing", "context", no_wake: true)
     prefix = Keys.agent_external_runtime_sessions_prefix(agent_id)
 
     assert {:ok, _} =
@@ -7453,6 +7415,13 @@ defmodule SalixAgent.ExternalSessionStoreTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
   defp restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
+
+  defp settle_durably(:complete_session, pid),
+    do: ExternalSessionActor.complete_session(pid, %{})
+
+  defp settle_durably(:fail_session, pid),
+    do: ExternalSessionActor.fail_session(pid, :native_failed, %{})
+
   # Context is appended to the actual dispatch, not inserted into the source queue.
   defp queued_inputs(messages),
     do: Enum.reject(messages, &(&1["content_kind"] == "model_context"))

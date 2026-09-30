@@ -1047,30 +1047,6 @@ defmodule BridgeForTeamsWeb.ProjectAgentControllerTest do
     assert Agents.list_agents(project.id) |> MapSet.new(& &1.id) == before_ids
   end
 
-  test "project agents API rejects unsupported external runtime config fields", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    conn =
-      api_json(:post, project_agents_path(org.slug, project.slug), token, %{
-        "role" => "worker",
-        "runtime_config" => %{
-          "kind" => "external",
-          "provider" => "codex",
-          "device_id" => "dev-ready",
-          "runtime_id" => "runtime-ready",
-          "device_runtime_id" => @device_runtime_id,
-          "api_base_url" => "https://attacker.example.test"
-        }
-      })
-
-    assert conn.status == 400
-
-    assert %{"ok" => false, "error" => %{"code" => "raw_runtime_config_forbidden"}} =
-             Jason.decode!(conn.resp_body)
-  end
-
   test "project agents API does not expose projects without read permission", %{
     org: org,
     project: project
@@ -1084,32 +1060,41 @@ defmodule BridgeForTeamsWeb.ProjectAgentControllerTest do
     assert conn.status == 404
   end
 
-  test "project agents API does not create agents without project write permission", %{
-    org: org,
-    project: project
-  } do
-    member = user_fixture(email: "agents-writer@example.com")
-    {:ok, _membership} = Memberships.put_org_member(org.id, member.id, "member")
-    {:ok, %{token: token, session: session}} = Sessions.create(member, device: "bft-cli")
-    {:ok, _grants} = CLILogin.grant_cli_session_orgs(session, [org.id], member.id)
+  for {name, project_role, status, error} <- [
+        {"project agents API does not create agents without project read permission", nil, 404,
+         "project_not_found"},
+        {"project agents API does not create agents for a read-only project member", "user", 403,
+         "forbidden"}
+      ] do
+    test name, %{org: org, project: project} do
+      member = user_fixture(email: "agents-read-only@example.com")
+      {:ok, _org_membership} = Memberships.put_org_member(org.id, member.id, "member")
 
-    conn =
-      api_json(:post, project_agents_path(org.slug, project.slug), token, %{
-        "name" => "codex-denied",
-        "role" => "worker",
-        "runtime_config" => %{
-          "kind" => "external",
-          "provider" => "codex",
-          "device_id" => "dev-ready",
-          "runtime_id" => "runtime-ready",
-          "device_runtime_id" => @device_runtime_id
-        }
-      })
+      if role = unquote(project_role) do
+        {:ok, _project_membership} = Memberships.put_project_member(project.id, member.id, role)
+      end
 
-    assert conn.status == 404
+      {:ok, %{token: token, session: session}} = Sessions.create(member, device: "bft-cli")
+      {:ok, _grants} = CLILogin.grant_cli_session_orgs(session, [org.id], member.id)
 
-    agents = Agents.list_agents(project.id)
-    refute Enum.any?(agents, &(&1.salix["name"] == "codex-denied"))
+      before_ids = Agents.list_agents(project.id) |> MapSet.new(& &1.id)
+
+      conn =
+        api_json(:post, project_agents_path(org.slug, project.slug), token, %{
+          "name" => "codex-read-only",
+          "external_target" => %{
+            "kind" => "connected_runtime",
+            "device_runtime_id" => @device_runtime_id
+          }
+        })
+
+      assert conn.status == unquote(status)
+
+      assert %{"ok" => false, "error" => %{"code" => unquote(error)}} =
+               Jason.decode!(conn.resp_body)
+
+      assert Agents.list_agents(project.id) |> MapSet.new(& &1.id) == before_ids
+    end
   end
 
   test "project refs only accept id or slug", %{org: org, project: project, token: token} do

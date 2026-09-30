@@ -6,22 +6,23 @@ import {
 } from "../side-chat-test-window";
 
 describe("Side Chat test window geometry", () => {
-  it("converts Electron screen DIPs into the selected display's local coordinates", () => {
-    expect(
-      localizeSideChatTestWindowSourceFrame(
-        { height: 24, width: 24, x: -118, y: 84 },
-        { height: 1117, width: 1728, x: -1728, y: 0 }
-      )
-    ).toEqual({ height: 24, width: 24, x: 1610, y: 84 });
-  });
-
-  it("keeps the morph source inside the fullscreen overlay", () => {
-    expect(
-      localizeSideChatTestWindowSourceFrame(
-        { height: 90, width: 90, x: 1435, y: 895 },
-        { height: 900, width: 1440, x: 0, y: 0 }
-      )
-    ).toEqual({ height: 90, width: 90, x: 1350, y: 810 });
+  it.each(
+    [
+      {
+        name: "converts Electron screen DIPs into the selected display's local coordinates",
+        source: { height: 24, width: 24, x: -118, y: 84 },
+        display: { height: 1117, width: 1728, x: -1728, y: 0 },
+        expected: { height: 24, width: 24, x: 1610, y: 84 },
+      },
+      {
+        name: "keeps the morph source inside the fullscreen overlay",
+        source: { height: 90, width: 90, x: 1435, y: 895 },
+        display: { height: 900, width: 1440, x: 0, y: 0 },
+        expected: { height: 90, width: 90, x: 1350, y: 810 },
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { source, display, expected }) => {
+    expect(localizeSideChatTestWindowSourceFrame(source, display)).toEqual(expected);
   });
 
   it("encodes only validated local source geometry into the independent route", () => {

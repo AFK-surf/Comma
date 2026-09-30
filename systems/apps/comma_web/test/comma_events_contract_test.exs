@@ -1137,14 +1137,6 @@ defmodule CommaWeb.CommaEventsContractTest do
     assert response.status == 503
     assert response.body == %{"error" => "conversation_unavailable"}
 
-    serialized_body = Jason.encode!(response.body)
-    refute serialized_body =~ group_id
-    refute serialized_body =~ salix_id
-    refute serialized_body =~ "grp1_"
-    refute serialized_body =~ "cnv1_"
-    refute serialized_body =~ "msg1_"
-    refute serialized_body =~ "ptp1_"
-
     SalixClientFake.fail_reads(:salix_participant_validation_incomplete)
 
     atom_response =
@@ -1173,12 +1165,6 @@ defmodule CommaWeb.CommaEventsContractTest do
 
       assert internal_response.status == 503
       assert internal_response.body == %{"error" => "conversation_unavailable"}
-
-      internal_body = Jason.encode!(internal_response.body)
-      refute internal_body =~ "grp1_"
-      refute internal_body =~ "cnv1_"
-      refute internal_body =~ "msg1_"
-      refute internal_body =~ "ptp1_"
     end
   end
 

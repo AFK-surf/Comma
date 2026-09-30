@@ -544,46 +544,32 @@ defmodule SalixAgent.ServerRuntimeOwnershipTest do
     assert released.owner_node == nil
   end
 
-  test "an idle registered session actor does not hold the lease", %{agent: a} do
-    SalixAgent.TestSupport.create_control_agent!(a)
-    _fake = start_fake_session_actor!(a, "ses1_0000000000000000805", false)
+  for {name, idle_actor?} <- [
+        {"an idle registered session actor does not hold the lease", true},
+        {"passivation still releases promptly when no session actors exist", false}
+      ] do
+    test name, %{agent: a} do
+      SalixAgent.TestSupport.create_control_agent!(a)
 
-    {:ok, pid} =
-      Server.start_link(
-        agent_id: a,
-        node_id: to_string(node()),
-        sm: State,
-        startup_mode: :passive,
-        park_ms: 100,
-        lease_ttl_ms: 3_000,
-        lease_guard_ms: 100
-      )
+      if unquote(idle_actor?),
+        do: start_fake_session_actor!(a, "ses1_0000000000000000805", false)
 
-    ref = Process.monitor(pid)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+      {:ok, pid} =
+        Server.start_link(
+          agent_id: a,
+          node_id: to_string(node()),
+          sm: State,
+          startup_mode: :passive,
+          park_ms: 100,
+          lease_ttl_ms: 3_000,
+          lease_guard_ms: 100
+        )
 
-    assert {:ok, head} = Agent.peek(a)
-    assert head.owner_node == nil
-  end
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
 
-  test "passivation still releases promptly when no session actors exist", %{agent: a} do
-    SalixAgent.TestSupport.create_control_agent!(a)
-
-    {:ok, pid} =
-      Server.start_link(
-        agent_id: a,
-        node_id: to_string(node()),
-        sm: State,
-        startup_mode: :passive,
-        park_ms: 100,
-        lease_ttl_ms: 3_000,
-        lease_guard_ms: 100
-      )
-
-    ref = Process.monitor(pid)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
-
-    assert {:ok, head} = Agent.peek(a)
-    assert head.owner_node == nil
+      assert {:ok, head} = Agent.peek(a)
+      assert head.owner_node == nil
+    end
   end
 end

@@ -1026,6 +1026,58 @@
       ]
     },
     {
+      "id": "billing-20260930000002",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20260930000002,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20260930000002_seed_claude_55_pricing.exs",
+      "checksum": "sha256:7e4e8fab5eaeb67481bb11beb4a7fe29600a677ce502f92072fd5ea09c72f87d",
+      "execution": {
+        "idempotent": true
+      },
+      "postconditions": [
+        "billing_core.meter_pricing_catalog/anthropic:claude-opus-5-5=prices-seeded",
+        "billing_core.meter_pricing_catalog/anthropic:claude-sonnet-5-5=prices-seeded"
+      ]
+    },
+    {
+      "id": "billing-20260930000005",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20260930000005,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20260930000005_add_subscription_checkout.exs",
+      "checksum": "sha256:137dfbef08612d5934221638bec089e9982dac15914e0576249825d504ff183e",
+      "postconditions": [
+        "billing_core.migration-ledger/20260930000005=subscription-checkout-owner-ready"
+      ]
+    },
+    {
+      "id": "billing-20260930000006",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20260930000006,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20260930000006_add_cycle_payment_sources.exs",
+      "checksum": "sha256:691cfc46b114e55df85f229c93b09d03de46e68b0f8f2417ad174b14cf266eb2",
+      "postconditions": [
+        "billing_core.migration-ledger/20260930000006=cycle-payment-sources-and-comma-json-objects-ready"
+      ]
+    },
+    {
+      "id": "billing-20260930000007",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20260930000007,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20260930000007_seed_claude_55_openrouter_pricing.exs",
+      "checksum": "sha256:d98c6e28c9d34213dc5bd3b6cc405bc906e12a081efd52dd73d2f4dc26b80368",
+      "execution": {
+        "idempotent": true
+      },
+      "postconditions": [
+        "billing_core.meter_pricing_catalog/anthropic:anthropic-claude-opus-5.5=prices-seeded",
+        "billing_core.meter_pricing_catalog/anthropic:anthropic-claude-sonnet-5.5=prices-seeded"
+      ]
+    },
+    {
       "id": "bridge-20260615000001",
       "owner": "bridge_for_teams",
       "store": "postgres",
@@ -2292,6 +2344,17 @@
       "postconditions": [
         "postgres.comma_task_shares=public-task-share-links",
         "postgres.index/comma_task_shares_active_conversation_index=present"
+      ]
+    },
+    {
+      "id": "comma-20260930000004",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20260930000004,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20260930000004_add_signup_credit_eligibility.exs",
+      "checksum": "sha256:86ba3a7731737a6f372210c51528cb4622d2426d8964faa09e0bb7ba2fe2528f",
+      "postconditions": [
+        "comma_core.migration-ledger/20260930000004=signup-credit-eligibility-ready"
       ]
     },
     {
@@ -4616,6 +4679,28 @@
       "checksum": "sha256:025ade922a74263d3087da8185cd6d0dbadc251d9ac48c5219567ccff7710135",
       "postconditions": [
         "salix_store.migration-ledger/20260930000100=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "comma-20260930000008",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20260930000008,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20260930000008_index_signup_credit_candidates.exs",
+      "checksum": "sha256:2a4dbfbeaeaa45250ab9814b6c57944742dc9f6a6f3f8c3e0cf352eeadf083cd",
+      "postconditions": [
+        "comma_core.migration-ledger/20260930000008=applied-and-schema-ready"
+      ]
+    },
+    {
+      "id": "billing-20260930132400",
+      "owner": "billing_core",
+      "store": "postgres",
+      "version": 20260930132400,
+      "source": "systems/apps/billing_core/priv/repo/migrations/20260930132400_index_signup_credit_budget.exs",
+      "checksum": "sha256:a2f25078f6c6416846394deb21c3e983e01b6068dde6af34202c7c39a4fa3bf5",
+      "postconditions": [
+        "billing_core.migration-ledger/20260930132400=applied-and-schema-ready"
       ]
     }
   ],

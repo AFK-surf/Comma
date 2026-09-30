@@ -223,6 +223,13 @@ defmodule BridgeForTeams.Memberships do
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
+  @doc "Count the org's memberships."
+  @spec count_org_members(Ecto.UUID.t()) :: non_neg_integer()
+  def count_org_members(org_id) do
+    from(m in OrgMembership, where: m.org_id == ^org_id)
+    |> Repo.aggregate(:count, :id)
+  end
+
   @doc "Count the org's owner memberships (used to guard demoting the last owner)."
   @spec count_org_owners(Ecto.UUID.t()) :: non_neg_integer()
   def count_org_owners(org_id) do

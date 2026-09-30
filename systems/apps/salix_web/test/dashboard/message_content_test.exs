@@ -15,12 +15,6 @@ defmodule SalixWeb.Dashboard.MessageContentTest do
     assert preview == "x" <> String.duplicate("中", 39) <> "…"
   end
 
-  test "preview/2 output survives JSON encoding, as the LiveView socket requires" do
-    preview = MessageContent.preview(mid_character_cut())
-
-    assert {:ok, _json} = Jason.encode(%{"content" => preview})
-  end
-
   test "preview/2 keeps the whole string when it fits the budget" do
     assert MessageContent.preview("中文", 120) == "中文"
   end

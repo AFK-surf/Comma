@@ -135,22 +135,35 @@ describe("Comma local dev seed", () => {
     );
   });
 
-  it("rejects an invalid local developer Session lifetime before making an API request", async () => {
-    let fetchCalled = false;
+  for (const { name, options, error } of [
+    {
+      name: "rejects an invalid local developer Session lifetime before making an API request",
+      options: { sessionTtlSeconds: 0 },
+      error: /sessionTtlSeconds must be a positive safe integer/,
+    },
+    {
+      name: "rejects an invalid grant generation before making an API request",
+      options: { creditGrantGeneration: 0 },
+      error: /creditGrantGeneration must be a positive safe integer/,
+    },
+  ]) {
+    it(name, async () => {
+      let fetchCalled = false;
 
-    await assert.rejects(
-      seedLocalDev({
-        sessionTtlSeconds: 0,
-        fetchImpl: async () => {
-          fetchCalled = true;
-          return json(500, { error: "must_not_run" });
-        },
-      }),
-      /sessionTtlSeconds must be a positive safe integer/,
-    );
+      await assert.rejects(
+        seedLocalDev({
+          ...options,
+          fetchImpl: async () => {
+            fetchCalled = true;
+            return json(500, { error: "must_not_run" });
+          },
+        }),
+        error,
+      );
 
-    assert.equal(fetchCalled, false);
-  });
+      assert.equal(fetchCalled, false);
+    });
+  }
 
   it("uses an explicit grant generation for an idempotent local credit top-up", async () => {
     const calls = [];
@@ -176,23 +189,6 @@ describe("Comma local dev seed", () => {
       ),
       true,
     );
-  });
-
-  it("rejects an invalid grant generation before making an API request", async () => {
-    let fetchCalled = false;
-
-    await assert.rejects(
-      seedLocalDev({
-        creditGrantGeneration: 0,
-        fetchImpl: async () => {
-          fetchCalled = true;
-          return json(500, { error: "must_not_run" });
-        },
-      }),
-      /creditGrantGeneration must be a positive safe integer/,
-    );
-
-    assert.equal(fetchCalled, false);
   });
 
   it("normalizes surrounding whitespace and case without collapsing plus addressing", async () => {

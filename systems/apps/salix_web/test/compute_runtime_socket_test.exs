@@ -41,48 +41,36 @@ defmodule SalixWeb.ComputeRuntimeSocketTest do
              )
   end
 
-  test "does not dispatch an event request without the negotiated event feature" do
-    state = %ComputeRuntimeSocket{
-      status: :ready,
-      runtime_kind: "external_worker",
-      features: ["runtime.input.v1"]
-    }
+  for {label, features, method} <- [
+        {"an event request without the negotiated event feature", ["runtime.input.v1"],
+         "external_runtime_event"},
+        {"a meeting event through an external worker carrier",
+         ["runtime.input.v1", "runtime.event.v1"], "meeting_runtime_event"}
+      ] do
+    @features features
+    @method method
 
-    assert {:push, {:text, response}, ^state} =
-             ComputeRuntimeSocket.handle_in(
-               {Jason.encode!(%{
-                  "type" => "request",
-                  "id" => "event-1",
-                  "method" => "external_runtime_event",
-                  "params" => %{}
-                }), [opcode: :text]},
-               state
-             )
+    test "does not dispatch #{label}" do
+      state = %ComputeRuntimeSocket{
+        status: :ready,
+        runtime_kind: "external_worker",
+        features: @features
+      }
 
-    assert %{"type" => "error", "id" => "event-1", "error" => "unsupported_runtime_request"} =
-             Jason.decode!(response)
-  end
+      assert {:push, {:text, response}, ^state} =
+               ComputeRuntimeSocket.handle_in(
+                 {Jason.encode!(%{
+                    "type" => "request",
+                    "id" => "event-1",
+                    "method" => @method,
+                    "params" => %{}
+                  }), [opcode: :text]},
+                 state
+               )
 
-  test "does not dispatch a meeting event through an external worker carrier" do
-    state = %ComputeRuntimeSocket{
-      status: :ready,
-      runtime_kind: "external_worker",
-      features: ["runtime.input.v1", "runtime.event.v1"]
-    }
-
-    assert {:push, {:text, response}, ^state} =
-             ComputeRuntimeSocket.handle_in(
-               {Jason.encode!(%{
-                  "type" => "request",
-                  "id" => "event-1",
-                  "method" => "meeting_runtime_event",
-                  "params" => %{}
-                }), [opcode: :text]},
-               state
-             )
-
-    assert %{"type" => "error", "id" => "event-1", "error" => "unsupported_runtime_request"} =
-             Jason.decode!(response)
+      assert %{"type" => "error", "id" => "event-1", "error" => "unsupported_runtime_request"} =
+               Jason.decode!(response)
+    end
   end
 
   test "admits connector runtime proxy requests on a ready compute carrier" do

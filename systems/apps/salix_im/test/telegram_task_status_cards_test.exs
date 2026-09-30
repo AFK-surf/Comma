@@ -33,6 +33,13 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     end
   end
 
+  defmodule Observer do
+    def task_status_changed(snapshot) do
+      send(Application.fetch_env!(:salix_im, :status_card_test_pid), {:observed, snapshot})
+      :ok
+    end
+  end
+
   defmodule AgentDelivery do
     def notify_conversation(agent, source),
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
@@ -48,6 +55,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
               :agent_delivery_mod,
               :telegram_api_base_url,
               :task_status_personal_adapter,
+              :task_status_observer,
               :status_card_test_pid,
               :status_card_test_targets,
               :status_card_test_result
@@ -172,6 +180,33 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     assert connect["connect_id"] == ctx.connect["connect_id"]
   end
 
+  test "an owned Task's status change reaches the product's status observer", ctx do
+    Application.put_env(:salix_im, :task_status_observer, Observer)
+    id = create_task(ctx, "Needs a decision", "usr_task_owner")
+    unowned = create_task(ctx, "Nobody's")
+
+    for task <- [id, unowned] do
+      assert {:ok, _} =
+               SalixIM.Provider.call_api(
+                 ctx.router["agent_id"],
+                 "internal",
+                 "internal.update_conversation",
+                 %{
+                   "connect_id" => "internal",
+                   "params" => %{"conversation_id" => task, "status" => "escalated"}
+                 }
+               )
+    end
+
+    assert_receive {:observed, %{"conversation_id" => ^id, "status" => "escalated"} = snapshot},
+                   3_000
+
+    assert snapshot["owner_user_id"] == "usr_task_owner"
+    assert snapshot["agent_group_id"] == ctx.group
+    assert is_integer(snapshot["provider_status_version"])
+    refute_receive {:observed, %{"conversation_id" => ^unowned}}, 200
+  end
+
   defp status_participant(group, id) do
     {:ok, %{"participants" => participants}} =
       Conversations.list_group_conversation_participants(group, id)
@@ -179,7 +214,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     Enum.find(participants, &(&1["role_label"] == "task_status_personal"))
   end
 
-  defp create_task(ctx, title) do
+  defp create_task(ctx, title, owner \\ nil) do
     id = Ids.new_conversation_id()
 
     assert {:ok, _} =
@@ -190,6 +225,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
                ctx.worker["agent_id"],
                %{
                  "title" => title,
+                 "owner_user_id" => owner,
                  "content" => "Work on " <> title,
                  "schedule" => %{"schedule_id" => nil, "command" => "Work on " <> title},
                  "workflow" => nil,

@@ -64,61 +64,39 @@ defmodule SalixIM.IFCTest do
       assert block["principal"] == "provider_user|#{@connect}|U_A"
     end
 
-    test "a private channel is its own audience" do
-      Store.observe_scope(@tenant, @group, @connect, "C1", %{
-        kind: "room",
-        within: "space|#{@connect}"
-      })
+    for {name, observed, scope_label, channel_type, expected} <- [
+          {"a private channel is its own audience", %{kind: "room", within: "space|#{@connect}"},
+           nil, "group", ["scope|C1"]},
+          {"a public channel is the whole workspace", %{kind: "public"}, nil, "channel",
+           ["space"]},
+          {"unless an operator asked for its exact members", %{kind: "public"},
+           %{audience_mode: "members"}, "channel", ["scope|C1"]},
+          {"an operator's classification tags travel with the content", %{kind: "room"},
+           %{tags: ["finance"]}, "group", ["scope|C1", "tag|finance"]}
+        ] do
+      @observed observed
+      @tag scope_label: scope_label
+      @channel_type channel_type
+      # Rows name atoms without the connect so the table stays readable.
+      @expected Enum.map(expected, fn
+                  "scope|" <> scope -> "scope|#{@connect}|#{scope}"
+                  "space" -> "space|#{@connect}"
+                  tag -> tag
+                end)
+      test name, %{scope_label: scope_label} do
+        Store.observe_scope(@tenant, @group, @connect, "C1", @observed)
 
-      block =
-        Ingress.provider_block(
-          group(),
-          slack_metadata(%{"channel_type" => "group"}),
-          principal_ref()
-        )
+        if scope_label, do: Store.put_scope_label(@tenant, @group, @connect, "C1", scope_label)
 
-      assert block["label"] == ["scope|#{@connect}|C1"]
-    end
+        block =
+          Ingress.provider_block(
+            group(),
+            slack_metadata(%{"channel_type" => @channel_type}),
+            principal_ref()
+          )
 
-    test "a public channel is the whole workspace" do
-      Store.observe_scope(@tenant, @group, @connect, "C1", %{kind: "public"})
-
-      block =
-        Ingress.provider_block(
-          group(),
-          slack_metadata(%{"channel_type" => "channel"}),
-          principal_ref()
-        )
-
-      assert block["label"] == ["space|#{@connect}"]
-    end
-
-    test "unless an operator asked for its exact members" do
-      Store.observe_scope(@tenant, @group, @connect, "C1", %{kind: "public"})
-      Store.put_scope_label(@tenant, @group, @connect, "C1", %{audience_mode: "members"})
-
-      block =
-        Ingress.provider_block(
-          group(),
-          slack_metadata(%{"channel_type" => "channel"}),
-          principal_ref()
-        )
-
-      assert block["label"] == ["scope|#{@connect}|C1"]
-    end
-
-    test "an operator's classification tags travel with the content" do
-      Store.observe_scope(@tenant, @group, @connect, "C1", %{kind: "room"})
-      Store.put_scope_label(@tenant, @group, @connect, "C1", %{tags: ["finance"]})
-
-      block =
-        Ingress.provider_block(
-          group(),
-          slack_metadata(%{"channel_type" => "group"}),
-          principal_ref()
-        )
-
-      assert block["label"] == ["scope|#{@connect}|C1", "tag|finance"]
+        assert block["label"] == @expected
+      end
     end
 
     test "IFC treats sealed member identities equally regardless of transport actor or bot flags" do

@@ -30,7 +30,16 @@ defmodule SalixAgent.LLMErrorClassificationTest do
              "The input token count (210000) exceeds the maximum number of tokens allowed (200000)."
          }
        }},
-      {"bedrock", %{"message" => "Input is too long for requested model."}}
+      {"bedrock", %{"message" => "Input is too long for requested model."}},
+      # Volces Ark (OpenAI-compatible) oversized-request phrasing.
+      {"openai_chat",
+       %{
+         "error" => %{
+           "code" => "InvalidParameter",
+           "message" => "Total tokens of image and text exceed max message tokens.",
+           "type" => "BadRequest"
+         }
+       }}
     ]
 
     for {provider, body} <- cases, value <- [body, Jason.encode!(body)] do
@@ -73,15 +82,6 @@ defmodule SalixAgent.LLMErrorClassificationTest do
 
       refute meta["category"] == "context_overflow"
     end
-  end
-
-  test "Volces Ark oversized-request phrasing classifies as context overflow" do
-    body =
-      ~s({"error":{"code":"InvalidParameter","message":"Total tokens of image and text exceed max message tokens.","type":"BadRequest"}})
-
-    assert {:error, meta} = Error.http("openai_chat", 400, body)
-    assert meta["category"] == "context_overflow"
-    refute Error.retryable?(meta)
   end
 
   test "an unrelated 400 stays a permanent, non-retryable provider error" do

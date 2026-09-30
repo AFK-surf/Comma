@@ -77,7 +77,7 @@ export function ModelSelectionView({
         JSON.stringify(policy.allowed_template_ids.toSorted()));
 
   return (
-    <>
+    <section aria-label="Models" className="admin-workspace">
       <AdminPageHeader
         eyebrow="Platform"
         title="Models"
@@ -236,6 +236,6 @@ export function ModelSelectionView({
           setNotice("Saved. New user selections now use this list.");
         }}
       />
-    </>
+    </section>
   );
 }

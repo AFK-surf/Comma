@@ -4,11 +4,6 @@ defmodule BridgeForTeams.CacheTest do
 
   alias BridgeForTeams.Cache
 
-  setup do
-    on_exit(fn -> Cache.delete({:t, self()}) end)
-    :ok
-  end
-
   test "put/get/delete round-trip" do
     key = {:cache_test, make_ref()}
     assert :error = Cache.get(key)

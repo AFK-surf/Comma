@@ -131,6 +131,8 @@ import {
   commaBillingPlanSchema,
   commaBillingSummarySchema,
   commaBillingSessionSchema,
+  commaBillingChangeSchema,
+  commaBillingChangePreviewSchema,
   commaRedemptionResultSchema,
   type CommaChatSuggestion,
   type CommaConnectorToken,
@@ -154,6 +156,8 @@ import {
   type CommaBillingPlan,
   type CommaBillingSummary,
   type CommaBillingSession,
+  type CommaBillingChange,
+  type CommaBillingChangePreview,
   type CommaRedemptionResult,
 } from "./schemas";
 import { z } from "zod";
@@ -313,10 +317,17 @@ export interface CommaApiClient {
     planKey: string
   ): Promise<CommaBillingSession>;
   createBillingPortal(workspaceId: string): Promise<CommaBillingSession>;
-  changeBillingSubscription(
+  previewBillingSubscriptionChange(
     workspaceId: string,
     planKey: string
-  ): Promise<CommaBillingSession>;
+  ): Promise<CommaBillingChangePreview>;
+  changeBillingSubscription(
+    workspaceId: string,
+    planKey: string,
+    preview: CommaBillingChangePreview,
+    requestId: string
+  ): Promise<CommaBillingChange>;
+  cancelBillingSubscriptionRenewal(workspaceId: string): Promise<CommaBillingChange>;
   redeemBillingCode(workspaceId: string, code: string): Promise<CommaRedemptionResult>;
   getProfile(options?: { signal?: AbortSignal }): Promise<CommaUserProfile>;
   updateProfile(
@@ -993,17 +1004,35 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
       );
     },
 
-    changeBillingSubscription(workspaceId, planKey) {
+    previewBillingSubscriptionChange(workspaceId, planKey) {
+      return request(
+        "POST",
+        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/billing/subscription/preview`,
+        commaBillingChangePreviewSchema,
+        { plan_key: planKey, client_request_id: crypto.randomUUID() }
+      );
+    },
+    changeBillingSubscription(workspaceId, planKey, preview, changeRequestId) {
       return request(
         "POST",
         `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/billing/subscription/change`,
-        commaBillingSessionSchema,
+        commaBillingChangeSchema,
         {
           plan_key: planKey,
-          return_url: billingReturnUrl("portal"),
+          current_price_id: preview.current_price_id,
+          proration_date: preview.proration_date,
+          period_end: preview.period_end,
           success_url: billingReturnUrl("subscription"),
-          client_request_id: crypto.randomUUID(),
+          client_request_id: changeRequestId,
         }
+      );
+    },
+    cancelBillingSubscriptionRenewal(workspaceId) {
+      return request(
+        "POST",
+        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/billing/subscription/cancel`,
+        commaBillingChangeSchema,
+        { client_request_id: crypto.randomUUID() }
       );
     },
 

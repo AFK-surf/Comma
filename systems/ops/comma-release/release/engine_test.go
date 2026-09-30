@@ -689,85 +689,67 @@ func TestLifecycleHardCutSecondFenceAssertionStopsBeforeIrreversibleFenceAndCanR
 	}
 }
 
-func TestLifecycleActiveTerminalStateCannotBeReplacedByAnotherRelease(t *testing.T) {
+func TestLifecycleTerminalStateWithEpochCannotBeReplacedByAnotherRelease(t *testing.T) {
 	now := time.Now().UTC()
-	state := NewState("staging", "lifecycle-v1", "image", 1, now)
-	state.Phase = PhaseSucceeded
-	state.BundleName = BundleName([]byte("bundle"))
-	state.Artifacts = ArtifactFacts{ChartReference: "chart", ChartDigest: "sha256:chart"}
-	state.LifecycleWriterEpoch = &LifecycleWriterEpochFacts{
-		Required: true, Status: "active", Generation: 3,
-		FencingToken: strings.Repeat("a", 64), LeaseExpiresAt: now.Add(time.Minute),
-		DrainedAt: now,
-	}
-	store := &memoryStore{
-		exists: true,
-		record: Record{
-			State:   state,
-			Version: "1",
+	for _, test := range []struct {
+		name  string
+		phase Phase
+		epoch LifecycleWriterEpochFacts
+	}{
+		{
+			name:  "succeeded with active epoch",
+			phase: PhaseSucceeded,
+			epoch: LifecycleWriterEpochFacts{
+				Required: true, Status: "active", Generation: 3,
+				FencingToken: strings.Repeat("a", 64), LeaseExpiresAt: now.Add(time.Minute),
+				DrainedAt: now,
+			},
 		},
-	}
-	platform := &fakePlatform{plan: testPlan(t, ModeOnline)}
-	engine := Engine{
-		Store: store, Platform: platform, Now: time.Now,
-		ChartReference: "chart", ChartDigest: "sha256:chart",
-		RequireLifecycleWriterEpoch: true,
-		AuthorizeShutdown:           func(context.Context, State) error { return nil },
-	}
-	_, err := engine.Prepare(
-		context.Background(),
-		"staging",
-		"next-release",
-		"next-image",
-		[]byte("next-bundle"),
-	)
-	if err == nil || !strings.Contains(err.Error(), `active release "lifecycle-v1"`) {
-		t.Fatalf("active epoch terminal state was replaceable: state=%#v err=%v", store.record.State, err)
-	}
-	if store.record.State.ReleaseID != "lifecycle-v1" ||
-		store.record.State.LifecycleWriterEpoch.FencingToken == "" {
-		t.Fatalf("replacement lost the durable epoch owner: %#v", store.record.State)
-	}
-}
-
-func TestLifecycleAcquireIntentTerminalStateCannotBeReplacedByAnotherRelease(t *testing.T) {
-	now := time.Now().UTC()
-	token := strings.Repeat("c", 64)
-	state := NewState("staging", "lifecycle-v1", "image", 1, now)
-	state.Phase = PhaseRecovered
-	state.BundleName = BundleName([]byte("bundle"))
-	state.Artifacts = ArtifactFacts{ChartReference: "chart", ChartDigest: "sha256:chart"}
-	state.LifecycleWriterEpoch = &LifecycleWriterEpochFacts{
-		Required: true, FencingToken: token, OperationAttempt: 1,
-	}
-	store := &memoryStore{
-		exists: true,
-		record: Record{
-			State:   state,
-			Version: "1",
+		{
+			name:  "recovered with unsettled acquire intent",
+			phase: PhaseRecovered,
+			epoch: LifecycleWriterEpochFacts{
+				Required: true, FencingToken: strings.Repeat("c", 64), OperationAttempt: 1,
+			},
 		},
-	}
-	platform := &fakePlatform{plan: testPlan(t, ModeOnline)}
-	engine := Engine{
-		Store: store, Platform: platform, Now: time.Now,
-		ChartReference: "chart", ChartDigest: "sha256:chart",
-		RequireLifecycleWriterEpoch: true,
-		AuthorizeShutdown:           func(context.Context, State) error { return nil },
-	}
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := NewState("staging", "lifecycle-v1", "image", 1, now)
+			state.Phase = test.phase
+			state.BundleName = BundleName([]byte("bundle"))
+			state.Artifacts = ArtifactFacts{ChartReference: "chart", ChartDigest: "sha256:chart"}
+			epoch := test.epoch
+			state.LifecycleWriterEpoch = &epoch
+			store := &memoryStore{
+				exists: true,
+				record: Record{
+					State:   state,
+					Version: "1",
+				},
+			}
+			platform := &fakePlatform{plan: testPlan(t, ModeOnline)}
+			engine := Engine{
+				Store: store, Platform: platform, Now: time.Now,
+				ChartReference: "chart", ChartDigest: "sha256:chart",
+				RequireLifecycleWriterEpoch: true,
+				AuthorizeShutdown:           func(context.Context, State) error { return nil },
+			}
 
-	_, err := engine.Prepare(
-		context.Background(),
-		"staging",
-		"next-release",
-		"next-image",
-		[]byte("next-bundle"),
-	)
-	if err == nil || !strings.Contains(err.Error(), `active release "lifecycle-v1"`) {
-		t.Fatalf("unsettled acquire terminal state was replaceable: state=%#v err=%v", store.record.State, err)
-	}
-	if store.record.State.ReleaseID != "lifecycle-v1" ||
-		store.record.State.LifecycleWriterEpoch.FencingToken != token {
-		t.Fatalf("replacement lost the durable acquire intent: %#v", store.record.State)
+			_, err := engine.Prepare(
+				context.Background(),
+				"staging",
+				"next-release",
+				"next-image",
+				[]byte("next-bundle"),
+			)
+			if err == nil || !strings.Contains(err.Error(), `active release "lifecycle-v1"`) {
+				t.Fatalf("terminal state was replaceable: state=%#v err=%v", store.record.State, err)
+			}
+			if store.record.State.ReleaseID != "lifecycle-v1" ||
+				store.record.State.LifecycleWriterEpoch.FencingToken != test.epoch.FencingToken {
+				t.Fatalf("replacement lost the durable epoch owner: %#v", store.record.State)
+			}
+		})
 	}
 }
 

@@ -341,11 +341,16 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
       end
     end
 
-    test "waits below the cap succeed" do
-      Application.put_env(:salix_agent, :wait_for_activation_cap, 3)
-      ctx = seed_timeout_session(2)
+    for {name, cap, timeouts} <- [
+          {"waits below the cap succeed", 3, 2},
+          {"cap 0 disables the budget", 0, 10}
+        ] do
+      test name do
+        Application.put_env(:salix_agent, :wait_for_activation_cap, unquote(cap))
+        ctx = seed_timeout_session(unquote(timeouts))
 
-      assert {_content, [_ev]} = AsyncOps.wait_for(%{"reason" => "still waiting"}, ctx)
+        assert {_content, [_ev]} = AsyncOps.wait_for(%{"reason" => "still waiting"}, ctx)
+      end
     end
 
     test "sending a blocked update does not renew the timeout budget" do
@@ -409,13 +414,6 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
         ])
 
       assert {_content, [_ev]} = AsyncOps.wait_for(%{"reason" => "one more"}, ctx)
-    end
-
-    test "cap 0 disables the budget" do
-      Application.put_env(:salix_agent, :wait_for_activation_cap, 0)
-      ctx = seed_timeout_session(10)
-
-      assert {_content, [_ev]} = AsyncOps.wait_for(%{"reason" => "unbounded"}, ctx)
     end
 
     test "fails open when the session cannot be read" do

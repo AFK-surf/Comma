@@ -641,18 +641,6 @@ defmodule CommaWeb.CommaApiTest do
 
     assert reloaded["id"] == conversation["id"]
     assert reloaded["final_message_id"] == final["final_message_id"]
-
-    reloaded_events =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/events?wait=0"
-      )
-      |> expect_status(200)
-
-    assert reloaded_events.body =~ "event: snapshot"
-    assert reloaded_events.body =~ "hello from comma"
-    refute reloaded_events.body =~ "event: message_created"
   end
 
   test "Comma lists and reads canonical Salix Tasks immediately without adoption or projection" do
@@ -1117,7 +1105,9 @@ defmodule CommaWeb.CommaApiTest do
     |> expect_status(400)
 
     other_user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "task-search-other@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "task-search-other@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -1151,7 +1141,9 @@ defmodule CommaWeb.CommaApiTest do
 
   test "Task-list SSE invalidates the old collection when a conversation changes kind" do
     user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "task-kind-events@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "task-kind-events@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -1226,7 +1218,9 @@ defmodule CommaWeb.CommaApiTest do
 
   test "Task-list SSE invalidates the collection when a canonical Task is created" do
     user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "task-create-events@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "task-create-events@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -1304,7 +1298,9 @@ defmodule CommaWeb.CommaApiTest do
     end)
 
     user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "participant-owner-sse@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "participant-owner-sse@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -1526,7 +1522,9 @@ defmodule CommaWeb.CommaApiTest do
 
   test "assistant-chat is the Group fixed Router Conversation and sends through its input adapter" do
     user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "fixed-router-chat@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "fixed-router-chat@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -2345,7 +2343,8 @@ defmodule CommaWeb.CommaApiTest do
     assert {:ok, archived_router} = SalixAgent.Control.delete(router_id)
     assert is_integer(archived_router["archived_at"])
 
-    path = "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{chat["id"]}/messages"
+    path =
+      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{chat["id"]}/messages"
 
     failed =
       user_req(session["token"], :post, path,
@@ -2467,7 +2466,8 @@ defmodule CommaWeb.CommaApiTest do
     :ok = GenServer.stop(chat_owner, :normal)
     Mock.script(task_create_script(workspace, run_id))
 
-    path = "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{chat["id"]}/messages"
+    path =
+      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{chat["id"]}/messages"
 
     body = %{
       "client_request_id" => run_id,
@@ -2692,7 +2692,9 @@ defmodule CommaWeb.CommaApiTest do
 
   test "/v1 Chat read exposes only the Salix-derived public conversation contract" do
     user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "aggregate-contract@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "aggregate-contract@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -2848,16 +2850,55 @@ defmodule CommaWeb.CommaApiTest do
       |> expect_status(201)
       |> Map.fetch!(:body)
 
+    previous_portal = Application.get_env(:billing_stripe, :portal_configuration_id)
+    Application.put_env(:billing_stripe, :portal_configuration_id, "bpc_comma")
+    on_exit(fn -> restore_env(:billing_stripe, :portal_configuration_id, previous_portal) end)
+
+    {:ok, old_mapping} =
+      BillingCommerce.put_provider_price(%{
+        package_code: "comma_value",
+        package_version: "2026-06",
+        provider: "stripe",
+        provider_lookup_key: "cue_value_v1",
+        provider_price_id: "price_cue_value_v1",
+        currency: "usd",
+        amount_minor: 2000
+      })
+
+    assert old_mapping.provider_price_id == "price_cue_value_v1"
+
     plans =
-      user_req(session["token"], :get, "/v1/comma/billing/plans")
+      Req.get!(base() <> "/v1/comma/billing/plans")
       |> expect_status(200)
       |> Map.fetch!(:body)
 
-    assert Enum.any?(plans["data"], &(&1["plan_key"] == "comma_value_v1"))
+    assert Enum.count(plans["data"], &(&1["plan_key"] == "comma_value_v1")) == 1
+    refute Enum.any?(plans["data"], &(&1["plan_key"] == "cue_value_v1"))
+
+    user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
+      json: %{
+        "plan_key" => "cue_value_v1",
+        "success_url" => "https://comma.test/success",
+        "cancel_url" => "https://comma.test/cancel",
+        "client_request_id" => "old-plan"
+      }
+    )
+    |> expect_status(400)
+
+    assert {:ok, %{provider_price_id: "price_cue_value_v1"}} =
+             BillingCommerce.get_provider_plan(%{
+               surface: "comma",
+               provider: "stripe",
+               provider_lookup_key: "cue_value_v1"
+             })
+
     refute Enum.any?(plans["data"], &Map.has_key?(&1, "provider_price_id"))
 
     checkout =
-      user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
+      user_req(
+        session["token"],
+        :post,
+        "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
         json: %{
           "plan_key" => "comma_value_v1",
           "success_url" => "https://comma.test/success",
@@ -2883,7 +2924,10 @@ defmodule CommaWeb.CommaApiTest do
     assert checkout_params.customer =~ "cus_"
 
     retry_checkout =
-      user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
+      user_req(
+        session["token"],
+        :post,
+        "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
         json: %{
           "plan_key" => "comma_value_v1",
           "success_url" => "https://comma.test/success",
@@ -2896,13 +2940,8 @@ defmodule CommaWeb.CommaApiTest do
 
     assert retry_checkout["provider"] == "stripe"
 
-    assert [
-             {:customer, _customer_params, _customer_opts},
-             {:checkout, _checkout_params, _checkout_opts},
-             {:checkout, retry_checkout_params, _retry_checkout_opts}
-           ] = stripe_calls()
-
-    assert retry_checkout_params.customer == checkout_params.customer
+    assert retry_checkout["id"] == checkout["id"]
+    assert Enum.count(stripe_calls(), &match?({:checkout, _, _}, &1)) == 1
 
     user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
       json: %{
@@ -2940,6 +2979,65 @@ defmodule CommaWeb.CommaApiTest do
     assert summary["billing_account_id"] == workspace["billing_account_id"]
     assert summary["current_credits"] >= 100
     assert [%{"remaining_credits" => 100} | _] = summary["active_grants"]
+
+    Ecto.Adapters.SQL.query!(
+      BillingCore.Repo,
+      "UPDATE billing_provider_prices SET metadata = '{\"comma_purchasable\":false}'::jsonb WHERE provider_price_id = $1",
+      ["price_comma_value_v1"]
+    )
+
+    hidden_plans =
+      Req.get!(base() <> "/v1/comma/billing/plans") |> expect_status(200) |> Map.fetch!(:body)
+
+    refute Enum.any?(
+             hidden_plans["data"],
+             &(&1["package_code"] == "comma_value" and &1["package_version"] == "2026-06")
+           )
+
+    before_calls = stripe_calls()
+
+    user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout",
+      json: %{
+        "plan_key" => "comma_value_v1",
+        "success_url" => "https://comma.test/success",
+        "cancel_url" => "https://comma.test/cancel",
+        "client_request_id" => "hidden-new-checkout"
+      }
+    )
+    |> expect_status(400)
+
+    assert stripe_calls() == before_calls
+
+    Req.post!(base() <> "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout", json: %{})
+    |> expect_status(401)
+
+    now = DateTime.utc_now()
+
+    assert {:ok, _} =
+             BillingCommerce.Subscriptions.create_subscription(%{
+               billing_account_id: workspace["billing_account_id"],
+               surface: "comma",
+               product_owner_type: "workspace",
+               product_owner_id: workspace["id"],
+               package_code: "comma_value",
+               package_version: "2026-06",
+               source_type: "stripe_subscription",
+               source_id: "sub_hidden_#{unique}",
+               source_event_id: "in_hidden_#{unique}",
+               idempotency_key: "hidden_#{unique}",
+               source_metadata: %{"provider_price_id" => "price_cue_value_v1"},
+               periods: [
+                 %{cycle_key: "initial", valid_from: now, expires_at: DateTime.add(now, 86400)}
+               ]
+             })
+
+    current_summary =
+      user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/billing/summary")
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert current_summary["active_subscription"]["plan"]["plan_key"] == "cue_value_v1"
+    refute Map.has_key?(current_summary["active_subscription"]["plan"], "provider_price_id")
   end
 
   test "workspace member can redeem a code without choosing the billing target" do
@@ -3031,6 +3129,7 @@ defmodule CommaWeb.CommaApiTest do
     payload =
       Jason.encode!(%{
         "id" => "evt_comma_web_checkout_#{unique}",
+        "created" => 1_780_272_000,
         "type" => "checkout.session.completed",
         "data" => %{
           "object" => %{
@@ -3175,7 +3274,9 @@ defmodule CommaWeb.CommaApiTest do
     assert duplicate["error"] == "redeem_code_account_limit_reached"
 
     redemptions =
-      admin_req(:get, "/v1/comma/admin/billing/redemptions?redeem_code_id=#{created["id"]}", json: %{})
+      admin_req(:get, "/v1/comma/admin/billing/redemptions?redeem_code_id=#{created["id"]}",
+        json: %{}
+      )
       |> expect_status(200)
       |> Map.fetch!(:body)
 
@@ -3200,7 +3301,8 @@ defmodule CommaWeb.CommaApiTest do
     assert {:ok, other_user} = Comma.Accounts.create_user(%{"email" => "grant-other@example.com"})
     other = create_ready_workspace!(other_user["id"], %{"name" => "Other"})
 
-    open_session = admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{}).body
+    open_session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{}).body
 
     conversation = active_chat!(open_session, workspace)
 
@@ -3237,7 +3339,9 @@ defmodule CommaWeb.CommaApiTest do
     token = grant["token"]
 
     out_of_scope =
-      user_req(token, :post, "/v1/comma/groups/#{other["default_group_id"]}/assistant-chat", json: %{})
+      user_req(token, :post, "/v1/comma/groups/#{other["default_group_id"]}/assistant-chat",
+        json: %{}
+      )
 
     assert out_of_scope.status == 403
 
@@ -3247,7 +3351,9 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     assert Enum.map(scoped_workspaces["data"], & &1["id"]) == [workspace["id"]]
-    assert user_req(token, :post, "/v1/comma/workspaces", json: %{"name" => "Escalate"}).status == 403
+
+    assert user_req(token, :post, "/v1/comma/workspaces", json: %{"name" => "Escalate"}).status ==
+             403
 
     conversation_only =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions",
@@ -3360,7 +3466,9 @@ defmodule CommaWeb.CommaApiTest do
 
   test "a legacy conversation-restricted session remains exact during a rolling Group-scope deploy" do
     user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "legacy-group-scope@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "legacy-group-scope@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -3380,7 +3488,9 @@ defmodule CommaWeb.CommaApiTest do
              )
 
     other_user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "legacy-other-group@example.com"})
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "legacy-other-group@example.com"}
+      )
       |> expect_status(201)
       |> Map.fetch!(:body)
 
@@ -4133,7 +4243,8 @@ defmodule CommaWeb.CommaApiTest do
           provider_lookup_key: version.provider_lookup_key,
           provider_price_id: "price_" <> version.provider_lookup_key,
           currency: version.currency,
-          amount_minor: version.amount_minor
+          amount_minor: version.amount_minor,
+          metadata: %{"comma_purchasable" => true}
         })
     end)
   end

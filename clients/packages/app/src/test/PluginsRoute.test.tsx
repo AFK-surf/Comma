@@ -280,7 +280,9 @@ describe("PluginsRoute", () => {
     expect(harness.navigate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
     await act(async () => Promise.resolve());
-    expect(harness.navigate).toHaveBeenCalledWith({ to: "/" });
+    // The confirmed retry stays in Plugins and shows the plugin as added.
+    expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
+    expect(harness.navigate).not.toHaveBeenCalled();
   });
 
   it("continues authorization while Plugins is unmounted and completes after returning", async () => {
@@ -318,7 +320,8 @@ describe("PluginsRoute", () => {
     await act(async () => vi.advanceTimersByTimeAsync(2_000));
     expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(3);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
-    expect(harness.navigate).toHaveBeenCalledWith({ to: "/" });
+    expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
+    expect(harness.navigate).not.toHaveBeenCalled();
   });
 
   it("cancels the old account's request when its session ends", async () => {
@@ -419,7 +422,7 @@ describe("PluginsRoute", () => {
       }
     );
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
-    expect(harness.navigate).toHaveBeenCalledWith({ to: "/" });
+    expect(harness.navigate).not.toHaveBeenCalled();
     expect(
       screen.getByRole("button", { name: "View Linear plugin details" })
     ).toBeVisible();

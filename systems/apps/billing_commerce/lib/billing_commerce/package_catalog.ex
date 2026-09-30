@@ -23,7 +23,7 @@ defmodule BillingCommerce.PackageCatalog do
           metadata = EXCLUDED.metadata,
           updated_at = now()
       """,
-      [code, surface, name, status, Jason.encode!(metadata)]
+      [code, surface, name, status, metadata]
     )
 
     get_package(Map.put(attrs, :code, code))
@@ -64,7 +64,7 @@ defmodule BillingCommerce.PackageCatalog do
           terms.grant_period,
           terms.currency,
           terms.amount_minor,
-          Jason.encode!(terms.usage_policy),
+          terms.usage_policy,
           terms.effective_at,
           terms.expires_at,
           terms.status
@@ -273,6 +273,9 @@ defmodule BillingCommerce.PackageCatalog do
     }
   end
 
+  @doc "Compare persisted commercial terms with a desired catalog version."
+  def version_terms_match?(existing, attrs), do: immutable_match?(existing, version_terms(attrs))
+
   defp immutable_match?(existing, terms) do
     Enum.all?(
       [
@@ -288,9 +291,21 @@ defmodule BillingCommerce.PackageCatalog do
         :expires_at,
         :status
       ],
-      &same_term?(Map.fetch!(existing, &1), Map.fetch!(terms, &1))
+      fn
+        :usage_policy ->
+          same_term?(
+            commercial_policy(existing.usage_policy),
+            commercial_policy(terms.usage_policy)
+          )
+
+        key ->
+          same_term?(Map.fetch!(existing, key), Map.fetch!(terms, key))
+      end
     )
   end
+
+  # Provider lookup keys and display descriptions are not immutable commercial terms.
+  defp commercial_policy(policy), do: Map.drop(policy, ["stripe_lookup_key", "description"])
 
   defp same_term?(%DateTime{} = left, %DateTime{} = right),
     do: DateTime.compare(left, right) == :eq

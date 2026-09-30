@@ -697,114 +697,45 @@ defmodule SalixAgent.StateTest do
                materialized.messages
     end
 
-    test "materialize batch respects the limit when wakeable input is beyond the batch" do
-      queued =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "ctx-1",
-            payload: %{source_message_id: "ctx-1", content: "context one"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "ctx-2",
-            payload: %{source_message_id: "ctx-2", content: "context two"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: true,
-            dedupe_key: "go",
-            payload: %{source_message_id: "go", content: "go"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: true,
-            dedupe_key: "later",
-            payload: %{source_message_id: "later", content: "later"}
-          }
-        ])
+    for {name, limit, activated?, delivered, remaining} <- [
+          {"materialize batch respects the limit when wakeable input is beyond the batch", 2,
+           false, ["context one", "context two"], ["go", "later"]},
+          {"materialize batch includes all queued inputs up to the batch limit once activated", 4,
+           true, ["context one", "context two", "go", "later"], []}
+        ] do
+      test name do
+        queued =
+          reduce_session([
+            %{type: "session_created", session_id: "s1"}
+            | for {id, content, wake} <- [
+                    {"ctx-1", "context one", false},
+                    {"ctx-2", "context two", false},
+                    {"go", "go", true},
+                    {"later", "later", true}
+                  ] do
+                %{
+                  type: "queue_append",
+                  session_id: "s1",
+                  kind: "user_message",
+                  wake: wake,
+                  dedupe_key: id,
+                  payload: %{source_message_id: id, content: content}
+                }
+              end
+          ])
 
-      {events, false, hwm} = materialize(queued, 2)
+        limit = unquote(limit)
+        assert {events, unquote(activated?), ^limit} = materialize(queued, limit)
 
-      assert hwm == 2
+        assert Enum.map(Enum.filter(events, &(&1["type"] == "delivery")), & &1["content"]) ==
+                 unquote(delivered)
 
-      assert Enum.map(Enum.filter(events, &(&1["type"] == "delivery")), & &1["content"]) == [
-               "context one",
-               "context two"
-             ]
+        assert List.last(events)["queue_ack_id"] == limit
 
-      assert List.last(events)["queue_ack_id"] == 2
-
-      materialized = SessionData.apply_events(queued, events)
-      assert materialized.queue_ack_id == 2
-      assert Enum.map(materialized.input_queue, &queue_payload_content/1) == ["go", "later"]
-    end
-
-    test "materialize batch includes all queued inputs up to the batch limit once activated" do
-      queued =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "ctx-1",
-            payload: %{source_message_id: "ctx-1", content: "context one"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "ctx-2",
-            payload: %{source_message_id: "ctx-2", content: "context two"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: true,
-            dedupe_key: "go",
-            payload: %{source_message_id: "go", content: "go"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: true,
-            dedupe_key: "later",
-            payload: %{source_message_id: "later", content: "later"}
-          }
-        ])
-
-      {events, true, hwm} = materialize(queued, 4)
-
-      assert hwm == 4
-
-      assert Enum.map(Enum.filter(events, &(&1["type"] == "delivery")), & &1["content"]) == [
-               "context one",
-               "context two",
-               "go",
-               "later"
-             ]
-
-      assert List.last(events)["queue_ack_id"] == 4
-
-      materialized = SessionData.apply_events(queued, events)
-      assert materialized.queue_ack_id == 4
-      assert materialized.input_queue == []
+        materialized = SessionData.apply_events(queued, events)
+        assert materialized.queue_ack_id == limit
+        assert Enum.map(materialized.input_queue, &queue_payload_content/1) == unquote(remaining)
+      end
     end
 
     test "provider-backed wakeable inputs materialize one source activation at a time" do
@@ -995,33 +926,36 @@ defmodule SalixAgent.StateTest do
       assert {[], false, 0} = materialize(after_timeout)
     end
 
-    test "direct delivery events cannot bypass the pending input queue" do
-      session =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "delivery",
-            session_id: "s1",
-            message_id: 1,
-            source_message_id: "src-A",
-            content: "hi"
-          }
-        ])
+    for {label, event, error} <- [
+          {"delivery events",
+           %{
+             type: "delivery",
+             session_id: "s1",
+             message_id: 1,
+             source_message_id: "src-A",
+             content: "hi"
+           }, :delivery_must_come_from_queue},
+          {"runtime messages",
+           %{
+             type: "runtime_message",
+             session_id: "s1",
+             message_id: 1,
+             runtime_message_id: "runtime-direct-1",
+             runtime_message_type: "runtime_recovered",
+             summary: "recovered"
+           }, :runtime_message_must_come_from_queue}
+        ] do
+      test "direct #{label} cannot bypass the pending input queue" do
+        event = unquote(Macro.escape(event))
+        session = reduce_session([%{type: "session_created", session_id: "s1"}, event])
 
-      assert session.messages == []
-      assert session.input_queue == []
-      assert SessionData.query(session, :derived_state) == :paused
+        assert session.messages == []
+        assert session.input_queue == []
+        assert session.input_dedupe == MapSet.new()
+        assert SessionData.query(session, :derived_state) == :paused
 
-      assert {:error, :delivery_must_come_from_queue} =
-               SessionState.validate_events([
-                 %{
-                   type: "delivery",
-                   session_id: "s1",
-                   message_id: 1,
-                   source_message_id: "src-A",
-                   content: "hi"
-                 }
-               ])
+        assert {:error, unquote(error)} = SessionState.validate_events([event])
+      end
     end
 
     test "session log messages are history records, not pending stable input" do
@@ -1148,36 +1082,6 @@ defmodule SalixAgent.StateTest do
       refute Map.has_key?(runtime_context_message, :runtime_type)
 
       assert SessionData.query(materialized, :derived_state) == :queued
-    end
-
-    test "direct runtime message cannot bypass pending input queue" do
-      session =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "runtime_message",
-            session_id: "s1",
-            message_id: 1,
-            runtime_message_id: "runtime-direct-1",
-            runtime_message_type: "runtime_recovered",
-            summary: "recovered"
-          }
-        ])
-
-      assert session.input_dedupe == MapSet.new()
-      assert session.messages == []
-
-      assert {:error, :runtime_message_must_come_from_queue} =
-               SessionState.validate_events([
-                 %{
-                   type: "runtime_message",
-                   session_id: "s1",
-                   message_id: 1,
-                   runtime_message_id: "runtime-direct-1",
-                   runtime_message_type: "runtime_recovered",
-                   summary: "recovered"
-                 }
-               ])
     end
 
     test "queued runtime message requires stable identity even after materialization" do
@@ -1335,44 +1239,26 @@ defmodule SalixAgent.StateTest do
       assert Enum.map(materialized.messages, & &1.content) == ["one", "two", "three"]
     end
 
-    test "runtime message queue item without stable identity is rejected" do
-      assert_raise ArgumentError,
-                   "runtime_message queue item requires runtime_message_id or dedupe_key",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "queue_append",
-                         session_id: "s1",
-                         kind: "runtime_message",
-                         wake: true,
-                         payload: %{
-                           type: "runtime_recovered",
-                           summary: "missing identity"
-                         }
-                       }
-                     ])
-                   end
-    end
-
-    test "user message queue item without stable identity is rejected" do
-      assert_raise ArgumentError,
-                   "user_message queue item requires source_message_id or dedupe_key",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "queue_append",
-                         session_id: "s1",
-                         kind: "user_message",
-                         wake: true,
-                         payload: %{
-                           role: "user",
-                           content: "missing source"
-                         }
-                       }
-                     ])
-                   end
+    for {kind, payload, message} <- [
+          {"runtime_message", %{type: "runtime_recovered", summary: "missing identity"},
+           "runtime_message queue item requires runtime_message_id or dedupe_key"},
+          {"user_message", %{role: "user", content: "missing source"},
+           "user_message queue item requires source_message_id or dedupe_key"}
+        ] do
+      test "#{kind} queue item without stable identity is rejected" do
+        assert_raise ArgumentError, unquote(message), fn ->
+          reduce_session([
+            %{type: "session_created", session_id: "s1"},
+            %{
+              type: "queue_append",
+              session_id: "s1",
+              kind: unquote(kind),
+              wake: true,
+              payload: unquote(Macro.escape(payload))
+            }
+          ])
+        end
+      end
     end
 
     test "wait and ack are derived from the target session only" do

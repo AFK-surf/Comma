@@ -7,18 +7,17 @@ defmodule SalixAgent.Utf8Test do
   # byte-truncation shape that wedged production sessions (invalid byte 0xE5).
   @truncated_cjk binary_part("接入", 0, 4)
 
-  test "scrub/1 replaces each invalid byte with U+FFFD and keeps the rest" do
-    scrubbed = Utf8.scrub(@truncated_cjk)
-    assert String.valid?(scrubbed)
-    assert scrubbed == "接�"
-    assert {:ok, _} = Jason.encode(scrubbed)
-  end
-
-  test "scrub/1 handles invalid bytes mid-string" do
-    corrupt = "prefix " <> @truncated_cjk <> " suffix"
-    scrubbed = Utf8.scrub(corrupt)
-    assert String.valid?(scrubbed)
-    assert scrubbed == "prefix 接� suffix"
+  for {name, input, expected} <- [
+        {"replaces each invalid byte with U+FFFD and keeps the rest", @truncated_cjk, "接�"},
+        {"handles invalid bytes mid-string", "prefix " <> @truncated_cjk <> " suffix",
+         "prefix 接� suffix"}
+      ] do
+    test "scrub/1 #{name}" do
+      scrubbed = Utf8.scrub(unquote(input))
+      assert String.valid?(scrubbed)
+      assert scrubbed == unquote(expected)
+      assert {:ok, _} = Jason.encode(scrubbed)
+    end
   end
 
   test "scrub_term/1 deep-scrubs binaries in maps and lists" do

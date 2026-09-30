@@ -203,7 +203,7 @@ describe("SideChatTestWindow", () => {
     window.location.hash +=
       "&workspaceId=wsp_1&groupId=grp_1&conversationId=cnv_parent";
     const openTestWindow = vi.fn(async () => ({ revision: 8 }));
-    const bridge = installTestWindowBridge({
+    installTestWindowBridge({
       chatState: nestedTaskChatState,
       openTestWindow,
     });
@@ -250,7 +250,6 @@ describe("SideChatTestWindow", () => {
         },
       })
     );
-    expect(bridge.sideChat.openTestWindow).toBe(openTestWindow);
   });
 
   it("takes over the first-painted shell without replaying its entrance or loading diagnostics", async () => {
@@ -314,7 +313,6 @@ describe("SideChatTestWindow", () => {
     const root = container.querySelector(".comma-side-chat-test-window")!;
     const toggle = await screen.findByRole("button", { name: "Toggle chat sidebar" });
     expect(root).toHaveAttribute("data-sidebar-open", "false");
-    expect(screen.getByTestId("ai-input-shell")).toHaveClass("rounded-[19px]");
     const link = await screen.findByRole("link", { name: "Preview" });
     fireEvent.contextMenu(link);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Open in Comma" }));

@@ -1,7 +1,7 @@
 defmodule SalixAgent.SendMessageDraftStreamTest do
   use ExUnit.Case, async: true
 
-  alias SalixAgent.SendMessageDraftStream
+  alias SalixAgent.{SendMessageDraftStream, Tools}
 
   @conversation_id "cnv_streaming_target"
   @scope %{"conversation_id" => @conversation_id}
@@ -115,6 +115,39 @@ defmodule SalixAgent.SendMessageDraftStreamTest do
              @scope,
              {:repair_required, 1}
            )
+  end
+
+  test "a send outside the call envelope cannot dispatch or own a visible draft, including during repair" do
+    # A complete {"tool", "params"} payload that would draft under the `call`
+    # dispatcher, so only the direct tool name keeps it from dispatching.
+    encoded = encoded_arguments("not a message")
+
+    call = %{
+      id: "direct-send",
+      name: "im_api.internal.send_message",
+      args: Jason.decode!(encoded)
+    }
+
+    for phase <- [:clean, {:repair_required, 1}] do
+      [prepared] =
+        Tools.prepare_for_dispatch([call], %{
+          llm_tool_envelope: true,
+          tool_disclosure: %{"tools" => []},
+          visible_reply_scope: @scope,
+          visible_reply_phase: phase
+        })
+
+      assert prepared[:name] == "call"
+      assert prepared[:guidance_reason] == "envelope_misuse"
+      refute SendMessageDraftStream.exact_source_send?([call], @scope, phase)
+    end
+
+    assert {_state, :noop} =
+             SendMessageDraftStream.consume(
+               SendMessageDraftStream.new(),
+               delta(encoded, call.name),
+               @scope
+             )
   end
 
   defp encoded_arguments(text, conversation_id \\ @conversation_id) do

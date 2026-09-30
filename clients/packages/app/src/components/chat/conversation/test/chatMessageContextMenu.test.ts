@@ -9,7 +9,6 @@ import {
   resolveChatMessageText,
   selectedTextInRoot,
 } from "../chatMessageContextMenu";
-import { composeMessageWithAttachments } from "../../model/protocol";
 
 function assistantArticle(text: string, messageId = "msg_1") {
   const article = document.createElement("article");
@@ -98,16 +97,6 @@ describe("chatMessageContextMenu", () => {
     ).toBe("Hello world");
 
     document.body.removeChild(article);
-  });
-
-  it("copies the visible user bubble body without attachment protocol text", () => {
-    const text = composeMessageWithAttachments("请看这些文件", [
-      { name: "report.txt", path: "/uploads/1-report.txt" },
-    ]);
-    const { article } = userArticle("请看这些文件", "msg_file");
-    expect(resolveChatMessageText(article, [{ messageId: "msg_file", text }])).toBe(
-      "请看这些文件"
-    );
   });
 
   it("falls back to the streaming draft when the article has no message id", () => {

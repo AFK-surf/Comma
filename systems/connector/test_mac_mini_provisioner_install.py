@@ -925,40 +925,50 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertFalse(install_path.exists())
             self.assertFalse((prefix / "bin" / "bft-runner").exists())
 
-    def test_launchd_load_requires_explicit_plist_install(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            artifacts = root / "artifacts"
-            artifacts.mkdir()
-            prefix = root / "install"
-            existing_bin = root / "existing-bin"
-            existing_bin.mkdir()
-            launchctl_log = root / "launchctl.log"
+    def test_invalid_launchd_load_requests_fail_before_launchctl(self) -> None:
+        cases = [
+            ("load without explicit plist install", {}, "preflight.launchd_install_missing"),
+            (
+                "load and remove conflict",
+                {"BFT_REMOVE_LAUNCHD": "1"},
+                "preflight.launchd_action_conflict",
+            ),
+        ]
+        for name, extra_env, error_code in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                prefix = root / "install"
+                existing_bin = root / "existing-bin"
+                existing_bin.mkdir()
+                launchctl_log = root / "launchctl.log"
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
-            write_fake_launchctl(existing_bin / "launchctl", launchctl_log)
-            worker_sha = write_worker(artifacts / "mac-mini-provisioner")
+                connector_sha = write_executable(
+                    artifacts / "salix-connector",
+                    "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
+                )
+                write_fake_launchctl(existing_bin / "launchctl", launchctl_log)
+                worker_sha = write_worker(artifacts / "mac-mini-provisioner")
 
-            proc = self.run_installer(
-                {
-                    "HOME": str(root / "home"),
-                    "PATH": f"{existing_bin}:{os.environ['PATH']}",
-                    "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
-                    **agent_vmm_host_env(root, artifacts, existing_bin),
-                    "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
-                    "BFT_RUNNER_SHA256": worker_sha,
-                    "BFT_LOAD_LAUNCHD": "1",
-                }
-            )
+                proc = self.run_installer(
+                    {
+                        "HOME": str(root / "home"),
+                        "PATH": f"{existing_bin}:{os.environ['PATH']}",
+                        "BFT_INSTALL_PREFIX": str(prefix),
+                        "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
+                        "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
+                        **agent_vmm_host_env(root, artifacts, existing_bin),
+                        "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
+                        "BFT_RUNNER_SHA256": worker_sha,
+                        "BFT_LOAD_LAUNCHD": "1",
+                        **extra_env,
+                    }
+                )
 
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("preflight.launchd_install_missing", proc.stderr)
-            self.assertFalse(launchctl_log.exists())
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(error_code, proc.stderr)
+                self.assertFalse(launchctl_log.exists())
 
     def test_explicit_launchd_remove_unloads_and_removes_installed_plist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1017,42 +1027,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertEqual(status_payload["launchd"]["last_action"], "remove")
             self.assertTrue(status_payload["launchd"]["last_remove_removed"])
             self.assertTrue((prefix / "com.bridgeforteams.runner.plist").exists())
-
-    def test_launchd_load_and_remove_conflict_before_launchctl(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            artifacts = root / "artifacts"
-            artifacts.mkdir()
-            prefix = root / "install"
-            existing_bin = root / "existing-bin"
-            existing_bin.mkdir()
-            launchctl_log = root / "launchctl.log"
-
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
-            write_fake_launchctl(existing_bin / "launchctl", launchctl_log)
-            worker_sha = write_worker(artifacts / "mac-mini-provisioner")
-
-            proc = self.run_installer(
-                {
-                    "HOME": str(root / "home"),
-                    "PATH": f"{existing_bin}:{os.environ['PATH']}",
-                    "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
-                    **agent_vmm_host_env(root, artifacts, existing_bin),
-                    "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
-                    "BFT_RUNNER_SHA256": worker_sha,
-                    "BFT_LOAD_LAUNCHD": "1",
-                    "BFT_REMOVE_LAUNCHD": "1",
-                }
-            )
-
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("preflight.launchd_action_conflict", proc.stderr)
-            self.assertFalse(launchctl_log.exists())
 
     def test_missing_runner_sha_identifies_runner_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

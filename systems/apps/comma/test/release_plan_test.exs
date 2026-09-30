@@ -42,7 +42,7 @@ defmodule Comma.ReleasePlanTest do
     assert online.manifestDigest == Comma.ReleasePlan.manifest_digest()
     assert online.pendingIDs == []
     assert online.pendingSteps == []
-    assert online.providerPendingIDs == []
+    assert online.providerPendingIDs == ["comma-signup-credits"]
   end
 
   test "unknown Ecto versions fail closed" do
@@ -388,7 +388,7 @@ defmodule Comma.ReleasePlanTest do
     assert plan.requiredMode == "online"
     assert plan.pendingIDs == []
     assert plan.pendingSteps == []
-    assert plan.providerPendingIDs == ["billing-provider"]
+    assert plan.providerPendingIDs == ["billing-provider", "comma-signup-credits"]
   end
 
   test "contract steps are deferred outside ordinary release plans" do

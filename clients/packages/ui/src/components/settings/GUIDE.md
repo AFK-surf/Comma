@@ -111,6 +111,21 @@ const registry = createSettingsRegistry({
 
 ## Rendering
 
+A row renders again only when its item changes. The client can rebuild the
+registry on every render; a change in one row does not render the other rows,
+the sidebar, or the dialog frame.
+
+- Text, values, flags, and lists compare by value. Elements compare by type,
+  key, and props.
+- Callbacks in item data can be new functions on every render. A row calls the
+  callback of the latest item when the event occurs, so the callback can use
+  the current state of the client.
+- Callbacks in element props compare by identity, because the component keeps
+  the callback that it rendered with. An element with an inline callback
+  renders its row each time. This is correct but slower.
+- A component in a row that reads state outside its props must subscribe to
+  that state (context or a store). The row does not render again to refresh it.
+
 Use `SettingsPage` for product settings. Lower-level `SettingsSidebar` and
 `SettingsPanel` exports exist for Storybook and focused composition tests, not
 for rebuilding the product page in a client.

@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.react.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.bft.app.tsbuildinfo",
+    "types": ["vite/client"],
+    "paths": {
+      "@comma/ui": ["../../packages/ui/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../../packages/ui/src/**/*.ts",
+    "../../packages/ui/src/**/*.tsx",
+    "../../packages/ui/src/**/*.json"
+  ],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/**/*.test.*",
+    "../../packages/**/*.spec.*"
+  ]
+}

@@ -18,15 +18,4 @@ describe("UserAvatar", () => {
     expect(screen.getByLabelText("casey")).toHaveTextContent("C");
     expect(getUserDisplayName({ email: "casey@example.com" })).toBe("casey");
   });
-
-  it("provides a compact size that aligns with sidebar icon slots", () => {
-    const { container } = render(
-      <UserAvatar email="casey@example.com" size="compact" />
-    );
-
-    expect(container.querySelector(".comma-user-avatar")).toHaveClass(
-      "[&>img]:size-5",
-      "[&>span]:size-5"
-    );
-  });
 });

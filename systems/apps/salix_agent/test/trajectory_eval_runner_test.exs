@@ -534,86 +534,61 @@ defmodule SalixAgent.TrajectoryEvalRunnerTest do
     assert [%{"repeats" => 2, "judge" => %{"verdicts" => _}} | _] = doc["evals"]
   end
 
-  test "clean windows are not judged at zero sample rate" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
+  # Clean-window judge sampling. Every row scripts a valid judge response and
+  # seeds the RNG so its first draw is exactly 0.0 (`:rand.uniform/0` can
+  # return it), so a wrongful sample WOULD record a judge fact:
+  #
+  # * a configured 0.0 must never run the paid judge, even on a 0.0 draw (the
+  #   old `U > rate` check ran it on `0.0 > 0.0 == false`);
+  # * an out-of-range rate is REJECTED to the 0.0 default, not clamped to 1.0
+  #   (which would judge every clean window — the opposite of typo protection);
+  # * a present-but-invalid tenant override (-1) fails closed to 0.0, NOT to
+  #   the higher global rate (a missing override still inherits the global,
+  #   covered by the on/off override tests below);
+  # * the valid boundary (1.0) still judges every clean window, so the
+  #   rejections above are genuinely rejecting the typo.
+  for {name, clean_rate, tenant_mod, judged?} <- [
+        {"a 0.0 clean sample rate never judges, even when the RNG returns 0.0", 0.0, nil, false},
+        {"an out-of-range clean sample rate is rejected, not clamped", 2, nil, false},
+        {"a present-invalid tenant clean rate fails closed, not to the global rate", 1.0,
+         TenantCleanRateInvalid, false},
+        {"a valid full clean sample rate judges every clean window", 1.0, nil, true}
+      ] do
+    test name do
+      agent_id = SalixAgent.TestSupport.new_agent_id()
 
-    :ok =
-      seed_session(agent_id, @session_id, [
-        %{id: 1, role: "user", content: "hello"},
-        %{id: 2, role: "assistant", content: "Done.", tool_calls: [], round_id: "round-c"}
-      ])
+      :ok =
+        seed_session(agent_id, @session_id, [
+          %{id: 1, role: "user", content: "hello"},
+          %{id: 2, role: "assistant", content: "Done.", tool_calls: [], round_id: "round-c"}
+        ])
 
-    Application.put_env(:salix_agent, :trajectory_eval,
-      enabled: true,
-      judge_enabled: true,
-      judge_clean_sample_rate: 0.0
-    )
+      Application.put_env(:salix_agent, :trajectory_eval,
+        enabled: true,
+        judge_enabled: true,
+        judge_clean_sample_rate: unquote(clean_rate)
+      )
 
-    assert {:ok, stored} = Runner.eval_now(agent_id, @session_id, :final)
-    assert stored["findings"] == []
+      Application.put_env(:salix_agent, :trajectory_eval_tenant_mod, unquote(tenant_mod))
 
-    assert_receive {:recorded, %{evaluator: "heuristic"}}
-    refute_receive {:recorded, %{evaluator: "judge"}}, 200
+      SalixAgent.LLM.Mock.script([{:final, judge_json()}])
+      :rand.seed({:exsss, [1 | 0]})
+      assert :rand.uniform() == 0.0
+      :rand.seed({:exsss, [1 | 0]})
 
-    assert {:ok, doc} = Store.read(agent_id, @session_id)
-    assert [entry | _] = doc["evals"]
-    refute Map.has_key?(entry, "judge")
-  end
+      assert {:ok, stored} = Runner.eval_now(agent_id, @session_id, :final)
+      assert stored["findings"] == []
+      assert_receive {:recorded, %{evaluator: "heuristic"}}
 
-  # Boundary regression (review follow-up): an out-of-range clean sample rate is
-  # REJECTED to the default (0.0 -> no paid call), not clamped to 1.0 (which
-  # would judge every clean window — the opposite of typo protection). Scripts a
-  # valid judge response so a wrongful sample WOULD emit a fact (the pre-fix
-  # clamped code fails this; without the script it would pass vacuously).
-  test "an out-of-range clean sample rate is rejected, not clamped" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-
-    :ok =
-      seed_session(agent_id, @session_id, [
-        %{id: 1, role: "user", content: "hello"},
-        %{id: 2, role: "assistant", content: "Done.", tool_calls: [], round_id: "round-c"}
-      ])
-
-    Application.put_env(:salix_agent, :trajectory_eval,
-      enabled: true,
-      judge_enabled: true,
-      judge_clean_sample_rate: 2
-    )
-
-    SalixAgent.LLM.Mock.script([{:final, judge_json()}])
-
-    assert {:ok, stored} = Runner.eval_now(agent_id, @session_id, :final)
-    assert stored["findings"] == []
-    assert_receive {:recorded, %{evaluator: "heuristic"}}
-    refute_receive {:recorded, %{evaluator: "judge"}}, 200
-  end
-
-  # Blocker 1: a configured 0.0 must never run the paid judge, even when the RNG
-  # returns exactly 0.0 (`:rand.uniform/0` can). The seed below deterministically
-  # yields 0.0; the old `U > rate` check ran the judge on `0.0 > 0.0 == false`.
-  test "a 0.0 clean sample rate never judges, even when the RNG returns 0.0" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-
-    :ok =
-      seed_session(agent_id, @session_id, [
-        %{id: 1, role: "user", content: "hello"},
-        %{id: 2, role: "assistant", content: "Done.", tool_calls: [], round_id: "round-c"}
-      ])
-
-    Application.put_env(:salix_agent, :trajectory_eval,
-      enabled: true,
-      judge_enabled: true,
-      judge_clean_sample_rate: 0.0
-    )
-
-    SalixAgent.LLM.Mock.script([{:final, judge_json()}])
-    :rand.seed({:exsss, [1 | 0]})
-    assert :rand.uniform() == 0.0
-    :rand.seed({:exsss, [1 | 0]})
-
-    assert {:ok, _} = Runner.eval_now(agent_id, @session_id, :final)
-    assert_receive {:recorded, %{evaluator: "heuristic"}}
-    refute_receive {:recorded, %{evaluator: "judge"}}, 200
+      if unquote(judged?) do
+        assert_receive {:recorded, %{evaluator: "judge"}}
+      else
+        refute_receive {:recorded, %{evaluator: "judge"}}, 200
+        assert {:ok, doc} = Store.read(agent_id, @session_id)
+        assert [entry | _] = doc["evals"]
+        refute Map.has_key?(entry, "judge")
+      end
+    end
   end
 
   # The free L1 gate's changed behavior: an invalid sample_rate keeps L1 running
@@ -631,56 +606,6 @@ defmodule SalixAgent.TrajectoryEvalRunnerTest do
 
     assert :ok = Runner.maybe_eval_async(%{agent_id: agent_id}, @session_id, :final)
     assert_receive {:recorded, %{evaluator: "heuristic"}}, 2_000
-  end
-
-  # Blocker 2: a present-but-invalid tenant override (-1) must fail closed to
-  # 0.0, NOT inherit the higher global rate (1.0). A missing override still
-  # inherits the global (covered by the on/off override tests above).
-  test "a present-invalid tenant clean rate fails closed, not to the global rate" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-
-    :ok =
-      seed_session(agent_id, @session_id, [
-        %{id: 1, role: "user", content: "hello"},
-        %{id: 2, role: "assistant", content: "Done.", tool_calls: [], round_id: "round-c"}
-      ])
-
-    Application.put_env(:salix_agent, :trajectory_eval,
-      enabled: true,
-      judge_enabled: true,
-      judge_clean_sample_rate: 1.0
-    )
-
-    Application.put_env(:salix_agent, :trajectory_eval_tenant_mod, TenantCleanRateInvalid)
-    SalixAgent.LLM.Mock.script([{:final, judge_json()}])
-
-    assert {:ok, _} = Runner.eval_now(agent_id, @session_id, :final)
-    assert_receive {:recorded, %{evaluator: "heuristic"}}
-    refute_receive {:recorded, %{evaluator: "judge"}}, 200
-  end
-
-  # The valid boundary (1.0) still judges every clean window, so the rejection
-  # above is genuinely rejecting the typo, not disabling clean judging wholesale.
-  test "a valid full clean sample rate judges every clean window" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-
-    :ok =
-      seed_session(agent_id, @session_id, [
-        %{id: 1, role: "user", content: "hello"},
-        %{id: 2, role: "assistant", content: "Done.", tool_calls: [], round_id: "round-c"}
-      ])
-
-    Application.put_env(:salix_agent, :trajectory_eval,
-      enabled: true,
-      judge_enabled: true,
-      judge_clean_sample_rate: 1.0
-    )
-
-    SalixAgent.LLM.Mock.script([{:final, judge_json()}])
-
-    assert {:ok, _} = Runner.eval_now(agent_id, @session_id, :final)
-    assert_receive {:recorded, %{evaluator: "heuristic"}}
-    assert_receive {:recorded, %{evaluator: "judge"}}
   end
 
   test "judge failure leaves the stored L1 entry intact" do

@@ -54,7 +54,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
 
     case UserOnboardings.ensure_onboarding(user.id) do
       {:ok, %{status: status}} when status in ["completed", "skipped"] ->
-        {:ok, redirect(socket, to: ~p"/new-home")}
+        {:ok, redirect(socket, to: ~p"/")}
 
       {:ok, onboarding} ->
         orgs = Orgs.list_orgs_for_user(user.id)
@@ -293,7 +293,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
       {:noreply,
        socket
        |> put_flash(:info, finish_flash(length(created)))
-       |> redirect(to: ~p"/new-home")}
+       |> redirect(to: ~p"/")}
     else
       {:error, _reason} -> {:noreply, save_failed(socket)}
     end
@@ -302,7 +302,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
   def handle_event("skip_onboarding", _params, socket) do
     case UserOnboardings.skip(socket.assigns.onboarding) do
       {:ok, _onboarding} ->
-        {:noreply, redirect(socket, to: ~p"/new-home")}
+        {:noreply, redirect(socket, to: ~p"/")}
 
       {:error, _reason} ->
         {:noreply, save_failed(socket)}

@@ -4,6 +4,7 @@ import { ConversationRoute } from "../ConversationRoute";
 
 const harness = vi.hoisted(() => ({
   acceptTaskReview: vi.fn(),
+  apiAcceptTaskReview: vi.fn(),
   refresh: vi.fn(),
 }));
 
@@ -26,7 +27,7 @@ vi.mock("../../../chat-sidebar/ChatSidebarContext", () => ({
 }));
 
 vi.mock("../../ChatProvider", () => ({
-  useChatApi: () => ({ acceptTaskReview: harness.acceptTaskReview }),
+  useChatApi: () => ({ acceptTaskReview: harness.apiAcceptTaskReview }),
 }));
 
 vi.mock("../useConversation", () => ({
@@ -71,11 +72,11 @@ vi.mock("../ConversationView", () => ({
 describe("ConversationRoute", () => {
   it("delegates review acceptance to the retained conversation owner", async () => {
     harness.acceptTaskReview.mockRejectedValueOnce(new Error("conflict"));
-    harness.refresh.mockResolvedValueOnce(undefined);
 
     render(<ConversationRoute />);
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
 
     await waitFor(() => expect(harness.acceptTaskReview).toHaveBeenCalledWith(2));
+    expect(harness.apiAcceptTaskReview).not.toHaveBeenCalled();
   });
 });

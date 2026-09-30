@@ -16,29 +16,30 @@ import {
 const minSize: Size = { width: 80, height: 60 };
 
 describe("clampRectToCanvas", () => {
-  it("keeps a rect that already fits untouched", () => {
-    const rect: Rect = { x: 20, y: 30, width: 200, height: 150 };
-    expect(clampRectToCanvas(rect, { width: 800, height: 600 }, minSize)).toEqual(rect);
-  });
+  const canvas: Size = { width: 800, height: 600 };
 
-  it("nudges toward the top-left before shrinking", () => {
-    const rect: Rect = { x: 700, y: 500, width: 200, height: 150 };
-    expect(clampRectToCanvas(rect, { width: 800, height: 600 }, minSize)).toEqual({
-      x: 600,
-      y: 450,
-      width: 200,
-      height: 150,
-    });
-  });
-
-  it("shrinks only when the rect is larger than the canvas", () => {
-    const rect: Rect = { x: 50, y: 40, width: 900, height: 700 };
-    expect(clampRectToCanvas(rect, { width: 800, height: 600 }, minSize)).toEqual({
-      x: 0,
-      y: 0,
-      width: 800,
-      height: 600,
-    });
+  it.each(
+    (
+      [
+        {
+          name: "keeps a rect that already fits untouched",
+          rect: { x: 20, y: 30, width: 200, height: 150 },
+          expected: { x: 20, y: 30, width: 200, height: 150 },
+        },
+        {
+          name: "nudges toward the top-left before shrinking",
+          rect: { x: 700, y: 500, width: 200, height: 150 },
+          expected: { x: 600, y: 450, width: 200, height: 150 },
+        },
+        {
+          name: "shrinks only when the rect is larger than the canvas",
+          rect: { x: 50, y: 40, width: 900, height: 700 },
+          expected: { x: 0, y: 0, width: 800, height: 600 },
+        },
+      ] satisfies Array<{ name: string; rect: Rect; expected: Rect }>
+    ).map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { rect, expected }) => {
+    expect(clampRectToCanvas(rect, canvas, minSize)).toEqual(expected);
   });
 });
 
@@ -66,34 +67,44 @@ describe("toRelativeRect / toPixelRect", () => {
 describe("adaptRectToCanvas", () => {
   const prev: Size = { width: 1000, height: 800 };
 
-  it("keeps pixel size and drifts top-left when the canvas shrinks", () => {
-    const rect: Rect = { x: 700, y: 600, width: 250, height: 180 };
-    const next: Size = { width: 800, height: 600 };
-    expect(adaptRectToCanvas(rect, prev, next, "pixel", minSize)).toEqual({
-      x: 550,
-      y: 420,
-      width: 250,
-      height: 180,
-    });
-  });
-
-  it("scales proportionally in relative mode", () => {
-    const rect: Rect = { x: 100, y: 80, width: 500, height: 400 };
-    const next: Size = { width: 500, height: 400 };
-    expect(adaptRectToCanvas(rect, prev, next, "relative", minSize)).toEqual({
-      x: 50,
-      y: 40,
-      width: 250,
-      height: 200,
-    });
-  });
-
-  it("falls back to clamping when there is no previous canvas size", () => {
-    const rect: Rect = { x: 100, y: 80, width: 500, height: 400 };
-    const next: Size = { width: 400, height: 300 };
-    expect(
-      adaptRectToCanvas(rect, { width: 0, height: 0 }, next, "relative", minSize)
-    ).toEqual({ x: 0, y: 0, width: 400, height: 300 });
+  it.each(
+    (
+      [
+        {
+          name: "keeps pixel size and drifts top-left when the canvas shrinks",
+          rect: { x: 700, y: 600, width: 250, height: 180 },
+          previous: prev,
+          next: { width: 800, height: 600 },
+          mode: "pixel",
+          expected: { x: 550, y: 420, width: 250, height: 180 },
+        },
+        {
+          name: "scales proportionally in relative mode",
+          rect: { x: 100, y: 80, width: 500, height: 400 },
+          previous: prev,
+          next: { width: 500, height: 400 },
+          mode: "relative",
+          expected: { x: 50, y: 40, width: 250, height: 200 },
+        },
+        {
+          name: "falls back to clamping when there is no previous canvas size",
+          rect: { x: 100, y: 80, width: 500, height: 400 },
+          previous: { width: 0, height: 0 },
+          next: { width: 400, height: 300 },
+          mode: "relative",
+          expected: { x: 0, y: 0, width: 400, height: 300 },
+        },
+      ] satisfies Array<{
+        name: string;
+        rect: Rect;
+        previous: Size;
+        next: Size;
+        mode: "pixel" | "relative";
+        expected: Rect;
+      }>
+    ).map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { rect, previous, next, mode, expected }) => {
+    expect(adaptRectToCanvas(rect, previous, next, mode, minSize)).toEqual(expected);
   });
 });
 

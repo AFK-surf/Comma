@@ -55,39 +55,6 @@ defmodule SalixWeb.ConversationSSETest do
     {:ok, group: group["group_id"], agent: agent["agent_id"], conversation: conversation_id}
   end
 
-  test "streams a canonical Message created through ConversationServer", %{
-    group: group_id,
-    agent: agent_id,
-    conversation: conversation_id
-  } do
-    client = open_group_stream(group_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
-
-    assert_receive {:sse_headers, headers}, 3_000
-    assert headers =~ "HTTP/1.1 200"
-
-    assert {:ok, %{"message_id" => message_id}} =
-             ConversationServer.append_group_conversation_agent_message(
-               group_id,
-               conversation_id,
-               agent_id,
-               %{
-                 "content" => "explicit canonical result",
-                 "client_request_id" => "canonical-sse-message"
-               }
-             )
-
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "message_created",
-                      "data" => %{
-                        "conversation_id" => ^conversation_id,
-                        "message_id" => ^message_id
-                      }
-                    }},
-                   1_000
-  end
-
   test "closes the stream when an accepted mutation cannot be reread canonically", %{
     group: group_id,
     conversation: conversation_id
@@ -199,7 +166,10 @@ defmodule SalixWeb.ConversationSSETest do
                     %{
                       "event" => "message_created",
                       "id" => mutation_version,
-                      "data" => %{"message_id" => ^next_message_id}
+                      "data" => %{
+                        "conversation_id" => ^conversation_id,
+                        "message_id" => ^next_message_id
+                      }
                     }},
                    1_000
 

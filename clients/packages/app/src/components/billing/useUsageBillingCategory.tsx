@@ -2,13 +2,14 @@ import type { ReactNode } from "react";
 import { LoadingIndicator } from "@comma/ui";
 import { formatDate } from "@comma/i18n";
 import { useCommaI18n, useCommaMessages } from "@comma/i18n/react";
-import { Badge } from "@comma/ui";
+import { Badge, Dialog } from "@comma/ui";
 import type { SettingsCategoryDefinition, SettingsPanelItem } from "@comma/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CommaApiClient,
   CommaBillingPlan,
   CommaBillingSummary,
+  CommaBillingChangePreview,
   CommaWorkspace,
 } from "../../api";
 import { CommaApiError } from "../../api";
@@ -54,11 +55,25 @@ export function useUsageBillingCategory(
   // An error stays with the page whose action raised it.
   const [error, setError] = useState<{ key: string; message: string }>();
   const [notice, setNotice] = useState<string>();
+  const [changeQuote, setChangeQuote] = useState<{
+    plan: CommaBillingPlan;
+    preview: CommaBillingChangePreview;
+    requestId: string;
+  }>();
   const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>("month");
 
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
-  const availablePeriods = billingPeriods.filter((period) =>
-    plans.some((plan) => plan.mode === "subscription" && plan.billing_period === period)
+  const activeSubscription = summary?.active_subscription;
+  const isActivePlan = (plan: CommaBillingPlan) =>
+    activeSubscription?.package_code === plan.package_code &&
+    activeSubscription.package_version === plan.package_version;
+  const activePlan = activeSubscription?.plan ?? undefined;
+  const availablePeriods = billingPeriods.filter(
+    (period) =>
+      (!activePlan || activePlan.billing_period === period) &&
+      plans.some(
+        (plan) => plan.mode === "subscription" && plan.billing_period === period
+      )
   );
   // A catalog with only one period shows that period, whichever pill was last
   // chosen; the other pill stays visible but cannot be selected.
@@ -69,11 +84,6 @@ export function useUsageBillingCategory(
     (plan) => plan.mode === "subscription" && plan.billing_period === period
   );
   const creditPacks = plans.filter((plan) => plan.mode === "payment");
-  const activeSubscription = summary?.active_subscription;
-  const isActivePlan = (plan: CommaBillingPlan) =>
-    activeSubscription?.package_code === plan.package_code &&
-    activeSubscription.package_version === plan.package_version;
-  const activePlan = plans.find(isActivePlan);
   const allowance = useMemo(() => creditAllowance(summary, plans), [summary, plans]);
   const loading = pending === "load";
   const opening = zh ? "正在打开…" : "Opening…";
@@ -165,13 +175,36 @@ export function useUsageBillingCategory(
   const startSubscriptionChange = (plan: CommaBillingPlan) => {
     if (!workspace) return;
     void run(plan.plan_key, async () => {
-      await openNativePlatformExternalUrlFromUserAction(async () => {
-        const session = await api.changeBillingSubscription(
+      const preview = await api.previewBillingSubscriptionChange(
+        workspace.id,
+        plan.plan_key
+      );
+      setChangeQuote({ plan, preview, requestId: crypto.randomUUID() });
+    });
+  };
+
+  const confirmSubscriptionChange = () => {
+    if (!workspace || !changeQuote) return;
+    const quote = changeQuote;
+    void run(quote.plan.plan_key, async () => {
+      const execute = async () =>
+        api.changeBillingSubscription(
           workspace.id,
-          plan.plan_key
+          quote.plan.plan_key,
+          quote.preview,
+          quote.requestId
         );
-        return session.url;
-      });
+      if (quote.preview.effect === "upgrade") {
+        await openNativePlatformExternalUrlFromUserAction(async () => {
+          const result = await execute();
+          if (!result.url) throw new Error("subscription_payment_failed");
+          return result.url;
+        });
+      } else {
+        await execute();
+      }
+      setChangeQuote(undefined);
+      await reload();
     });
   };
 
@@ -353,16 +386,151 @@ export function useUsageBillingCategory(
     ),
   ];
 
+  if (changeQuote) {
+    const preview = changeQuote.preview;
+    const due = new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: preview.currency,
+    }).format(preview.amount_minor / 100);
+    const nextBill = formatDate(new Date(preview.period_end * 1000), locale, {
+      dateStyle: "medium",
+    });
+    const description =
+      preview.effect === "upgrade"
+        ? zh
+          ? `立即收取差价 ${due}。付款成功后升档。原定降档将被取消，付款失败不自动恢复。`
+          : `Pay ${due} now. The upgrade applies after payment. This cancels any scheduled downgrade, which is not restored if payment fails.`
+        : preview.effect === "downgrade"
+          ? zh
+            ? `${nextBill} 下次续费时降档。当前已付期间的套餐和额度保留。`
+            : `The downgrade applies at your next renewal on ${nextBill}. Your current paid plan and credits remain available.`
+          : zh
+            ? "取消待降档，保持当前套餐。"
+            : "Cancel the scheduled downgrade and keep your current plan.";
+    planListRows.push({
+      id: "billing.plans.confirm",
+      title: changeQuote.plan.name,
+      control: {
+        type: "custom",
+        content: (
+          <Dialog
+            isOpen
+            title={zh ? "确认套餐变更" : "Confirm plan change"}
+            description={description}
+            isDismissable={!pending}
+            onOpenChange={(open) => {
+              if (!open && !pending) setChangeQuote(undefined);
+            }}
+            actions={[
+              {
+                label: zh ? "取消" : "Cancel",
+                hierarchy: "secondary-gray",
+                disabled: !!pending,
+                onPress: () => setChangeQuote(undefined),
+              },
+              {
+                label: zh ? "确认" : "Confirm",
+                hierarchy: "primary",
+                disabled: !!pending,
+                onPress: confirmSubscriptionChange,
+              },
+            ]}
+          />
+        ),
+      },
+    });
+  }
+  const scheduled = activeSubscription?.source_metadata?.scheduled_plan;
+  if (scheduled) {
+    const target = plans.find(
+      (plan) =>
+        plan.package_code === scheduled.package_code &&
+        plan.package_version === scheduled.package_version
+    );
+    planRows.push({
+      id: "billing.plan.scheduled",
+      title: zh ? "待降档" : "Scheduled downgrade",
+      description: `${target?.name ?? scheduled.package_code} · ${formatDate(new Date(scheduled.effective_at * 1000), locale, { dateStyle: "medium" })}`,
+      control: {
+        type: "button",
+        label: zh ? "保持当前套餐" : "Keep current plan",
+        disabled: !!pending || !activePlan,
+        onPress: () => {
+          if (activePlan) startSubscriptionChange(activePlan);
+        },
+      },
+    });
+  }
+
+  if (activeSubscription) {
+    const cancellation = activeSubscription.source_metadata?.cancel_at_period_end;
+    const ends = activeSubscription.source_metadata?.current_period_end;
+    planRows.push({
+      id: "billing.plan.cancel",
+      title: zh ? "取消续费" : "Cancel renewal",
+      ...(cancellation
+        ? {
+            description:
+              (zh ? "已取消续费" : "Renewal cancelled") +
+              (ends
+                ? ` · ${formatDate(new Date(ends * 1000), locale, { dateStyle: "medium" })}`
+                : ""),
+          }
+        : {}),
+      control: {
+        type: "button",
+        label: cancellation
+          ? zh
+            ? "已取消"
+            : "Cancelled"
+          : zh
+            ? "取消续费"
+            : "Cancel renewal",
+        disabled: !!pending || !!cancellation,
+        onPress: () => {
+          if (workspace)
+            void run("portal", async () => {
+              await api.cancelBillingSubscriptionRenewal(workspace.id);
+              await reload();
+            });
+        },
+      },
+    });
+  }
+
+  const nowUtc = new Date();
+  const estimatedPackEnd = new Date(
+    Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth() + 1, 0)
+  )
+    .toISOString()
+    .slice(0, 10);
+  const paidPackExpiries = [
+    ...new Set(
+      (summary?.active_grants ?? [])
+        .filter((grant) => grant.source_type === "stripe_checkout" && grant.expires_at)
+        .map((grant) => `${grant.expires_at!.slice(0, 10)} 00:00 UTC`)
+    ),
+  ];
+
   // Credit packs: one row per pack.
   const packRows: SettingsPanelItem[] = [
+    ...(paidPackExpiries.length > 0
+      ? [
+          {
+            id: "billing.packs.paid-expiry",
+            title: zh ? "已购充值包有效至" : "Purchased credits expire",
+            description: paidPackExpiries.join(", "),
+          },
+        ]
+      : []),
     ...(creditPacks.length > 0
       ? creditPacks.map(
           (plan): SettingsPanelItem => ({
             id: `billing.packs.${plan.plan_key}`,
             title: plan.name,
             description: zh
-              ? `一次性 · 到账 ${number.format(plan.grant_credits)} credits`
-              : `One-time · ${number.format(plan.grant_credits)} credits`,
+              ? `一次性 · 到账 ${number.format(plan.grant_credits)} credits · 预计 ${estimatedPackEnd} UTC 月底到期，以实际付款月份为准`
+              : `One-time · ${number.format(plan.grant_credits)} credits · Estimated expiry: end of ${estimatedPackEnd} UTC, based on the payment month`,
             keywords: ["buy", "credits", "充值"],
             control: {
               type: "button",

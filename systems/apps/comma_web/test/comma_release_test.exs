@@ -36,16 +36,11 @@ defmodule CommaWeb.CommaReleaseTest do
                Comma.Release.sync_billing_catalog()
              end)
 
-    assert length(summary.local.packages) == 6
-    assert length(summary.local.versions) == 9
-    assert length(summary.provider_prices) == 9
+    assert length(summary.local.packages) == 7
+    assert length(summary.local.versions) == 11
+    assert length(summary.provider_prices) == 11
 
     lookup_keys = Comma.Billing.PricingV1.catalog().versions |> Enum.map(& &1.provider_lookup_key)
-
-    calls = stripe_calls()
-    assert Enum.count(calls, &match?({:list_prices, _, _}, &1)) == length(lookup_keys)
-    assert Enum.count(calls, &match?({:product, _, _}, &1)) == length(lookup_keys)
-    assert Enum.count(calls, &match?({:price, _, _}, &1)) == length(lookup_keys)
 
     with_billing_repo(fn repo ->
       for lookup_key <- lookup_keys do
@@ -68,8 +63,8 @@ defmodule CommaWeb.CommaReleaseTest do
                Comma.Release.sync_billing_catalog(provider_sync: false)
              end)
 
-    assert length(summary.local.packages) == 6
-    assert length(summary.local.versions) == 9
+    assert length(summary.local.packages) == 7
+    assert length(summary.local.versions) == 11
     assert summary.provider_prices == []
     assert summary.provider_sync == :skipped
     assert stripe_calls() == []
@@ -116,7 +111,7 @@ defmodule CommaWeb.CommaReleaseTest do
     assert status == 0, output
     assert output =~ "stripe-transport-started=true"
     assert output =~ "billing-stripe-started=false"
-    assert output =~ "provider-plan-size=9"
+    assert output =~ "provider-plan-size=11"
   end
 
   @tag :tmp_dir

@@ -1,41 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { reconcileSidebarNavOrder, sidebarNavItemIds } from "../sidebarNavOrder";
+import { reconcileSidebarNavOrder } from "../sidebarNavOrder";
 
 describe("reconcileSidebarNavOrder", () => {
-  it("shows the default order for an empty preference", () => {
-    expect(reconcileSidebarNavOrder([])).toEqual([
-      "home",
-      "inbox",
-      "tasks",
-      "drive",
-      "plugins",
-    ]);
-    expect(sidebarNavItemIds).toEqual(reconcileSidebarNavOrder([]));
-  });
-
-  it("keeps the reader's arrangement", () => {
-    expect(
-      reconcileSidebarNavOrder(["tasks", "home", "plugins", "inbox", "drive"])
-    ).toEqual(["tasks", "home", "plugins", "inbox", "drive"]);
-  });
-
-  it("drops ids the build no longer ships and appends ones it newly does", () => {
-    expect(reconcileSidebarNavOrder(["tasks", "archive", "home"])).toEqual([
-      "tasks",
-      "home",
-      "inbox",
-      "drive",
-      "plugins",
-    ]);
-  });
-
-  it("collapses a duplicated id to its first position", () => {
-    expect(reconcileSidebarNavOrder(["inbox", "home", "inbox"])).toEqual([
-      "inbox",
-      "home",
-      "tasks",
-      "drive",
-      "plugins",
-    ]);
+  it.each([
+    {
+      name: "shows the default order for an empty preference",
+      stored: [],
+      expected: ["home", "inbox", "tasks", "drive", "plugins"],
+    },
+    {
+      name: "keeps the reader's arrangement",
+      stored: ["tasks", "home", "plugins", "inbox", "drive"],
+      expected: ["tasks", "home", "plugins", "inbox", "drive"],
+    },
+    {
+      name: "drops ids the build no longer ships and appends ones it newly does",
+      stored: ["tasks", "archive", "home"],
+      expected: ["tasks", "home", "inbox", "drive", "plugins"],
+    },
+    {
+      name: "collapses a duplicated id to its first position",
+      stored: ["inbox", "home", "inbox"],
+      expected: ["inbox", "home", "tasks", "drive", "plugins"],
+    },
+  ])("$name", ({ stored, expected }) => {
+    expect(reconcileSidebarNavOrder(stored)).toEqual(expected);
   });
 });

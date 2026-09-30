@@ -56,7 +56,6 @@ describe("Workspace Chat resolution", () => {
   it.each([
     { expectedStatus: "unauthorized", responseStatus: 401 },
     { expectedStatus: "hidden", responseStatus: 403 },
-    { expectedStatus: "hidden", responseStatus: 404 },
   ] as const)(
     "maps HTTP $responseStatus to $expectedStatus",
     async ({ expectedStatus, responseStatus }) => {

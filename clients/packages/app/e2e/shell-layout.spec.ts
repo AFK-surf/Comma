@@ -541,7 +541,9 @@ for (const freshAddBeforeExpiry of [false, true]) {
       await expect(add).toBeDisabled();
       await expect(page).toHaveURL(/#\/plugins$/);
       releaseNew();
-      await expect(page).toHaveURL(/#\/$/);
+      // The confirmed Add stays in Plugins and shows the plugin as added.
+      await expect(add).toHaveCount(0);
+      await expect(page).toHaveURL(/#\/plugins$/);
       return;
     }
     await page.clock.runFor(2_000);
@@ -676,7 +678,10 @@ test("plugin install waits for pending authorization and continues through each 
     ]);
 
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(page).toHaveURL(/#\/$/);
+  await expect(
+    page.getByRole("button", { name: "Add Google Workspace", exact: true })
+  ).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/plugins$/);
   expect(installRequests).toEqual([
     { contract: "unified_v1" },
     {
@@ -6442,31 +6447,6 @@ test("Home rail controls keep working when persistence is unavailable", async ({
     await expect(tasksRail).toBeHidden();
   } finally {
     await stub.close();
-  }
-});
-
-test("settings omit unsupported permission rows and search entries", async ({
-  page,
-  unavailableProductApi,
-}) => {
-  await installBrowserTestSession(page, {
-    apiBaseUrl: unavailableProductApi,
-    email: "permissions-settings@comma.local",
-    token: "comma_sess_permissions_settings",
-  });
-  await page.goto("/#/settings");
-  await expectSettledSettingsModal(page);
-  await expect(
-    page.locator('[data-setting-id="permissions.label-changes"]')
-  ).toBeVisible();
-  const search = page.getByRole("searchbox", { name: "Search settings" });
-  for (const name of ["Default permissions", "Auto-review", "Full access"]) {
-    await expect(page.getByText(name, { exact: true })).toHaveCount(0);
-    await search.fill(name);
-    await expect(page.getByText(name, { exact: true })).toHaveCount(0);
-    await expect(
-      page.locator('[data-slot="settings-search-results"] [data-setting-id]')
-    ).toHaveCount(0);
   }
 });
 

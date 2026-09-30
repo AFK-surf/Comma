@@ -850,47 +850,41 @@ defmodule SalixAgent.ToolPolicyExtrasTest do
              Map.drop(params, ["connect_id"])
   end
 
-  test "call envelope does not discard sibling fields" do
-    Application.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
+  for {name, envelope} <- [
+        {"call envelope does not discard sibling fields",
+         %{
+           "params" => %{
+             "tool" => "im_api.internal.send_message",
+             "params" => %{
+               "connect_id" => "internal",
+               "conversation_id" => "conv-double-wrapped",
+               "content" => [%{"type" => "text", "text" => "hello"}]
+             }
+           },
+           "unexpected" => true
+         }},
+        {"call envelope does not recursively unwrap a three-layer params wrapper",
+         %{
+           "params" => %{
+             "params" => %{
+               "tool" => "im_api.internal.send_message",
+               "params" => %{
+                 "connect_id" => "internal",
+                 "conversation_id" => "conv-triple-wrapped",
+                 "content" => [%{"type" => "text", "text" => "hello"}]
+               }
+             }
+           }
+         }}
+      ] do
+    test name do
+      Application.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
 
-    nested = %{
-      "params" => %{
-        "tool" => "im_api.internal.send_message",
-        "params" => %{
-          "connect_id" => "internal",
-          "conversation_id" => "conv-double-wrapped",
-          "content" => [%{"type" => "text", "text" => "hello"}]
-        }
-      },
-      "unexpected" => true
-    }
+      res = run_tool("call", unquote(Macro.escape(envelope)), %{llm_tool_envelope: true})
 
-    res = run_tool("call", nested, %{llm_tool_envelope: true})
-
-    assert res.status == "guidance"
-    assert Jason.decode!(res.content)["error"] == "'tool' is required"
-  end
-
-  test "call envelope does not recursively unwrap a three-layer params wrapper" do
-    Application.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
-
-    nested = %{
-      "params" => %{
-        "params" => %{
-          "tool" => "im_api.internal.send_message",
-          "params" => %{
-            "connect_id" => "internal",
-            "conversation_id" => "conv-triple-wrapped",
-            "content" => [%{"type" => "text", "text" => "hello"}]
-          }
-        }
-      }
-    }
-
-    res = run_tool("call", nested, %{llm_tool_envelope: true})
-
-    assert res.status == "guidance"
-    assert Jason.decode!(res.content)["error"] == "'tool' is required"
+      assert res.status == "guidance"
+      assert Jason.decode!(res.content)["error"] == "'tool' is required"
+    end
   end
 
   test "repair classifier leaves executable and historical direct calls at most once" do
@@ -1032,28 +1026,5 @@ defmodule SalixAgent.ToolPolicyExtrasTest do
       |> SalixAgent.TestSupport.with_plugin_projection()
 
     Map.put(base, :tool_disclosure, ToolDisclosure.materialize(role, runtime_kind, base))
-  end
-
-  defp internal_api_names(role, runtime_kind) do
-    ctx = ctx_for(role, runtime_kind)
-
-    [result] =
-      SessionToolDispatch.execute(
-        [
-          %{
-            "id" => "list-internal-apis",
-            "name" => "im.provider_apis_list",
-            "args" => %{"provider" => "internal", "connect_id" => "internal"}
-          }
-        ],
-        ctx
-      )
-
-    refute result.error
-
-    result.content
-    |> Jason.decode!()
-    |> Map.fetch!("apis")
-    |> Enum.map(& &1["api"])
   end
 end

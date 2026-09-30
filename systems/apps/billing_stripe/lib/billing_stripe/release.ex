@@ -18,6 +18,20 @@ defmodule BillingStripe.Release do
     end
   end
 
+  @doc "Create or converge the Comma portal through an explicit ops command."
+  def sync_portal(catalog, opts \\ []) do
+    prepare_apps()
+
+    for repo <- repos() do
+      result = sync_repo_with_retries(repo, catalog, Keyword.put(opts, :portal_sync, true))
+
+      case result do
+        {:ok, summary} -> summary
+        {:error, reason} -> raise "failed to sync Comma portal: #{inspect(reason)}"
+      end
+    end
+  end
+
   defp sync_repo_with_retries(repo, catalog, opts) do
     max_attempts = Keyword.get(opts, :max_attempts, 1)
     sync_repo_attempt(repo, catalog, opts, 1, max_attempts)
@@ -26,7 +40,9 @@ defmodule BillingStripe.Release do
   defp sync_repo_attempt(repo, catalog, opts, attempt, max_attempts) do
     result =
       Ecto.Migrator.with_repo(repo, fn started_repo ->
-        sync_repo(started_repo, catalog, opts)
+        if opts[:portal_sync],
+          do: BillingStripe.PortalSync.sync(catalog, Keyword.put(opts, :repo, started_repo)),
+          else: sync_repo(started_repo, catalog, opts)
       end)
 
     case result do
@@ -58,6 +74,10 @@ defmodule BillingStripe.Release do
   end
 
   defp sync_repo(repo, catalog, opts) do
+    if Keyword.get(opts, :require_provider, false) and not Keyword.get(opts, :dry_run, false) do
+      BillingCore.BillingJSONRepair.run(repo)
+    end
+
     opts = Keyword.put(opts, :repo, repo)
 
     case BillingStripe.sync_prices(catalog, opts) do

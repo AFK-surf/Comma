@@ -235,19 +235,34 @@ describe("native capability artifact generator", () => {
     ).toThrow(/nativeCapabilityRegistry.*missingCapability/);
   });
 
-  it("rejects duplicate command ids across registered leaves", () => {
+  it.each(
+    [
+      {
+        name: "rejects duplicate command ids across registered leaves",
+        channels: ["comma:test:first", "comma:test:second"],
+        ids: ["test.duplicate", "test.duplicate"],
+        error: /duplicate native capability id.*test\.duplicate/,
+      },
+      {
+        name: "rejects duplicate command channels across registered leaves",
+        channels: ["comma:test:duplicate", "comma:test:duplicate"],
+        ids: ["test.first", "test.second"],
+        error: /duplicate native capability channel.*comma:test:duplicate/,
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { channels, ids, error }) => {
     expect(() =>
       collectNativeCapabilityEntries(`
         export const firstCapability = defineNativeCapability({
           bridge: { method: "first", namespace: "native" },
-          channel: "comma:test:first",
+          channel: "${channels[0]}",
           handler: {
             exportName: "FirstProvider",
             member: "first",
             module: "../../../apps/electron/src/main/modules/native/index",
             provider: "first",
           },
-          id: "test.duplicate",
+          id: "${ids[0]}",
           input: z.void(),
           mock: {},
           output: testSchema,
@@ -258,14 +273,14 @@ describe("native capability artifact generator", () => {
 
         export const secondCapability = defineNativeCapability({
           bridge: { method: "second", namespace: "native" },
-          channel: "comma:test:second",
+          channel: "${channels[1]}",
           handler: {
             exportName: "SecondProvider",
             member: "second",
             module: "../../../apps/electron/src/main/modules/native/index",
             provider: "second",
           },
-          id: "test.duplicate",
+          id: "${ids[1]}",
           input: z.void(),
           mock: {},
           output: testSchema,
@@ -280,55 +295,7 @@ describe("native capability artifact generator", () => {
         ] as const;
         export const nativeEventRegistry = [] as const;
       `)
-    ).toThrow(/duplicate native capability id.*test\.duplicate/);
-  });
-
-  it("rejects duplicate command channels across registered leaves", () => {
-    expect(() =>
-      collectNativeCapabilityEntries(`
-        export const firstCapability = defineNativeCapability({
-          bridge: { method: "first", namespace: "native" },
-          channel: "comma:test:duplicate",
-          handler: {
-            exportName: "FirstProvider",
-            member: "first",
-            module: "../../../apps/electron/src/main/modules/native/index",
-            provider: "first",
-          },
-          id: "test.first",
-          input: z.void(),
-          mock: {},
-          output: testSchema,
-          permission: "test.first",
-          sessionAdmission: "required",
-          webFallback: {},
-        });
-
-        export const secondCapability = defineNativeCapability({
-          bridge: { method: "second", namespace: "native" },
-          channel: "comma:test:duplicate",
-          handler: {
-            exportName: "SecondProvider",
-            member: "second",
-            module: "../../../apps/electron/src/main/modules/native/index",
-            provider: "second",
-          },
-          id: "test.second",
-          input: z.void(),
-          mock: {},
-          output: testSchema,
-          permission: "test.second",
-          sessionAdmission: "required",
-          webFallback: {},
-        });
-
-        export const nativeCapabilityRegistry = [
-          firstCapability,
-          secondCapability,
-        ] as const;
-        export const nativeEventRegistry = [] as const;
-      `)
-    ).toThrow(/duplicate native capability channel.*comma:test:duplicate/);
+    ).toThrow(error);
   });
 
   it("rejects event leaves that are not listed in the controlled registry", () => {

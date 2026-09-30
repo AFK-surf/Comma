@@ -84,7 +84,7 @@ defmodule SalixAgent.Tools.MCP do
        "Start or restart provider OAuth for a remote MCP binding and return the authorization URL immediately. Give that URL to the user; after the user completes provider consent, call mcp_manager.reconnect and mcp.list to verify discovered capabilities.",
        schema(:authorize), &__MODULE__.authorize/2, @normal_auto_wait_seconds},
       {"mcp.list",
-       "Discover MCP bindings and their tools/resources/prompts on demand. MCP operation names and manuals are not in the initial prompt. Use kind=tools with a binding filter to discover operation_id values, then read help for the selected operation before calling it by canonical name. Management actions are under mcp_manager.*.",
+       "List connected MCP services, including Slack connections authorized through Plugins, and discover their tools/resources/prompts on demand. Use kind=bindings to inspect connections. MCP operation names and manuals are not in the initial prompt. Use kind=tools with a binding filter to discover operation_id values. Read help for the selected operation before calling its canonical name. Management actions are under mcp_manager.*.",
        schema(:list), &__MODULE__.list/2, @normal_auto_wait_seconds},
       {"mcp.get",
        "Read one MCP resource or prompt through an existing binding. For MCP tool manuals and schemas, use help on the returned operation_id.",

@@ -1759,33 +1759,6 @@ describe("ConversationView", () => {
     expect(slot).toHaveAttribute("data-state", "error");
   });
 
-  it("announces new assistant replies in the live region", async () => {
-    const conversation = renderStatefulConversation(
-      state({ messages: [message("msg_1", "user", "先查一下。")] })
-    );
-    await screen.findByText("先查一下。");
-
-    const liveRegion = conversation.container.querySelector(
-      '.app-sr-only[aria-live="polite"]'
-    );
-    expect(liveRegion).toHaveTextContent("");
-
-    act(() => {
-      conversation.setState(
-        state({
-          messages: [
-            message("msg_1", "user", "先查一下。"),
-            message("msg_2", "assistant", "查好了。"),
-          ],
-        })
-      );
-    });
-
-    await waitFor(() =>
-      expect(liveRegion).toHaveTextContent("A new reply has arrived")
-    );
-  });
-
   it("updates the live region node for consecutive assistant replies", async () => {
     const conversation = renderStatefulConversation(
       state({ messages: [message("msg_1", "user", "先查一下。")] })
@@ -1796,6 +1769,7 @@ describe("ConversationView", () => {
       '.app-sr-only[aria-live="polite"]'
     );
     expect(liveRegion).not.toBeNull();
+    expect(liveRegion!.textContent).toBe("");
 
     act(() => {
       conversation.setState(
@@ -1880,7 +1854,16 @@ describe("ConversationView", () => {
     );
   });
 
-  it("keeps the generated file card without an inline download button", async () => {
+  it.each([
+    {
+      name: "keeps the generated file card without an inline download button",
+      variant: undefined,
+    },
+    {
+      name: "does not offer generated-file downloads on the Side Chat surface",
+      variant: "side-chat" as const,
+    },
+  ])("$name", async ({ variant }) => {
     const actions = createActions();
     const fetchConversationAttachment = vi
       .fn()
@@ -1910,52 +1893,13 @@ describe("ConversationView", () => {
             }),
           ],
         })}
+        {...(variant ? { variant } : {})}
         workspaceId="wsp_1"
       />
     );
 
     const fileCard = await screen.findByTestId("chat-attachment-file-msg_1-0");
     expect(fileCard).toHaveTextContent("report.pdf");
-    expect(
-      within(fileCard).queryByRole("button", { name: "Download" })
-    ).not.toBeInTheDocument();
-    expect(fetchConversationAttachment).not.toHaveBeenCalled();
-  });
-
-  it("does not offer generated-file downloads on the Side Chat surface", async () => {
-    const actions = createActions();
-    const fetchConversationAttachment = vi.fn();
-    const api = {
-      fetchConversationAttachment,
-    } as Partial<CommaApiClient> as CommaApiClient;
-
-    renderConversation(
-      <ConversationViewWithDraft
-        actions={actions}
-        api={api}
-        groupId="grp_1"
-        state={state({
-          messages: [
-            message("msg_1", "assistant", "报告好了。", {
-              attachments: [
-                {
-                  attachmentIndex: 2,
-                  blockType: "file",
-                  fileName: "report.pdf",
-                  mimeType: "application/pdf",
-                  size: 2048,
-                  title: "report.pdf",
-                },
-              ],
-            }),
-          ],
-        })}
-        variant="side-chat"
-        workspaceId="wsp_1"
-      />
-    );
-
-    const fileCard = await screen.findByTestId("chat-attachment-file-msg_1-0");
     expect(
       within(fileCard).queryByRole("button", { name: "Download" })
     ).not.toBeInTheDocument();
@@ -4480,23 +4424,6 @@ describe("ConversationThread", () => {
     });
   }
 
-  it("uses regular typography for assistant markdown", () => {
-    render(
-      <ConversationThread
-        messages={[message("msg_1", "assistant", "正文回复")]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
-    );
-
-    expect(screen.getByTestId("markdown-message:msg_1")).toHaveClass(
-      "text-sm",
-      "leading-5"
-    );
-  });
-
   it("renders streaming assistant text in a response bubble without announcing a reply", async () => {
     const conversation = renderStatefulConversation(
       state({ messages: [message("msg_1", "user", "先查一下。")] })
@@ -4572,21 +4499,6 @@ describe("ConversationThread", () => {
     expect(finalNode).toBe(draftNode);
     expect(finalNode).toHaveTextContent("完成内容");
     expect(await screen.findByText("result.pdf")).toBeInTheDocument();
-  });
-
-  it("keeps side-chat typing dots out of the default conversation thread", () => {
-    render(
-      <ConversationThread
-        messages={[]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
-    );
-
-    expect(screen.queryByTestId("chat-assistant-typing")).toBeNull();
-    expect(document.querySelector(".comma-side-chat-assistant-slot")).toBeNull();
   });
 
   it("copies assistant messages without embedding timestamps in the hover action row", async () => {
@@ -5651,91 +5563,85 @@ describe("ConversationThread", () => {
     }
   }
 
-  it("keeps optimistic thinking for the current send beside an older failure", async () => {
-    const failed = pendingSend("req_failed", "先前失败", "failed");
-    const current = pendingSend("req_current", "重新开始", "sending");
-    renderStatefulConversation(
-      state({
-        awaitingReply: true,
-        awaitingTurnKey: current.clientRequestId,
-        locallyAwaitingReply: true,
-        messages: [pendingMessage(failed), pendingMessage(current)],
-        pending: [failed, current],
-      })
-    );
+  it.each([
+    {
+      name: "keeps optimistic thinking for the current send beside an older failure",
+      text: "重新开始",
+      thinking: true,
+      build: () => {
+        const failed = pendingSend("req_failed", "先前失败", "failed");
+        const current = pendingSend("req_current", "重新开始", "sending");
+        return state({
+          awaitingReply: true,
+          awaitingTurnKey: current.clientRequestId,
+          locallyAwaitingReply: true,
+          messages: [pendingMessage(failed), pendingMessage(current)],
+          pending: [failed, current],
+        });
+      },
+    },
+    {
+      name: "does not show optimistic thinking for a failed current send",
+      text: "当前失败",
+      thinking: false,
+      build: () => {
+        const failed = pendingSend("req_failed", "当前失败", "failed");
+        return state({
+          awaitingReply: true,
+          awaitingTurnKey: failed.clientRequestId,
+          locallyAwaitingReply: true,
+          messages: [pendingMessage(failed)],
+          pending: [failed],
+        });
+      },
+    },
+    {
+      name: "does not infer optimistic thinking from a user-ended transcript",
+      text: "已经发送",
+      thinking: false,
+      build: () =>
+        state({
+          awaitingReply: true,
+          locallyAwaitingReply: false,
+          messages: [message("msg_user", "user", "已经发送")],
+        }),
+    },
+    {
+      name: "does not let the previous stopped snapshot hide a current local send",
+      text: "开始吧",
+      thinking: true,
+      build: () =>
+        state({
+          awaitingReply: true,
+          locallyAwaitingReply: true,
+          messages: [
+            message("pending:req_1", "user", "开始吧", {
+              clientRequestId: "req_1",
+              delivery: "sending",
+              source: "pending",
+            }),
+          ],
+          participantStatus: {
+            conversationId: "cnv_1",
+            participantId: "ptp_1",
+            state: "stopped",
+            status: "",
+            updatedAt: 1_780_000_000_100,
+          },
+        }),
+    },
+  ])("$name", async ({ build, text, thinking }) => {
+    renderStatefulConversation(build());
 
-    expect(await screen.findByText("重新开始")).toBeInTheDocument();
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    if (thinking) {
+      expect(screen.getByText("Thinking")).toBeInTheDocument();
+    } else {
+      expect(screen.queryByText("Thinking")).toBeNull();
+    }
     expect(screen.getByTestId("participant-status-slot")).toHaveAttribute(
       "data-active",
-      "true"
-    );
-  });
-
-  it("does not show optimistic thinking for a failed current send", async () => {
-    const failed = pendingSend("req_failed", "当前失败", "failed");
-    renderStatefulConversation(
-      state({
-        awaitingReply: true,
-        awaitingTurnKey: failed.clientRequestId,
-        locallyAwaitingReply: true,
-        messages: [pendingMessage(failed)],
-        pending: [failed],
-      })
-    );
-
-    expect(await screen.findByText("当前失败")).toBeInTheDocument();
-    expect(screen.queryByText("Thinking")).toBeNull();
-    expect(screen.getByTestId("participant-status-slot")).toHaveAttribute(
-      "data-active",
-      "false"
-    );
-  });
-
-  it("does not infer optimistic thinking from a user-ended transcript", async () => {
-    const userMessage = message("msg_user", "user", "已经发送");
-    renderStatefulConversation(
-      state({
-        awaitingReply: true,
-        locallyAwaitingReply: false,
-        messages: [userMessage],
-      })
-    );
-
-    expect(await screen.findByText("已经发送")).toBeInTheDocument();
-    expect(screen.queryByText("Thinking")).toBeNull();
-    expect(screen.getByTestId("participant-status-slot")).toHaveAttribute(
-      "data-active",
-      "false"
-    );
-  });
-
-  it("does not let the previous stopped snapshot hide a current local send", async () => {
-    const optimisticMessage = message("pending:req_1", "user", "开始吧", {
-      clientRequestId: "req_1",
-      delivery: "sending",
-      source: "pending",
-    });
-    renderStatefulConversation(
-      state({
-        awaitingReply: true,
-        locallyAwaitingReply: true,
-        messages: [optimisticMessage],
-        participantStatus: {
-          conversationId: "cnv_1",
-          participantId: "ptp_1",
-          state: "stopped",
-          status: "",
-          updatedAt: 1_780_000_000_100,
-        },
-      })
-    );
-
-    expect(await screen.findByText("开始吧")).toBeInTheDocument();
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
-    expect(screen.getByTestId("participant-status-slot")).toHaveAttribute(
-      "data-active",
-      "true"
+      String(thinking)
     );
   });
 
@@ -5943,7 +5849,31 @@ describe("Composer", () => {
     expect(screen.queryByTestId("chat-heic-unsupported")).toBeNull();
   });
 
-  it("passes dropped files to the channel attachment handler", () => {
+  it.each([
+    {
+      name: "passes dropped files to the channel attachment handler",
+      fileName: "dropped.txt",
+      deliver: (file: File) =>
+        fireEvent.drop(screen.getByTestId("ai-input-shell"), {
+          dataTransfer: {
+            types: ["Files"],
+            files: [file],
+          },
+        }),
+    },
+    {
+      name: "passes pasted files to the channel attachment handler",
+      fileName: "pasted.txt",
+      deliver: (file: File) =>
+        fireEvent.paste(screen.getByRole("textbox", { name: "AI prompt" }), {
+          clipboardData: {
+            types: ["Files"],
+            files: [file],
+            getData: () => "pasted.txt",
+          },
+        }),
+    },
+  ])("$name", ({ deliver, fileName }) => {
     const onAttachFiles = vi.fn();
     render(
       <Composer
@@ -5955,42 +5885,11 @@ describe("Composer", () => {
       />
     );
 
-    const file = new File(["hello"], "dropped.txt", { type: "text/plain" });
-    fireEvent.drop(screen.getByTestId("ai-input-shell"), {
-      dataTransfer: {
-        types: ["Files"],
-        files: [file],
-      },
-    });
+    const file = new File(["hello"], fileName, { type: "text/plain" });
+    deliver(file);
 
     expect(onAttachFiles).toHaveBeenCalledWith([
-      { data: file, name: "dropped.txt", size: 5 },
-    ]);
-  });
-
-  it("passes pasted files to the channel attachment handler", () => {
-    const onAttachFiles = vi.fn();
-    render(
-      <Composer
-        draftSource={fixedDraftSource("")}
-        onAttachFiles={onAttachFiles}
-        onDraftChange={() => {}}
-        onSend={() => {}}
-        submitDisabled={false}
-      />
-    );
-
-    const file = new File(["hello"], "pasted.txt", { type: "text/plain" });
-    fireEvent.paste(screen.getByRole("textbox", { name: "AI prompt" }), {
-      clipboardData: {
-        types: ["Files"],
-        files: [file],
-        getData: () => "pasted.txt",
-      },
-    });
-
-    expect(onAttachFiles).toHaveBeenCalledWith([
-      { data: file, name: "pasted.txt", size: 5 },
+      { data: file, name: fileName, size: 5 },
     ]);
   });
 

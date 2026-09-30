@@ -207,22 +207,6 @@ describe("RuntimeWorkbenchRoute", () => {
     expect(within(matrix).queryByText("planned")).toBeNull();
     expect(within(matrix).queryByText("active")).toBeNull();
   });
-
-  it("does not render a renderer-owned token probe on the Session tab", async () => {
-    render(<RuntimeWorkbenchRoute />);
-
-    const functionalTabs = screen.getAllByRole("tablist")[0];
-    if (!functionalTabs) {
-      throw new Error("Runtime Workbench functional tablist was not rendered.");
-    }
-
-    await userEvent.click(
-      within(functionalTabs).getByRole("tab", { name: /^Session/ })
-    );
-
-    expect(screen.queryByLabelText("Dev token")).toBeNull();
-    expect(screen.queryByText("session.proxyProbe")).toBeNull();
-  });
 });
 
 function createTestStateBridge<Snapshot>(

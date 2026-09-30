@@ -781,6 +781,11 @@ export type BrowserSidebarInspectResult =
 // Modeled in tla/browser-sidebar/BrowserSidebar.tla.
 export const maxBrowserSidebarSessionsPerOwner = 32;
 
+/** Larger icons are skipped: the tab shows its generic globe instead. */
+export const maxBrowserSidebarFaviconBytes = 64 * 1024;
+export const maxBrowserSidebarFaviconDataUrlLength =
+  Math.ceil(maxBrowserSidebarFaviconBytes / 3) * 4 + 128;
+
 export interface BrowserSidebarState {
   available: boolean;
   active: boolean;
@@ -789,6 +794,8 @@ export interface BrowserSidebarState {
   canGoForward?: boolean | undefined;
   loading?: boolean | undefined;
   title?: string | undefined;
+  /** The current document's icon as a `data:image/*` URL. */
+  favicon?: string | undefined;
   visible?: boolean | undefined;
   url?: string | undefined;
   surface?: ViewSurface | undefined;
@@ -1632,6 +1639,11 @@ export const browserSidebarStateSchema = z
     canGoForward: z.boolean().optional(),
     loading: z.boolean().optional(),
     title: z.string().max(4_096).optional(),
+    favicon: z
+      .string()
+      .startsWith("data:image/")
+      .max(maxBrowserSidebarFaviconDataUrlLength)
+      .optional(),
     visible: z.boolean().optional(),
     url: browserSidebarUrlSchema.optional(),
     surface: viewSurfaceSchema.optional(),

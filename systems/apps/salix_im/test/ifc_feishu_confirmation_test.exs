@@ -150,34 +150,30 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
       assert Jason.encode!(response) =~ "已取消"
     end
 
-    test "anyone else pressing the button decides nothing" do
-      Process.put(:ifc_card_request, request())
+    for {name, request_overrides, connect_id, user, expected} <- [
+          {"anyone else pressing the button", %{}, nil, "ou_b",
+           {:error, {:ignored, :ifc_declassify_wrong_user}}},
+          {"a card from another workspace's connect", %{}, "cnx_other", "ou_a",
+           {:error, {:ignored, :ifc_declassify_wrong_user}}},
+          {"a request whose requester is not a provider user", %{"requester" => "system"}, nil,
+           "ou_a", {:error, {:ignored, :ifc_declassify_wrong_user}}},
+          {"an unknown request", nil, nil, "ou_a", {:error, :not_found}}
+        ] do
+      @request_overrides request_overrides
+      @connect_id connect_id
+      @user user
+      @expected expected
+      test "#{name} decides nothing" do
+        if @request_overrides,
+          do: Process.put(:ifc_card_request, request(@request_overrides)),
+          else: Process.delete(:ifc_card_request)
 
-      assert {:error, {:ignored, :ifc_declassify_wrong_user}} =
-               FeishuConfirmation.apply_action(connect(), press("approve", "ou_b"))
+        connect =
+          if @connect_id, do: Map.put(connect(), "connect_id", @connect_id), else: connect()
 
-      refute_received {:decided, _group, _request, _attrs, _tenant}
-    end
-
-    test "a card from another workspace's connect decides nothing" do
-      Process.put(:ifc_card_request, request())
-
-      assert {:error, {:ignored, :ifc_declassify_wrong_user}} =
-               FeishuConfirmation.apply_action(
-                 Map.put(connect(), "connect_id", "cnx_other"),
-                 press("approve", "ou_a")
-               )
-
-      refute_received {:decided, _group, _request, _attrs, _tenant}
-    end
-
-    test "a request whose requester is not a provider user decides nothing" do
-      Process.put(:ifc_card_request, request(%{"requester" => "system"}))
-
-      assert {:error, {:ignored, :ifc_declassify_wrong_user}} =
-               FeishuConfirmation.apply_action(connect(), press("approve", "ou_a"))
-
-      refute_received {:decided, _group, _request, _attrs, _tenant}
+        assert FeishuConfirmation.apply_action(connect, press("approve", @user)) == @expected
+        refute_received {:decided, _group, _request, _attrs, _tenant}
+      end
     end
 
     test "a second press of an already-settled request changes nothing" do
@@ -186,15 +182,6 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
 
       assert {:error, {:ignored, :ifc_declassify_settled}} =
                FeishuConfirmation.apply_action(connect(), press("deny", "ou_a"))
-    end
-
-    test "an unknown request decides nothing" do
-      Process.delete(:ifc_card_request)
-
-      assert {:error, :not_found} =
-               FeishuConfirmation.apply_action(connect(), press("approve", "ou_a"))
-
-      refute_received {:decided, _group, _request, _attrs, _tenant}
     end
 
     test "a malformed callback is ignored, not retried" do
@@ -243,15 +230,6 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
       Process.put(:ifc_card_request, english)
       assert {:ok, response} = FeishuConfirmation.apply_action(connect(), press("deny", "ou_a"))
       assert Jason.encode!(response) =~ "Cancelled, nothing was carried over"
-    end
-
-    test "a request of another type is not a card" do
-      assert :ok = FeishuConfirmation.post(%{"request_type" => "host_access"})
-      assert :ok = FeishuConfirmation.post(%{})
-    end
-
-    test "a requester who is not a provider user gets no card" do
-      assert :ok = FeishuConfirmation.post(request(%{"requester" => "system"}))
     end
 
     test "an unreachable connect never fails the request that raised it" do

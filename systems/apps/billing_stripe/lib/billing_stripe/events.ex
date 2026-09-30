@@ -8,24 +8,156 @@ defmodule BillingStripe.Events do
 
   alias BillingCommerce.{PackageCatalog, Subscriptions}
 
-  @spec process(map()) :: {:ok, map()} | {:error, term()}
-  def process(%{"id" => event_id, "type" => "invoice.paid", "data" => %{"object" => invoice}}) do
-    metadata = billing_metadata_with_provider_plan(invoice)
-    period = period_from(invoice)
-    subscription_id = subscription_id(invoice)
-    invoice_cycle_key = cycle_key(period.valid_from)
+  @supported_events ~w(invoice.paid invoice.payment_failed checkout.session.completed checkout.session.async_payment_succeeded charge.refunded charge.dispute.created charge.dispute.updated charge.dispute.closed customer.subscription.created customer.subscription.updated customer.subscription.deleted customer.subscription.paused customer.subscription.resumed customer.subscription.pending_update_applied customer.subscription.pending_update_expired subscription_schedule.created subscription_schedule.updated subscription_schedule.released subscription_schedule.canceled subscription_schedule.completed)
 
-    with {:ok, package} <-
-           PackageCatalog.get_package_version(%{
-             package_code: required(metadata, "package_code"),
-             version: required(metadata, "package_version")
+  def process(%{"type" => type} = event) when type in @supported_events do
+    with {:ok, owner} <- BillingStripe.Ownership.resolve(event) do
+      case owner do
+        :comma -> do_process(event)
+        :foreign -> {:ok, %{ignored: true, reason: :foreign_product}}
+      end
+    end
+  end
+
+  def process(_), do: {:ok, %{ignored: true}}
+
+  defp do_process(%{"id" => event_id, "type" => "invoice.paid", "data" => %{"object" => invoice}}) do
+    with {:ok, payment} <- BillingStripe.Payments.invoice_payment(invoice) do
+      case payment do
+        :not_stripe_payment ->
+          if invoice["paid_out_of_band"] == true,
+            do: {:ok, %{ignored: true, reason: :not_stripe_payment}},
+            else: reconcile_subscription(subscription_id(invoice), event_id)
+
+        payment ->
+          process_paid_invoice(event_id, invoice, payment)
+      end
+    end
+  end
+
+  defp do_process(%{
+         "id" => event_id,
+         "type" => "checkout.session.completed",
+         "created" => created,
+         "data" => %{"object" => session}
+       }) do
+    process_checkout_payment(event_id, session, from_unix!(created))
+  end
+
+  defp do_process(%{
+         "id" => event_id,
+         "type" => "checkout.session.async_payment_succeeded",
+         "created" => created,
+         "data" => %{"object" => session}
+       }) do
+    process_checkout_payment(
+      event_id,
+      Map.put(session, "payment_status", "paid"),
+      from_unix!(created)
+    )
+  end
+
+  defp do_process(%{
+         "id" => event_id,
+         "type" => "charge.refunded",
+         "data" => %{"object" => charge}
+       }) do
+    BillingCommerce.PaymentRights.apply(required_payment_intent(charge), event_id, fn ->
+      with {:ok, config} <- stripe_config(),
+           {:ok, current} <-
+             config.api.retrieve_charge(required(charge, "id"), %{},
+               api_key: config.secret_key,
+               response_as: :map
+             ) do
+        {:ok,
+         %{
+           type: :refund,
+           amount: current["amount_refunded"],
+           full: current["amount_refunded"] == current["amount"]
+         }}
+      end
+    end)
+  end
+
+  defp do_process(%{"id" => event_id, "type" => type, "data" => %{"object" => dispute}})
+       when type in ["charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed"] do
+    with {:ok, charge} <- BillingStripe.Ownership.charge(dispute),
+         pi <- dispute["payment_intent"] || required_payment_intent(charge) do
+      BillingCommerce.PaymentRights.apply(payment_intent_id(pi), event_id, fn ->
+        with {:ok, config} <- stripe_config(),
+             {:ok, current} <-
+               config.api.retrieve_dispute(required(dispute, "id"), %{},
+                 api_key: config.secret_key,
+                 response_as: :map
+               ) do
+          {:ok, %{type: :dispute, id: current["id"], status: current["status"]}}
+        end
+      end)
+    end
+  end
+
+  defp do_process(%{
+         "id" => event_id,
+         "type" => "invoice.payment_failed",
+         "data" => %{"object" => invoice}
+       }) do
+    reconcile_subscription(subscription_id(invoice), event_id, %{
+      "stripe_invoice_id" => required(invoice, "id")
+    })
+  end
+
+  defp do_process(%{"id" => event_id, "type" => type, "data" => %{"object" => subscription}})
+       when type in [
+              "customer.subscription.created",
+              "customer.subscription.updated",
+              "customer.subscription.deleted",
+              "customer.subscription.paused",
+              "customer.subscription.resumed",
+              "customer.subscription.pending_update_applied",
+              "customer.subscription.pending_update_expired"
+            ] do
+    reconcile_subscription(required(subscription, "id"), event_id)
+  end
+
+  defp do_process(%{
+         "id" => event_id,
+         "type" => "subscription_schedule." <> _,
+         "data" => %{"object" => schedule}
+       }) do
+    id =
+      schedule["subscription"] || schedule["released_subscription"] ||
+        get_in(schedule, ["metadata", "comma_subscription_id"])
+
+    if is_binary(id),
+      do: reconcile_subscription(id, event_id),
+      else: {:error, :stripe_schedule_subscription_missing}
+  end
+
+  defp do_process(_event), do: {:ok, %{ignored: true}}
+
+  defp process_paid_invoice(event_id, invoice, payment) do
+    with {:ok, line, plan} <- BillingStripe.Payments.subscription_line(invoice),
+         metadata <-
+           Map.merge(billing_metadata(invoice), %{
+             "package_code" => plan.package_code,
+             "package_version" => plan.package_version
            }),
-         periods <- paid_periods(invoice, period, package.billing_period),
+         period <- period_from(Map.put(invoice, "lines", %{"data" => [line]})),
+         {:ok, package} <-
+           PackageCatalog.get_package_version(%{
+             package_code: plan.package_code,
+             version: plan.package_version
+           }),
+         {:ok, prior_tier} <- BillingStripe.Payments.prior_tier(invoice),
+         {:ok, prior_invoice} <- BillingStripe.Payments.prior_invoice(invoice),
+         periods <- paid_periods(invoice, period, package.billing_period, prior_tier),
          :ok <- sync_provider_customer(metadata, invoice),
+         subscription_id <- subscription_id(invoice),
          {:ok, result} <-
            Subscriptions.create_subscription(
              subscription_attrs(metadata, %{
                source_type: "stripe_subscription",
+               subscription_checkout_key: metadata["subscription_checkout_key"],
                source_id: subscription_id,
                source_event_id: required(invoice, "id"),
                idempotency_key: "stripe:subscription:#{subscription_id}",
@@ -33,87 +165,21 @@ defmodule BillingStripe.Events do
                periods: periods
              })
            ),
-         {:ok, cycle} <- find_cycle(result.cycles, invoice_cycle_key),
          {:ok, issued} <-
-           Subscriptions.run_due_cycles(%{at: period.valid_from, limit: 1, cycle_ids: [cycle.id]}),
-         {:ok, _subscription} <-
-           reconcile_subscription(subscription_id, event_id, %{
-             "stripe_invoice_id" => required(invoice, "id")
-           }) do
+           BillingCommerce.PaidCycles.record_invoice(
+             result.subscription,
+             package,
+             required(invoice, "id"),
+             payment
+             |> Map.merge(period)
+             |> Map.put(:prior_tier, prior_tier)
+             |> Map.put(:prior_invoice, prior_invoice),
+             payment.paid_at
+           ),
+         {:ok, _} <- reconcile_subscription(subscription_id, event_id) do
       {:ok, issued}
     end
   end
-
-  def process(%{
-        "id" => event_id,
-        "type" => "checkout.session.completed",
-        "data" => %{"object" => session}
-      }) do
-    process_checkout_payment(event_id, session)
-  end
-
-  def process(%{
-        "id" => event_id,
-        "type" => "checkout.session.async_payment_succeeded",
-        "data" => %{"object" => session}
-      }) do
-    process_checkout_payment(event_id, Map.put(session, "payment_status", "paid"))
-  end
-
-  def process(%{"id" => event_id, "type" => "charge.refunded", "data" => %{"object" => charge}}) do
-    Subscriptions.refund_one_time_purchase(%{
-      provider_payment_intent_id: required_payment_intent(charge),
-      refunded_amount_minor: required(charge, "amount_refunded"),
-      payment_amount_minor: required(charge, "amount"),
-      source_type: "stripe_refund",
-      source_id: required(charge, "id"),
-      source_event_id: event_id,
-      reason: "provider_refund"
-    })
-  end
-
-  def process(%{
-        "id" => event_id,
-        "type" => "charge.dispute.created",
-        "data" => %{"object" => dispute}
-      }) do
-    payment_intent_id = required_payment_intent(dispute)
-
-    with {:ok, payment_amount_minor} <- payment_intent_amount(payment_intent_id) do
-      Subscriptions.refund_one_time_purchase(%{
-        provider_payment_intent_id: payment_intent_id,
-        refunded_amount_minor: required(dispute, "amount"),
-        payment_amount_minor: payment_amount_minor,
-        source_type: "stripe_dispute",
-        source_id: required(dispute, "id"),
-        source_event_id: event_id,
-        reason: "provider_dispute"
-      })
-    end
-  end
-
-  def process(%{
-        "id" => event_id,
-        "type" => "invoice.payment_failed",
-        "data" => %{"object" => invoice}
-      }) do
-    reconcile_subscription(subscription_id(invoice), event_id, %{
-      "stripe_invoice_id" => required(invoice, "id")
-    })
-  end
-
-  def process(%{"id" => event_id, "type" => type, "data" => %{"object" => subscription}})
-      when type in [
-             "customer.subscription.created",
-             "customer.subscription.updated",
-             "customer.subscription.deleted",
-             "customer.subscription.paused",
-             "customer.subscription.resumed"
-           ] do
-    reconcile_subscription(required(subscription, "id"), event_id)
-  end
-
-  def process(_event), do: {:ok, %{ignored: true}}
 
   # Stripe does not order deliveries. Read the authoritative current object
   # after taking the PG subscription lock, including on invoice delivery.
@@ -123,10 +189,12 @@ defmodule BillingStripe.Events do
     Subscriptions.reconcile_provider_subscription(source_id, fn ->
       with {:ok, config} <- stripe_config(),
            {:ok, subscription} <-
-             config.api.retrieve_subscription(source_id, %{},
+             config.api.retrieve_subscription(source_id, %{expand: ["schedule"]},
                api_key: config.secret_key,
                response_as: :map
-             ) do
+             ),
+           {:ok, subscription} <-
+             BillingStripe.SubscriptionChanges.reconcile(source_id, subscription) do
         {:ok,
          Map.merge(
            %{
@@ -134,7 +202,13 @@ defmodule BillingStripe.Events do
              status: provider_subscription_status(subscription),
              source_metadata:
                Map.merge(source_metadata, %{
-                 "cancel_at_period_end" => subscription["cancel_at_period_end"] == true,
+                 "cancel_at_period_end" =>
+                   subscription["cancel_at_period_end"] == true or
+                     get_in(subscription, ["schedule", "end_behavior"]) == "cancel",
+                 "scheduled_plan" => scheduled_plan(subscription),
+                 "current_period_end" =>
+                   subscription["current_period_end"] ||
+                     get_in(subscription, ["items", "data", Access.at(0), "current_period_end"]),
                  "provider_price_id" => provider_price_id(subscription),
                  "provider_status" => subscription["status"]
                })
@@ -145,31 +219,37 @@ defmodule BillingStripe.Events do
     end)
   end
 
-  defp process_checkout_payment(event_id, session) do
+  defp process_checkout_payment(event_id, session, paid_at) do
     metadata = billing_metadata(session)
 
     case {session["mode"], session["payment_status"]} do
-      {"payment", status} when status in ["paid", "no_payment_required"] ->
-        period = period_from(session)
+      {"payment", "paid"} ->
         payment_intent_id = payment_intent_id(session["payment_intent"])
 
-        with :ok <- sync_provider_customer(metadata, session) do
-          Subscriptions.issue_one_time_purchase(
-            subscription_attrs(metadata, %{
-              source_type: "stripe_checkout",
-              source_id: required(session, "id"),
-              source_event_id: event_id,
-              idempotency_key: "stripe:checkout:#{required(session, "id")}",
-              source_metadata: %{
-                "stripe_checkout_session_id" => required(session, "id"),
-                "stripe_payment_intent_id" => payment_intent_id,
-                "payment_status" => status
-              },
-              provider_payment_intent_id: payment_intent_id,
-              valid_from: period.valid_from,
-              expires_at: period.expires_at
-            })
-          )
+        with {:ok, payment} <- BillingStripe.Payments.intent(payment_intent_id),
+             period <- paid_month(paid_at),
+             :ok <- sync_provider_customer(metadata, session) do
+          with {:ok, result} <-
+                 Subscriptions.issue_one_time_purchase(
+                   subscription_attrs(metadata, %{
+                     source_type: "stripe_checkout",
+                     source_id: required(session, "id"),
+                     source_event_id: event_id,
+                     idempotency_key: "stripe:checkout:#{required(session, "id")}",
+                     source_metadata: %{
+                       "stripe_checkout_session_id" => required(session, "id"),
+                       "stripe_payment_intent_id" => payment_intent_id,
+                       "payment_status" => "paid"
+                     },
+                     metadata: %{"stripe_payment_intent_id" => payment_intent_id},
+                     provider_payment_intent_id: payment_intent_id,
+                     valid_from: period.valid_from,
+                     expires_at: period.expires_at
+                   })
+                 ),
+               :ok <- BillingStripe.Payments.compensate_initial(payment, event_id) do
+            {:ok, result}
+          end
         end
 
       {"payment", _pending_or_missing} ->
@@ -178,6 +258,12 @@ defmodule BillingStripe.Events do
       _ ->
         {:ok, %{ignored: true, reason: :not_one_time_payment}}
     end
+  end
+
+  defp paid_month(at) do
+    start = Date.new!(at.year, at.month, 1)
+    next = Date.shift(start, month: 1)
+    %{valid_from: at, expires_at: DateTime.new!(next, ~T[00:00:00], "Etc/UTC")}
   end
 
   @spec billing_metadata(map()) :: map()
@@ -192,11 +278,6 @@ defmodule BillingStripe.Events do
     else
       object["metadata"] || %{}
     end
-  end
-
-  defp billing_metadata_with_provider_plan(object) do
-    metadata = billing_metadata(object)
-    Map.merge(metadata, stringify_plan_attrs(provider_plan_attrs(object, metadata)))
   end
 
   defp provider_plan_attrs(object, metadata) do
@@ -220,12 +301,6 @@ defmodule BillingStripe.Events do
     end
   end
 
-  defp stringify_plan_attrs(%{package_code: package_code, package_version: package_version}) do
-    %{"package_code" => package_code, "package_version" => package_version}
-  end
-
-  defp stringify_plan_attrs(_attrs), do: %{}
-
   defp provider_price_id(object) do
     price =
       get_in(object, ["items", "data", Access.at(0), "price"]) ||
@@ -245,13 +320,6 @@ defmodule BillingStripe.Events do
       get_in(object, ["parent", "subscription_details", "subscription"]) ||
       get_in(object, ["subscription_details", "subscription"]) ||
       required(object, "subscription")
-  end
-
-  defp find_cycle(cycles, cycle_key) do
-    case Enum.find(cycles, &(&1.cycle_key == cycle_key)) do
-      nil -> {:error, :stripe_invoice_cycle_not_found}
-      cycle -> {:ok, cycle}
-    end
   end
 
   defp subscription_attrs(metadata, attrs) do
@@ -338,21 +406,57 @@ defmodule BillingStripe.Events do
 
     boundaries
     |> Enum.chunk_every(2, 1, :discard)
-    |> Enum.map(fn [valid_from, expires_at] ->
+    |> Enum.with_index()
+    |> Enum.map(fn {[valid_from, expires_at], offset} ->
       %{
         cycle_key: cycle_key(valid_from),
         valid_from: valid_from,
         expires_at: expires_at,
-        source_event_id: cycle_key(valid_from)
+        source_event_id: cycle_key(valid_from),
+        source_metadata: %{
+          "nominal_end" => DateTime.to_iso8601(DateTime.shift(start_at, month: offset + 1))
+        }
       }
     end)
   end
 
-  defp paid_periods(invoice, period, billing_period) do
+  defp paid_periods(invoice, period, _billing_period, prior_tier) when is_integer(prior_tier) do
+    # A paid upgrade allocates within existing paid cycles. Rebuilding from a
+    # proration date shifts monthly anchors and can duplicate annual cycles.
+    repo = Application.fetch_env!(:billing_stripe, :repo)
+
+    rows =
+      Ecto.Adapters.SQL.query!(
+        repo,
+        """
+        SELECT c.cycle_key, c.period_start, c.period_end
+        FROM billing_subscription_cycles c
+        JOIN billing_subscriptions s ON s.id = c.subscription_id
+        WHERE s.source_type = 'stripe_subscription' AND s.source_id = $1
+          AND c.period_start < $3 AND c.period_end > $2
+        ORDER BY c.period_start LIMIT 13
+        """,
+        [subscription_id(invoice), period.valid_from, period.expires_at]
+      ).rows
+
+    if rows == [] or length(rows) > 12, do: repo.rollback(:stripe_paid_cycle_missing)
+
+    Enum.map(rows, fn [key, starts, ends] ->
+      %{
+        cycle_key: key,
+        valid_from: starts,
+        expires_at: ends,
+        source_event_id: required(invoice, "id")
+      }
+    end)
+  end
+
+  defp paid_periods(invoice, period, billing_period, nil) do
     # Clover invoice lines contain a price id under pricing.price_details,
     # not an expanded recurring Price. Cadence is already owned by our catalog.
     if billing_period == "year" do
       monthly_periods(period.valid_from, period.expires_at)
+      |> Enum.map(&Map.put(&1, :source_event_id, required(invoice, "id")))
     else
       [
         %{
@@ -362,6 +466,36 @@ defmodule BillingStripe.Events do
           source_event_id: required(invoice, "id")
         }
       ]
+    end
+  end
+
+  defp scheduled_plan(subscription) do
+    schedule = subscription["schedule"]
+
+    if is_map(schedule) and schedule["end_behavior"] != "cancel" do
+      current_start = get_in(schedule, ["current_phase", "start_date"])
+      next_phase = Enum.find(schedule["phases"] || [], &(&1["start_date"] > current_start))
+
+      if next_phase do
+        price = get_in(next_phase, ["items", Access.at(0), "price"])
+        id = if is_map(price), do: price["id"], else: price
+
+        case BillingCommerce.get_provider_plan(%{
+               surface: "comma",
+               provider: "stripe",
+               provider_price_id: id
+             }) do
+          {:ok, plan} ->
+            %{
+              package_code: plan.package_code,
+              package_version: plan.package_version,
+              effective_at: next_phase["start_date"]
+            }
+
+          _ ->
+            nil
+        end
+      end
     end
   end
 
@@ -389,23 +523,6 @@ defmodule BillingStripe.Events do
   defp payment_intent_id(%{"id" => id}), do: id
   defp payment_intent_id(%{id: id}), do: id
 
-  defp payment_intent_amount(payment_intent_id) do
-    with {:ok, config} <- stripe_config(),
-         {:ok, payment_intent} <-
-           config.api.retrieve_payment_intent(
-             payment_intent_id,
-             %{},
-             api_key: config.secret_key
-           ),
-         amount when is_integer(amount) and amount > 0 <-
-           map_value(payment_intent, :amount) do
-      {:ok, amount}
-    else
-      {:error, reason} -> {:error, reason}
-      _invalid_response -> {:error, :invalid_stripe_payment_intent_amount}
-    end
-  end
-
   defp stripe_config do
     case Application.get_env(:billing_stripe, :secret_key) do
       key when is_binary(key) and key != "" ->
@@ -419,9 +536,6 @@ defmodule BillingStripe.Events do
         {:error, :stripe_not_configured}
     end
   end
-
-  defp map_value(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
   defp cycle_key(%DateTime{} = at) do
     date = DateTime.to_date(at)

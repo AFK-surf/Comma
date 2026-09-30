@@ -100,16 +100,52 @@ func TestApprovedReusePreservesAllArtifactIdentitiesAcrossSourceRevisions(t *tes
 	}
 }
 
-func TestGenerateRejectsWrongPlatform(t *testing.T) {
-	assertArchiveFailure(t, "release-7", func(path string) {
-		writeOCIArchive(t, path, "shell", testInputDigest(), "linux", "amd64", true)
-	}, "platform must be linux/arm64")
+func TestGenerateRejectsInvalidInput(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		generate func(*testing.T) error
+		want     string
+	}{
+		{"wrong platform", func(t *testing.T) error {
+			return generateWithArchives(t, "release-7", func(path string) {
+				writeOCIArchive(t, path, "shell", testInputDigest(), "linux", "amd64", true)
+			})
+		}, "platform must be linux/arm64"},
+		{"missing layout", func(t *testing.T) error {
+			return generateWithArchives(t, "release-7", func(path string) {
+				writeOCIArchive(t, path, "shell", testInputDigest(), "linux", "arm64", false)
+			})
+		}, "missing oci-layout"},
+		{"missing classes", func(*testing.T) error {
+			_, err := Generate("release-7", map[string]string{"shell": testInputDigest()}, map[string]string{"shell": "unused"})
+			return err
+		}, "expected input digests and archives"},
+		{"empty source revision", func(*testing.T) error {
+			_, err := Generate("", nil, nil)
+			return err
+		}, "source revision is required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.generate(t); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
 }
 
-func TestGenerateRejectsMissingLayout(t *testing.T) {
-	assertArchiveFailure(t, "release-7", func(path string) {
-		writeOCIArchive(t, path, "shell", testInputDigest(), "linux", "arm64", false)
-	}, "missing oci-layout")
+func generateWithArchives(t *testing.T, revision string, write func(string)) error {
+	t.Helper()
+	dir := t.TempDir()
+	archives := map[string]string{}
+	inputDigests := map[string]string{}
+	for _, class := range requiredClasses {
+		path := filepath.Join(dir, class+".oci.tar")
+		write(path)
+		archives[class] = path
+		inputDigests[class] = testInputDigest()
+	}
+	_, err := Generate(revision, inputDigests, archives)
+	return err
 }
 
 func TestInputDigestIsOnlyAReuseSelectorAndDoesNotChangeArtifactIdentity(t *testing.T) {
@@ -131,39 +167,6 @@ func TestInputDigestIsOnlyAReuseSelectorAndDoesNotChangeArtifactIdentity(t *test
 	}
 	if first.ManifestDigest != second.ManifestDigest || first.Reference != second.Reference {
 		t.Fatalf("selector changed OCI identity: first=%#v second=%#v", first, second)
-	}
-}
-
-func TestGenerateRequiresExactlyThreeClasses(t *testing.T) {
-	_, err := Generate("release-7", map[string]string{"shell": testInputDigest()}, map[string]string{"shell": "unused"})
-	if err == nil || !strings.Contains(err.Error(), "expected input digests and archives") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestGenerateRejectsInvalidSourceRevision(t *testing.T) {
-	_, err := Generate("", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "source revision is required") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func assertArchiveFailure(t *testing.T, revision string, write func(string), want string) {
-	t.Helper()
-	dir := t.TempDir()
-	archives := map[string]string{}
-	for _, class := range requiredClasses {
-		path := filepath.Join(dir, class+".oci.tar")
-		write(path)
-		archives[class] = path
-	}
-	inputDigests := map[string]string{}
-	for _, class := range requiredClasses {
-		inputDigests[class] = testInputDigest()
-	}
-	_, err := Generate(revision, inputDigests, archives)
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("error = %v, want substring %q", err, want)
 	}
 }
 

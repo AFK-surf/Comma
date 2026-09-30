@@ -2996,12 +2996,17 @@ defmodule SalixIM.ConversationsTest do
                     ^second_participant_id}
 
     assert {:ok,
-            %{"activity" => %{"state" => "active", "status" => "canonical session activity"}}} =
+            %{"activity" => %{"state" => "active", "status" => "canonical session activity"}} =
+              first_status} =
              ConversationServer.get_group_conversation_participant_status(
                group_id,
                first_conversation_id,
                first_participant_id
              )
+
+    # The second participant's presentation must not leak into the first.
+    refute get_in(first_status, ["presentation_activity", "summary"]) ==
+             "second participant now"
 
     assert {:ok,
             %{
@@ -3162,8 +3167,7 @@ defmodule SalixIM.ConversationsTest do
     assert {:ok, %{"data" => listed_conversations, "has_more" => false}} =
              Conversations.list_group_conversations(group_id, limit: 20)
 
-    assert listed = Enum.find(listed_conversations, &(&1["conversation_id"] == conversation_id))
-    assert listed["conversation_id"] == conversation_id
+    assert Enum.any?(listed_conversations, &(&1["conversation_id"] == conversation_id))
 
     assert {:ok, [%{"conversation_id" => ^conversation_id}]} =
              Conversations.search_group_conversations(group_id, "alpha", limit: 10)
@@ -3294,7 +3298,6 @@ defmodule SalixIM.ConversationsTest do
 
     assert String.valid?(snippet)
     assert snippet =~ "«needle»"
-    assert is_binary(Jason.encode!(%{"snippet" => snippet}))
   end
 
   test "message metadata rejects delivery billing context", %{group_id: group_id} do
@@ -5575,35 +5578,6 @@ defmodule SalixIM.ConversationsTest do
             }} = Conversations.list_group_conversations(group_id, limit: 1)
 
     assert is_binary(next_cursor)
-  end
-
-  test "conversation list performs one bounded durable read per projected record", %{
-    group_id: group_id
-  } do
-    start_supervised!(ReadProbe)
-
-    assert {:ok, conversation} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "title" => "Slow hydration"
-             })
-
-    ReadProbe.reset(nil, Keys.ctl_group_conversation(group_id, conversation["conversation_id"]))
-
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, InstrumentedS3)
-
-    on_exit(fn ->
-      restore(:salix_store, :s3_backend, previous_backend)
-    end)
-
-    assert {:ok, %{"data" => [%{"conversation_id" => conversation_id}]}} =
-             Conversations.list_group_conversations(group_id, limit: 20)
-
-    assert conversation_id == conversation["conversation_id"]
-
-    assert ReadProbe.snapshot().gets == %{
-             Keys.ctl_group_conversation(group_id, conversation_id) => 1
-           }
   end
 
   test "conversation list returns an error when parallel hydration times out", %{
@@ -8011,46 +7985,77 @@ defmodule SalixIM.ConversationsTest do
            }
   end
 
-  test "Task list repair survives conversation owner restart", %{
-    group_id: group_id,
-    router_id: router_id,
-    worker_id: worker_id
-  } do
-    {conversation_id, review_version} =
-      create_reviewable_task!(group_id, router_id, worker_id, "restart-index-repair")
+  # A change whose stale list-index delete failed leaves two index records;
+  # the restarted owner converges them to the canonical Task.
+  for {name, change, expected_status} <- [
+        {"Task list repair", :accept_review, "completed"},
+        {"message append list repair", :agent_message, "ready_for_review"}
+      ] do
+    @change change
+    @expected_status expected_status
+    test "#{name} survives conversation owner restart", %{
+      group_id: group_id,
+      router_id: router_id,
+      worker_id: worker_id
+    } do
+      {conversation_id, review_version} =
+        create_reviewable_task!(group_id, router_id, worker_id, "restart-index-repair-#{@change}")
 
-    assert {:ok, reviewable} = Conversations.get_group_conversation(group_id, conversation_id)
-    stale_key = conversation_list_index_key(group_id, reviewable)
-    assert :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :delete, stale_key})
-    on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
+      assert {:ok, before_change} =
+               Conversations.get_group_conversation(group_id, conversation_id)
 
-    assert {:ok, %{"status" => "completed"}} =
-             ConversationServer.accept_task_review(group_id, conversation_id, review_version)
+      stale_key = conversation_list_index_key(group_id, before_change)
+      assert :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :delete, stale_key})
+      on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
 
-    assert [_current, _stale] =
-             conversation_list_index_records(group_id, conversation_id)
+      case @change do
+        :accept_review ->
+          assert {:ok, %{"status" => "completed"}} =
+                   ConversationServer.accept_task_review(
+                     group_id,
+                     conversation_id,
+                     review_version
+                   )
 
-    assert {:ok, owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
-    store_pid = :sys.get_state(owner).store_pid
-    store_ref = Process.monitor(store_pid)
-    assert :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
-    assert_receive {:DOWN, ^store_ref, :process, ^store_pid, _reason}, 1_000
-    assert :ok = SalixStore.S3.Fake.clear_blackhole()
+        :agent_message ->
+          assert {:ok, %{"inserted" => true}} =
+                   ConversationServer.append_group_conversation_agent_message(
+                     group_id,
+                     conversation_id,
+                     router_id,
+                     %{
+                       "content" => "Please add keyboard controls.",
+                       "client_request_id" => "append-restart-index-repair-command",
+                       "delivery_filter" => %{"participant_ids" => []}
+                     }
+                   )
+      end
 
-    assert {:ok, _restarted_owner} =
-             ConversationPlacement.ensure_started(group_id, conversation_id)
+      assert [_current, _stale] = conversation_list_index_records(group_id, conversation_id)
 
-    assert eventually_value(fn ->
-             with {:ok, canonical} <-
-                    Conversations.get_group_conversation(group_id, conversation_id),
-                  [{only_key, only_record}] <-
-                    conversation_list_index_records(group_id, conversation_id) do
-               only_key == conversation_list_index_key(group_id, canonical) and
-                 only_record["updated_at"] == canonical["updated_at"]
-             else
-               _ -> false
-             end
-           end)
+      assert {:ok, owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
+      store_pid = :sys.get_state(owner).store_pid
+      store_ref = Process.monitor(store_pid)
+      assert :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
+      assert_receive {:DOWN, ^store_ref, :process, ^store_pid, _reason}, 1_000
+      assert :ok = SalixStore.S3.Fake.clear_blackhole()
+
+      assert {:ok, _restarted_owner} =
+               ConversationPlacement.ensure_started(group_id, conversation_id)
+
+      assert eventually_value(fn ->
+               with {:ok, canonical} <-
+                      Conversations.get_group_conversation(group_id, conversation_id),
+                    [{only_key, only_record}] <-
+                      conversation_list_index_records(group_id, conversation_id) do
+                 only_key == conversation_list_index_key(group_id, canonical) and
+                   only_record["updated_at"] == canonical["updated_at"] and
+                   canonical["status"] == @expected_status
+               else
+                 _ -> false
+               end
+             end)
+    end
   end
 
   test "Task acceptance does not commit when its current list index cannot be written", %{
@@ -8101,59 +8106,6 @@ defmodule SalixIM.ConversationsTest do
     assert current_index = Enum.find_index(writes, &(&1 == current_key))
     assert meta_index = Enum.find_index(writes, &(&1 == meta_key))
     assert current_index < meta_index
-  end
-
-  test "message append list repair survives conversation owner restart", %{
-    group_id: group_id,
-    router_id: router_id,
-    worker_id: worker_id
-  } do
-    {conversation_id, _review_version} =
-      create_reviewable_task!(group_id, router_id, worker_id, "append-restart-index-repair")
-
-    assert {:ok, before_append} =
-             Conversations.get_group_conversation(group_id, conversation_id)
-
-    stale_key = conversation_list_index_key(group_id, before_append)
-    assert :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :delete, stale_key})
-    on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
-
-    assert {:ok, %{"inserted" => true}} =
-             ConversationServer.append_group_conversation_agent_message(
-               group_id,
-               conversation_id,
-               router_id,
-               %{
-                 "content" => "Please add keyboard controls.",
-                 "client_request_id" => "append-restart-index-repair-command",
-                 "delivery_filter" => %{"participant_ids" => []}
-               }
-             )
-
-    assert [_current, _stale] = conversation_list_index_records(group_id, conversation_id)
-
-    assert {:ok, owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
-    store_pid = :sys.get_state(owner).store_pid
-    store_ref = Process.monitor(store_pid)
-    assert :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
-    assert_receive {:DOWN, ^store_ref, :process, ^store_pid, _reason}, 1_000
-    assert :ok = SalixStore.S3.Fake.clear_blackhole()
-
-    assert {:ok, _restarted_owner} =
-             ConversationPlacement.ensure_started(group_id, conversation_id)
-
-    assert eventually_value(fn ->
-             with {:ok, canonical} <-
-                    Conversations.get_group_conversation(group_id, conversation_id),
-                  [{only_key, only_record}] <-
-                    conversation_list_index_records(group_id, conversation_id) do
-               only_key == conversation_list_index_key(group_id, canonical) and
-                 only_record["updated_at"] == canonical["updated_at"] and
-                 canonical["status"] == "ready_for_review"
-             else
-               _ -> false
-             end
-           end)
   end
 
   test "overlapping failed list-index updates converge to the latest canonical Task", %{

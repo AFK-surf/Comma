@@ -2678,13 +2678,16 @@ defmodule CommaWeb.Router do
   end
 
   get "/v1/comma/billing/plans" do
-    with_user(conn, fn _user, _session ->
-      with {:ok, plans} <- comma_billing_plans() do
-        send_json(conn, 200, %{"data" => Enum.map(plans, &public_billing_plan/1)})
-      else
-        {:error, reason} -> comma_error(conn, reason)
-      end
-    end)
+    with {:ok, plans} <- comma_billing_plans() do
+      conn
+      |> put_resp_header("cache-control", "no-store")
+      |> send_json(200, %{
+        "data" => Enum.map(plans, &public_billing_plan/1),
+        "signup_credits" => Comma.Billing.SignupCredits.public_policy()
+      })
+    else
+      {:error, reason} -> comma_error(conn, reason)
+    end
   end
 
   get "/v1/comma/workspaces/:workspace_id/billing/summary" do
@@ -2714,8 +2717,34 @@ defmodule CommaWeb.Router do
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
            {:ok, portal} <-
-             create_subscription_change(workspace, user, conn.body_params || %{}) do
-        send_json(conn, 201, public_billing_session(portal))
+             create_subscription_change(workspace, user, conn.body_params || %{}, :change) do
+        send_json(conn, 201, portal)
+      else
+        {:error, reason} -> subscription_change_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/billing/subscription/preview" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, preview} <-
+             create_subscription_change(workspace, user, conn.body_params || %{}, :preview) do
+        send_json(conn, 200, preview)
+      else
+        {:error, reason} -> subscription_change_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/billing/subscription/cancel" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, attrs} <- subscription_provider_attrs(workspace, user, conn.body_params || %{}),
+           {:ok, result} <- BillingStripe.cancel_subscription_renewal(attrs) do
+        send_json(conn, 200, result)
       else
         {:error, reason} -> subscription_change_error(conn, reason)
       end
@@ -4519,6 +4548,7 @@ defmodule CommaWeb.Router do
 
   defp create_checkout(workspace, user, attrs) do
     with {:ok, plan} <- plan(attrs),
+         :ok <- purchasable(plan),
          :ok <- synced_price(plan),
          {:ok, customer} <-
            BillingStripe.ensure_customer(stripe_customer_attrs(workspace, user, attrs)) do
@@ -4564,30 +4594,47 @@ defmodule CommaWeb.Router do
     ArgumentError -> {:error, :invalid_portal_request}
   end
 
-  defp create_subscription_change(workspace, user, attrs) do
-    account_id = workspace["billing_account_id"]
-
-    with {:ok, plan} <- plan(attrs),
+  defp create_subscription_change(workspace, user, attrs, action) do
+    with {:ok, plan} <- historical_plan(attrs),
          :ok <- subscription_plan(plan),
          :ok <- synced_price(plan),
-         {:ok, subscription} <- active_billing_subscription(account_id),
-         :ok <- different_subscription_plan(subscription, plan),
+         {:ok, command} <- subscription_provider_attrs(workspace, user, attrs) do
+      command =
+        Map.merge(command, %{
+          provider_price_id: plan.provider_price_id,
+          success_url: attrs["success_url"],
+          current_price_id: attrs["current_price_id"],
+          period_end: attrs["period_end"],
+          proration_date: attrs["proration_date"]
+        })
+
+      case action do
+        :preview -> BillingStripe.preview_subscription_change(command)
+        :change -> BillingStripe.change_subscription(command)
+      end
+    end
+  rescue
+    ArgumentError -> {:error, :invalid_subscription_change_request}
+  end
+
+  defp subscription_provider_attrs(workspace, user, attrs) do
+    account_id = workspace["billing_account_id"]
+
+    with {:ok, subscription} <- active_billing_subscription(account_id),
          {:ok, customer} <-
            BillingCommerce.get_active_provider_customer(%{
              billing_account_id: account_id,
              provider: "stripe",
              provider_context: "default"
            }) do
-      BillingStripe.create_subscription_change_portal(%{
-        billing_account_id: account_id,
-        customer_id: customer.provider_customer_id,
-        subscription_id: subscription["source_id"],
-        provider_price_id: plan.provider_price_id,
-        return_url: required_body(attrs, "return_url"),
-        success_url: required_body(attrs, "success_url"),
-        idempotency_key:
-          "comma:subscription-change:#{workspace["id"]}:#{plan.provider_lookup_key}:#{user["id"]}:#{required_body(attrs, "client_request_id")}"
-      })
+      {:ok,
+       %{
+         billing_account_id: account_id,
+         customer_id: customer.provider_customer_id,
+         subscription_id: subscription["source_id"],
+         idempotency_key:
+           "comma:subscription-change:#{workspace["id"]}:#{user["id"]}:#{required_body(attrs, "client_request_id")}"
+       }}
     else
       {:error, :not_found} -> {:error, :active_subscription_not_found}
       {:error, _} = error -> error
@@ -4599,20 +4646,15 @@ defmodule CommaWeb.Router do
   defp subscription_plan(%{mode: "subscription"}), do: :ok
   defp subscription_plan(_plan), do: {:error, :subscription_plan_required}
 
-  defp different_subscription_plan(subscription, plan) do
-    if subscription["package_code"] == plan.package_code and
-         subscription["package_version"] == plan.package_version do
-      {:error, :subscription_plan_already_active}
-    else
-      :ok
-    end
-  end
-
   defp subscription_change_error(conn, reason)
        when reason in [
               :active_subscription_not_found,
               :stripe_customer_not_linked,
-              :subscription_plan_already_active
+              :subscription_plan_already_active,
+              :subscription_payment_pending,
+              :subscription_quote_changed,
+              :subscription_renewal_cancelled,
+              :subscription_billing_period_change_unavailable
             ],
        do: send_error(conn, 409, reason)
 
@@ -4822,28 +4864,47 @@ defmodule CommaWeb.Router do
   defp redeem_apply_status(_reason), do: 400
 
   defp comma_billing_plans do
-    BillingCommerce.list_provider_plans(%{
-      surface: "comma",
-      provider: "stripe",
-      synced_only: true
-    })
+    with {:ok, plans} <-
+           BillingCommerce.list_provider_plans(%{
+             surface: "comma",
+             provider: "stripe",
+             synced_only: true
+           }) do
+      keys = current_billing_keys()
+      {:ok, Enum.filter(plans, &(&1.provider_lookup_key in keys and purchasable?(&1)))}
+    end
+  end
+
+  defp current_billing_keys do
+    Enum.map(Comma.Billing.PricingV1.catalog().versions, & &1.provider_lookup_key)
   end
 
   defp plan(attrs) do
     lookup_key =
-      attrs["plan_key"] || attrs[:plan_key] || attrs["provider_lookup_key"] ||
-        attrs[:provider_lookup_key]
+      attrs["plan_key"] || attrs[:plan_key] ||
+        attrs["provider_lookup_key"] || attrs[:provider_lookup_key]
 
-    if is_binary(lookup_key) and String.trim(lookup_key) != "" do
-      BillingCommerce.get_provider_plan(%{
-        surface: "comma",
-        provider: "stripe",
-        provider_lookup_key: lookup_key
-      })
+    if lookup_key in current_billing_keys() do
+      historical_plan(attrs)
     else
       {:error, :invalid_plan_selector}
     end
   end
+
+  defp historical_plan(attrs) do
+    BillingCommerce.get_provider_plan(%{
+      surface: "comma",
+      provider: "stripe",
+      provider_lookup_key:
+        attrs["plan_key"] || attrs[:plan_key] || attrs["provider_lookup_key"] ||
+          attrs[:provider_lookup_key]
+    })
+  end
+
+  defp purchasable?(plan), do: plan.provider_metadata["comma_purchasable"] == true
+
+  defp purchasable(plan),
+    do: if(purchasable?(plan), do: :ok, else: {:error, :plan_not_purchasable})
 
   defp synced_price(%{provider_price_id: price_id}) when is_binary(price_id) and price_id != "",
     do: :ok
@@ -4896,8 +4957,11 @@ defmodule CommaWeb.Router do
 
     active_subscription =
       case active_billing_subscription(account_id) do
-        {:ok, subscription} -> subscription
-        {:error, :not_found} -> nil
+        {:ok, subscription} ->
+          subscription
+
+        {:error, :not_found} ->
+          nil
       end
 
     %{
@@ -4929,15 +4993,32 @@ defmodule CommaWeb.Router do
     }
   end
 
+  defp current_subscription_plan(metadata) do
+    case metadata["provider_price_id"] do
+      price_id when is_binary(price_id) and price_id != "" ->
+        case BillingCommerce.get_provider_plan(%{
+               surface: "comma",
+               provider: "stripe",
+               provider_price_id: price_id
+             }) do
+          {:ok, plan} -> public_billing_plan(plan)
+          {:error, :not_found} -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
   defp active_billing_subscription(account_id) do
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         BillingCore.Repo,
         """
-        SELECT package_code, package_version, status, source_id
+        SELECT package_code, package_version, status, source_id, source_metadata
         FROM billing_subscriptions
         WHERE billing_account_id = $1
-          AND status IN ('active', 'trialing', 'past_due')
+          AND status IN ('active', 'trialing', 'past_due', 'unpaid', 'paused')
         ORDER BY inserted_at DESC, id DESC
         LIMIT 1
         """,
@@ -4945,13 +5026,22 @@ defmodule CommaWeb.Router do
       )
 
     case rows do
-      [[package_code, package_version, status, source_id]] ->
+      [[package_code, package_version, status, source_id, metadata]] ->
+        metadata = BillingCore.Metadata.object(metadata)
+
         {:ok,
          %{
            "package_code" => package_code,
            "package_version" => package_version,
            "status" => status,
-           "source_id" => source_id
+           "source_id" => source_id,
+           "plan" => current_subscription_plan(metadata),
+           "source_metadata" =>
+             Map.take(metadata, [
+               "cancel_at_period_end",
+               "current_period_end",
+               "scheduled_plan"
+             ])
          }}
 
       [] ->

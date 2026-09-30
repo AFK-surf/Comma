@@ -12,6 +12,8 @@ import {
   browserSidebarOpenInputSchema,
   browserSidebarOpenTabRequestSchema,
   browserSidebarUpdateInputSchema,
+  maxBrowserSidebarFaviconBytes,
+  maxBrowserSidebarFaviconDataUrlLength,
   maxBrowserSidebarSessionsPerOwner,
   type BrowserSidebarCaptureInput,
   type BrowserSidebarCaptureResult,
@@ -51,6 +53,7 @@ const CLIENT_BROWSER_OWNER_WINDOW_ID = "win_main";
 // every request to `setWindowOpenHandler` without consulting it, so the sidebar
 // reconstructs the rule itself in `installBrowserSidebarSecurity`.
 const BROWSER_SIDEBAR_USER_ACTIVATION_TIMEOUT_MS = 5_000;
+const BROWSER_SIDEBAR_FAVICON_FETCH_TIMEOUT_MS = 5_000;
 export const BROWSER_SIDEBAR_WEB_PREFERENCES = {
   contextIsolation: true,
   nodeIntegration: false,
@@ -92,7 +95,7 @@ interface NavigationEvent {
 
 type BrowserSidebarSessionLike = Pick<
   Session,
-  "setPermissionCheckHandler" | "setPermissionRequestHandler"
+  "fetch" | "setPermissionCheckHandler" | "setPermissionRequestHandler"
 >;
 
 interface BrowserSidebarKeyboardInputLike {
@@ -143,6 +146,7 @@ interface BrowserSidebarWebContentsLike {
       | "did-start-navigation"
       | "did-start-loading"
       | "did-stop-loading"
+      | "page-favicon-updated"
       | "page-title-updated",
     listener: (...args: unknown[]) => void
   ): unknown;
@@ -264,6 +268,11 @@ interface ActiveBrowserSidebar {
   closing: boolean;
   closePromise?: Promise<void> | undefined;
   destructionObserved: Promise<void>;
+  /** The committed document's icon as a bounded `data:image/*` URL. */
+  favicon?: string | undefined;
+  /** Aborts the reads of the previous icon list when a new list arrives. */
+  faviconFetch?: AbortController | undefined;
+  faviconSourceUrl?: string | undefined;
   id: string;
   inspectionGeneration: number;
   inspectionPageGeneration?: number | undefined;
@@ -1255,6 +1264,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       ...(surface ? { surface } : {}),
       url: active.url,
       title: active.webContents.getTitle(),
+      ...(active.favicon ? { favicon: active.favicon } : {}),
       visible: active.view.getVisible(),
     };
   }
@@ -1305,12 +1315,63 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     });
     active.webContents.on("did-navigate", publish);
     active.webContents.on("did-navigate-in-page", publish);
+    active.webContents.on("page-favicon-updated", (...args) => {
+      void this.#loadFavicon(active, args[1])
+        .then((changed) => {
+          if (changed) publish();
+        })
+        .catch(() => undefined);
+    });
     active.webContents.on("did-start-loading", () => {
       active.reason = undefined;
       publish();
     });
     active.webContents.on("did-stop-loading", publish);
     active.webContents.on("page-title-updated", publish);
+  }
+
+  /**
+   * Chromium reports the document's icon candidates, including the implicit
+   * `/favicon.ico`. The app renderer may load only `data:` images, so Main
+   * reads the first candidate that is an image through the tab's own session:
+   * the page's partition, cookies and HTTP cache, usually a cache hit. An
+   * inline `data:image/*` icon is used as is; `data:,` means "no icon".
+   *
+   * Each list replaces the icon, including with none. A navigation alone does
+   * not: Chromium skips the event when the next document declares the same
+   * list, so clearing on `did-navigate` would lose a reloaded page's icon. A
+   * list that still names the current icon's source keeps it without a read,
+   * even if an earlier candidate would now load; at 16 px any of them will do.
+   */
+  async #loadFavicon(active: ActiveBrowserSidebar, candidates: unknown) {
+    const urls = (Array.isArray(candidates) ? candidates : []).filter(
+      (url): url is string =>
+        typeof url === "string" && /^(?:https?:|data:image\/)/.test(url)
+    );
+    active.faviconFetch?.abort();
+    const fetch = new AbortController();
+    active.faviconFetch = fetch;
+    if (active.faviconSourceUrl && urls.includes(active.faviconSourceUrl)) {
+      return false;
+    }
+    for (const url of urls) {
+      const favicon = url.startsWith("data:")
+        ? url
+        : await fetchFavicon(active.webContents.session, url, fetch.signal).catch(
+            () => undefined
+          );
+      if (fetch.signal.aborted || active.closing) return false;
+      // A long `Content-Type` can push a fetched icon past the published limit.
+      if (favicon && favicon.length <= maxBrowserSidebarFaviconDataUrlLength) {
+        active.favicon = favicon;
+        active.faviconSourceUrl = url;
+        return true;
+      }
+    }
+    const changed = active.favicon !== undefined;
+    active.favicon = undefined;
+    active.faviconSourceUrl = undefined;
+    return changed;
   }
 
   async #publishState(active: ActiveBrowserSidebar) {
@@ -2024,6 +2085,42 @@ function isSafeBrowserSidebarUrl(value: string) {
 function currentSafeUrl(webContents: BrowserSidebarWebContentsLike, fallback: string) {
   const current = webContents.getURL();
   return isSafeBrowserSidebarUrl(current) ? current : fallback;
+}
+
+async function fetchFavicon(
+  session: BrowserSidebarSessionLike,
+  url: string,
+  signal: AbortSignal
+) {
+  const response = await session.fetch(url, {
+    signal: AbortSignal.any([
+      signal,
+      AbortSignal.timeout(BROWSER_SIDEBAR_FAVICON_FETCH_TIMEOUT_MS),
+    ]),
+  });
+  const type = response.headers
+    .get("content-type")
+    ?.split(";")[0]
+    ?.trim()
+    .toLowerCase();
+  if (
+    !response.ok ||
+    !response.body ||
+    !type?.startsWith("image/") ||
+    Number(response.headers.get("content-length")) > maxBrowserSidebarFaviconBytes
+  ) {
+    await response.body?.cancel();
+    return undefined;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.byteLength;
+    if (size > maxBrowserSidebarFaviconBytes) return undefined;
+    chunks.push(chunk);
+  }
+  if (size === 0) return undefined;
+  return `data:${type};base64,${Buffer.concat(chunks).toString("base64")}`;
 }
 
 function closeWebContents(webContents: BrowserSidebarWebContentsLike) {

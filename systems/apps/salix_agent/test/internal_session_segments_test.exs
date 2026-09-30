@@ -134,11 +134,15 @@ defmodule SalixAgent.InternalSessionSegmentsTest do
     {agent_id, hd(records).seq + 1}
   end
 
-  defp replace_first_segment_body(agent_id, body) do
-    {key, _} = sealed_first_segment(agent_id)
-    {:ok, _} = S3.put(key, body)
-    :ok
-  end
+  defp corrupt_segment_body(:duplicate, [first | rest]),
+    do: SealedSegments.encode([first, first | rest])
+
+  defp corrupt_segment_body(:reorder, [a, b | rest]), do: SealedSegments.encode([b, a | rest])
+  defp corrupt_segment_body(:invalid_zstd, _records), do: <<1, 2, 3, "not a zstd frame">>
+  defp corrupt_segment_body(:non_list, _records), do: SealedSegments.encode(%{"not" => "a list"})
+
+  defp corrupt_segment_body(:missing_seqs, _records),
+    do: SealedSegments.encode([%{seq: 1}, %{no_seq: true}, 3])
 
   defp read!(agent_id) do
     {:ok, session} = InternalSessionStore.read(agent_id, @session)
@@ -588,54 +592,26 @@ defmodule SalixAgent.InternalSessionSegmentsTest do
              InternalSessionStore.archived_records(agent_id, read!(agent_id))
   end
 
-  test "a segment body with a duplicated record fails loudly" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-
-    {agent_id, _} =
-      corrupt_first_segment(agent_id, fn [first | rest] -> [first, first | rest] end)
-
-    assert {:error, {:archive_incomplete, _}} =
-             InternalSessionStore.archived_records(agent_id, read!(agent_id))
-  end
-
-  test "a reordered segment body fails loudly" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-
-    {agent_id, _} =
-      corrupt_first_segment(agent_id, fn [a, b | rest] -> [b, a | rest] end)
-
-    assert {:error, {:archive_incomplete, _}} =
-             InternalSessionStore.archived_records(agent_id, read!(agent_id))
-  end
-
   # A corrupt body must fail closed as an archive error, never crash the
-  # reader: invalid zstd frame, a decodable non-list term, and a list whose
-  # elements lack seqs are all wrong-segment shapes, not exceptions.
-  test "an invalid zstd frame fails closed instead of raising" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+  # reader or serve a short history: duplicated or reordered records, an
+  # invalid zstd frame, a decodable non-list term, and a list whose elements
+  # lack seqs are all wrong-segment shapes, not exceptions.
+  for {name, corruption} <- [
+        {"a segment body with a duplicated record fails loudly", :duplicate},
+        {"a reordered segment body fails loudly", :reorder},
+        {"an invalid zstd frame fails closed instead of raising", :invalid_zstd},
+        {"a decodable non-list segment body fails closed instead of raising", :non_list},
+        {"a segment body whose records lack seqs fails closed instead of raising", :missing_seqs}
+      ] do
+    test name do
+      agent_id = "agent-#{System.unique_integer([:positive])}"
+      {key, body} = sealed_first_segment(agent_id)
+      corrupt = corrupt_segment_body(unquote(corruption), SealedSegments.decode(body))
+      {:ok, _} = S3.put(key, corrupt)
 
-    replace_first_segment_body(agent_id, <<1, 2, 3, "not a zstd frame">>)
-
-    assert {:error, {:archive_incomplete, _}} =
-             InternalSessionStore.archived_records(agent_id, read!(agent_id))
-  end
-
-  test "a decodable non-list segment body fails closed instead of raising" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-
-    replace_first_segment_body(agent_id, SealedSegments.encode(%{"not" => "a list"}))
-
-    assert {:error, {:archive_incomplete, _}} =
-             InternalSessionStore.archived_records(agent_id, read!(agent_id))
-  end
-
-  test "a segment body whose records lack seqs fails closed instead of raising" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-
-    replace_first_segment_body(agent_id, SealedSegments.encode([%{seq: 1}, %{no_seq: true}, 3]))
-
-    assert {:error, {:archive_incomplete, _}} =
-             InternalSessionStore.archived_records(agent_id, read!(agent_id))
+      assert {:error, {:archive_incomplete, _}} =
+               InternalSessionStore.archived_records(agent_id, read!(agent_id))
+    end
   end
 
   @tag :redo_regression

@@ -51,26 +51,34 @@ describe("resolveLocale", () => {
     }
   );
 
-  it("uses the first supported browser preference", () => {
-    expect(resolveLocale(["fr-FR", "zh-SG", "en-US"])).toBe("zh-CN");
-  });
-
-  it("continues after an unsupported Chinese preference", () => {
-    expect(resolveLocale(["zh-TW", "zh-CN", "en-US"])).toBe("zh-CN");
+  it.each([
+    ["uses the first supported browser preference", ["fr-FR", "zh-SG", "en-US"]],
+    ["continues after an unsupported Chinese preference", ["zh-TW", "zh-CN", "en-US"]],
+  ])("%s", (_name, languages) => {
+    expect(resolveLocale(languages)).toBe("zh-CN");
   });
 });
 
 describe("initializeCommaI18n", () => {
-  it("sets the generated message locale and document language", () => {
-    expect(initializeCommaI18n(["zh-CN"])).toBe("zh-CN");
-    expect(document.documentElement.lang).toBe("zh-CN");
-    expect(messages.nav_inbox()).toBe("收件箱");
-  });
-
-  it("uses English for an unsupported browser language", () => {
-    expect(initializeCommaI18n(["fr-FR"])).toBe("en");
-    expect(document.documentElement.lang).toBe("en");
-    expect(messages.nav_inbox()).toBe("Inbox");
+  it.each(
+    [
+      {
+        name: "sets the generated message locale and document language",
+        language: "zh-CN",
+        expected: "zh-CN",
+        inbox: "收件箱",
+      },
+      {
+        name: "uses English for an unsupported browser language",
+        language: "fr-FR",
+        expected: "en",
+        inbox: "Inbox",
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { language, expected, inbox }) => {
+    expect(initializeCommaI18n([language])).toBe(expected);
+    expect(document.documentElement.lang).toBe(expected);
+    expect(messages.nav_inbox()).toBe(inbox);
   });
 
   it("leaves an unchanged document language untouched", () => {

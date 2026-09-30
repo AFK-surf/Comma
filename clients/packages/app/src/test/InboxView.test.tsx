@@ -166,20 +166,20 @@ describe("InboxView", () => {
     expect(screen.getByTestId("inbox-list")).toBeInTheDocument();
   });
 
-  it("surfaces the error on the error state", async () => {
-    renderInbox({
-      source: "error",
-      errorCode: "utility_unavailable",
-      items: [],
-    });
-
-    expect(await screen.findByTestId("inbox-banner")).toHaveTextContent("Sync failed");
-    expect(screen.getByTestId("inbox-banner")).toHaveTextContent(
-      "The Main ProductInbox scheduler is unavailable."
-    );
-  });
-
-  it("localizes ProductInbox error details", async () => {
+  it.each([
+    {
+      name: "surfaces the error on the error state",
+      locale: undefined,
+      title: "Sync failed",
+      detail: "The Main ProductInbox scheduler is unavailable.",
+    },
+    {
+      name: "localizes ProductInbox error details",
+      locale: "zh-CN" as const,
+      title: "同步失败",
+      detail: "主进程的 ProductInbox 调度器不可用。",
+    },
+  ])("$name", async ({ detail, locale, title }) => {
     renderInbox(
       {
         source: "error",
@@ -187,13 +187,11 @@ describe("InboxView", () => {
         items: [],
       },
       {},
-      "zh-CN"
+      locale
     );
 
-    expect(await screen.findByTestId("inbox-banner")).toHaveTextContent("同步失败");
-    expect(screen.getByTestId("inbox-banner")).toHaveTextContent(
-      "主进程的 ProductInbox 调度器不可用。"
-    );
+    expect(await screen.findByTestId("inbox-banner")).toHaveTextContent(title);
+    expect(screen.getByTestId("inbox-banner")).toHaveTextContent(detail);
   });
 
   it("shows an empty state when synced with no conversations", async () => {

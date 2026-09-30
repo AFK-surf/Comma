@@ -28,9 +28,13 @@ The tool catalog only shows the paths this tenant has configured, so in most
 sessions there is no choice to make: use whichever of `composio.*` / `oauth.*`
 is present. When **both** are available:
 
-- For Comma GitHub, Linear, and Notion plugins, use connected official MCP tools when they cover the task.
+- For Comma GitHub, Linear, Notion, and Slack plugins, use connected official MCP tools when they cover the task.
   Reuse managed OAuth credentials for API, CLI, or VM work. Check existing connections before requesting authorization.
-- For other services or existing Composio connections, use `composio.execute` for direct provider calls — one-shot reads,
+- For Slack, check `oauth.list_credentials` and `mcp.list` before Composio.
+  The Slack MCP uses the Comma Slack plugin's user OAuth token.
+  If the credential is active but MCP discovery is stale, use `mcp_manager.reconnect`, then `mcp.list`.
+  If Slack rejects MCP app access, report that error. Do not request another connection unless the user asks.
+- For other services, use `composio.execute` for direct provider calls: one-shot reads,
   simple writes, anything that maps to a single provider operation (fetch
   emails, list events, create an issue). It avoids the VM round-trip.
 - Prefer the managed OAuth path (`oauth.*` + `env.exec` with

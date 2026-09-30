@@ -1275,20 +1275,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     refute Map.has_key?(poll, "token")
   end
 
-  test "context resolves org and project through authenticated API wrapper", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    conn = api(:get, "/v1/cli/context?org=#{org.slug}&project=#{project.slug}", token)
-
-    assert conn.status == 200
-    body = Jason.decode!(conn.resp_body)
-    assert body["ok"] == true
-    assert body["data"]["context"]["org"]["id"] == org.id
-    assert body["data"]["context"]["project"]["id"] == project.id
-  end
-
   test "Slack setup is a read-only project operation", %{org: org, project: project} do
     member = user_fixture(email: "slack-setup-reader@example.com")
     {:ok, _membership} = Memberships.put_org_member(org.id, member.id, "member")
@@ -1677,6 +1663,27 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
       |> put_in(["events", Access.at(0), "autojoin", "status"], "failed")
       |> put_in(["summary", "autojoin_error_count"], 1)
 
+    inconsistent_projection =
+      base
+      |> Map.put("health", "ok")
+      |> Map.put("reason", "no_eligible_meetings_in_window")
+      |> put_in(["projection", "fresh_count"], 1)
+      |> put_in(["projection", "candidate_count"], 0)
+      |> put_in(["projection", "returned_count"], 0)
+      |> put_in(["summary", "candidate_count"], 0)
+      |> put_in(["summary", "returned_count"], 0)
+      |> put_in(["summary", "planned_count"], 0)
+      |> Map.put("events", [])
+
+    sparse_event =
+      put_in(base, ["events"], [
+        %{
+          "last_error_present" => false,
+          "plan" => %{"status" => "planned"},
+          "autojoin" => %{"status" => "not_started"}
+        }
+      ])
+
     cases = [
       {"healthy projected event", base, "ok", "eligible_meetings_projected"},
       {"provisioning autojoin lifecycle",
@@ -1778,7 +1785,17 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
        "calendar_status_invalid_response"}
     ]
 
-    for {label, status, health, reason} <- cases do
+    # Raw DTO violations are rejected before defaults apply, so no events leak through.
+    raw_dto_rejections = [
+      {"raw DTO projection counts disagree", inconsistent_projection, "unavailable",
+       "calendar_status_invalid_response"},
+      {"raw DTO event omits required identity and time fields", sparse_event, "unavailable",
+       "calendar_status_invalid_response"}
+    ]
+
+    raw_dto_rejection_labels = Enum.map(raw_dto_rejections, &elem(&1, 0))
+
+    for {label, status, health, reason} <- cases ++ raw_dto_rejections do
       Process.put(:calendar_status_result, {:ok, status})
 
       data =
@@ -1792,64 +1809,10 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
       assert data["calendar"]["health"] == health, label
       assert data["calendar"]["reason"] == reason, label
       assert length(data["calendar"]["events"]) <= 1, label
-    end
-  end
 
-  test "meeting calendar status validates the complete raw DTO before applying defaults", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
-
-    {:ok, router} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    Process.put(:calendar_router_agent_id, router.salix_agent_id)
-
-    base = CalendarStatusSalixClient.healthy_calendar_status(1)
-
-    inconsistent_projection =
-      base
-      |> Map.put("health", "ok")
-      |> Map.put("reason", "no_eligible_meetings_in_window")
-      |> put_in(["projection", "fresh_count"], 1)
-      |> put_in(["projection", "candidate_count"], 0)
-      |> put_in(["projection", "returned_count"], 0)
-      |> put_in(["summary", "candidate_count"], 0)
-      |> put_in(["summary", "returned_count"], 0)
-      |> put_in(["summary", "planned_count"], 0)
-      |> Map.put("events", [])
-
-    sparse_event =
-      put_in(base, ["events"], [
-        %{
-          "last_error_present" => false,
-          "plan" => %{"status" => "planned"},
-          "autojoin" => %{"status" => "not_started"}
-        }
-      ])
-
-    for {label, status} <- [
-          {"projection counts disagree", inconsistent_projection},
-          {"event omits required identity and time fields", sparse_event}
-        ] do
-      Process.put(:calendar_status_result, {:ok, status})
-
-      data =
-        api(
-          :get,
-          "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar&limit=1",
-          token
-        )
-        |> json_data()
-
-      assert data["calendar"]["health"] == "unavailable", label
-      assert data["calendar"]["reason"] == "calendar_status_invalid_response", label
-      assert data["calendar"]["events"] == [], label
+      if label in raw_dto_rejection_labels do
+        assert data["calendar"]["events"] == [], label
+      end
     end
   end
 
@@ -2473,23 +2436,9 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     assert setup["required_scopes"] == FeishuScopes.required_scope_ids(:bot)
     assert setup["batch_import_payload"] == FeishuScopes.import_payload(:bot)
-    assert "im:message:readonly" in setup["required_scopes"]
-    assert "im:message.group_msg" in setup["required_scopes"]
-    assert "im:message:update" in setup["required_scopes"]
-    assert "im:message:recall" in setup["required_scopes"]
-    assert "im:message.reactions:read" in setup["required_scopes"]
-    assert "im:message.reactions:write_only" in setup["required_scopes"]
-    assert "im:message.pins:read" in setup["required_scopes"]
-    assert "im:message.pins:write_only" in setup["required_scopes"]
-    assert "im:resource" in setup["required_scopes"]
-    assert "contact:contact.base:readonly" in setup["required_scopes"]
-    assert "contact:user.base:readonly" in setup["required_scopes"]
-    assert "contact:department.base:readonly" in setup["required_scopes"]
-    refute "im:message.history:readonly" in setup["required_scopes"]
 
-    optional_scope_ids = Enum.map(setup["optional_scopes"], & &1["scope"])
-    refute "im:message.group_msg:readonly" in optional_scope_ids
-    refute "im:resource" in optional_scope_ids
+    assert Enum.map(setup["optional_scopes"], & &1["scope"]) ==
+             Enum.map(FeishuScopes.optional_bot_scopes(), & &1.scope)
   end
 
   test "Feishu app upsert rejects non-admin org members", %{org: org} do

@@ -10,7 +10,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
 
   alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.LoginLinks.Delivery.Fake, as: FakeDelivery
-  alias BridgeForTeams.{Memberships, Orgs}
+  alias BridgeForTeams.Memberships
   alias BridgeForTeamsWeb.Dashboard.Auth, as: DashAuth
 
   defp sso_less_org_with_member do
@@ -18,49 +18,6 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
     user = user_fixture()
     {:ok, _} = Memberships.put_org_member(org.id, user.id, "member")
     %{org: org, user: user}
-  end
-
-  defp add_sso!(org) do
-    {:ok, _} =
-      Orgs.upsert_sso_connection(org.id, %{
-        "issuer" => "https://idp.test",
-        "client_id" => "client-magic",
-        "client_secret" => "secret"
-      })
-
-    :ok
-  end
-
-  test "POST /auth/start falls back to the email form for an SSO-less org", %{conn: conn} do
-    %{org: org} = sso_less_org_with_member()
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    assert redirected_to(conn) == "/auth/email?" <> URI.encode_query(%{"o" => org.slug})
-  end
-
-  test "POST /auth/start keeps the ambiguous fallback for unknown slugs", %{conn: conn} do
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => "does-not-exist"})
-
-    assert redirected_to(conn) == "/auth/email?" <> URI.encode_query(%{"o" => "does-not-exist"})
-  end
-
-  test "POST /auth/start still starts SSO for an org with a connection", %{conn: conn} do
-    %{org: org} = sso_less_org_with_member()
-    add_sso!(org)
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    assert redirected_to(conn) =~ "https://idp.test/authorize"
   end
 
   test "the full flow: request form, emailed link, session cookie", %{conn: conn} do

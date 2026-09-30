@@ -1767,54 +1767,35 @@ defmodule Salix.Bindings.MeetingCalendarTest do
              MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
   end
 
-  test "repeated Composio session loss is operational and preserves the meeting plan", %{
-    group: group,
-    source: source
-  } do
-    current = standalone_event("Session unavailable", 1, "2030-01-01T00:00:00Z")
-    stub_list([current], "session-unavailable-sync")
-    assert {:ok, _} = sync_source(group)
-    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
+  for {label, loss, title, sync_token} <- [
+        {"repeated Composio session loss", :replacement_session, "Session unavailable",
+         "session-unavailable-sync"},
+        {"Composio session creation loss", :session_creation, "Session creation unavailable",
+         "session-creation-unavailable-sync"}
+      ] do
+    @loss loss
+    @title title
+    @sync_token sync_token
+    test "#{label} is operational and preserves the meeting plan", %{
+      group: group,
+      source: source
+    } do
+      current = standalone_event(@title, 1, "2030-01-01T00:00:00Z")
+      stub_list([current], @sync_token)
+      assert {:ok, _} = sync_source(group)
+      assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
 
-    MockExternalHTTP.stub_sequence("POST", @proxy_execute_path, [
-      {404, %{"error" => %{"message" => "proxy session expired"}}},
-      {404, %{"error" => %{"message" => "replacement session unavailable"}}}
-    ])
+      stub_composio_session_loss(@loss)
 
-    assert {:error, :composio_proxy_session_unavailable} =
-             MeetingCalendar.revalidate(group, event)
+      assert {:error, :composio_proxy_session_unavailable} =
+               MeetingCalendar.revalidate(group, event)
 
-    assert {:ok, %{"status" => "planned"}} =
-             MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+      assert {:ok, %{"status" => "planned"}} =
+               MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
 
-    assert {:ok, %{"status" => "active"}} =
-             Calendar.get_source(group["group_id"], group["calendar_id"], source["source_id"])
-  end
-
-  test "Composio session creation loss is operational and preserves the meeting plan", %{
-    group: group,
-    source: source
-  } do
-    current = standalone_event("Session creation unavailable", 1, "2030-01-01T00:00:00Z")
-    stub_list([current], "session-creation-unavailable-sync")
-    assert {:ok, _} = sync_source(group)
-    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
-
-    MockExternalHTTP.stub(
-      "POST",
-      @proxy_session_path,
-      %{"error" => %{"message" => "proxy session creation unavailable"}},
-      404
-    )
-
-    assert {:error, :composio_proxy_session_unavailable} =
-             MeetingCalendar.revalidate(group, event)
-
-    assert {:ok, %{"status" => "planned"}} =
-             MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
-
-    assert {:ok, %{"status" => "active"}} =
-             Calendar.get_source(group["group_id"], group["calendar_id"], source["source_id"])
+      assert {:ok, %{"status" => "active"}} =
+               Calendar.get_source(group["group_id"], group["calendar_id"], source["source_id"])
+    end
   end
 
   test "Google quota and permission 403 responses preserve distinct error provenance", %{
@@ -2182,31 +2163,20 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert length(instance_requests()) == 1
   end
 
-  test "ordinary recurrence exact refresh fails closed when the instance is absent", %{
-    group: group
-  } do
-    stub_list([recurring_master()], "sync-1")
-    assert {:ok, _} = sync_source(group)
-    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
+  for {label, instances, expected} <- [
+        {"fails closed when the instance is absent", :absent, :calendar_event_not_found},
+        {"observes a newly cancelled instance", :cancelled, :calendar_event_cancelled}
+      ] do
+    @instances instances
+    @expected expected
+    test "ordinary recurrence exact refresh #{label}", %{group: group} do
+      stub_list([recurring_master()], "sync-1")
+      assert {:ok, _} = sync_source(group)
+      assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
 
-    stub_instances([])
-    assert {:error, :calendar_event_not_found} = MeetingCalendar.revalidate(group, event)
-  end
-
-  test "ordinary recurrence exact refresh observes a newly cancelled instance", %{
-    group: group
-  } do
-    stub_list([recurring_master()], "sync-1")
-    assert {:ok, _} = sync_source(group)
-    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
-
-    cancelled =
-      ordinary_instance()
-      |> Map.put("status", "cancelled")
-      |> Map.drop(["start", "end"])
-
-    stub_instances([cancelled])
-    assert {:error, :calendar_event_cancelled} = MeetingCalendar.revalidate(group, event)
+      stub_instances(exact_refresh_instances(@instances))
+      assert {:error, @expected} = MeetingCalendar.revalidate(group, event)
+    end
   end
 
   test "ordinary recurrence exact refresh uses the earlier offset for a DST overlap", %{
@@ -4349,6 +4319,32 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       "end" => %{"dateTime" => "2030-01-14T12:00:00Z", "timeZone" => "Etc/UTC"},
       "hangoutLink" => "https://meet.google.com/abc-defg-hij"
     }
+  end
+
+  defp stub_composio_session_loss(:replacement_session) do
+    MockExternalHTTP.stub_sequence("POST", @proxy_execute_path, [
+      {404, %{"error" => %{"message" => "proxy session expired"}}},
+      {404, %{"error" => %{"message" => "replacement session unavailable"}}}
+    ])
+  end
+
+  defp stub_composio_session_loss(:session_creation) do
+    MockExternalHTTP.stub(
+      "POST",
+      @proxy_session_path,
+      %{"error" => %{"message" => "proxy session creation unavailable"}},
+      404
+    )
+  end
+
+  defp exact_refresh_instances(:absent), do: []
+
+  defp exact_refresh_instances(:cancelled) do
+    [
+      ordinary_instance()
+      |> Map.put("status", "cancelled")
+      |> Map.drop(["start", "end"])
+    ]
   end
 
   defp ordinary_instance do

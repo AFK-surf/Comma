@@ -714,7 +714,7 @@ describe("HomeRoute startup draft", () => {
     ).toBeNull();
   });
 
-  it("provides responsive Greet and Tasks rails without header triggers", () => {
+  it("provides responsive Greet and Tasks rails", () => {
     harness.chatState = readyState();
     harness.conversationState.status = "error";
     harness.conversationState.errorKind = "unauthorized";
@@ -732,8 +732,6 @@ describe("HomeRoute startup draft", () => {
     // style. An unmeasured Home reports both rails open.
     expect(greetRail).toHaveAttribute("data-folded", "false");
     expect(tasksRail).toHaveAttribute("data-folded", "false");
-    expect(screen.queryByRole("button", { name: "Show Greet panel" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show Tasks panel" })).toBeNull();
   });
 });
 

@@ -448,6 +448,7 @@ defmodule SalixAgent.RoundRuntimeTest do
     alias SalixAgent.{DecideFixture, InternalSession, SkillStore}
     DecideFixture.start_provider()
     DecideFixture.put_env(:decide_test_pid, self())
+    DecideFixture.put_env(:decide_selected_miniskill, "miniskill-runtime")
     DecideFixture.put_env(:plugin_store_mod, MiniskillPlugins)
     DecideFixture.put_env(:ifc_facts_mod, nil)
     ctx = %{agent_id: context.agent_id, tenant_id: tenant, group_id: group}
@@ -2886,55 +2887,59 @@ defmodule SalixAgent.RoundRuntimeTest do
            end)
   end
 
-  test "direct run_round refuses to bypass the pending input queue", %{agent: agent} do
-    {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, "ses1_0000000000000000904", [
-        %{"type" => "session_created", "session_id" => "ses1_0000000000000000904"},
-        %{
-          "type" => "queue_append",
-          "session_id" => "ses1_0000000000000000904",
-          "kind" => "user_message",
-          "dedupe_key" => "queued-input",
-          "payload" => %{
-            "source_message_id" => "queued-input",
-            "content" => "queued"
-          }
-        }
-      ])
+  for {label, session_id, events} <- [
+        {"the pending input queue", "ses1_0000000000000000904",
+         [
+           %{
+             "type" => "queue_append",
+             "kind" => "user_message",
+             "dedupe_key" => "queued-input",
+             "payload" => %{"source_message_id" => "queued-input", "content" => "queued"}
+           }
+         ]},
+        {"no_wake pending queue context", "ses1_0000000000000000905",
+         [
+           %{
+             "type" => "queue_append",
+             "kind" => "user_message",
+             "wake" => false,
+             "dedupe_key" => "queued-no-wake-context",
+             "payload" => %{
+               "source_message_id" => "queued-no-wake-context",
+               "content" => "context only"
+             }
+           }
+         ]},
+        {"transcript continuation", "ses1_0000000000000000906",
+         [
+           %{
+             "type" => "tool_result",
+             "message_id" => 1,
+             "tool_call_id" => "tool-1",
+             "content" => "done"
+           },
+           %{"type" => "ack", "last_ack_message_id" => 1}
+         ]}
+      ] do
+    test "direct run_round refuses to bypass #{label}", %{agent: agent} do
+      session_id = unquote(session_id)
 
-    assert {:error, :activation_required} =
-             SalixAgent.InternalSessionFleet.run_round(
-               agent,
-               "ses1_0000000000000000904",
-               %{agent_id: agent, session_id: "ses1_0000000000000000904"},
-               []
-             )
-  end
+      events =
+        Enum.map(
+          [%{"type" => "session_created"} | unquote(Macro.escape(events))],
+          &Map.put(&1, "session_id", session_id)
+        )
 
-  test "direct run_round refuses to bypass no_wake pending queue context", %{agent: agent} do
-    {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, "ses1_0000000000000000905", [
-        %{"type" => "session_created", "session_id" => "ses1_0000000000000000905"},
-        %{
-          "type" => "queue_append",
-          "session_id" => "ses1_0000000000000000905",
-          "kind" => "user_message",
-          "wake" => false,
-          "dedupe_key" => "queued-no-wake-context",
-          "payload" => %{
-            "source_message_id" => "queued-no-wake-context",
-            "content" => "context only"
-          }
-        }
-      ])
+      {:ok, _session} = InternalSessionStore.prepare_commit(agent, session_id, events)
 
-    assert {:error, :activation_required} =
-             SalixAgent.InternalSessionFleet.run_round(
-               agent,
-               "ses1_0000000000000000905",
-               %{agent_id: agent, session_id: "ses1_0000000000000000905"},
-               []
-             )
+      assert {:error, :activation_required} =
+               SalixAgent.InternalSessionFleet.run_round(
+                 agent,
+                 session_id,
+                 %{agent_id: agent, session_id: session_id},
+                 []
+               )
+    end
   end
 
   test "direct run_round refuses to bypass already materialized stable input", %{
@@ -2946,29 +2951,6 @@ defmodule SalixAgent.RoundRuntimeTest do
                agent,
                "ses1_0000000000000000902",
                context,
-               []
-             )
-  end
-
-  test "direct run_round refuses to bypass transcript continuation", %{agent: agent} do
-    {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, "ses1_0000000000000000906", [
-        %{"type" => "session_created", "session_id" => "ses1_0000000000000000906"},
-        %{
-          "type" => "tool_result",
-          "session_id" => "ses1_0000000000000000906",
-          "message_id" => 1,
-          "tool_call_id" => "tool-1",
-          "content" => "done"
-        },
-        %{"type" => "ack", "session_id" => "ses1_0000000000000000906", "last_ack_message_id" => 1}
-      ])
-
-    assert {:error, :activation_required} =
-             SalixAgent.InternalSessionFleet.run_round(
-               agent,
-               "ses1_0000000000000000906",
-               %{agent_id: agent, session_id: "ses1_0000000000000000906"},
                []
              )
   end
@@ -3465,117 +3447,55 @@ defmodule SalixAgent.RoundRuntimeTest do
     assert offsets == [0, 100]
   end
 
-  test "tool side effects cannot bypass pending input queue with delivery events", %{
-    agent: agent,
-    context: context
-  } do
-    pending = %{
-      session_id: "ses1_0000000000000000902",
-      trace_ctx: %{turn_id: "turn", round_id: "round", request_id: "request", trace_id: "trace"}
-    }
+  for {label, call_id, event} <- [
+        {"delivery events", "call-delivery", %{"type" => "delivery", "content" => "pollution"}},
+        {"queue append events", "call-queue-append",
+         %{
+           "type" => "queue_append",
+           "kind" => "user_message",
+           "dedupe_key" => "tool-pollution",
+           "payload" => %{"content" => "pollution"}
+         }},
+        {"runtime messages", "call-runtime-message",
+         %{
+           "type" => "runtime_message",
+           "runtime_message_id" => "tool-direct-runtime",
+           "runtime_message_type" => "tool_call_completed",
+           "summary" => "pollution"
+         }}
+      ] do
+    test "tool side effects cannot bypass pending input queue with #{label}", %{
+      agent: agent,
+      context: context
+    } do
+      call_id = unquote(call_id)
 
-    result = %{
-      id: "call-delivery",
-      name: "bad_tool",
-      content: "attempted direct delivery",
-      events: [
-        %{
-          "type" => "delivery",
-          "session_id" => "ses1_0000000000000000902",
-          "content" => "pollution"
-        }
-      ]
-    }
+      event =
+        Map.put(unquote(Macro.escape(event)), "session_id", "ses1_0000000000000000902")
 
-    assert {:error, {:invalid_tool_side_effect_event, "delivery"}} =
-             Round.commit_tool_results(context, pending, [result])
+      pending = %{
+        session_id: "ses1_0000000000000000902",
+        trace_ctx: %{turn_id: "turn", round_id: "round", request_id: "request", trace_id: "trace"}
+      }
 
-    session = read_session!(agent, "ses1_0000000000000000902")
+      result = %{id: call_id, name: "bad_tool", content: "attempted bypass", events: [event]}
 
-    refute Enum.any?(
-             SalixAgent.InternalSession.get(session, :messages),
-             &(&1[:content] == "pollution")
-           )
+      assert {:error, {:invalid_tool_side_effect_event, event_type}} =
+               Round.commit_tool_results(context, pending, [result])
 
-    refute Enum.any?(
-             SalixAgent.InternalSession.get(session, :messages),
-             &(&1[:tool_call_id] == "call-delivery")
-           )
-  end
+      assert event_type == event["type"]
 
-  test "tool side effects cannot bypass pending input queue with queue append events", %{
-    agent: agent,
-    context: context
-  } do
-    pending = %{
-      session_id: "ses1_0000000000000000902",
-      trace_ctx: %{turn_id: "turn", round_id: "round", request_id: "request", trace_id: "trace"}
-    }
+      session = read_session!(agent, "ses1_0000000000000000902")
+      messages = SalixAgent.InternalSession.get(session, :messages)
 
-    result = %{
-      id: "call-queue-append",
-      name: "bad_tool",
-      content: "attempted queue append",
-      events: [
-        %{
-          "type" => "queue_append",
-          "session_id" => "ses1_0000000000000000902",
-          "kind" => "user_message",
-          "dedupe_key" => "tool-pollution",
-          "payload" => %{"content" => "pollution"}
-        }
-      ]
-    }
+      refute Enum.any?(messages, &(&1[:tool_call_id] == call_id))
+      refute Enum.any?(messages, &(&1[:content] == "pollution"))
+      refute Enum.any?(messages, &(&1[:runtime_message_id] == "tool-direct-runtime"))
 
-    assert {:error, {:invalid_tool_side_effect_event, "queue_append"}} =
-             Round.commit_tool_results(context, pending, [result])
-
-    session = read_session!(agent, "ses1_0000000000000000902")
-
-    refute Enum.any?(SalixAgent.InternalSession.get(session, :input_queue), fn item ->
-             payload = item["payload"] || %{}
-             payload["content"] == "pollution"
-           end)
-
-    refute Enum.any?(
-             SalixAgent.InternalSession.get(session, :messages),
-             &(&1[:tool_call_id] == "call-queue-append")
-           )
-  end
-
-  test "tool side effects cannot bypass pending input queue with runtime messages", %{
-    agent: agent,
-    context: context
-  } do
-    pending = %{
-      session_id: "ses1_0000000000000000902",
-      trace_ctx: %{turn_id: "turn", round_id: "round", request_id: "request", trace_id: "trace"}
-    }
-
-    result = %{
-      id: "call-runtime-message",
-      name: "bad_tool",
-      content: "attempted direct runtime message",
-      events: [
-        %{
-          "type" => "runtime_message",
-          "session_id" => "ses1_0000000000000000902",
-          "runtime_message_id" => "tool-direct-runtime",
-          "runtime_message_type" => "tool_call_completed",
-          "summary" => "pollution"
-        }
-      ]
-    }
-
-    assert {:error, {:invalid_tool_side_effect_event, "runtime_message"}} =
-             Round.commit_tool_results(context, pending, [result])
-
-    session = read_session!(agent, "ses1_0000000000000000902")
-
-    refute Enum.any?(
-             SalixAgent.InternalSession.get(session, :messages),
-             &(&1[:runtime_message_id] == "tool-direct-runtime")
-           )
+      refute Enum.any?(SalixAgent.InternalSession.get(session, :input_queue), fn item ->
+               (item["payload"] || %{})["content"] == "pollution"
+             end)
+    end
   end
 
   test "same-session input during an active round waits in the queue for the next activation", %{

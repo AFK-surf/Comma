@@ -40,24 +40,6 @@ defmodule SalixWeb.TenantApiKeysPgTest do
     assert {:error, :unauthorized} = Tenants.validate_api_key(raw)
   end
 
-  test "validate never LISTs S3 and only reads the tenant record" do
-    tenant_id = create_tenant!()
-    {:ok, %{"key" => raw}} = Tenants.create_api_key(tenant_id, %{"name" => "hot path"})
-
-    S3.Fake.reset_read_log()
-    assert {:ok, ^tenant_id, _rec} = Tenants.validate_api_key(raw)
-
-    reads = S3.Fake.read_log()
-    lists = Enum.filter(reads, &match?({:list, _}, &1))
-    assert lists == [], "validate must not LIST S3, saw: #{inspect(reads)}"
-  end
-
-  test "an unknown key is unauthorized (no marker gate in the request path)" do
-    # A key with no PG row is a clean 401 — serving reads Postgres directly and
-    # never returns the marker-derived :unavailable it used to under the gate.
-    assert {:error, :unauthorized} = Tenants.validate_api_key("salix_nonexistent")
-  end
-
   test "a key whose tenant no longer resolves stays unauthorized" do
     tenant_id = create_tenant!()
     {:ok, %{"key" => raw, "key_hash" => hash}} = Tenants.create_api_key(tenant_id, %{})

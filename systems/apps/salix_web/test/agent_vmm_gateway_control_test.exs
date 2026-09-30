@@ -248,6 +248,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
       |> SalixWeb.Router.call(SalixWeb.Router.init([]))
 
     assert conn.status == 401
+    assert Jason.decode!(conn.resp_body) == %{"error" => "unauthorized"}
   end
 
   test "registration authentication reports a transient database fault as unavailable" do

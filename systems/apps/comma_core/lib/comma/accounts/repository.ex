@@ -126,11 +126,11 @@ defmodule Comma.Accounts.Repository do
       status: value(attrs, :status) || "active"
     }
 
-    changeset = User.changeset(%User{}, values)
+    changeset = User.changeset(%User{signup_credit_eligible: true}, values)
 
     if changeset.valid? do
       user = Ecto.Changeset.apply_changes(changeset)
-      {:ok, Map.take(user, [:id, :email, :name, :status])}
+      {:ok, Map.take(user, [:id, :email, :name, :status, :signup_credit_eligible])}
     else
       {:error, changeset}
     end

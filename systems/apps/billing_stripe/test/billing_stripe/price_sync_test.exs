@@ -36,7 +36,7 @@ defmodule BillingStripe.PriceSyncTest do
 
     calls = stripe_calls()
 
-    assert Enum.count(calls, &match?({:list_prices, _, _}, &1)) == 2
+    assert Enum.count(calls, &match?({:list_prices, _, _}, &1)) == 4
     assert Enum.count(calls, &match?({:product, _, _}, &1)) == 2
     assert Enum.count(calls, &match?({:price, _, _}, &1)) == 2
 
@@ -47,7 +47,7 @@ defmodule BillingStripe.PriceSyncTest do
       end)
 
     assert value_product.name == "Test Value"
-    assert value_product_opts[:idempotency_key] == "billing:stripe:product:test_value_v1"
+    assert value_product_opts[:idempotency_key] == "billing:stripe:product:comma:test_value"
 
     {:price, value_price, _opts} =
       Enum.find(calls, fn
@@ -77,6 +77,55 @@ defmodule BillingStripe.PriceSyncTest do
 
     assert plan.provider_price_id =~ "price_"
     assert plan.amount_minor == 2_000
+  end
+
+  test "explicit sync hides and restores prices without replacing historical mappings" do
+    assert {:ok, first} = BillingStripe.sync_prices(catalog())
+    price_ids = Enum.map(first.provider_prices, & &1.provider_price_id)
+
+    for enabled <- ["false", "true"] do
+      Agent.update(BillingStripe.TestAPI.Recorder, fn calls ->
+        Enum.map(calls, fn
+          {:price, params, opts} ->
+            {:price, Map.put(params, :metadata, %{comma_purchasable: enabled}), opts}
+
+          call ->
+            call
+        end)
+      end)
+
+      assert {:ok, synced} = BillingStripe.sync_prices(catalog())
+      assert Enum.map(synced.provider_prices, & &1.provider_price_id) == price_ids
+
+      assert Enum.all?(
+               synced.provider_prices,
+               &(&1.metadata["comma_purchasable"] == (enabled == "true"))
+             )
+
+      assert Enum.count(stripe_calls(), &match?({:price, _, _}, &1)) == 2
+    end
+  end
+
+  test "monthly and annual prices share a product and reruns reuse both prices" do
+    original = catalog()
+    monthly = hd(original.versions)
+
+    annual = %{
+      monthly
+      | version: "annual",
+        billing_period: "year",
+        amount_minor: 20_000,
+        provider_lookup_key: "test_value_annual"
+    }
+
+    catalog = %{original | versions: [monthly, annual, List.last(original.versions)]}
+    assert {:ok, result} = BillingStripe.sync_prices(catalog)
+    [month, year, _] = result.provider_prices
+    assert month.metadata["stripe_product_id"] == year.metadata["stripe_product_id"]
+    assert {:ok, _} = BillingStripe.sync_prices(catalog)
+    calls = stripe_calls()
+    assert Enum.count(calls, &match?({:product, _, _}, &1)) == 2
+    assert Enum.count(calls, &match?({:price, _, _}, &1)) == 3
   end
 
   test "fails fast when an existing Stripe lookup key points at incompatible terms" do
@@ -227,7 +276,15 @@ defmodule BillingStripe.PriceSyncTest do
              unit_amount: amount,
              type: if(recurring, do: "recurring", else: "one_time"),
              recurring: recurring,
-             product: "prod_existing_" <> lookup_key
+             product: %{
+               id: "prod_existing_" <> lookup_key,
+               name: if(lookup_key == "test_value_v1", do: "Test Value", else: "Test Add-On"),
+               metadata: %{
+                 package_code:
+                   if(lookup_key == "test_value_v1", do: "test_value", else: "test_addon"),
+                 surface: "comma"
+               }
+             }
            }
          ]
        }}

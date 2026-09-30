@@ -47,6 +47,10 @@ const mergeClientSettings = (
       : current.appearance,
   });
 
+/** Main compares its own copies the same way; both are schema-ordered JSON. */
+const sameClientSettings = (left: CommaClientSettings, right: CommaClientSettings) =>
+  left === right || JSON.stringify(left) === JSON.stringify(right);
+
 export function readWebCommaClientSettings(): CommaClientSettings {
   try {
     const stored = globalThis.localStorage?.getItem(commaClientSettingsStorageKey);
@@ -142,9 +146,13 @@ export function CommaElectronClientSettingsProvider({
   const acceptPreferences = useCallback((snapshot: AppPreferences) => {
     if (snapshot.revision < highWaterRevisionRef.current) return;
     highWaterRevisionRef.current = snapshot.revision;
-    if (!snapshot.clientSettings) return;
+    const next = snapshot.clientSettings;
+    if (!next) return;
     ownerHasSettingsRef.current = true;
-    setSettings(snapshot.clientSettings);
+    // Every preference change, such as the Notch switch, arrives as a whole new
+    // snapshot. Unchanged settings keep their identity, so the chat, sidebar
+    // and appearance consumers in every window do not render for it.
+    setSettings((current) => (sameClientSettings(current, next) ? current : next));
   }, []);
 
   useEffect(

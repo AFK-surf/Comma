@@ -16,11 +16,17 @@ import {
 } from "./AttachmentRemoveButton";
 import { ImageAttachment, type ImageAttachmentProps } from "./ImageAttachment";
 
+/**
+ * The hairline is an inset ring, not a border: a border takes layout (and
+ * Chromium rounds 0.5px up to 1px), which would push the inset close control
+ * off the tile edge and make this chip taller than the 48px image and quote
+ * tiles beside it.
+ */
 const FileAttachment = ({ attachment, onRemove }: AttachmentTileProps) => (
   <div
     className={cx(
       aiInputAttachment,
-      "flex w-[150px] items-start gap-sm rounded-md border-[0.5px] border-primary bg-popup-primary p-sm"
+      "flex w-[150px] items-start gap-sm rounded-md bg-popup-primary p-sm shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]"
     )}
     data-slot="file-attachment"
   >
@@ -31,7 +37,11 @@ const FileAttachment = ({ attachment, onRemove }: AttachmentTileProps) => (
       <FileIcon className="size-5" />
     </div>
     <div className="flex min-w-0 flex-1 flex-col text-xs leading-[18px]">
-      <span className="truncate text-ai-input-panel-text-attachment-primary">
+      {/* The name line shares its row with the inset close control: past the
+          chip's own padding, spacing-xl clears the control's 16px + 2px inset
+          and leaves spacing-xs before the ellipsis. The meta line sits below
+          the control and keeps the full width. */}
+      <span className="truncate pr-xl text-ai-input-panel-text-attachment-primary">
         {attachment.name}
       </span>
       {attachment.meta && (

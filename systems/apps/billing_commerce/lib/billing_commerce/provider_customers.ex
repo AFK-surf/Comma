@@ -187,7 +187,7 @@ defmodule BillingCommerce.ProviderCustomers do
           attrs[:created_by_actor_id] || attrs["created_by_actor_id"],
           attrs[:source_type] || attrs["source_type"] || "operator",
           attrs[:source_event_id] || attrs["source_event_id"],
-          Jason.encode!(metadata)
+          metadata
         ]
       )
 

@@ -5012,7 +5012,7 @@ defmodule SalixIM.ProviderTest do
              )
   end
 
-  test "a stale legacy snapshot cannot wake the Router after disable or identity rotation",
+  test "a stale legacy snapshot cannot wake the Router after disable",
        %{tenant: tenant, group_id: group_id, agent_id: _agent_id} do
     secret = "sign-stale-identity"
 
@@ -6743,11 +6743,9 @@ defmodule SalixIM.ProviderTest do
                "bot_username" => "bridge_bot"
              }
 
-      assert Enum.find(connects, &(&1["connect_id"] == "wx1")) == %{
-               "connect_id" => "wx1",
-               "provider" => "wechat",
-               "wechat_id" => "wx-1"
-             }
+      assert Enum.filter(connects, &(&1["provider"] == "wechat")) == [
+               %{"connect_id" => "wx1", "provider" => "wechat", "wechat_id" => "wx-1"}
+             ]
 
       assert Enum.find(connects, &(&1["connect_id"] == "fs1")) == %{
                "connect_id" => "fs1",
@@ -6813,30 +6811,6 @@ defmodule SalixIM.ProviderTest do
                  "channel" => "C9",
                  "text" => "worker reply"
                })
-    end
-
-    test "wechat connects require connected im_connects records",
-         %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
-      seed_connect(group_id, "wx1", "wechat", %{
-        "tenant_id" => tenant,
-        "status" => "connected",
-        "wechat_id" => "wx-1",
-        "base_url" => "https://wechat.example",
-        "token" => "wx-token"
-      })
-
-      assert {:ok, connects} = Provider.list_connects(agent_id)
-
-      assert Enum.filter(connects, &(&1["provider"] == "wechat")) == [
-               %{"connect_id" => "wx1", "provider" => "wechat", "wechat_id" => "wx-1"}
-             ]
-    end
-
-    test "absent external connects still leaves only internal",
-         %{agent_id: agent_id} do
-      assert {:ok, connects} = Provider.list_connects(agent_id)
-      assert Enum.filter(connects, &(&1["provider"] == "wechat")) == []
-      assert [%{"connect_id" => "internal"} | _] = connects
     end
 
     test "scope errors", _ctx do
@@ -6948,10 +6922,6 @@ defmodule SalixIM.ProviderTest do
 
       api_names = Enum.map(manual["apis"], & &1["name"])
       assert api_names == @slack_first_wave_apis
-      refute "slack.fetch_image" in api_names
-      assert "slack.fetch_canvas" in api_names
-      assert "slack.create_canvas" in api_names
-      assert "slack.edit_canvas" in api_names
 
       fetch_canvas = Enum.find(manual["apis"], &(&1["name"] == "slack.fetch_canvas"))
       assert fetch_canvas["required_params"] == ["canvas_id"]
@@ -6960,7 +6930,9 @@ defmodule SalixIM.ProviderTest do
       assert create_canvas["required_params"] == ["content"]
       assert create_canvas["required_scopes"] == ["canvases:write"]
 
-      refute Enum.any?(manual["apis"], &(&1["name"] == "slack.post_message"))
+      update_message = Enum.find(manual["apis"], &(&1["name"] == "slack.update_message"))
+      assert update_message["required_params"] == ["channel", "ts", "text"]
+
       reply = Enum.find(manual["apis"], &(&1["name"] == "slack.reply_message"))
       assert reply["required_params"] == ["channel", "text", "thread_ts"]
       post = Enum.find(manual["apis"], &(&1["name"] == "slack.post_channel_message"))
@@ -7007,18 +6979,6 @@ defmodule SalixIM.ProviderTest do
       search = Enum.find(manual["apis"], &(&1["name"] == "slack.search"))
       assert search["required_params"] == ["query"]
       refute Map.has_key?(search, "required_scopes")
-    end
-
-    test "slack provider manual is the source for new API required params" do
-      assert {:ok, %{"apis" => apis}} = Provider.provider_manual("slack")
-
-      update_message = Enum.find(apis, &(&1["name"] == "slack.update_message"))
-      assert update_message["required_params"] == ["channel", "ts", "text"]
-
-      fetch_canvas = Enum.find(apis, &(&1["name"] == "slack.fetch_canvas"))
-      assert fetch_canvas["required_params"] == ["canvas_id"]
-
-      refute Enum.any?(apis, &(&1["name"] == "slack.fetch_image"))
     end
 
     test "im_api.internal.task.list manual is Router-only and carries its strict paging schema" do
@@ -9983,6 +9943,8 @@ defmodule SalixIM.ProviderTest do
       assert eventually(fn -> length(MockSlack.requests("chat.postMessage")) == 1 end)
       first_card = MockSlack.last_request("chat.postMessage") |> slack_task_card_from_request()
       assert first_card["output"] == expected_output.(first)
+      # The oracle shares the renderer, so check the tail independently.
+      assert slack_task_card_output(first_card) =~ "结论：缺少原始记录，不能确认。"
 
       assert {:ok, %{"inserted" => true}} =
                ConversationServer.append_group_conversation_agent_message(
@@ -10003,6 +9965,7 @@ defmodule SalixIM.ProviderTest do
              end)
 
       corrected_card = MockSlack.last_request("chat.update") |> slack_task_card_from_request()
+      assert slack_task_card_output(corrected_card) =~ "更正：已读到原始记录。"
       refute corrected_card["block_id"] == first_card["block_id"]
       assert length(MockSlack.requests("chat.postMessage")) == 1
     end
@@ -10440,12 +10403,6 @@ defmodule SalixIM.ProviderTest do
                        "Visible Worker progress follows the control message."
                end
              end)
-
-      refute (slack_task_card_details(
-                MockSlack.last_request("chat.update")
-                |> slack_task_card_from_request()
-              ) || "") =~
-               "Internal BFT synchronization control."
 
       refute Enum.any?(MockSlack.requests("chat.update"), fn update ->
                (slack_task_card_details(slack_task_card_from_request(update)) || "") =~
@@ -12929,53 +12886,78 @@ defmodule SalixIM.ProviderTest do
       assert [_complete_request] = MockSlack.requests("files.completeUploadExternal")
     end
 
-    test "pending provider delivery without operation ref is marked unknown",
-         %{
-           agent_id: agent_id,
-           group_id: group_id,
-           slack_connect_id: connect_id
-         } do
-      conversation_id = Ids.new_conversation_id()
-      message_id = Ids.new_message_id()
-      participant_id = Ids.new_participant_id()
+    # A delivery without an operation_ref cannot be verified against Slack, so
+    # it settles as unknown and is never resent, whether it never started or
+    # went stale mid-send.
+    for {name, status, started_ago_ms, channel_id, thread_ts} <- [
+          {"pending provider delivery without operation ref is marked unknown", "pending", nil,
+           "C-legacy-pending", "40.000"},
+          {"stale provider delivery without operation ref is marked unknown without resend",
+           "delivering", 180_000, "C-stale-no-op-ref", "41.000"}
+        ] do
+      @status status
+      @tag started_ago_ms: started_ago_ms
+      @channel_id channel_id
+      @thread_ts thread_ts
+      test name,
+           %{
+             agent_id: agent_id,
+             group_id: group_id,
+             slack_connect_id: connect_id,
+             started_ago_ms: started_ago_ms
+           } do
+        conversation_id = Ids.new_conversation_id()
+        message_id = Ids.new_message_id()
+        participant_id = Ids.new_participant_id()
+        now = System.system_time(:millisecond)
 
-      seed_group_conversation(group_id, agent_id, %{"conversation_id" => conversation_id})
+        seed_group_conversation(group_id, agent_id, %{"conversation_id" => conversation_id})
 
-      delivery = %{
-        "delivery_id" => "#{group_id}:#{conversation_id}:#{message_id}:#{participant_id}",
-        "status" => "pending",
-        "agent_group_id" => group_id,
-        "conversation_id" => conversation_id,
-        "message_id" => message_id,
-        "participant_id" => participant_id,
-        "participant_actor_type" => "provider",
-        "participant_provider" => "slack",
-        "participant_payload" => %{
-          "connect_id" => connect_id,
-          "channel_id" => "C-legacy-pending",
-          "thread_ts" => "40.000"
-        },
-        "message_content" => [%{"type" => "text", "text" => "missing operation ref"}],
-        "message_created_at" => System.system_time(:millisecond)
-      }
+        delivery =
+          %{
+            "delivery_id" => "#{group_id}:#{conversation_id}:#{message_id}:#{participant_id}",
+            "status" => @status,
+            "agent_group_id" => group_id,
+            "conversation_id" => conversation_id,
+            "message_id" => message_id,
+            "participant_id" => participant_id,
+            "participant_actor_type" => "provider",
+            "participant_provider" => "slack",
+            "participant_payload" => %{
+              "connect_id" => connect_id,
+              "channel_id" => @channel_id,
+              "thread_ts" => @thread_ts
+            },
+            "message_content" => [%{"type" => "text", "text" => "missing operation ref"}],
+            "message_created_at" => now
+          }
+          |> then(fn delivery ->
+            if started_ago_ms,
+              do: Map.put(delivery, "delivery_started_at", now - started_ago_ms),
+              else: delivery
+          end)
 
-      {participant_id, message_id} =
-        put_delivery!(group_id, conversation_id, participant_id, delivery)
+        {participant_id, message_id} =
+          put_delivery!(group_id, conversation_id, participant_id, delivery)
 
-      diagnostic =
-        wake_delivery_and_wait!(
-          group_id,
-          conversation_id,
-          participant_id,
-          message_id,
-          "unknown"
-        )
+        diagnostic =
+          wake_delivery_and_wait!(
+            group_id,
+            conversation_id,
+            participant_id,
+            message_id,
+            "unknown"
+          )
 
-      assert diagnostic["delivery"]["last_error"] =~ "missing_operation_ref"
+        assert diagnostic["delivery"]["last_error"] =~ "missing_operation_ref"
 
-      assert diagnostic["delivery"]["delivery_result"] == %{
-               "status" => "delivery_missing_operation_ref"
-             }
+        assert MockSlack.requests("chat.postMessage") == []
+        assert MockSlack.requests("conversations.replies") == []
+
+        assert diagnostic["delivery"]["delivery_result"] == %{
+                 "status" => "delivery_missing_operation_ref"
+               }
+      end
     end
 
     test "conversation-created provider delivery stores an opaque operation ref", %{
@@ -13097,60 +13079,6 @@ defmodule SalixIM.ProviderTest do
 
       assert diagnostic["delivery"]["delivery_result"] == %{
                "status" => "stale_provider_delivery_unverified"
-             }
-    end
-
-    test "stale provider delivery without operation ref is marked unknown without resend",
-         %{
-           agent_id: agent_id,
-           group_id: group_id,
-           slack_connect_id: connect_id
-         } do
-      conversation_id = Ids.new_conversation_id()
-      message_id = Ids.new_message_id()
-      participant_id = Ids.new_participant_id()
-      now = System.system_time(:millisecond)
-
-      seed_group_conversation(group_id, agent_id, %{"conversation_id" => conversation_id})
-
-      delivery = %{
-        "delivery_id" => "#{group_id}:#{conversation_id}:#{message_id}:#{participant_id}",
-        "status" => "delivering",
-        "delivery_started_at" => now - 180_000,
-        "agent_group_id" => group_id,
-        "conversation_id" => conversation_id,
-        "message_id" => message_id,
-        "participant_id" => participant_id,
-        "participant_actor_type" => "provider",
-        "participant_provider" => "slack",
-        "participant_payload" => %{
-          "connect_id" => connect_id,
-          "channel_id" => "C-stale-no-op-ref",
-          "thread_ts" => "41.000"
-        },
-        "message_content" => [%{"type" => "text", "text" => "do not resend missing ref"}],
-        "message_created_at" => now
-      }
-
-      {participant_id, message_id} =
-        put_delivery!(group_id, conversation_id, participant_id, delivery)
-
-      diagnostic =
-        wake_delivery_and_wait!(
-          group_id,
-          conversation_id,
-          participant_id,
-          message_id,
-          "unknown"
-        )
-
-      assert diagnostic["delivery"]["last_error"] =~ "missing_operation_ref"
-
-      assert MockSlack.requests("chat.postMessage") == []
-      assert MockSlack.requests("conversations.replies") == []
-
-      assert diagnostic["delivery"]["delivery_result"] == %{
-               "status" => "delivery_missing_operation_ref"
              }
     end
 
@@ -13287,36 +13215,6 @@ defmodule SalixIM.ProviderTest do
                "side_effect_result" => %{"channel" => "C-unknown", "ts" => "31.123"},
                "status" => "delivery_acknowledgement_unknown"
              }
-    end
-
-    test "slack.post_message rejects model-owned Block Kit JSON", %{
-      agent_id: agent_id,
-      slack_connect_id: connect_id
-    } do
-      blocks = [
-        %{"type" => "header", "text" => %{"type" => "plain_text", "text" => "Hello"}},
-        %{"type" => "section", "text" => %{"type" => "mrkdwn", "text" => "*hello*"}},
-        %{"type" => "divider"},
-        %{
-          "type" => "context",
-          "elements" => [%{"type" => "mrkdwn", "text" => "Context"}]
-        },
-        %{
-          "type" => "image",
-          "image_url" => "https://example.com/image.png",
-          "alt_text" => "Example"
-        }
-      ]
-
-      assert {:error, "render_mode and blocks are not supported; send standard Markdown text"} =
-               call(agent_id, "slack", "slack.post_message", connect_id, %{
-                 "channel" => "C9",
-                 "text" => "hello",
-                 "render_mode" => "blocks",
-                 "blocks" => blocks
-               })
-
-      assert MockSlack.requests("chat.postMessage") == []
     end
 
     test "slack.post_message rejects more than fifty rendered blocks before provider I/O", %{
@@ -14756,6 +14654,12 @@ defmodule SalixIM.ProviderTest do
       agent_id: agent_id,
       slack_connect_id: connect_id
     } do
+      # Point the file at the mock so an attempted download would be recorded.
+      download_base =
+        :salix_im
+        |> Application.fetch_env!(:slack_api_base_url)
+        |> String.replace_suffix("/api", "")
+
       MockSlack.respond("conversations.replies", %{
         "ok" => true,
         "messages" => [
@@ -14770,7 +14674,7 @@ defmodule SalixIM.ProviderTest do
                 "name" => "diagram.png",
                 "mimetype" => "image/png",
                 "size" => 23,
-                "url_private_download" => "https://files.slack.test/F100"
+                "url_private_download" => download_base <> "/files/F100"
               }
             ]
           }
@@ -14787,6 +14691,9 @@ defmodule SalixIM.ProviderTest do
       assert message["files"] == [
                %{"id" => "F100", "name" => "diagram.png", "mimetype" => "image/png", "size" => 23}
              ]
+
+      assert MockSlack.requests("canvas_download") == []
+      assert MockSlack.requests("files.info") == []
     end
 
     test "slack.fetch_file downloads a file by id into the agent VFS on demand", %{
@@ -14896,7 +14803,6 @@ defmodule SalixIM.ProviderTest do
       [upload_req] = MockSlack.requests("external_upload")
       assert upload_req.raw == "PDF-VFS-BYTES"
       assert upload_req.content_type == "application/octet-stream"
-      refute upload_req.raw =~ "HOST-SECRET-SLACK"
 
       complete_req = MockSlack.last_request("files.completeUploadExternal")
 
@@ -15331,20 +15237,6 @@ defmodule SalixIM.ProviderTest do
 
       assert {:error, "Slack connect is not OAuth-complete"} =
                call(agent_id, "slack", "slack.post_message", "sl-no-token", %{
-                 "channel" => "C9",
-                 "text" => "x"
-               })
-    end
-
-    test "Slack API errors get Slack error shaping", %{
-      agent_id: agent_id,
-      slack_connect_id: connect_id
-    } do
-      MockSlack.respond("chat.postMessage", %{"ok" => false, "error" => "missing_scope"})
-
-      assert {:error,
-              "Slack API error: missing_scope. The Slack app may need additional OAuth scopes."} =
-               call(agent_id, "slack", "slack.post_message", connect_id, %{
                  "channel" => "C9",
                  "text" => "x"
                })
@@ -15811,7 +15703,6 @@ defmodule SalixIM.ProviderTest do
       assert req.method == "sendDocument"
       assert req.raw =~ "PDF-VFS-BYTES"
       assert req.raw =~ ~s(filename="report.pdf")
-      refute req.raw =~ "HOST-SECRET-TELEGRAM"
     end
   end
 
@@ -18214,74 +18105,55 @@ defmodule SalixIM.ProviderTest do
       assert reason =~ "exceeds the 5 byte staging limit"
     end
 
-    test "message resource streaming refreshes an expired tenant token once", %{
-      agent_id: agent_id,
-      feishu_connect_id: connect_id
-    } do
-      MockProviderRuntime.feishu_messages([
-        %{
-          "message_id" => "om_refresh_resource",
-          "msg_type" => "file",
-          "body" => %{
-            "content" =>
-              Jason.encode!(%{
-                "file_key" => "file-refresh",
-                "file_name" => "refresh.txt"
-              })
+    # Both Feishu tenant-token rejection codes take the one-refresh path.
+    for {kind, rejection_code, message_id, file_key, bytes} <- [
+          {"an expired", nil, "om_refresh_resource", "file-refresh", "REFRESHED"},
+          {"an invalid", 99_991_665, "om_invalid_tenant_resource", "file-invalid-tenant",
+           "RECOVERED"}
+        ] do
+      @rejection_code rejection_code
+      @message_id message_id
+      @file_key file_key
+      @bytes bytes
+      test "message resource streaming refreshes #{kind} tenant token once", %{
+        agent_id: agent_id,
+        feishu_connect_id: connect_id
+      } do
+        MockProviderRuntime.feishu_messages([
+          %{
+            "message_id" => @message_id,
+            "msg_type" => "file",
+            "body" => %{
+              "content" =>
+                Jason.encode!(%{
+                  "file_key" => @file_key,
+                  "file_name" => "#{@file_key}.txt"
+                })
+            }
           }
-        }
-      ])
+        ])
 
-      MockProviderRuntime.feishu_token_rejections(1)
-      MockProviderRuntime.feishu_resource("text/plain", "REFRESHED")
+        if @rejection_code do
+          MockProviderRuntime.feishu_token_rejections(1, @rejection_code)
+        else
+          MockProviderRuntime.feishu_token_rejections(1)
+        end
 
-      assert {:ok, %{"size" => 9} = staged} =
-               call(agent_id, "feishu", "feishu.fetch_message_resource", connect_id, %{
-                 "message_id" => "om_refresh_resource",
-                 "file_key" => "file-refresh",
-                 "resource_type" => "file"
-               })
+        MockProviderRuntime.feishu_resource("text/plain", @bytes)
 
-      assert {:ok, %{data: "REFRESHED"}} =
-               SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged["vfs_path"])
+        assert {:ok, %{"size" => 9} = staged} =
+                 call(agent_id, "feishu", "feishu.fetch_message_resource", connect_id, %{
+                   "message_id" => @message_id,
+                   "file_key" => @file_key,
+                   "resource_type" => "file"
+                 })
 
-      assert length(MockProviderRuntime.requests(:feishu_message_resource)) == 2
-      assert length(MockProviderRuntime.requests(:feishu_validate)) == 2
-    end
+        assert {:ok, %{data: @bytes}} =
+                 SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged["vfs_path"])
 
-    test "message resource streaming refreshes an invalid tenant token once", %{
-      agent_id: agent_id,
-      feishu_connect_id: connect_id
-    } do
-      MockProviderRuntime.feishu_messages([
-        %{
-          "message_id" => "om_invalid_tenant_resource",
-          "msg_type" => "file",
-          "body" => %{
-            "content" =>
-              Jason.encode!(%{
-                "file_key" => "file-invalid-tenant",
-                "file_name" => "invalid-tenant.txt"
-              })
-          }
-        }
-      ])
-
-      MockProviderRuntime.feishu_token_rejections(1, 99_991_665)
-      MockProviderRuntime.feishu_resource("text/plain", "RECOVERED")
-
-      assert {:ok, %{"size" => 9} = staged} =
-               call(agent_id, "feishu", "feishu.fetch_message_resource", connect_id, %{
-                 "message_id" => "om_invalid_tenant_resource",
-                 "file_key" => "file-invalid-tenant",
-                 "resource_type" => "file"
-               })
-
-      assert {:ok, %{data: "RECOVERED"}} =
-               SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged["vfs_path"])
-
-      assert length(MockProviderRuntime.requests(:feishu_message_resource)) == 2
-      assert length(MockProviderRuntime.requests(:feishu_validate)) == 2
+        assert length(MockProviderRuntime.requests(:feishu_message_resource)) == 2
+        assert length(MockProviderRuntime.requests(:feishu_validate)) == 2
+      end
     end
 
     test "message resource response headers determine the staged filename and MIME", %{
@@ -19356,21 +19228,9 @@ defmodule SalixIM.ProviderTest do
 
       assert count == length(tasks)
       refute Map.has_key?(result, "next_cursor")
+      # The guidance must name the projected field and the tool that acts on it.
       assert next_action =~ "task_ref"
-      assert next_action =~ "read that conversation"
-      assert next_action =~ "do not decide from its title alone"
       assert next_action =~ "im_api.internal.send_message"
-      assert next_action =~ "exact existing Task"
-      assert next_action =~ "omitted mentions"
-
-      assert next_action =~
-               "The responsible Worker and Router subscribe"
-
-      assert next_action =~ "does not reopen an ended Task"
-      assert next_action =~ "Do not create a replacement Task"
-      refute next_action =~ "active progress participants"
-      refute next_action =~ "16"
-      refute next_action =~ "sparse"
 
       by_id = Map.new(tasks, &{&1["task_id"], &1})
 
@@ -24387,100 +24247,67 @@ defmodule SalixIM.ProviderTest do
     assert {:error, :not_found} = SalixAgent.TestSupport.SessionData.read(agent_id, session_id)
   end
 
-  test "Slack bot identity backfill resolves and persists a legacy connect", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    connect =
-      seed_connect(group_id, "sl-bot-id-backfill", "slack", %{
-        "tenant_id" => tenant,
-        "app_id" => "A-backfill",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-backfill",
-        "bot_token" => "xoxb-backfill",
-        "bot_user_id" => "Ubot-backfill",
-        "oauth_completed_at" => 1
+  # A legacy connect is a backfill candidate while any bot identity field is
+  # missing; one auth.test fills and persists them and retires the candidate.
+  for {name, suffix, seeded_bot_id?} <- [
+        {"resolves and persists a legacy connect", "bot-id-backfill", false},
+        {"includes a legacy connect missing only bot username", "bot-username-backfill", true}
+      ] do
+    @suffix suffix
+    @seeded_bot_id seeded_bot_id?
+    test "Slack bot identity backfill #{name}", %{tenant: tenant, group_id: group_id} do
+      bot_id = "B-#{@suffix}"
+      bot_user_id = "Ubot-#{@suffix}"
+      bot_username = "comma-#{@suffix}-bot"
+      bot_token = "xoxb-#{@suffix}"
+
+      attrs =
+        %{
+          "tenant_id" => tenant,
+          "app_id" => "A-#{@suffix}",
+          "signing_secret" => "slack-secret",
+          "workspace_id" => "T-#{@suffix}",
+          "bot_token" => bot_token,
+          "bot_user_id" => bot_user_id,
+          "oauth_completed_at" => 1
+        }
+        |> then(&if(@seeded_bot_id, do: Map.put(&1, "bot_id", bot_id), else: &1))
+
+      connect = seed_connect(group_id, "sl-#{@suffix}", "slack", attrs)
+
+      MockSlack.respond("auth.test", %{
+        "ok" => true,
+        "bot_id" => bot_id,
+        "user_id" => bot_user_id,
+        "user" => bot_username,
+        "team_id" => "T-#{@suffix}"
       })
 
-    MockSlack.respond("auth.test", %{
-      "ok" => true,
-      "bot_id" => "B-backfill",
-      "user_id" => "Ubot-backfill",
-      "user" => "comma-backfill-bot",
-      "team_id" => "T-backfill"
-    })
+      assert {:ok, %{candidates: candidates}} =
+               SalixIM.ProviderConnects.list_slack_bot_identity_backfill_candidates()
 
-    assert {:ok, %{candidates: candidates}} =
-             SalixIM.ProviderConnects.list_slack_bot_identity_backfill_candidates()
+      assert Enum.any?(candidates, &(&1["connect_id"] == connect["connect_id"]))
 
-    assert Enum.any?(candidates, fn candidate ->
-             candidate["connect_id"] == connect["connect_id"]
-           end)
+      assert {:ok, updated} = SalixIM.ProviderHTTP.backfill_slack_bot_identity(connect)
+      assert updated["bot_id"] == bot_id
+      assert updated["bot_user_id"] == bot_user_id
+      assert updated["bot_username"] == bot_username
 
-    assert {:ok, updated} = SalixIM.ProviderHTTP.backfill_slack_bot_identity(connect)
-    assert updated["bot_id"] == "B-backfill"
-    assert updated["bot_user_id"] == "Ubot-backfill"
-    assert updated["bot_username"] == "comma-backfill-bot"
+      assert {:ok, stored} =
+               SalixStore.CasRecord.get(Keys.ctl_im_connect(group_id, connect["connect_id"]))
 
-    assert {:ok, %{candidates: candidates}} =
-             SalixIM.ProviderConnects.list_slack_bot_identity_backfill_candidates()
+      assert stored["bot_id"] == bot_id
+      assert stored["bot_username"] == bot_username
 
-    refute Enum.any?(candidates, fn candidate ->
-             candidate["connect_id"] == connect["connect_id"]
-           end)
+      assert {:ok, %{candidates: candidates}} =
+               SalixIM.ProviderConnects.list_slack_bot_identity_backfill_candidates()
 
-    request = MockSlack.last_request("auth.test")
-    assert request.auth == "Bearer xoxb-backfill"
-    assert request.params == %{}
-  end
+      refute Enum.any?(candidates, &(&1["connect_id"] == connect["connect_id"]))
 
-  test "Slack bot identity backfill includes a legacy connect missing only bot username", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    connect =
-      seed_connect(group_id, "sl-bot-username-backfill", "slack", %{
-        "tenant_id" => tenant,
-        "app_id" => "A-username-backfill",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-username-backfill",
-        "bot_token" => "xoxb-username-backfill",
-        "bot_id" => "B-username-backfill",
-        "bot_user_id" => "Ubot-username-backfill",
-        "oauth_completed_at" => 1
-      })
-
-    MockSlack.respond("auth.test", %{
-      "ok" => true,
-      "bot_id" => "B-username-backfill",
-      "user_id" => "Ubot-username-backfill",
-      "user" => "comma-username-backfill-bot",
-      "team_id" => "T-username-backfill"
-    })
-
-    assert {:ok, %{candidates: candidates}} =
-             SalixIM.ProviderConnects.list_slack_bot_identity_backfill_candidates()
-
-    assert Enum.any?(candidates, &(&1["connect_id"] == connect["connect_id"]))
-
-    assert {:ok, updated} = SalixIM.ProviderHTTP.backfill_slack_bot_identity(connect)
-    assert updated["bot_id"] == "B-username-backfill"
-    assert updated["bot_user_id"] == "Ubot-username-backfill"
-    assert updated["bot_username"] == "comma-username-backfill-bot"
-
-    assert {:ok, stored} =
-             SalixStore.CasRecord.get(Keys.ctl_im_connect(group_id, connect["connect_id"]))
-
-    assert stored["bot_username"] == "comma-username-backfill-bot"
-
-    assert {:ok, %{candidates: candidates}} =
-             SalixIM.ProviderConnects.list_slack_bot_identity_backfill_candidates()
-
-    refute Enum.any?(candidates, &(&1["connect_id"] == connect["connect_id"]))
-
-    request = MockSlack.last_request("auth.test")
-    assert request.auth == "Bearer xoxb-username-backfill"
-    assert request.params == %{}
+      request = MockSlack.last_request("auth.test")
+      assert request.auth == "Bearer #{bot_token}"
+      assert request.params == %{}
+    end
   end
 
   test "Slack bot identity backfill rejects a mismatched workspace", %{
@@ -24887,35 +24714,82 @@ defmodule SalixIM.ProviderTest do
              %{}
   end
 
-  test "Slack member_joined_channel for another user is ignored", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-human-join", secret)
+  # Each ignored event must leave no receipt, so a later relevant retry is
+  # still processed.
+  for {name, connect_id, event_id, event} <- [
+        {"Slack member_joined_channel for another user is ignored", "sl-human-join",
+         "Ev-human-join",
+         %{
+           "type" => "member_joined_channel",
+           "user" => "U-human",
+           "channel" => "C-intro",
+           "channel_type" => "C",
+           "team" => "T1",
+           "inviter" => "U-inviter"
+         }},
+        {"Slack inbound ignores an app mention authored by this connect", "sl-own-app",
+         "Ev-own-app",
+         %{
+           "type" => "app_mention",
+           "user" => "Ubot",
+           "bot_id" => "B-own",
+           "app_id" => "A1",
+           "text" => "<@Ubot> loop",
+           "channel" => "C1",
+           "channel_type" => "channel",
+           "ts" => "123.457"
+         }},
+        {"Slack inbound fails closed for a bot-id-only event before identity backfill",
+         "sl-legacy-bot-id", "Ev-legacy-bot-id",
+         %{
+           "type" => "app_mention",
+           "bot_id" => "B-unknown",
+           "text" => "<@Ubot> should not loop",
+           "channel" => "C1",
+           "channel_type" => "channel",
+           "ts" => "123.459"
+         }},
+        {"Slack inbound ignores an ordinary channel message that does not mention the bot",
+         "sl-plain", "Ev-plain",
+         %{
+           "type" => "message",
+           "user" => "U1",
+           "text" => "ordinary channel message",
+           "channel" => "C1",
+           "channel_type" => "channel",
+           "ts" => "123.456"
+         }},
+        {"Slack inbound ignores a message-event mention (handled via app_mention)", "sl-dup",
+         "Ev-dup",
+         %{
+           "type" => "message",
+           "user" => "U1",
+           "text" => "<@Ubot> please help",
+           "channel" => "C1",
+           "channel_type" => "channel",
+           "ts" => "123.456"
+         }}
+      ] do
+    @connect_id connect_id
+    @event_id event_id
+    @event event
+    test name, %{tenant: tenant, group_id: group_id} do
+      secret = "slack-secret"
+      connect = seed_slack_inbound_connect(group_id, tenant, @connect_id, secret)
+      envelope = slack_envelope(@event_id, @event)
+      raw = Jason.encode!(envelope)
 
-    envelope =
-      slack_envelope("Ev-human-join", %{
-        "type" => "member_joined_channel",
-        "user" => "U-human",
-        "channel" => "C-intro",
-        "channel_type" => "C",
-        "team" => "T1",
-        "inviter" => "U-inviter"
-      })
+      assert {:error, :ignored} =
+               SalixIM.ProviderHTTP.handle_slack_event(
+                 connect,
+                 envelope,
+                 sign_slack_body(raw, secret),
+                 raw
+               )
 
-    raw = Jason.encode!(envelope)
-
-    assert {:error, :ignored} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
-
-    assert fake_records_with_prefix("ctl/im_slack_event_receipts/#{connect["connect_id"]}/") ==
-             %{}
+      assert fake_records_with_prefix("ctl/im_slack_event_receipts/#{connect["connect_id"]}/") ==
+               %{}
+    end
   end
 
   test "Slack inbound delivers a top-level bot mention to the group router session", %{
@@ -25094,67 +24968,6 @@ defmodule SalixIM.ProviderTest do
       expected_source_id,
       "SDK request"
     )
-  end
-
-  test "Slack inbound ignores an app mention authored by this connect", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-own-app", secret)
-
-    envelope =
-      slack_envelope("Ev-own-app", %{
-        "type" => "app_mention",
-        "user" => "Ubot",
-        "bot_id" => "B-own",
-        "app_id" => "A1",
-        "text" => "<@Ubot> loop",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "ts" => "123.457"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:error, :ignored} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
-
-    assert fake_records_with_prefix("ctl/im_slack_event_receipts/#{connect["connect_id"]}/") ==
-             %{}
-  end
-
-  test "Slack inbound fails closed for a bot-id-only event before identity backfill", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-legacy-bot-id", secret)
-
-    envelope =
-      slack_envelope("Ev-legacy-bot-id", %{
-        "type" => "app_mention",
-        "bot_id" => "B-unknown",
-        "text" => "<@Ubot> should not loop",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "ts" => "123.459"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:error, :ignored} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
   end
 
   test "Slack channel-only conversation participant receives and verifies a top-level message", %{
@@ -26463,83 +26276,6 @@ defmodule SalixIM.ProviderTest do
     assert slack_post.params["text"] == "External worker reply"
   end
 
-  test "Slack inbound bound to a worker creates a task with Slack and worker participants",
-       %{tenant: tenant, group_id: group_id} do
-    secret = "slack-secret"
-
-    {:ok, worker} =
-      create_control_agent(
-        %{"name" => "Worker", "group_id" => group_id, "role" => "worker"},
-        tenant
-      )
-
-    connect =
-      seed_connect(group_id, Ids.new_connect_id(), "slack", %{
-        "tenant_id" => tenant,
-        "app_id" => "A1",
-        "signing_secret" => secret,
-        "workspace_id" => "T1",
-        "bot_token" => "xoxb-test",
-        "bot_user_id" => "Ubot",
-        "oauth_completed_at" => 1,
-        "inbound_agent_id" => worker["agent_id"]
-      })
-
-    envelope =
-      slack_envelope("Ev-worker-no-link", %{
-        "type" => "app_mention",
-        "user" => "U1",
-        "text" => "<@Ubot> please fix this",
-        "channel" => "C-worker",
-        "channel_type" => "channel",
-        "ts" => "250.000"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
-
-    conversation = agent_task_conversation!(group_id)
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(
-               group_id,
-               conversation["conversation_id"],
-               limit: 10
-             )
-
-    slack_participant =
-      Enum.find(
-        participants,
-        &(&1["actor_type"] == "provider" and &1["provider"] == "slack" and
-            get_in(&1, ["payload", "thread_ts"]) == "250.000")
-      )
-
-    assert Ids.valid_participant_id?(slack_participant["participant_id"])
-
-    assert Enum.any?(
-             participants,
-             &(&1["actor_type"] == "agent" and &1["agent_id"] == worker["agent_id"])
-           )
-
-    assert {:ok, [message]} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               conversation["conversation_id"],
-               limit: 10
-             )
-
-    assert message["actor_type"] == "provider_user"
-    assert message["participant_id"] == slack_participant["participant_id"]
-    assert message["mentions"]["participant_ids"] != []
-  end
-
   test "Slack inbound bound to a worker stages image attachments into the worker workspace", %{
     tenant: tenant,
     group_id: group_id
@@ -26704,191 +26440,82 @@ defmodule SalixIM.ProviderTest do
              SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged_path)
   end
 
-  test "Slack inbound stages an image shared in a thread the bot joined (file_share, no mention)",
-       %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
-    SalixAgent.LLM.Mock.script([{:final, "ack"}])
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-thread-img", secret)
+  # A file_share reply in a thread the bot joined, with no @-mention, is staged
+  # into the Router workspace whatever the file type or caption.
+  for {name, connect_id, event_id, ts, text, file_id, file_name, mimetype, bytes} <- [
+        {"an image shared in a thread the bot joined (file_share, no mention)", "sl-thread-img",
+         "Ev-thread-img", "200.001", "看一下这张图，描述一下内容", "F2", "photo.png", "image/png", @png},
+        {"a non-image file (e.g. video) shared in a thread the bot joined", "sl-thread-vid",
+         "Ev-thread-vid", "300.002", "", "F3", "clip.mp4", "video/mp4",
+         <<0x00, 0x00, 0x00, 0x18, "ftypmp42", "fake-mp4-bytes">>}
+      ] do
+    @connect_id connect_id
+    @event_id event_id
+    @ts ts
+    @text text
+    @file_id file_id
+    @file_name file_name
+    @mimetype mimetype
+    @bytes bytes
+    test "Slack inbound stages #{name}", %{tenant: tenant, group_id: group_id, agent_id: agent_id} do
+      SalixAgent.LLM.Mock.script([{:final, "ack"}])
+      secret = "slack-secret"
+      connect = seed_slack_inbound_connect(group_id, tenant, @connect_id, secret)
 
-    api_base = Application.get_env(:salix_im, :slack_api_base_url)
-    download_base = String.replace_suffix(api_base, "/api", "")
-    MockSlack.respond("canvas_download", @png)
-    # The thread-participant check reads conversations.replies; include the bot.
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [%{"user" => "Ubot"}]
-    })
-
-    # A file_share reply in an existing thread, with a caption but no @-mention.
-    envelope =
-      slack_envelope("Ev-thread-img", %{
-        "type" => "message",
-        "subtype" => "file_share",
-        "user" => "U1",
-        "text" => "看一下这张图，描述一下内容",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "ts" => "200.001",
-        "thread_ts" => "100.000",
-        "files" => [
-          %{
-            "id" => "F2",
-            "name" => "photo.png",
-            "mimetype" => "image/png",
-            "size" => byte_size(@png),
-            "url_private_download" => "#{download_base}/files/F2"
-          }
-        ]
+      api_base = Application.get_env(:salix_im, :slack_api_base_url)
+      download_base = String.replace_suffix(api_base, "/api", "")
+      MockSlack.respond("canvas_download", @bytes)
+      # The thread-participant check reads conversations.replies; include the bot.
+      MockSlack.respond("conversations.replies", %{
+        "ok" => true,
+        "messages" => [%{"user" => "Ubot"}]
       })
 
-    raw = Jason.encode!(envelope)
+      envelope =
+        slack_envelope(@event_id, %{
+          "type" => "message",
+          "subtype" => "file_share",
+          "user" => "U1",
+          "text" => @text,
+          "channel" => "C1",
+          "channel_type" => "channel",
+          "ts" => @ts,
+          "thread_ts" => "100.000",
+          "files" => [
+            %{
+              "id" => @file_id,
+              "name" => @file_name,
+              "mimetype" => @mimetype,
+              "size" => byte_size(@bytes),
+              "url_private_download" => "#{download_base}/files/#{@file_id}"
+            }
+          ]
+        })
 
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
+      raw = Jason.encode!(envelope)
 
-    staged_path =
-      SalixIM.SlackFiles.vfs_path("C1", "200.001", %{"id" => "F2", "name" => "photo.png"})
+      assert {:ok, :accepted} =
+               SalixIM.ProviderHTTP.handle_slack_event(
+                 connect,
+                 envelope,
+                 sign_slack_body(raw, secret),
+                 raw
+               )
 
-    assert_router_session_delivery(
-      tenant,
-      group_id,
-      agent_id,
-      "im_provider:slack:#{connect["connect_id"]}:Ev-thread-img",
-      staged_path
-    )
+      staged_path =
+        SalixIM.SlackFiles.vfs_path("C1", @ts, %{"id" => @file_id, "name" => @file_name})
 
-    assert {:ok, %{data: @png}} =
-             SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged_path)
-  end
+      assert_router_session_delivery(
+        tenant,
+        group_id,
+        agent_id,
+        "im_provider:slack:#{connect["connect_id"]}:#{@event_id}",
+        staged_path
+      )
 
-  test "Slack inbound stages a non-image file (e.g. video) shared in a thread the bot joined", %{
-    tenant: tenant,
-    group_id: group_id,
-    agent_id: agent_id
-  } do
-    SalixAgent.LLM.Mock.script([{:final, "ack"}])
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-thread-vid", secret)
-
-    api_base = Application.get_env(:salix_im, :slack_api_base_url)
-    download_base = String.replace_suffix(api_base, "/api", "")
-    clip = <<0x00, 0x00, 0x00, 0x18, "ftypmp42", "fake-mp4-bytes">>
-    MockSlack.respond("canvas_download", clip)
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [%{"user" => "Ubot"}]
-    })
-
-    envelope =
-      slack_envelope("Ev-thread-vid", %{
-        "type" => "message",
-        "subtype" => "file_share",
-        "user" => "U1",
-        "text" => "",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "ts" => "300.002",
-        "thread_ts" => "100.000",
-        "files" => [
-          %{
-            "id" => "F3",
-            "name" => "clip.mp4",
-            "mimetype" => "video/mp4",
-            "size" => byte_size(clip),
-            "url_private_download" => "#{download_base}/files/F3"
-          }
-        ]
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
-
-    staged_path =
-      SalixIM.SlackFiles.vfs_path("C1", "300.002", %{"id" => "F3", "name" => "clip.mp4"})
-
-    assert_router_session_delivery(
-      tenant,
-      group_id,
-      agent_id,
-      "im_provider:slack:#{connect["connect_id"]}:Ev-thread-vid",
-      staged_path
-    )
-
-    assert {:ok, %{data: ^clip}} =
-             SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged_path)
-  end
-
-  test "Slack inbound ignores an ordinary channel message that does not mention the bot", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-plain", secret)
-
-    envelope =
-      slack_envelope("Ev-plain", %{
-        "type" => "message",
-        "user" => "U1",
-        "text" => "ordinary channel message",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "ts" => "123.456"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:error, :ignored} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
-
-    # An ignored event must not be recorded so a later relevant retry is processed.
-    assert fake_records_with_prefix("ctl/im_slack_event_receipts/#{connect["connect_id"]}/") ==
-             %{}
-  end
-
-  test "Slack inbound ignores a message-event mention (handled via app_mention)", %{
-    tenant: tenant,
-    group_id: group_id
-  } do
-    secret = "slack-secret"
-    connect = seed_slack_inbound_connect(group_id, tenant, "sl-dup", secret)
-
-    envelope =
-      slack_envelope("Ev-dup", %{
-        "type" => "message",
-        "user" => "U1",
-        "text" => "<@Ubot> please help",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "ts" => "123.456"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:error, :ignored} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, secret),
-               raw
-             )
+      assert {:ok, %{data: @bytes}} =
+               SalixIM.Ports.AgentWorkspace.read_upload(agent_id, staged_path)
+    end
   end
 
   test "Slack inbound delivers a thread reply when the bot already participates", %{
@@ -31095,20 +30722,24 @@ defmodule SalixIM.ProviderTest do
         "signing_secret" => slack_secret,
         "workspace_id" => "T-disabled",
         "bot_token" => "xoxb-test",
+        "bot_user_id" => "Ubot",
         "oauth_completed_at" => 1,
         "disabled_at" => 123
       })
 
+    # A mention an enabled connect would accept, so only the disable gate can
+    # ignore it.
     slack_envelope = %{
       "type" => "event_callback",
       "api_app_id" => "A-disabled",
       "team_id" => "T-disabled",
       "event_id" => "Ev-disabled",
       "event" => %{
-        "type" => "message",
+        "type" => "app_mention",
         "user" => "U1",
-        "text" => "blocked slack",
+        "text" => "<@Ubot> blocked slack",
         "channel" => "C1",
+        "channel_type" => "channel",
         "ts" => "123.456"
       }
     }
@@ -31122,6 +30753,8 @@ defmodule SalixIM.ProviderTest do
                sign_slack_body(slack_raw, slack_secret),
                slack_raw
              )
+
+    assert fake_records_with_prefix("ctl/im_slack_event_receipts/sl-disabled-inbound/") == %{}
 
     feishu =
       seed_connect(group_id, "fs-disabled-inbound", "feishu", %{

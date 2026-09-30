@@ -261,7 +261,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
           access_token: "xoxp-comma-local-token",
           token_type: "user",
           scope:
-            "search:read.public,search:read.private,search:read.mpim,search:read.im,search:read.files,search:read.users,chat:write,channels:history,groups:history,mpim:history,im:history,canvases:read,canvases:write,users:read,users:read.email,reactions:write,reactions:read,emoji:read,files:read,channels:write,groups:write,im:write,mpim:write,channels:read,groups:read,mpim:read"
+            "search:read,search:read.public,search:read.private,search:read.mpim,search:read.im,search:read.files,search:read.users,chat:write,channels:history,groups:history,mpim:history,im:history,canvases:read,canvases:write,users:read,users:read.email,reactions:write,reactions:read,emoji:read,files:read,channels:write,groups:write,im:write,mpim:write,channels:read,groups:read,mpim:read"
         },
         team: %{id: "TCOMMALOCAL", name: "Comma Local Workspace"}
       })

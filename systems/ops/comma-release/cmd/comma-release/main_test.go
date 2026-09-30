@@ -104,17 +104,30 @@ func TestLifecycleHardCutOptInIsExplicitAndStrict(t *testing.T) {
 	}
 }
 
-func TestPlanRejectsUnknownMigrationPhase(t *testing.T) {
-	body := []byte(`{"schemaVersion":2,"manifestDigest":"x","requiredMode":"online","pendingIDs":["a"],"pendingSteps":[{"id":"a","owner":"test","store":"postgres","version":1,"source":"test","checksum":"sha256:test","phase":"mystery","execution":{"transactional":true,"timeoutSeconds":300,"lockBudgetSeconds":5},"safety":{"rollbackStrategy":"none"},"postconditions":["complete"],"repair":"retry"}],"providerPendingIDs":[]}`)
-	if err := run(context.Background(), []string{"plan"}, bytes.NewReader(body), &bytes.Buffer{}); err == nil {
-		t.Fatal("expected rejection")
-	}
-}
-
-func TestPlanRejectsLegacyV1Envelope(t *testing.T) {
-	body := []byte(`{"schemaVersion":1,"manifestDigest":"legacy","requiredMode":"online","steps":[]}`)
-	if err := run(context.Background(), []string{"plan"}, bytes.NewReader(body), &bytes.Buffer{}); err == nil {
-		t.Fatal("legacy V1 execution envelope was accepted")
+func TestPlanRejectsUnsupportedEnvelopes(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	for _, test := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "unknown migration phase",
+			body:    `{"schemaVersion":2,"manifestDigest":"` + digest + `","requiredMode":"online","pendingIDs":["a"],"pendingSteps":[{"id":"a","owner":"test","store":"postgres","version":1,"source":"test","checksum":"sha256:test","phase":"mystery","execution":{"transactional":true,"timeoutSeconds":300,"lockBudgetSeconds":5},"safety":{"rollbackStrategy":"none"},"postconditions":["complete"],"repair":"retry"}],"providerPendingIDs":[]}`,
+			wantErr: `phase "mystery"`,
+		},
+		{
+			name:    "legacy V1 execution envelope",
+			body:    `{"schemaVersion":1,"manifestDigest":"legacy","requiredMode":"online","steps":[]}`,
+			wantErr: "schema",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := run(context.Background(), []string{"plan"}, strings.NewReader(test.body), &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("plan error = %v, want %q", err, test.wantErr)
+			}
+		})
 	}
 }
 

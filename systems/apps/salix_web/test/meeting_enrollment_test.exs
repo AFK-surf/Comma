@@ -477,18 +477,13 @@ defmodule Salix.Bindings.MeetingEnrollmentTest do
              })
   end
 
-  test "fails closed when the Slack connect is disabled", context do
-    seed_connect(context, "slack-primary", "T-primary", %{"disabled_at" => 101})
+  for {label, tombstone} <- [{"disabled", "disabled_at"}, {"deleted", "deleted_at"}] do
+    @tombstone tombstone
+    test "fails closed when the Slack connect is #{label}", context do
+      seed_connect(context, "slack-primary", "T-primary", %{@tombstone => 101})
 
-    assert {:error, :calendar_enrollment_connect_not_found} =
-             MeetingEnrollment.resolve(entry())
-  end
-
-  test "fails closed when the Slack connect is deleted", context do
-    seed_connect(context, "slack-primary", "T-primary", %{"deleted_at" => 101})
-
-    assert {:error, :calendar_enrollment_connect_not_found} =
-             MeetingEnrollment.resolve(entry())
+      assert {:error, :calendar_enrollment_connect_not_found} = MeetingEnrollment.resolve(entry())
+    end
   end
 
   test "resolves configured connect identities with one bounded shared scan", context do
@@ -583,32 +578,29 @@ defmodule Salix.Bindings.MeetingEnrollmentTest do
     assert {:error, {:calendar_ambiguous, "Comma Event"}} = MeetingEnrollment.resolve(entry())
   end
 
-  test "fails closed when the bot is not a member of the channel", context do
-    seed_connect(context, "slack-primary", "T-primary")
+  for {label, channel, expected} <- [
+        {"the bot is not a member of the channel",
+         %{"id" => "C0BOTARENA", "name" => "botarena", "is_member" => false},
+         {:channel_bot_not_member, "#botarena"}},
+        {"the channel is not found",
+         %{"id" => "C0OTHER", "name" => "general", "is_member" => true},
+         {:channel_not_found, "#botarena"}}
+      ] do
+    @channel channel
+    @expected expected
+    test "fails closed when #{label}", context do
+      seed_connect(context, "slack-primary", "T-primary")
 
-    stub_accounts(context.group_id, [
-      account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
-    ])
+      stub_accounts(context.group_id, [
+        account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
+      ])
 
-    stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
-    stub_source_lifecycle(context.group_id, "ca-cal")
-    stub_channels([%{"id" => "C0BOTARENA", "name" => "botarena", "is_member" => false}])
+      stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
+      stub_source_lifecycle(context.group_id, "ca-cal")
+      stub_channels([@channel])
 
-    assert {:error, {:channel_bot_not_member, "#botarena"}} = MeetingEnrollment.resolve(entry())
-  end
-
-  test "fails closed when the channel is not found", context do
-    seed_connect(context, "slack-primary", "T-primary")
-
-    stub_accounts(context.group_id, [
-      account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
-    ])
-
-    stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
-    stub_source_lifecycle(context.group_id, "ca-cal")
-    stub_channels([%{"id" => "C0OTHER", "name" => "general", "is_member" => true}])
-
-    assert {:error, {:channel_not_found, "#botarena"}} = MeetingEnrollment.resolve(entry())
+      assert {:error, @expected} == MeetingEnrollment.resolve(entry())
+    end
   end
 
   test "resolves a Feishu notify target and its explicit create calendar", context do
@@ -710,52 +702,36 @@ defmodule Salix.Bindings.MeetingEnrollmentTest do
     assert policy["readiness"] == "ACTIVE"
   end
 
-  test "persists a producer-shaped Google quota outcome across consecutive policy checks",
-       context do
-    seed_feishu_connect(context, "feishu-primary")
-    agent_id = seed_agent(context)
+  for {label, failure, maintenance_reason} <- [
+        {"persists a producer-shaped Google quota outcome across consecutive policy checks",
+         {:proxy_event_error, 403, "rateLimitExceeded"},
+         {:google_calendar_rate_limited, 403, ["rateLimitExceeded"]}},
+        {"persists a producer-shaped Google 429 outcome across consecutive policy checks",
+         {:proxy_event_error, 429, "quotaExceeded"},
+         {:google_calendar_rate_limited, 429, ["quotaExceeded"]}},
+        {"persists an outer Tool Router 503 across consecutive policy checks", :tool_router_503,
+         {:google_calendar_http, 503}}
+      ] do
+    @failure failure
+    @expected {:error, {:calendar_source_maintenance, maintenance_reason}}
+    test label, context do
+      seed_feishu_connect(context, "feishu-primary")
+      agent_id = seed_agent(context)
 
-    stub_accounts(context.group_id, [
-      account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
-    ])
+      stub_accounts(context.group_id, [
+        account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
+      ])
 
-    stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
-    stub_source_lifecycle(context.group_id, "ca-cal")
-    stub_proxy_event_error(403, "rateLimitExceeded")
+      stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
+      stub_source_lifecycle(context.group_id, "ca-cal")
+      stub_policy_source_failure(@failure)
 
-    entry = feishu_entry(["Comma Event"], "Comma Event")
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+      entry = feishu_entry(["Comma Event"], "Comma Event")
+      Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
 
-    expected =
-      {:error,
-       {:calendar_source_maintenance, {:google_calendar_rate_limited, 403, ["rateLimitExceeded"]}}}
-
-    assert ^expected = MeetingCalendarPolicy.get(agent_id, "feishu-primary")
-    assert ^expected = MeetingCalendarPolicy.get(agent_id, "feishu-primary")
-  end
-
-  test "persists a producer-shaped Google 429 outcome across consecutive policy checks",
-       context do
-    seed_feishu_connect(context, "feishu-primary")
-    agent_id = seed_agent(context)
-
-    stub_accounts(context.group_id, [
-      account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
-    ])
-
-    stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
-    stub_source_lifecycle(context.group_id, "ca-cal")
-    stub_proxy_event_error(429, "quotaExceeded")
-
-    entry = feishu_entry(["Comma Event"], "Comma Event")
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
-
-    expected =
-      {:error,
-       {:calendar_source_maintenance, {:google_calendar_rate_limited, 429, ["quotaExceeded"]}}}
-
-    assert ^expected = MeetingCalendarPolicy.get(agent_id, "feishu-primary")
-    assert ^expected = MeetingCalendarPolicy.get(agent_id, "feishu-primary")
+      assert @expected == MeetingCalendarPolicy.get(agent_id, "feishu-primary")
+      assert @expected == MeetingCalendarPolicy.get(agent_id, "feishu-primary")
+    end
   end
 
   test "normalizes LIST_CALENDARS quota envelopes across consecutive policy checks", context do
@@ -800,34 +776,6 @@ defmodule Salix.Bindings.MeetingEnrollmentTest do
     refute evidence =~ "sensitive-list-diagnostic"
     refute evidence =~ "secret-list-api-key"
     refute evidence =~ "secret-list-token"
-  end
-
-  test "persists an outer Tool Router 503 across consecutive policy checks", context do
-    seed_feishu_connect(context, "feishu-primary")
-    agent_id = seed_agent(context)
-
-    stub_accounts(context.group_id, [
-      account("ca-cal", context.group_id, "ACTIVE", "googlecalendar")
-    ])
-
-    stub_calendars([%{"id" => "cal-comma", "summary" => "Comma Event"}])
-    stub_source_lifecycle(context.group_id, "ca-cal")
-
-    MockExternalHTTP.stub(
-      "POST",
-      @proxy_execute_path,
-      %{"error" => %{"message" => "temporary proxy outage"}},
-      503
-    )
-
-    entry = feishu_entry(["Comma Event"], "Comma Event")
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
-
-    expected =
-      {:error, {:calendar_source_maintenance, {:google_calendar_http, 503}}}
-
-    assert ^expected = MeetingCalendarPolicy.get(agent_id, "feishu-primary")
-    assert ^expected = MeetingCalendarPolicy.get(agent_id, "feishu-primary")
   end
 
   test "keeps an active source permission failure until a successful repair supersedes it",
@@ -889,7 +837,7 @@ defmodule Salix.Bindings.MeetingEnrollmentTest do
     assert policy["readiness"] == "ACTIVE"
   end
 
-  test "Feishu calendar enrollment fails closed for join mode or disconnected app", context do
+  test "Feishu notify enrollment fails closed for a disconnected app", context do
     seed_feishu_connect(context, "feishu-primary", %{"status" => "error"})
 
     assert {:error, :calendar_enrollment_connect_not_found} =
@@ -1142,6 +1090,18 @@ defmodule Salix.Bindings.MeetingEnrollmentTest do
       "POST",
       "/api/v3/tools/execute/GOOGLECALENDAR_EVENTS_LIST",
       %{"successful" => true, "data" => %{"items" => [], "nextSyncToken" => "sync-1"}}
+    )
+  end
+
+  defp stub_policy_source_failure({:proxy_event_error, status, reason}),
+    do: stub_proxy_event_error(status, reason)
+
+  defp stub_policy_source_failure(:tool_router_503) do
+    MockExternalHTTP.stub(
+      "POST",
+      @proxy_execute_path,
+      %{"error" => %{"message" => "temporary proxy outage"}},
+      503
     )
   end
 

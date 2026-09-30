@@ -74,7 +74,8 @@ defmodule SalixWeb.AgentVMMInstallationControllerTest do
     body = Jason.decode!(response.resp_body)
     assert body["operation_id"] == ctx.descriptor.operation.id
     assert body["registration_id"] == ctx.descriptor.operation.registration_id
-    refute body["remote_enrollment"]["enrollment_token"] == ""
+    enrollment_token = body["remote_enrollment"]["enrollment_token"]
+    assert is_binary(enrollment_token) and enrollment_token != ""
 
     recovered = exchange(ctx.descriptor) |> then(&Jason.decode!(&1.resp_body))
     assert recovered == body

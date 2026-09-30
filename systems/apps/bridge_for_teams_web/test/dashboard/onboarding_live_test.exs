@@ -16,7 +16,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
   test "gate: a fresh user is redirected from / to /onboarding", %{conn: conn} do
     %{conn: conn} = log_in_fresh_owner(%{conn: conn})
 
-    assert {:error, {:redirect, %{to: "/onboarding"}}} = live(conn, ~p"/")
+    assert redirected_to(get(conn, ~p"/")) == "/onboarding"
   end
 
   test "gate: CLI device login is exempt", %{conn: conn} do
@@ -40,7 +40,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
   test "an onboarded user is redirected away from /onboarding", %{conn: conn} do
     %{conn: conn} = register_and_log_in_user(%{conn: conn})
 
-    assert {:error, {:redirect, %{to: "/new-home"}}} = live(conn, ~p"/onboarding")
+    assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/onboarding")
   end
 
   test "entering onboarding auto-creates an owned swarm for a user who owns none", %{
@@ -144,7 +144,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     render_submit(view, "add_custom_task", %{"custom" => %{"title" => "Track fund II pipeline"}})
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     assert UserOnboardings.onboarded?(user.id)
 
@@ -509,7 +509,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     # Report offers are seeded alongside but are pre-run intent — never
     # dispatched. Everything else became a real delegated conversation.
@@ -551,7 +551,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     offers =
       user.id
@@ -600,7 +600,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
     render_click(view, "save_capabilities", %{})
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
     assert UserOnboardings.onboarded?(user.id)
 
     items_before = WorkspaceItems.list_tasks(user.id, project_id: project.id)
@@ -622,7 +622,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
     assert length(WorkspaceItems.list_tasks(user.id, project_id: project.id)) ==
              length(items_before)
 
-    # The wizard is enterable again (no bounce to /new-home).
+    # The wizard is enterable again (no bounce to /).
     {:ok, _view, html} = live(conn, ~p"/onboarding")
     assert html =~ "Continue"
 
@@ -630,7 +630,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
     # board by title, offers dedupe by series, routines by the audit map.
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
     assert UserOnboardings.onboarded?(user.id)
 
     items_after = WorkspaceItems.list_tasks(user.id, project_id: project.id)
@@ -725,7 +725,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     {:ok, onboarding} = UserOnboardings.get_onboarding(user.id)
     audit = onboarding.capabilities["_schedules"][project.id]
@@ -762,7 +762,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     assert UserOnboardings.onboarded?(user.id)
 
@@ -788,7 +788,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     assert UserOnboardings.onboarded?(user.id)
     assert BridgeForTeams.Orgs.list_orgs_for_user(user.id) == []
@@ -807,7 +807,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding/tasks")
     render_click(view, "finish_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     assert UserOnboardings.onboarded?(member.id)
 
@@ -825,10 +825,10 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/onboarding")
     render_click(view, "skip_onboarding", %{})
-    assert_redirect(view, "/new-home")
+    assert_redirect(view, "/")
 
     assert UserOnboardings.onboarded?(user.id)
-    assert {:ok, _view, _html} = live(conn, ~p"/")
+    assert html_response(get(conn, ~p"/"), 200) =~ ~s(id="root")
   end
 
   test "bare /onboarding resumes at the stored step", %{conn: conn} do

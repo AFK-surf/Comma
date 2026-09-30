@@ -14,8 +14,11 @@ const uniq = () =>
   Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
 
 async function login(page: Page) {
-  await page.goto(`/dev/login?email=${encodeURIComponent(EMAIL)}`);
-  await expect(page).toHaveURL(/\/$/);
+  // Land on a LiveView page: the organization Overview is the React dashboard.
+  await page.goto(
+    `/dev/login?email=${encodeURIComponent(EMAIL)}&to=/orgs/${ORG_SLUG}/projects`,
+  );
+  await expect(page).toHaveURL(new RegExp(`/orgs/${ORG_SLUG}/projects$`));
   await expectLiveViewConnected(page);
 }
 
@@ -135,18 +138,13 @@ test("Triage Worker selection and archive confirmation preserve the configured a
   await expect(panel).toContainText("New Triage tasks are paused");
 });
 
-test("dashboard shell renders after login", async ({ page }) => {
-  // App shell: sidebar nav + org switcher showing an org.
-  await expect(page.locator("#org-switcher")).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Agent Swarms" }).first(),
-  ).toBeVisible();
-  await expect(page.locator("#home-statistics")).toBeVisible();
-  await expect(page.getByText("Agent Swarm activity")).toBeVisible();
-  await expect(page.getByText("Token usage")).toBeVisible();
-  // The switcher lists the user's orgs (the seeded "E2E Org" among them);
-  // toContainText tolerates items inside the collapsed dropdown.
-  await expect(page.locator("#org-switcher")).toContainText("E2E Org");
+test("organization Overview renders in the React dashboard", async ({ page }) => {
+  await page.goto(`/orgs/${ORG_SLUG}`);
+
+  await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Agent Swarms" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+  await expect(page.getByText("E2E Org").first()).toBeVisible();
 });
 
 test("dashboard main content scrolls at narrow viewport widths", async ({
@@ -813,11 +811,6 @@ test("members list shows the owner", async ({ page }) => {
   await expect(
     page.locator("#members").getByRole("combobox").first(),
   ).toHaveValue("owner");
-});
-
-test("settings SSO tab shows the SSO configuration form", async ({ page }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/settings/sso`);
-  await expect(page.locator("#sso-form")).toBeVisible();
 });
 
 test("settings OAuth tab opens pre-populated app creation links", async ({

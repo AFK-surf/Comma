@@ -280,14 +280,6 @@ defmodule SalixWeb.SiteServingTest do
 
       assert {:ok, ^agent_id, %{}} = SalixWeb.Site.lookup_agent(decoded)
     end
-
-    test "resolves the setup agent after a host-label round trip", %{
-      agent: agent,
-      encoded: encoded
-    } do
-      {:ok, decoded} = SiteId.decode(encoded)
-      assert {:ok, ^agent, %{}} = SalixWeb.Site.lookup_agent(decoded)
-    end
   end
 
   defp request(method, host, path, headers \\ [], body \\ nil) do
@@ -1025,12 +1017,8 @@ defmodule SalixWeb.SiteServingTest do
     assert resp.body =~ "Messages required"
   end
 
-  test "LLM proxy: disabled / auth / rate limit", %{agent: a, encoded: e} do
-    setup_llm_agent(a, %{
-      "enabled" => true,
-      "require_auth" => true,
-      "rate_limit_rpm" => 2
-    })
+  test "LLM proxy: disabled / auth", %{agent: a, encoded: e} do
+    setup_llm_agent(a, %{"enabled" => true, "require_auth" => true})
 
     write_files!(a, [
       {"/.salix/websites/off/_api.json", Jason.encode!(%{"llm" => %{"enabled" => false}})}

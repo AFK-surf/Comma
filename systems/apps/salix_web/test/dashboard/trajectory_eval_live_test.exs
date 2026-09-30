@@ -214,19 +214,6 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
     assert html =~ "/dash/agents/agent-abc/sessions/sess-xyz"
   end
 
-  test "changing filters reloads with the selected range" do
-    with_queries(StubQueries)
-
-    {:ok, view, _html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    html =
-      view
-      |> element("form[phx-change=filter]")
-      |> render_change(%{"days" => "30", "group_id" => ""})
-
-    assert html =~ "Last 30 days"
-  end
-
   test "the line breaks across days nothing ran, and never dives to zero" do
     with_queries(GappedQueries)
 

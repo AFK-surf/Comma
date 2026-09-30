@@ -81,19 +81,13 @@ describe("TasksRoute", () => {
     );
   });
 
-  it.each(["terminal"])(
-    "maps completion-looking status %s to the done display bucket",
-    (status) => {
-      expect(taskStatusBucket(status)).toBe("done");
-    }
-  );
-
-  it.each(["escalated", "ready_for_review"])(
-    "maps review status %s to the needs-review bucket",
-    (status) => {
-      expect(taskStatusBucket(status)).toBe("needs_review");
-    }
-  );
+  it.each([
+    ["terminal", "done"],
+    ["escalated", "needs_review"],
+    ["ready_for_review", "needs_review"],
+  ])("maps status %s to the %s display bucket", (status, bucket) => {
+    expect(taskStatusBucket(status)).toBe(bucket);
+  });
 
   it("switches to the complete task status list from the view panel", async () => {
     const user = userEvent.setup();

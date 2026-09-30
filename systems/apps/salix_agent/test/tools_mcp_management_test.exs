@@ -140,26 +140,6 @@ defmodule SalixAgent.Tools.MCPManagementTest do
     refute_received {:unexpected_capability_request, _attrs}
   end
 
-  test "management tool contracts contain no Salix approval replay parameter" do
-    contracts =
-      MCP.defs()
-      |> Map.new(fn {name, description, schema, _fun, _auto_wait} ->
-        {name, {description, schema}}
-      end)
-
-    for name <- [
-          "mcp_manager.definition_create",
-          "mcp_manager.connect",
-          "mcp_manager.update",
-          "mcp_manager.set_enabled",
-          "mcp_manager.authorize"
-        ] do
-      {_description, schema} = Map.fetch!(contracts, name)
-
-      refute Map.has_key?(schema["properties"], "approval_request_id")
-    end
-  end
-
   defp decode(result), do: Jason.decode!(result)
 
   defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)

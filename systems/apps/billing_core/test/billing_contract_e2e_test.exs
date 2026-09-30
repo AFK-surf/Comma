@@ -31,8 +31,10 @@ defmodule BillingContractE2ETest do
     :ok
   end
 
-  test "Cloudflare profile prices retain the old SKU and add the standard-1 rate" do
-    start_supervised!(BillingCore.Repo)
+  test "billing migrations retain VM and OpenRouter Claude prices" do
+    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
     rows =
       BillingCore.Repo.query!(
@@ -45,6 +47,18 @@ defmodule BillingContractE2ETest do
     assert map_size(prices) == 2
     assert Decimal.eq?(prices["runtime-minimum"], Decimal.new("35.84"))
     assert Decimal.eq?(prices["runtime-standard-1"], Decimal.new("20.56"))
+
+    claude_rows =
+      BillingCore.Repo.query!(
+        "SELECT sku, usd_micros_per_unit FROM meter_pricing_catalog " <>
+          "WHERE resource_kind = 'llm' AND provider = 'anthropic' AND component = 'input' " <>
+          "AND sku IN ('anthropic/claude-opus-5.5', 'anthropic/claude-sonnet-5.5')"
+      ).rows
+
+    claude_prices = Map.new(claude_rows, fn [sku, rate] -> {sku, rate} end)
+    assert map_size(claude_prices) == 2
+    assert Decimal.eq?(claude_prices["anthropic/claude-opus-5.5"], Decimal.new("4"))
+    assert Decimal.eq?(claude_prices["anthropic/claude-sonnet-5.5"], Decimal.new("2"))
   end
 
   @tag :byok

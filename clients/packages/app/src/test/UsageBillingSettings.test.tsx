@@ -245,7 +245,9 @@ describe("useUsageBillingCategory", () => {
     expect(screen.getByRole("heading", { name: "Buy credits" })).toBeVisible();
     const pack = screen.getByText("700 credits").closest("[data-setting-id]");
     expect(pack).toHaveAttribute("data-setting-id", "billing.packs.comma_topup_700");
-    expect(screen.getByText("One-time · 700 credits")).toBeInTheDocument();
+    expect(
+      screen.getByText(/One-time · 700 credits · Estimated expiry/)
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "$9.00" }));
     await waitFor(() => {
       expect(createBillingCheckout).toHaveBeenCalledWith(
@@ -309,6 +311,15 @@ describe("useUsageBillingCategory", () => {
     const changeBillingSubscription = vi.fn(async () => ({
       url: "https://billing.stripe.com/test/change",
     }));
+    const preview = {
+      amount_minor: 1_000,
+      currency: "usd",
+      proration_date: 1780272000,
+      current_price_id: "price_value",
+      period_end: 1782864000,
+      effect: "upgrade" as const,
+    };
+    const previewBillingSubscriptionChange = vi.fn(async () => preview);
     const api = {
       listBillingPlans: vi.fn(async () => [valuePlan, proPlan]),
       listWorkspaces: vi.fn(async () => workspaces),
@@ -325,6 +336,7 @@ describe("useUsageBillingCategory", () => {
       ),
       createBillingCheckout,
       changeBillingSubscription,
+      previewBillingSubscriptionChange,
     } as unknown as CommaApiClient;
 
     renderUsageBilling(api);
@@ -342,10 +354,18 @@ describe("useUsageBillingCategory", () => {
     ).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Upgrade to Comma Pro" }));
 
+    expect(
+      await screen.findByRole("dialog", { name: "Confirm plan change" })
+    ).toBeVisible();
+    expect(screen.getByText(/Pay \$10.00 now/)).toBeVisible();
+    expect(changeBillingSubscription).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /^Confirm$/ }));
     await waitFor(() => {
       expect(changeBillingSubscription).toHaveBeenCalledWith(
         "workspace-1",
-        "comma_pro_v1"
+        "comma_pro_v1",
+        preview,
+        expect.any(String)
       );
     });
     expect(createBillingCheckout).not.toHaveBeenCalled();
@@ -363,6 +383,7 @@ describe("useUsageBillingCategory", () => {
           package_version: "v1",
           source_id: "sub_1",
           status: "active",
+          plan: valuePlan,
         },
         active_grants: [
           {
@@ -411,6 +432,17 @@ function billingSummary(
     current_credits: 0,
     active_grants: [],
     ...overrides,
+    ...(overrides.active_subscription
+      ? {
+          active_subscription: {
+            ...overrides.active_subscription,
+            plan: [valuePlan, proPlan].find(
+              (plan) =>
+                plan.package_code === overrides.active_subscription?.package_code
+            ),
+          },
+        }
+      : {}),
   };
 }
 

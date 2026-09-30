@@ -1,8 +1,10 @@
 import { Header, MenuSection } from "react-aria-components";
 import { LoadingIndicator } from "../LoadingIndicator";
 import {
+  memo,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -35,6 +37,11 @@ import {
 } from "../settings-shortcut";
 import { Toggle } from "../toggle";
 import { isReducedMotionEnabled } from "../../tokens";
+import {
+  sameSettingsValue,
+  useLatestCallback,
+  withLatestCallbacks,
+} from "./settingsIdentity";
 import { cx, definedProps } from "../utils";
 
 export interface SettingsSegmentedItem {
@@ -572,7 +579,38 @@ const SettingsRowContent = ({ content }: { content: ReactNode }) => {
   );
 };
 
-const SettingsRow = ({
+/**
+ * One setting. It renders again only when its data changes, so a switch
+ * flipped on one row leaves the rest of the page alone. Its callbacks call
+ * the section's latest item when they run, not the one it last rendered.
+ */
+const SettingsRow = memo(
+  function SettingsRow({
+    active,
+    item: renderedItem,
+    latestItem,
+  }: {
+    active: boolean;
+    item: SettingsPanelItem;
+    latestItem: (id: string) => SettingsPanelItem | undefined;
+  }) {
+    const item = useMemo(
+      () =>
+        withLatestCallbacks(
+          renderedItem,
+          () => latestItem(renderedItem.id) ?? renderedItem
+        ),
+      [latestItem, renderedItem]
+    );
+    return <SettingsRowView active={active} item={item} />;
+  },
+  (previous, next) =>
+    previous.active === next.active &&
+    previous.latestItem === next.latestItem &&
+    sameSettingsValue(previous.item, next.item)
+);
+
+const SettingsRowView = ({
   active,
   item,
 }: {
@@ -795,6 +833,9 @@ export const SettingsSectionView = ({
 }) => {
   const titleId = `settings-section-${section.id}`;
   const labelledBy = section.title ? titleId : undefined;
+  const latestItem = useLatestCallback((id: string) =>
+    section.items.find((item) => item.id === id)
+  );
   return (
     <section
       aria-labelledby={labelledBy}
@@ -819,7 +860,12 @@ export const SettingsSectionView = ({
         }
       >
         {section.items.map((item) => (
-          <SettingsRow active={item.id === activeItemId} key={item.id} item={item} />
+          <SettingsRow
+            active={item.id === activeItemId}
+            item={item}
+            key={item.id}
+            latestItem={latestItem}
+          />
         ))}
       </div>
     </section>

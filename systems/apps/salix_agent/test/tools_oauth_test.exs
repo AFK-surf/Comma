@@ -619,43 +619,42 @@ defmodule SalixAgent.Tools.OAuthTest do
 
   # ---- delete_oauth_credential ----
 
-  test "delete removes a matching (provider, alias) binding via the store seam", %{ctx: ctx} do
-    Application.put_env(:salix_agent, :oauth_store_test_pid, self())
+  for {name, provider} <- [
+        {"delete removes a matching (provider, alias) binding via the store seam", "github"},
+        {"delete normalizes the provider name before matching", "GitHub"}
+      ] do
+    test name, %{ctx: ctx} do
+      Application.put_env(:salix_agent, :oauth_store_test_pid, self())
 
-    put_stub(%{
-      context: %{tenant: "t1", group_id: "g1"},
-      bindings: [
-        %{"binding_id" => "b1", "provider" => "github", "alias" => "work", "status" => "active"},
-        %{"binding_id" => "b2", "provider" => "slack", "alias" => "team", "status" => "active"}
-      ]
-    })
+      put_stub(%{
+        context: %{tenant: "t1", group_id: "g1"},
+        bindings: [
+          %{
+            "binding_id" => "b1",
+            "provider" => "github",
+            "alias" => "work",
+            "status" => "active"
+          },
+          %{"binding_id" => "b2", "provider" => "slack", "alias" => "team", "status" => "active"}
+        ]
+      })
 
-    out = OAuthTools.delete_oauth_credential(%{"provider" => "github", "alias" => "work"}, ctx)
+      out =
+        OAuthTools.delete_oauth_credential(
+          %{"provider" => unquote(provider), "alias" => "work"},
+          ctx
+        )
 
-    assert Jason.decode!(out) == %{
-             "status" => "deleted",
-             "provider" => "github",
-             "alias" => "work",
-             "binding_id" => "b1"
-           }
+      assert Jason.decode!(out) == %{
+               "status" => "deleted",
+               "provider" => "github",
+               "alias" => "work",
+               "binding_id" => "b1"
+             }
 
-    # The (tenant, group, binding_id) reached the control-plane delete seam.
-    assert_received {:deleted_binding, "t1", "g1", "b1"}
-  end
-
-  test "delete normalizes the provider name before matching", %{ctx: ctx} do
-    Application.put_env(:salix_agent, :oauth_store_test_pid, self())
-
-    put_stub(%{
-      context: %{tenant: "t1", group_id: "g1"},
-      bindings: [
-        %{"binding_id" => "b1", "provider" => "github", "alias" => "work", "status" => "active"}
-      ]
-    })
-
-    out = OAuthTools.delete_oauth_credential(%{"provider" => "GitHub", "alias" => "work"}, ctx)
-    assert Jason.decode!(out)["status"] == "deleted"
-    assert_received {:deleted_binding, "t1", "g1", "b1"}
+      # The (tenant, group, binding_id) reached the control-plane delete seam.
+      assert_received {:deleted_binding, "t1", "g1", "b1"}
+    end
   end
 
   test "delete returns not_found when no binding matches (no delete call)", %{ctx: ctx} do

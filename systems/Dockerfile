@@ -57,6 +57,21 @@ COPY systems/native/spinfoam/SPINFOAM_VERSION systems/native/spinfoam/SHA256SUMS
 RUN ./native/spinfoam/fetch.sh OUT=/out/spinfoam
 
 # ---- Stage 1: Elixir release builder -------------------------------------
+# ---- BFT dashboard builder -------------------------------------------------
+# The React dashboard (clients/apps/bft) builds into
+# systems/apps/bridge_for_teams_web/priv/static/bft; Phoenix serves it
+# same-origin. Only the app's workspace dependency graph is installed.
+FROM node:24-trixie-slim AS bft-dashboard-builder
+WORKDIR /src
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches ./patches
+COPY website/package.json website/package.json
+COPY observability/grafana/package.json observability/grafana/package.json
+COPY clients ./clients
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@comma/bft..."
+RUN pnpm --filter @comma/i18n compile && pnpm --filter @comma/bft build
+
 FROM hexpm/elixir:1.20.1-erlang-29.0.2-debian-trixie-20260610-slim AS elixir-builder
 
 ARG COMMA_LOCAL_RECOMMENDATION_MOCK=false
@@ -148,6 +163,7 @@ COPY --from=spinfoam-fetcher /out/spinfoam apps/salix_agent/priv/spinfoam
 COPY resources/salix-system-files/recommendation-template-catalog.v1.json /resources/salix-system-files/recommendation-template-catalog.v1.json
 # ProactiveWatch embeds the Skill's Loop program from the same resource root.
 COPY resources/salix-system-files/skills/proactive/scripts/watch.c /resources/salix-system-files/skills/proactive/scripts/watch.c
+COPY --from=bft-dashboard-builder /src/systems/apps/bridge_for_teams_web/priv/static/bft apps/bridge_for_teams_web/priv/static/bft
 # Build the bridge_for_teams dashboard assets (standalone tailwind+esbuild Hex
 # installers download their binaries here) into priv/static before the release,
 # which bundles each app's priv/. Harmless when the subsystem isn't run.

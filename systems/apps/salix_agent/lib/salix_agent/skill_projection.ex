@@ -10,6 +10,11 @@ defmodule SalixAgent.SkillProjection do
   @cache_table :salix_agent_skill_projection_cache
   @cache_ttl_ms 60_000
 
+  @doc false
+  def create_table do
+    :ets.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
+  end
+
   @type ctx :: map()
   @type projection :: %{
           required(:revision) => String.t(),
@@ -570,19 +575,7 @@ defmodule SalixAgent.SkillProjection do
     end
   end
 
-  defp cache_table do
-    case :ets.whereis(@cache_table) do
-      :undefined ->
-        try do
-          :ets.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
-        rescue
-          ArgumentError -> @cache_table
-        end
-
-      _tid ->
-        @cache_table
-    end
-  end
+  defp cache_table, do: @cache_table
 
   defp required(ctx, key) do
     case value(ctx, key) do

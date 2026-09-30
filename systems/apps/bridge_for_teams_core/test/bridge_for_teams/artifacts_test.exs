@@ -41,14 +41,6 @@ defmodule BridgeForTeams.ArtifactsTest do
     test "the fallback is overridable (reports pass \"report\")" do
       assert Artifacts.slug("", @user_id, "report") == "report-a1b2c3d4"
     end
-
-    test "reports series slugs are the same implementation" do
-      assert BridgeForTeams.Reports.series_slug("Daily Briefing", @user_id) ==
-               "daily-briefing-a1b2c3d4"
-
-      assert BridgeForTeams.Reports.series_slug("!!!", @user_id) == "report-a1b2c3d4"
-      assert BridgeForTeams.Reports.user_suffix(@user_id) == Artifacts.user_suffix(@user_id)
-    end
   end
 
   describe "dir/1 and path/2" do
@@ -101,40 +93,29 @@ defmodule BridgeForTeams.ArtifactsTest do
       end
     end
 
-    test "rejects paths outside the artifacts root" do
-      assert Artifacts.parse_path("/.salix/reports/s-a1b2c3d4/2026-07-06.md") == :error
-      assert Artifacts.parse_path("/artifacts/foo/2026-07-06.md") == :error
-      assert Artifacts.parse_path("/.salix/artifacts/2026-07-06.md") == :error
-    end
-
-    test "rejects extra path segments and directories" do
-      assert Artifacts.parse_path("/.salix/artifacts/a/b/2026-07-06.md") == :error
-      assert Artifacts.parse_path("/.salix/artifacts/competitor-scan-a1b2c3d4") == :error
-      assert Artifacts.parse_path("/.salix/artifacts/competitor-scan-a1b2c3d4/") == :error
-    end
-
-    test "rejects malformed filenames" do
-      for filename <- [
-            "notes.md",
-            "2026-07-06.html",
-            "2026-07-06.md.bak",
-            "2026-7-6.md",
-            "2026-07-06-08.md",
-            "2026-07-06-080000.md"
-          ] do
-        assert Artifacts.parse_path("/.salix/artifacts/s-a1b2c3d4/" <> filename) == :error
+    for {reason, path} <- [
+          {"the reports root", "/.salix/reports/s-a1b2c3d4/2026-07-06.md"},
+          {"a path outside /.salix", "/artifacts/foo/2026-07-06.md"},
+          {"a file directly under the root", "/.salix/artifacts/2026-07-06.md"},
+          {"extra path segments", "/.salix/artifacts/a/b/2026-07-06.md"},
+          {"a slug directory", "/.salix/artifacts/competitor-scan-a1b2c3d4"},
+          {"a slug directory with a trailing slash",
+           "/.salix/artifacts/competitor-scan-a1b2c3d4/"},
+          {"a non-date filename", "/.salix/artifacts/s-a1b2c3d4/notes.md"},
+          {"a non-Markdown extension", "/.salix/artifacts/s-a1b2c3d4/2026-07-06.html"},
+          {"a trailing extension", "/.salix/artifacts/s-a1b2c3d4/2026-07-06.md.bak"},
+          {"an unpadded date", "/.salix/artifacts/s-a1b2c3d4/2026-7-6.md"},
+          {"an hour-only disambiguator", "/.salix/artifacts/s-a1b2c3d4/2026-07-06-08.md"},
+          {"a seconds disambiguator", "/.salix/artifacts/s-a1b2c3d4/2026-07-06-080000.md"},
+          {"an invalid month", "/.salix/artifacts/s-a1b2c3d4/2026-13-01.md"},
+          {"an invalid day", "/.salix/artifacts/s-a1b2c3d4/2026-02-30.md"},
+          {"an invalid time", "/.salix/artifacts/s-a1b2c3d4/2026-07-06-2460.md"},
+          {"the empty string", ""},
+          {"a bare filename", "2026-07-06.md"}
+        ] do
+      test "rejects #{reason}: #{inspect(path)}" do
+        assert Artifacts.parse_path(unquote(path)) == :error
       end
-    end
-
-    test "rejects calendar-invalid dates and times" do
-      assert Artifacts.parse_path("/.salix/artifacts/s-a1b2c3d4/2026-13-01.md") == :error
-      assert Artifacts.parse_path("/.salix/artifacts/s-a1b2c3d4/2026-02-30.md") == :error
-      assert Artifacts.parse_path("/.salix/artifacts/s-a1b2c3d4/2026-07-06-2460.md") == :error
-    end
-
-    test "rejects the empty string and non-path garbage" do
-      assert Artifacts.parse_path("") == :error
-      assert Artifacts.parse_path("2026-07-06.md") == :error
     end
   end
 end

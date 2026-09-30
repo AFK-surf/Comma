@@ -69,58 +69,36 @@ describe("createNativeBridgePreload", () => {
     expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty("files");
   });
 
-  it("exposes a read-only renderer identity from BrowserWindow argv", () => {
-    const bridge = createNativeBridgePreload(
-      { invoke: vi.fn(), on: vi.fn(), off: vi.fn() },
+  it.each(
+    [
       {
+        name: "exposes a read-only renderer identity from BrowserWindow argv",
         argv: ["--window-id=win_main", "--window-role=main-window", "--ignored=value"],
-      }
-    );
-
-    expect(bridge.self).toEqual({
-      role: "main-window",
-      windowId: "win_main",
-    });
-  });
-
-  it("falls back to an unknown renderer identity when argv is incomplete", () => {
-    const bridge = createNativeBridgePreload(
-      { invoke: vi.fn(), on: vi.fn(), off: vi.fn() },
-      { argv: ["--window-id=win_main"] }
-    );
-
-    expect(bridge.self).toEqual({
-      role: "unknown",
-      windowId: "unknown",
-    });
-  });
-
-  it("recognizes the dedicated side-chat renderer role", () => {
-    const bridge = createNativeBridgePreload(
-      { invoke: vi.fn(), on: vi.fn(), off: vi.fn() },
+        expected: { role: "main-window", windowId: "win_main" },
+      },
       {
+        name: "falls back to an unknown renderer identity when argv is incomplete",
+        argv: ["--window-id=win_main"],
+        expected: { role: "unknown", windowId: "unknown" },
+      },
+      {
+        name: "recognizes the dedicated side-chat renderer role",
         argv: ["--window-id=win_side_chat", "--window-role=side-chat-window"],
-      }
-    );
-
-    expect(bridge.self).toEqual({
-      role: "side-chat-window",
-      windowId: "win_side_chat",
-    });
-  });
-
-  it("recognizes the isolated side-chat test-window renderer role", () => {
+        expected: { role: "side-chat-window", windowId: "win_side_chat" },
+      },
+      {
+        name: "recognizes the isolated side-chat test-window renderer role",
+        argv: ["--window-id=win_side_chat_test", "--window-role=side-chat-test-window"],
+        expected: { role: "side-chat-test-window", windowId: "win_side_chat_test" },
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { argv, expected }) => {
     const bridge = createNativeBridgePreload(
       { invoke: vi.fn(), on: vi.fn(), off: vi.fn() },
-      {
-        argv: ["--window-id=win_side_chat_test", "--window-role=side-chat-test-window"],
-      }
+      { argv }
     );
 
-    expect(bridge.self).toEqual({
-      role: "side-chat-test-window",
-      windowId: "win_side_chat_test",
-    });
+    expect(bridge.self).toEqual(expected);
   });
 
   it("binds every runtime leaf to its generated main channel", async () => {

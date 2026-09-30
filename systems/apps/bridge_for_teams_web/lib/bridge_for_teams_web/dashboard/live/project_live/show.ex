@@ -30,7 +30,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
   alias BridgeForTeams.{
     Accounts,
     Agents,
-    Auth,
     Conversations,
     Compute,
     Environments,
@@ -113,7 +112,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
        |> assign(:effective_model_defaults, %{})
        |> assign(:access_form, access_form())
        |> assign(:show_access_form, false)
-       |> assign(:import_token, nil)
        |> assign(:configure_agent, nil)
        |> assign(:rebind_agent, nil)
        |> assign(:conversation_form, nil)
@@ -941,42 +939,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
 
       {:noreply, put_flash(socket, :error, gettext("Only Agent Swarm admins can manage access."))}
     end
-  end
-
-  # ---- Data import token ----
-
-  def handle_event("mint_import_token", _params, socket) do
-    require_project_admin(
-      socket,
-      gettext("Only Agent Swarm admins can mint a data-import token."),
-      fn socket ->
-        case Auth.create_import_token(
-               socket.assigns.current_user,
-               socket.assigns.current_org,
-               socket.assigns.project,
-               audit_opts(socket)
-             ) do
-          {:ok, %{token: token, expires_at: expires_at}} ->
-            {:noreply,
-             assign(socket, :import_token, import_token_view(socket, token, expires_at))}
-
-          {:error, :forbidden} ->
-            {:noreply,
-             put_flash(
-               socket,
-               :error,
-               gettext("Only Agent Swarm admins can mint a data-import token.")
-             )}
-
-          {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, gettext("Could not mint a data-import token."))}
-        end
-      end
-    )
-  end
-
-  def handle_event("close_import_token", _params, socket) do
-    {:noreply, assign(socket, :import_token, nil)}
   end
 
   # ---- Agents events ----
@@ -4375,12 +4337,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
     Calendar.strftime(dt, "%b %d, %Y")
   end
 
-  defp format_datetime(nil), do: "—"
-
-  defp format_datetime(%DateTime{} = dt) do
-    Calendar.strftime(dt, "%b %d, %Y %H:%M UTC")
-  end
-
   defp nonblank?(value) when is_binary(value), do: String.trim(value) != ""
   defp nonblank?(_), do: false
 
@@ -5437,14 +5393,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
             <.icon name="plus" class="h-4 w-4" /> {gettext("Add user")}
           </.button>
           <.button
-            :if={@can_manage_project}
-            variant="secondary"
-            size="sm"
-            phx-click="mint_import_token"
-          >
-            {gettext("Data import")}
-          </.button>
-          <.button
             :if={@can_view_audit}
             href={~p"/orgs/#{@current_org.slug}/operations/audit?#{%{resource_type: "project_member"}}"}
             variant="ghost"
@@ -5457,12 +5405,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
           </.badge>
         </div>
       </div>
-
-      <.import_token_modal
-        :if={@import_token}
-        import_token={@import_token}
-        project={@project}
-      />
 
       <.modal
         :if={@can_manage_project && @show_access_form}
@@ -5549,118 +5491,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ProjectLive.Show do
       </.table>
     </div>
     """
-  end
-
-  # Shown once after a mint: the raw token (never recoverable later), its
-  # expiry, and a copy-ready curl example for the import endpoint.
-  attr(:import_token, :map, required: true)
-  attr(:project, :map, required: true)
-
-  defp import_token_modal(assigns) do
-    ~H"""
-    <.modal id="import-token-modal" show={true} on_cancel={JS.push("close_import_token")}>
-      <:title>{gettext("Data-import token")}</:title>
-
-      <div class="space-y-4">
-        <p class="text-sm text-neutral-600">
-          {gettext("Copy this token now — it is shown only once and cannot be recovered later. It expires %{at} and can seed the My Space board for this Agent Swarm.", at: format_datetime(@import_token.expires_at))}
-        </p>
-
-        <div>
-          <div class="mb-2 flex items-center justify-between gap-2">
-            <h3 class="text-sm font-medium text-neutral-900">{gettext("Token")}</h3>
-            <button
-              type="button"
-              id="copy-import-token"
-              phx-hook="CopyToClipboard"
-              data-copy-target="#import-token-value"
-              class="shrink-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-100"
-            >
-              {gettext("Copy")}
-            </button>
-          </div>
-          <pre
-            id="import-token-value"
-            class="overflow-x-auto rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs leading-5 text-neutral-100"
-          ><code>{@import_token.token}</code></pre>
-        </div>
-
-        <div>
-          <div class="mb-2 flex items-center justify-between gap-2">
-            <h3 class="text-sm font-medium text-neutral-900">{gettext("Import command")}</h3>
-            <button
-              type="button"
-              id="copy-import-curl"
-              phx-hook="CopyToClipboard"
-              data-copy-target="#import-curl-value"
-              class="shrink-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-100"
-            >
-              {gettext("Copy")}
-            </button>
-          </div>
-          <pre
-            id="import-curl-value"
-            class="overflow-x-auto rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs leading-5 text-neutral-100"
-          ><code>{@import_token.curl}</code></pre>
-        </div>
-      </div>
-
-      <:footer>
-        <.button variant="primary" phx-click="close_import_token">{gettext("Done")}</.button>
-      </:footer>
-    </.modal>
-    """
-  end
-
-  # Build the one-shot view for the import-token modal: the raw token, expiry,
-  # and a copy-ready curl example targeting this Agent Swarm's import endpoint.
-  defp import_token_view(socket, token, expires_at) do
-    org = socket.assigns.current_org
-    project = socket.assigns.project
-
-    url =
-      (dashboard_base_url() |> String.trim_trailing("/")) <>
-        "/v1/orgs/#{org.slug}/projects/#{project.slug}/dashboard/import"
-
-    curl =
-      """
-      curl -sS -X POST \\
-        "#{url}" \\
-        -H "Authorization: Bearer #{token}" \\
-        -H "Content-Type: application/json" \\
-        --data @myspace-import.json
-      """
-      |> String.trim()
-
-    %{token: token, expires_at: expires_at, curl: curl}
-  end
-
-  defp dashboard_base_url do
-    case Application.get_env(:bridge_for_teams_web, :public_base_url) do
-      base when is_binary(base) and base != "" ->
-        base
-
-      _ ->
-        endpoint_config =
-          Application.get_env(:bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint, [])
-
-        url_config = Keyword.get(endpoint_config, :url, [])
-        http_config = Keyword.get(endpoint_config, :http, [])
-
-        scheme = Keyword.get(url_config, :scheme, "http")
-        host = Keyword.get(url_config, :host, "localhost")
-        port = Keyword.get(url_config, :port) || Keyword.get(http_config, :port)
-
-        port_suffix =
-          case {scheme, port} do
-            {"http", port} when port in [nil, 80] -> ""
-            {"https", port} when port in [nil, 443] -> ""
-            {_scheme, nil} -> ""
-            {_scheme, port} -> ":#{port}"
-          end
-
-        "#{scheme}://#{host}#{port_suffix}"
-    end
   end
 
   defp external_target_picker(assigns) do

@@ -28,30 +28,25 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflightTest do
     :ok
   end
 
-  test "sandbox probe fails when disposable cleanup fails" do
-    gateway = start_supervised!({MockCloudflareGateway, fail_ops: [:destroy]})
-    put_cloudflare_default(gateway)
+  for {name, fail_op, error_pattern, sandbox_id} <- [
+        {"sandbox probe fails when disposable cleanup fails", :destroy, "destroy_failed",
+         "preflight-destroy-fails"},
+        {"sandbox probe fails when ensure fails", :ensure, "sandbox_probe_failed",
+         "preflight-ensure-fails"},
+        {"health check failure blocks preflight before sandbox probe", :healthz, "healthz_status",
+         "preflight-health-fails"}
+      ] do
+    @fail_op fail_op
+    @error_pattern error_pattern
+    @sandbox_id sandbox_id
 
-    assert_raise Mix.Error, ~r/destroy_failed/, fn ->
-      CloudflarePreflight.run(["--sandbox-id", "preflight-destroy-fails"])
-    end
-  end
+    test "#{name}" do
+      gateway = start_supervised!({MockCloudflareGateway, fail_ops: [@fail_op]})
+      put_cloudflare_default(gateway)
 
-  test "sandbox probe fails when ensure fails" do
-    gateway = start_supervised!({MockCloudflareGateway, fail_ops: [:ensure]})
-    put_cloudflare_default(gateway)
-
-    assert_raise Mix.Error, ~r/sandbox_probe_failed/, fn ->
-      CloudflarePreflight.run(["--sandbox-id", "preflight-ensure-fails"])
-    end
-  end
-
-  test "health check failure blocks preflight before sandbox probe" do
-    gateway = start_supervised!({MockCloudflareGateway, fail_ops: [:healthz]})
-    put_cloudflare_default(gateway)
-
-    assert_raise Mix.Error, ~r/healthz_status/, fn ->
-      CloudflarePreflight.run(["--sandbox-id", "preflight-health-fails"])
+      assert_raise Mix.Error, Regex.compile!(@error_pattern), fn ->
+        CloudflarePreflight.run(["--sandbox-id", @sandbox_id])
+      end
     end
   end
 

@@ -147,72 +147,52 @@ defmodule SalixIM.ProviderConversationLogTest do
     assert delivery["delivery"]["attempts"] == 1
   end
 
-  test "an exact delivery-state read fault is not projected as an empty delivery list" do
-    {ids, message_id, delivery} = delivered_fixture!("Exact delivery-state read fault")
+  # Each fault reaches a different read in the status projection: the exact
+  # state read for one message, the delivery listing, and the per-delivery
+  # state read that follows a successful listing.
+  for {name, fault, exact_message?} <- [
+        {"an exact delivery-state read fault", :state_get, true},
+        {"a delivery-state list fault", :deliveries_list, false},
+        {"a listed delivery-state read fault", :state_get, false}
+      ] do
+    @fault fault
+    @exact_message exact_message?
+    test "#{name} is not projected as an empty delivery list" do
+      {ids, message_id, delivery} = delivered_fixture!(unquote(name))
 
-    state_key =
-      Keys.ctl_group_conversation_participant_delivery_state(
-        ids.group,
-        ids.conversation,
-        ids.participant,
-        delivery["delivery_id"]
-      )
+      case @fault do
+        :state_get ->
+          state_key =
+            Keys.ctl_group_conversation_participant_delivery_state(
+              ids.group,
+              ids.conversation,
+              ids.participant,
+              delivery["delivery_id"]
+            )
 
-    assert :ok = S3.Fake.blackhole({:fail, 503, :get, state_key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
+          assert :ok = S3.Fake.blackhole({:fail, 503, :get, state_key})
+          on_exit(fn -> S3.Fake.clear_blackhole() end)
 
-    assert {:error, _reason} =
-             Conversations.group_conversation_delivery_status(
-               ids.group,
-               ids.conversation,
-               participant_id: ids.participant,
-               message_id: message_id,
-               limit: 1
-             )
-  end
+        :deliveries_list ->
+          deliveries_prefix =
+            Keys.ctl_group_conversation_participant_deliveries_prefix(
+              ids.group,
+              ids.conversation,
+              ids.participant
+            )
 
-  test "a delivery-state list fault is not projected as an empty delivery list" do
-    {ids, _message_id, _delivery} = delivered_fixture!("Delivery-state list fault")
+          assert :ok = S3.Fake.set_fault({:fail, 503, :list, deliveries_prefix})
+      end
 
-    deliveries_prefix =
-      Keys.ctl_group_conversation_participant_deliveries_prefix(
-        ids.group,
-        ids.conversation,
-        ids.participant
-      )
+      message_opts = if @exact_message, do: [message_id: message_id], else: []
 
-    assert :ok = S3.Fake.set_fault({:fail, 503, :list, deliveries_prefix})
-
-    assert {:error, _reason} =
-             Conversations.group_conversation_delivery_status(
-               ids.group,
-               ids.conversation,
-               participant_id: ids.participant,
-               limit: 1
-             )
-  end
-
-  test "a listed delivery-state read fault is not projected as an empty delivery list" do
-    {ids, _message_id, delivery} = delivered_fixture!("Listed delivery-state read fault")
-
-    state_key =
-      Keys.ctl_group_conversation_participant_delivery_state(
-        ids.group,
-        ids.conversation,
-        ids.participant,
-        delivery["delivery_id"]
-      )
-
-    assert :ok = S3.Fake.blackhole({:fail, 503, :get, state_key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
-
-    assert {:error, _reason} =
-             Conversations.group_conversation_delivery_status(
-               ids.group,
-               ids.conversation,
-               participant_id: ids.participant,
-               limit: 1
-             )
+      assert {:error, _reason} =
+               Conversations.group_conversation_delivery_status(
+                 ids.group,
+                 ids.conversation,
+                 [participant_id: ids.participant, limit: 1] ++ message_opts
+               )
+    end
   end
 
   test "shared recovery settles an inactive provider after owner loss without new sends" do

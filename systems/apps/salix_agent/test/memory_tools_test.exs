@@ -291,36 +291,6 @@ defmodule SalixAgent.MemoryToolsTest do
       assert res.content =~ "Unsupported memory path"
     end
 
-    test "unsupported paths get willow's full guidance wording", %{agent: a} do
-      res =
-        run(
-          "memory.write",
-          %{"path" => "/memory/foo.md", "content" => "x"},
-          ctx(a, state_with(a, []))
-        )
-
-      assert res.error
-
-      assert res.content ==
-               "error: Unsupported memory path. Use /memory/semantic/user.md, /memory/semantic/agent.md, " <>
-                 "/memory/semantic/people.md, /memory/semantic/environments/<alias>.md, " <>
-                 "/memory/index.md, /memory/scoped/<name>.md, or /memory/episodes/YYYY-MM-DD.md."
-    end
-
-    test "write mode is rejected for daily memory files", %{agent: a} do
-      res =
-        run(
-          "memory.write",
-          %{"path" => "/memory/episodes/2030-01-05.md", "content" => "x", "mode" => "write"},
-          ctx(a, state_with(a, []))
-        )
-
-      assert res.error
-
-      assert res.content ==
-               "error: memory.write write mode is not allowed for daily memory; use append mode on today's file"
-    end
-
     test "invalid mode wording", %{agent: a} do
       res =
         run(
@@ -382,33 +352,31 @@ defmodule SalixAgent.MemoryToolsTest do
       commit_workspace!(a, "append-third", res.events)
       assert {:ok, "first\nsecond\nthird"} = AgentWorkspace.read(a, today)
     end
+  end
 
-    test "append on a non-today daily file is rejected with willow's wording", %{agent: a} do
-      res =
-        run(
-          "memory.write",
-          %{"path" => "/memory/episodes/2020-01-01.md", "content" => "x", "mode" => "append"},
-          ctx(a, state_with(a, []))
-        )
+  describe "memory.write — rejected paths and modes" do
+    for {name, args, message} <- [
+          {"unsupported paths get willow's full guidance wording",
+           %{"path" => "/memory/foo.md", "content" => "x"},
+           "error: Unsupported memory path. Use /memory/semantic/user.md, /memory/semantic/agent.md, " <>
+             "/memory/semantic/people.md, /memory/semantic/environments/<alias>.md, " <>
+             "/memory/index.md, /memory/scoped/<name>.md, or /memory/episodes/YYYY-MM-DD.md."},
+          {"write mode is rejected for daily memory files",
+           %{"path" => "/memory/episodes/2030-01-05.md", "content" => "x", "mode" => "write"},
+           "error: memory.write write mode is not allowed for daily memory; use append mode on today's file"},
+          {"append on a non-today daily file is rejected with willow's wording",
+           %{"path" => "/memory/episodes/2020-01-01.md", "content" => "x", "mode" => "append"},
+           "error: memory.write append mode is only allowed for today's daily memory file"},
+          {"append on a non-daily allowed path is rejected (append is daily-only)",
+           %{"path" => "/memory/index.md", "content" => "x", "mode" => "append"},
+           "error: memory.write append mode is only allowed for today's daily memory file"}
+        ] do
+      test name, %{agent: a} do
+        res = run("memory.write", unquote(Macro.escape(args)), ctx(a, state_with(a, [])))
 
-      assert res.error
-
-      assert res.content ==
-               "error: memory.write append mode is only allowed for today's daily memory file"
-    end
-
-    test "append on a non-daily allowed path is rejected (append is daily-only)", %{agent: a} do
-      res =
-        run(
-          "memory.write",
-          %{"path" => "/memory/index.md", "content" => "x", "mode" => "append"},
-          ctx(a, state_with(a, []))
-        )
-
-      assert res.error
-
-      assert res.content ==
-               "error: memory.write append mode is only allowed for today's daily memory file"
+        assert res.error
+        assert res.content == unquote(message)
+      end
     end
   end
 end

@@ -27,37 +27,6 @@ defmodule Comma.Synchronicity.HTTPTest do
                   created: true
                 }}
     end
-
-    test "2xx with a result missing fields is invalid" do
-      assert HTTP.classify(200, %{"result" => %{"org_id" => "x"}}) ==
-               {:error, {:invalid, :malformed_success_body}}
-    end
-
-    test "2xx with no result is invalid" do
-      assert HTTP.classify(200, %{"ok" => true}) ==
-               {:error, {:invalid, :malformed_success_body}}
-    end
-
-    test "409 explicit_link_required awaits an explicit link" do
-      body = %{"error" => %{"code" => "explicit_link_required", "message" => "x"}}
-      assert HTTP.classify(409, body) == {:error, :explicit_link_required}
-    end
-
-    test "401 and 403 are auth failures" do
-      assert HTTP.classify(401, %{}) == {:error, :auth}
-      assert HTTP.classify(403, %{}) == {:error, :auth}
-    end
-
-    test "429, 5xx and 503 are retryable" do
-      assert HTTP.classify(429, %{}) == {:error, {:retryable, {:status, 429}}}
-      assert HTTP.classify(500, %{}) == {:error, {:retryable, {:status, 500}}}
-      assert HTTP.classify(503, %{}) == {:error, {:retryable, {:status, 503}}}
-    end
-
-    test "400 carries the code" do
-      body = %{"error" => %{"code" => "invalid_email"}}
-      assert HTTP.classify(400, body) == {:error, {:invalid, {:bad_request, "invalid_email"}}}
-    end
   end
 
   @device %{
@@ -78,50 +47,10 @@ defmodule Comma.Synchronicity.HTTPTest do
                   created: true
                 }}
     end
-
-    test "2xx missing device fields is invalid" do
-      assert HTTP.classify_device(200, %{"result" => %{"device_id" => "d"}}) ==
-               {:error, {:invalid, :malformed_success_body}}
-    end
-
-    test "404 means the workspace is not provisioned" do
-      assert HTTP.classify_device(404, %{}) == {:error, :not_provisioned}
-    end
-
-    test "409 preserves the device ownership conflict" do
-      body = %{"error" => %{"code" => "device_org_conflict"}}
-
-      assert HTTP.classify_device(409, body) ==
-               {:error, {:invalid, {:conflict, "device_org_conflict"}}}
-    end
-
-    test "401 and 403 are auth failures" do
-      assert HTTP.classify_device(401, %{}) == {:error, :auth}
-      assert HTTP.classify_device(403, %{}) == {:error, :auth}
-    end
-
-    test "429 and 5xx are retryable" do
-      assert HTTP.classify_device(429, %{}) == {:error, {:retryable, {:status, 429}}}
-      assert HTTP.classify_device(503, %{}) == {:error, {:retryable, {:status, 503}}}
-    end
-
-    test "400 carries the code" do
-      body = %{"error" => %{"code" => "invalid_nk"}}
-      assert HTTP.classify_device(400, body) == {:error, {:invalid, {:bad_request, "invalid_nk"}}}
-    end
   end
 
   describe "provision_workspace/3 over the transport" do
-    setup do
-      Application.put_env(:comma_core, :synchronicity,
-        base_url: "http://sync.test",
-        provisioning_secret: @secret,
-        req_options: [plug: {Req.Test, Comma.Synchronicity.HTTP}]
-      )
-
-      on_exit(fn -> Application.delete_env(:comma_core, :synchronicity) end)
-      :ok
-    end
+    setup :configure_transport
 
     test "PUTs to the workspace path with the bearer + owner, maps success" do
       Req.Test.stub(Comma.Synchronicity.HTTP, fn conn ->
@@ -172,16 +101,7 @@ defmodule Comma.Synchronicity.HTTPTest do
   end
 
   describe "enroll_device/4 over the transport" do
-    setup do
-      Application.put_env(:comma_core, :synchronicity,
-        base_url: "http://sync.test",
-        provisioning_secret: @secret,
-        req_options: [plug: {Req.Test, Comma.Synchronicity.HTTP}]
-      )
-
-      on_exit(fn -> Application.delete_env(:comma_core, :synchronicity) end)
-      :ok
-    end
+    setup :configure_transport
 
     test "POSTs to the workspace devices path with the bearer + nk/label/owner" do
       Req.Test.stub(Comma.Synchronicity.HTTP, fn conn ->
@@ -254,55 +174,70 @@ defmodule Comma.Synchronicity.HTTPTest do
                   expires_at: 0
                 }}
     end
-
-    test "2xx without a token is invalid" do
-      assert HTTP.classify_key(200, %{"result" => Map.delete(@key, "token")}) ==
-               {:error, {:invalid, :malformed_success_body}}
-    end
-
-    test "404 is an unprovisioned Workspace" do
-      assert HTTP.classify_key(404, %{"error" => %{"code" => "workspace_not_provisioned"}}) ==
-               {:error, :not_provisioned}
-    end
-
-    test "401/403, 429/5xx and 400 map like provisioning" do
-      assert HTTP.classify_key(401, %{}) == {:error, :auth}
-      assert HTTP.classify_key(503, %{}) == {:error, {:retryable, {:status, 503}}}
-
-      assert HTTP.classify_key(400, %{"error" => %{"code" => "bad_name"}}) ==
-               {:error, {:invalid, {:bad_request, "bad_name"}}}
-    end
   end
 
   describe "classify_revoke/2" do
     test "2xx is done" do
       assert HTTP.classify_revoke(200, %{"result" => %{"revoked" => true}}) == :ok
     end
+  end
 
-    test "404 distinguishes a gone key from an unprovisioned Workspace" do
-      assert HTTP.classify_revoke(404, %{"error" => %{"code" => "not_found"}}) ==
-               {:error, :not_found}
+  # Each classifier owns its own status clauses, so every row is a separate
+  # mapping contract rather than a replay of a shared helper.
+  @classification_errors [
+    {"2xx with a result missing fields is invalid", :classify, 200,
+     %{"result" => %{"org_id" => "x"}}, {:error, {:invalid, :malformed_success_body}}},
+    {"2xx with no result is invalid", :classify, 200, %{"ok" => true},
+     {:error, {:invalid, :malformed_success_body}}},
+    {"409 explicit_link_required awaits an explicit link", :classify, 409,
+     %{"error" => %{"code" => "explicit_link_required", "message" => "x"}},
+     {:error, :explicit_link_required}},
+    {"401 is an auth failure", :classify, 401, %{}, {:error, :auth}},
+    {"403 is an auth failure", :classify, 403, %{}, {:error, :auth}},
+    {"429 is retryable", :classify, 429, %{}, {:error, {:retryable, {:status, 429}}}},
+    {"500 is retryable", :classify, 500, %{}, {:error, {:retryable, {:status, 500}}}},
+    {"503 is retryable", :classify, 503, %{}, {:error, {:retryable, {:status, 503}}}},
+    {"400 carries the code", :classify, 400, %{"error" => %{"code" => "invalid_email"}},
+     {:error, {:invalid, {:bad_request, "invalid_email"}}}},
+    {"2xx missing device fields is invalid", :classify_device, 200,
+     %{"result" => %{"device_id" => "d"}}, {:error, {:invalid, :malformed_success_body}}},
+    {"404 means the workspace is not provisioned", :classify_device, 404, %{},
+     {:error, :not_provisioned}},
+    {"409 preserves the device ownership conflict", :classify_device, 409,
+     %{"error" => %{"code" => "device_org_conflict"}},
+     {:error, {:invalid, {:conflict, "device_org_conflict"}}}},
+    {"401 is an auth failure", :classify_device, 401, %{}, {:error, :auth}},
+    {"403 is an auth failure", :classify_device, 403, %{}, {:error, :auth}},
+    {"429 is retryable", :classify_device, 429, %{}, {:error, {:retryable, {:status, 429}}}},
+    {"503 is retryable", :classify_device, 503, %{}, {:error, {:retryable, {:status, 503}}}},
+    {"400 carries the code", :classify_device, 400, %{"error" => %{"code" => "invalid_nk"}},
+     {:error, {:invalid, {:bad_request, "invalid_nk"}}}},
+    {"2xx without a token is invalid", :classify_key, 200,
+     %{"result" => Map.delete(@key, "token")}, {:error, {:invalid, :malformed_success_body}}},
+    {"404 is an unprovisioned Workspace", :classify_key, 404,
+     %{"error" => %{"code" => "workspace_not_provisioned"}}, {:error, :not_provisioned}},
+    {"401 is an auth failure", :classify_key, 401, %{}, {:error, :auth}},
+    {"503 is retryable", :classify_key, 503, %{}, {:error, {:retryable, {:status, 503}}}},
+    {"400 carries the code", :classify_key, 400, %{"error" => %{"code" => "bad_name"}},
+     {:error, {:invalid, {:bad_request, "bad_name"}}}},
+    {"404 not_found is a gone key", :classify_revoke, 404, %{"error" => %{"code" => "not_found"}},
+     {:error, :not_found}},
+    {"404 workspace_not_provisioned is an unprovisioned Workspace", :classify_revoke, 404,
+     %{"error" => %{"code" => "workspace_not_provisioned"}}, {:error, :not_provisioned}},
+    {"502 is retryable", :classify_revoke, 502, %{}, {:error, {:retryable, {:status, 502}}}}
+  ]
 
-      assert HTTP.classify_revoke(404, %{"error" => %{"code" => "workspace_not_provisioned"}}) ==
-               {:error, :not_provisioned}
-    end
-
-    test "5xx is retryable" do
-      assert HTTP.classify_revoke(502, %{}) == {:error, {:retryable, {:status, 502}}}
+  describe "non-success classification" do
+    for {name, fun, status, body, expected} <- @classification_errors do
+      test "#{fun}/2: #{name}" do
+        assert apply(HTTP, unquote(fun), [unquote(status), unquote(Macro.escape(body))]) ==
+                 unquote(Macro.escape(expected))
+      end
     end
   end
 
   describe "mint_api_key/3 and revoke_api_key/2 over the transport" do
-    setup do
-      Application.put_env(:comma_core, :synchronicity,
-        base_url: "http://sync.test",
-        provisioning_secret: @secret,
-        req_options: [plug: {Req.Test, Comma.Synchronicity.HTTP}]
-      )
-
-      on_exit(fn -> Application.delete_env(:comma_core, :synchronicity) end)
-      :ok
-    end
+    setup :configure_transport
 
     test "POSTs to the workspace api-keys path with the bearer, name and owner" do
       Req.Test.stub(Comma.Synchronicity.HTTP, fn conn ->
@@ -349,5 +284,16 @@ defmodule Comma.Synchronicity.HTTPTest do
       assert {:error, {:retryable, _}} = HTTP.mint_api_key("wsp_1", @owner, "comma-agent")
       assert {:error, {:retryable, _}} = HTTP.revoke_api_key("wsp_1", "key_1")
     end
+  end
+
+  defp configure_transport(_context) do
+    Application.put_env(:comma_core, :synchronicity,
+      base_url: "http://sync.test",
+      provisioning_secret: @secret,
+      req_options: [plug: {Req.Test, Comma.Synchronicity.HTTP}]
+    )
+
+    on_exit(fn -> Application.delete_env(:comma_core, :synchronicity) end)
+    :ok
   end
 end

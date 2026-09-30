@@ -39,7 +39,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingController do
             "Could not restart onboarding. Please try again."
           )
         )
-        |> redirect(to: ~p"/new-home")
+        |> redirect(to: ~p"/")
     end
   end
 end

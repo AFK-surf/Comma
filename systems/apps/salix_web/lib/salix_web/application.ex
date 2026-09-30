@@ -65,6 +65,7 @@ defmodule SalixWeb.Application do
       {Task.Supervisor,
        name: SalixWeb.ConnectorStreamTaskSupervisor,
        max_children: Application.get_env(:salix_web, :connector_stream_task_limit, 32)},
+      {Task.Supervisor, name: SalixWeb.OAuthMCPRefreshSupervisor, max_children: 16},
       {Task.Supervisor, name: SalixWeb.CloudVM.ArchiveDiagnosticsSupervisor, max_children: 4},
       {Task.Supervisor, name: SalixWeb.CloudVM.RuntimeInstallSupervisor, max_children: 4},
       {Task.Supervisor, name: SalixWeb.CloudVM.ImageArchiveSupervisor, max_children: 4},

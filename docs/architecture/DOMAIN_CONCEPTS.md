@@ -902,13 +902,15 @@ See [local preparation and API paths](../development.md#cloud-vm-external-runtim
 
 | Concept | Meaning and boundary |
 | --- | --- |
-| Billing Account | The charge owner linked to a product owner. It is not a login account or a provider customer ID. |
+| Billing Account | The charge owner linked to a product owner. It is not a login account or a provider customer ID. It owns one pending subscription Checkout value. [SubscriptionCheckout](../../systems/apps/billing_commerce/lib/billing_commerce/subscription_checkout.ex) fixes the request under its row lock, creates the Stripe Session outside the transaction, and retains unknown results for retry. A paid Subscription or confirmed Session expiry clears this value. |
 | Package / Package Version | A product package and its immutable commercial terms version. Provider price IDs are external mappings. |
-| Subscription / Cycle / Purchase | A subscription, an issuance period, and a one-time purchase source. |
+| Subscription / Cycle / Purchase | A subscription, an issuance period, and a one-time purchase source. The Subscription owns one pending upgrade/downgrade operation and its Stripe Schedule mapping. Stripe owns the scheduled future tier. A Cycle retains payment allocations, each identified by its invoice and PaymentIntent. [PaidCycles](../../systems/apps/billing_commerce/lib/billing_commerce/paid_cycles.ex) issues an existing Grant per allocation. Its single `credit_grant_id` is not the authority for the collection. |
 | Entitlement | Granted capabilities and limits. It is not the remaining credit balance. |
 | Credit Grant / Lot | One issued batch of credits with consumption and compensation attribution. |
 | Meter Event / Charge | Resource usage evidence and its priced debit. Retrying the same event must not create a new charge identity. |
 | Fee Control | Cost availability admission. It is separate from usage metering and charging. |
+
+The public purchase catalog follows Stripe purchase metadata. The private billing summary resolves its current plan through the Subscription's exact provider price mapping. Hiding sales preserves the current plan, its cadence, and its management actions.
 
 Owners and entry points:
 [Billing accounts](../../systems/apps/billing_core/lib/billing_core/accounts.ex),
@@ -923,6 +925,22 @@ Self-hosted Workspace convergence reuses Credit Grant and the existing
 `unlimited_metered` entitlement policy. It issues one idempotent grant per Workspace
 through [WorkspaceConvergence](../../systems/apps/comma_core/lib/comma/workers/workspace_convergence.ex).
 BillingCore remains the grant and admission authority. No separate self-hosted billing identity is introduced.
+
+Hosted Comma registration reuses User eligibility and Credit Grant. New self-service
+Eligible Users receive 20,000,000 credits without expiry in their earliest non-deleted
+owned Workspace, only on their registration UTC day. Historical and admin-created
+Users are ineligible. Recognized aliases and configured excluded email domains do not
+receive the gift. These checks do not change login identity. BFT and self-hosted
+Workspaces receive no registration gift. [SignupCredits](../../systems/apps/comma_core/lib/comma/billing/signup_credits.ex)
+locks the Comma User and issues a fixed per-User Grant through BillingCore's own
+Repo. A shared BillingCore transaction lock enforces the configured daily USD cap,
+which defaults to 2,000. The transaction samples the UTC day after acquiring the lock
+and counts issued original credits by Grant insertion time. Spending or revocation
+does not free this budget. A normal skip ends User eligibility without delaying
+Workspace readiness. Existing Grants remain authoritative after consumption or Workspace deletion.
+Workspace convergence delivers the gift before readiness; post-rollout release
+convergence closes the old-worker window with bounded User pages and the same helper.
+There is no Redeem Code, Purchase, or additional claim entity.
 
 Comma's free Router list is a Fee Control policy value, not a package, grant, or new model identity.
 [Comma.Billing.RouterModels](../../systems/apps/comma_core/lib/comma/billing/router_models.ex) owns the global provider/SKU list in `comma_billing_policy`.
@@ -1164,6 +1182,10 @@ The due decision projects at most eight recent mail messages, 4 KB body text, an
 A watch Loop screens fresh evidence with the decision tool. Only confident, complete quiet decisions avoid the Router.
 Uncertain, invalid, or unavailable screening decisions wake the canonical Router for a fresh source read and a Home decision.
 A due reminder rechecks its source. A resolved matter or ended Task stops it. Every other recheck reaches the Router, including one that cannot decide. The due event itself never sends a user message; the Router sends the reminder the owner asked for unless it is resolved.
+Comma conversations are also a proactive source. An owned Task that becomes escalated or failed is handed to the owner's Router as a Home matter with key `["task", task_id]`.
+Salix calls the product's Task status observer when it publishes a Task status; the publication recovery row makes that call at least once per change. For an escalated or failed Task the observer queues one Oban job per status version; other statuses touch no Comma state. It never mutates the Task.
+The job re-reads the Task, requires the Workspace owner, and presents the matter as automatic with the observation `status:message_tail_seq`. One escalation hands over once, also after the owner answered. The switch and the handoff budget apply.
+The collection chain closes the matter when the Task left escalated or failed, which re-arms the next escalation even after the matter was handled, and when the owner wrote in the Task after it asked. It checks at most eight task matters from Home metadata and never lists Tasks.
 Draft actions create one Task through the durable creation receipt. Retries recover that Task. Source-only reminders create no Task.
 Implementation: [product controls](../../systems/apps/comma_web/lib/comma_web/proactive.ex),
 [proactive consumer](../../systems/apps/comma_web/lib/comma_web/proactive_check.ex),

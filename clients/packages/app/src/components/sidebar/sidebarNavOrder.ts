@@ -1,10 +1,4 @@
-export const sidebarNavItemIds = [
-  "home",
-  "inbox",
-  "tasks",
-  "drive",
-  "plugins",
-] as const;
+const sidebarNavItemIds = ["home", "inbox", "tasks", "drive", "plugins"] as const;
 
 export type SidebarNavItemId = (typeof sidebarNavItemIds)[number];
 

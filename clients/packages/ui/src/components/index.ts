@@ -633,6 +633,7 @@ export {
   FolderOpenIcon,
   BubbleAlertIcon,
   ExclamationTriangleIcon,
+  PeopleCircleIcon,
   StatusDot,
   GithubBrandIcon,
   GoogleBrandIcon,

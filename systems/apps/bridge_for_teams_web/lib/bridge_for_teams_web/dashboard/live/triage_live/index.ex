@@ -145,6 +145,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
     |> assign(:product_activity, nil)
     |> assign(:activity_heatmap, nil)
     |> assign(:heatmap_token, nil)
+    |> assign(:heatmap_range, nil)
+    |> assign(:heatmap_expanded, false)
     |> assign(:feedback_selection, nil)
     |> assign(:model_debug_selection, nil)
     |> assign(:activity_selection, nil)
@@ -812,6 +814,13 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
     end
   end
 
+  def handle_event("set-triage-heatmap-range", %{"range" => range}, socket)
+      when range in ~w(24h 7d),
+      do: {:noreply, assign(socket, :heatmap_range, range)}
+
+  def handle_event("toggle-triage-heatmap-channels", _params, socket),
+    do: {:noreply, update(socket, :heatmap_expanded, &(not &1))}
+
   def handle_event("clear-triage-activity-time", _params, socket) do
     {:noreply,
      socket
@@ -1387,6 +1396,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
     socket
     |> assign(:activity_heatmap, nil)
     |> assign(:heatmap_token, token)
+    |> assign(:heatmap_range, nil)
+    |> assign(:heatmap_expanded, false)
     |> start_async({:heatmap, token}, fn -> Triage.product_heatmap(org, agent, roster) end)
   end
 
@@ -2351,6 +2362,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
         recent_processing={@recent_processing}
         product_activity={@product_activity}
         activity_heatmap={@activity_heatmap}
+        heatmap_range={@heatmap_range}
+        heatmap_expanded={@heatmap_expanded}
         activity_navigation={@activity_navigation}
         activity_selection={@activity_selection}
         activity_processing={@activity_processing}
@@ -3423,6 +3436,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
   attr(:delegation_tasks, :map, required: true)
 
   attr(:activity_heatmap, :any, required: true)
+  attr(:heatmap_range, :any, default: nil)
+  attr(:heatmap_expanded, :boolean, default: false)
   attr(:activity_navigation, :map, required: true)
 
   attr(:activity_selection, :any, required: true)
@@ -3437,6 +3452,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
       <.product_activity_panel
         activity={@product_activity}
         heatmap={@activity_heatmap}
+        heatmap_range={@heatmap_range}
+        heatmap_expanded={@heatmap_expanded}
         revealed={@revealed}
         navigation={@activity_navigation}
         activity_selection={@activity_selection}
@@ -3525,6 +3542,8 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
 
   attr(:navigation, :map, required: true)
   attr(:heatmap, :any, default: nil)
+  attr(:heatmap_range, :any, default: nil)
+  attr(:heatmap_expanded, :boolean, default: false)
 
   attr(:activity_selection, :any, required: true)
   attr(:activity_processing, :any, required: true)
@@ -3557,7 +3576,15 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
         assigns.navigation.kind != "all" or not is_nil(assigns.navigation[:channel]) or
           not is_nil(assigns.navigation[:before])
       )
-      |> assign(:heatmap_view, heatmap_view(assigns.heatmap, channel_names))
+      |> assign(
+        :heatmap_view,
+        heatmap_view(
+          assigns.heatmap,
+          channel_names,
+          assigns.heatmap_range,
+          assigns.heatmap_expanded
+        )
+      )
 
     ~H"""
     <section
@@ -5781,86 +5808,117 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
     }
   end
 
-  @heatmap_column_ms 3 * 3_600_000
-  @heatmap_columns 56
-  @heatmap_rows 8
+  @hour_ms 3_600_000
+  @heatmap_ranges %{"24h" => {24, 1}, "7d" => {28, 6}}
+  @heatmap_rows 5
 
-  # Groups hourly Salix cells into 3-hour columns over the 7-day window. Rows
-  # are the busiest channels; each cell's level is relative to the busiest cell.
-  defp heatmap_view({:ok, %{since_ms: since_ms, cells: [_ | _] = cells} = heatmap}, channel_names) do
+  # Salix returns 7 days of hourly cells. "24h" shows the last 24 of them one
+  # per column; "7d" groups them into 6-hour columns. Without a chosen range,
+  # the view opens on 24h when that window has activity. Grey cells stayed
+  # silent (darker is busier); a green cell has a reply or reaction.
+  defp heatmap_view(
+         {:ok, %{since_ms: since_ms, cells: [_ | _] = cells} = heatmap},
+         channel_names,
+         range,
+         expanded?
+       ) do
+    recent_ms = since_ms + 144 * @hour_ms
+
+    range =
+      cond do
+        Map.has_key?(@heatmap_ranges, range) -> range
+        Enum.any?(cells, &(&1.at_ms >= recent_ms)) -> "24h"
+        true -> "7d"
+      end
+
+    {columns, bucket_hours} = Map.fetch!(@heatmap_ranges, range)
+    bucket_ms = bucket_hours * @hour_ms
+    start_ms = since_ms + 168 * @hour_ms - columns * bucket_ms
+
     filterable =
       MapSet.new(channel_names, fn {{_connect_id, channel_id}, _name} -> channel_id end)
 
     channels =
       cells
+      |> Enum.filter(&(&1.at_ms >= start_ms))
       |> Enum.group_by(&{&1.connect_id, &1.channel_id})
       |> Enum.map(fn {{connect_id, channel_id}, channel_cells} ->
-        columns =
-          Enum.reduce(channel_cells, %{}, fn cell, acc ->
-            index =
-              min(max(div(cell.at_ms - since_ms, @heatmap_column_ms), 0), @heatmap_columns - 1)
+        zero = %{reply: 0, reaction: 0, silence: 0, total: 0}
+        sum = fn a, b -> Map.new(a, fn {key, value} -> {key, value + b[key]} end) end
 
-            Map.update(
-              acc,
-              index,
-              Map.take(cell, [:reply, :reaction, :silence, :total]),
-              fn sum ->
-                Map.new(sum, fn {key, value} -> {key, value + cell[key]} end)
-              end
-            )
+        by_column =
+          Enum.reduce(channel_cells, %{}, fn cell, acc ->
+            index = min(div(cell.at_ms - start_ms, bucket_ms), columns - 1)
+            Map.update(acc, index, sum.(zero, cell), &sum.(&1, cell))
           end)
 
+        totals = by_column |> Map.values() |> Enum.reduce(zero, sum)
         name = Map.get(channel_names, {to_string(connect_id), to_string(channel_id)})
 
         %{
           channel_id: channel_id,
           label: if(is_binary(name) and name != "", do: "#" <> name, else: channel_id),
           filterable?: MapSet.member?(filterable, channel_id),
-          total: channel_cells |> Enum.map(& &1.total) |> Enum.sum(),
-          columns: columns
+          total: totals.total,
+          replied: totals.reply + totals.reaction,
+          silent_percent: round(100 * totals.silence / max(totals.total, 1)),
+          by_column: by_column
         }
       end)
       |> Enum.sort_by(&{-&1.total, &1.label})
 
-    {shown, hidden} = Enum.split(channels, @heatmap_rows)
-    peak = shown |> Enum.flat_map(&Map.values(&1.columns)) |> Enum.map(& &1.total) |> Enum.max()
+    {shown, hidden} = if expanded?, do: {channels, []}, else: Enum.split(channels, @heatmap_rows)
+
+    peak =
+      shown
+      |> Enum.flat_map(&Map.values(&1.by_column))
+      |> Enum.map(& &1.total)
+      |> Enum.max(fn -> 1 end)
 
     rows =
       Enum.map(shown, fn row ->
         cells =
-          for index <- 0..(@heatmap_columns - 1) do
-            counts = Map.get(row.columns, index, %{reply: 0, reaction: 0, silence: 0, total: 0})
-            start_ms = since_ms + index * @heatmap_column_ms
+          for index <- 0..(columns - 1) do
+            counts = Map.get(row.by_column, index, %{reply: 0, reaction: 0, silence: 0, total: 0})
+            cell_start_ms = start_ms + index * bucket_ms
 
             Map.merge(counts, %{
-              start_ms: start_ms,
-              end_ms: start_ms + @heatmap_column_ms,
+              start_ms: cell_start_ms,
+              end_ms: cell_start_ms + bucket_ms,
               level: heatmap_level(counts.total, peak),
               acted?: counts.reply + counts.reaction > 0
             })
           end
 
-        row |> Map.delete(:columns) |> Map.put(:cells, cells)
+        row |> Map.delete(:by_column) |> Map.put(:cells, cells)
       end)
 
+    tick_columns = if range == "24h", do: 6, else: 4
+
     %{
+      range: range,
+      columns: columns,
       rows: rows,
       hidden: length(hidden),
+      expanded?: expanded? and length(channels) > @heatmap_rows,
       truncated: heatmap[:truncated] == true,
-      ticks: for(day <- 0..6, do: since_ms + day * 8 * @heatmap_column_ms)
+      tick_format: if(range == "24h", do: "time", else: "month-day"),
+      tick_count: div(columns, tick_columns),
+      ticks:
+        for(i <- 0..(div(columns, tick_columns) - 1), do: start_ms + i * tick_columns * bucket_ms)
     }
   end
 
-  defp heatmap_view(_heatmap, _channel_names), do: nil
+  defp heatmap_view(_heatmap, _channel_names, _range, _expanded?), do: nil
 
   defp heatmap_level(0, _peak), do: 0
-  defp heatmap_level(total, peak), do: max(1, min(4, ceil(4 * total / peak)))
+  defp heatmap_level(total, peak), do: max(1, min(3, ceil(3 * total / peak)))
 
-  defp heatmap_level_class(0), do: "bg-neutral-100"
-  defp heatmap_level_class(1), do: "bg-brand-100"
-  defp heatmap_level_class(2), do: "bg-brand-200"
-  defp heatmap_level_class(3), do: "bg-brand-400"
-  defp heatmap_level_class(_level), do: "bg-brand-600"
+  defp heatmap_cell_class(%{acted?: true}), do: "bg-green-500"
+  defp heatmap_cell_class(%{level: 0}), do: "bg-neutral-100"
+  defp heatmap_cell_class(%{level: 1}), do: "bg-neutral-300"
+  defp heatmap_cell_class(%{level: 2}), do: "bg-neutral-400"
+  defp heatmap_cell_class(_cell), do: "bg-neutral-600"
 
   defp heatmap_cell_summary(cell) do
     [
@@ -5872,6 +5930,9 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
     |> Enum.join(" · ")
   end
 
+  defp format_heatmap_tick(ms, "time"), do: format_time(ms)
+  defp format_heatmap_tick(ms, _month_day), do: format_month_day(ms)
+
   attr(:view, :map, required: true)
   attr(:navigation, :map, required: true)
 
@@ -5879,25 +5940,57 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
     ~H"""
     <div id="triage-activity-heatmap" class="border-b border-neutral-200 px-3 py-3">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs leading-5">
-        <span class="font-medium text-neutral-700">{gettext("Last 7 days by channel")}</span>
-        <span class="flex items-center gap-1 text-neutral-500" aria-hidden="true">
-          {gettext("Fewer")}
-          <span :for={level <- 0..4} class={["h-2.5 w-2.5 rounded-sm", heatmap_level_class(level)]} />
-          {gettext("More")}
-          <span class="ml-2 h-1.5 w-1.5 rounded-full bg-green-500" />
-          {gettext("Replied or reacted")}
+        <div class="flex items-center gap-3">
+          <span class="font-medium text-neutral-700">{gettext("Activity by channel")}</span>
+          <span class="inline-flex rounded-md bg-neutral-100 p-0.5" role="group" aria-label={gettext("Time range")}>
+            <button
+              :for={{value, label} <- [{"24h", gettext("24h")}, {"7d", gettext("7d")}]}
+              type="button"
+              data-role="heatmap-range"
+              phx-click="set-triage-heatmap-range"
+              phx-value-range={value}
+              aria-pressed={to_string(@view.range == value)}
+              class={[
+                "inline-flex h-6 items-center rounded px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
+                if(@view.range == value,
+                  do: "bg-white font-medium text-neutral-900 shadow-sm",
+                  else: "text-neutral-500 hover:text-neutral-800"
+                )
+              ]}
+            >
+              {label}
+            </button>
+          </span>
+        </div>
+        <span class="flex items-center gap-3 text-neutral-500" aria-hidden="true">
+          <span class="flex items-center gap-1">
+            <span class="h-2.5 w-2.5 rounded-[2px] bg-neutral-400" />{gettext("Stayed silent")}
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="h-2.5 w-2.5 rounded-[2px] bg-green-500" />{gettext("Replied or reacted")}
+          </span>
         </span>
       </div>
-      <div class="grid grid-cols-[9rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
+      <div :if={@view.rows != []} class="grid grid-cols-[10rem_minmax(0,1fr)_3rem_3.5rem_3.5rem] items-center gap-x-3 gap-y-1.5">
+        <span />
+        <span />
+        <span class="text-right text-[11px] text-neutral-400">{gettext("Total")}</span>
+        <span class="text-right text-[11px] text-neutral-400">{gettext("Replied")}</span>
+        <span class="text-right text-[11px] text-neutral-400">{gettext("Silent")}</span>
         <%= for row <- @view.rows do %>
-          <span data-role="heatmap-channel" class="truncate text-xs text-neutral-600" title={row.label}>{row.label}</span>
-          <div data-role="heatmap-row" class="grid grid-cols-[repeat(56,minmax(0,1fr))] gap-px">
+          <span data-role="heatmap-channel" class="truncate text-xs text-neutral-700" title={row.label}>{row.label}</span>
+          <div
+            data-role="heatmap-row"
+            class="grid gap-[2px]"
+            style={"grid-template-columns: repeat(#{@view.columns}, minmax(0, 1fr))"}
+          >
             <%= for cell <- row.cells do %>
               <button
                 :if={row.filterable? and cell.total > 0}
                 type="button"
                 data-role="heatmap-cell"
                 data-level={cell.level}
+                data-acted={to_string(cell.acted?)}
                 data-local-title-ms={cell.start_ms}
                 data-local-title-end-ms={cell.end_ms}
                 data-local-title-suffix={heatmap_cell_summary(cell)}
@@ -5907,45 +6000,64 @@ defmodule BridgeForTeamsWeb.Dashboard.TriageLive.Index do
                 phx-value-channel={row.channel_id}
                 phx-value-before={cell.end_ms}
                 class={[
-                  "relative grid h-4 place-items-center rounded-sm hover:ring-2 hover:ring-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
-                  heatmap_level_class(cell.level),
+                  "h-3 rounded-[2px] hover:ring-2 hover:ring-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
+                  heatmap_cell_class(cell),
                   @navigation[:channel] == row.channel_id and @navigation[:before] == cell.end_ms &&
                     "ring-2 ring-neutral-900"
                 ]}
-              >
-                <span :if={cell.acted?} class="h-1.5 w-1.5 rounded-full bg-green-500 ring-1 ring-white" />
-              </button>
+              />
               <span
                 :if={not (row.filterable? and cell.total > 0)}
                 data-role="heatmap-cell"
                 data-level={cell.level}
+                data-acted={to_string(cell.acted?)}
                 data-local-title-ms={cell.total > 0 && cell.start_ms}
                 data-local-title-end-ms={cell.total > 0 && cell.end_ms}
                 data-local-title-suffix={cell.total > 0 && heatmap_cell_summary(cell)}
-                class={["grid h-4 place-items-center rounded-sm", heatmap_level_class(cell.level)]}
-              >
-                <span :if={cell.acted?} class="h-1.5 w-1.5 rounded-full bg-green-500 ring-1 ring-white" />
-              </span>
+                class={["h-3 rounded-[2px]", heatmap_cell_class(cell)]}
+              />
             <% end %>
           </div>
+          <span data-role="heatmap-total" class="text-right text-xs tabular-nums text-neutral-900">{row.total}</span>
+          <span
+            data-role="heatmap-replied"
+            class={["text-right text-xs tabular-nums", if(row.replied > 0, do: "text-green-700", else: "text-neutral-400")]}
+          >
+            {row.replied}
+          </span>
+          <span data-role="heatmap-silent" class="text-right text-xs tabular-nums text-neutral-500">{row.silent_percent}%</span>
         <% end %>
         <span />
-        <div class="grid grid-cols-7 text-[11px] tabular-nums text-neutral-400">
+        <div
+          class="grid text-[11px] tabular-nums text-neutral-400"
+          style={"grid-template-columns: repeat(#{@view.tick_count}, minmax(0, 1fr))"}
+        >
           <.browser_local_time
             :for={tick <- @view.ticks}
             ms={tick}
-            format="month-day"
-            fallback={format_month_day(tick)}
+            format={@view.tick_format}
+            fallback={format_heatmap_tick(tick, @view.tick_format)}
             class="truncate"
           />
         </div>
+        <span />
+        <span />
+        <span />
       </div>
-      <p :if={@view.hidden > 0 or @view.truncated} class="mt-2 text-xs text-neutral-500">
-        <span :if={@view.hidden > 0}>
-          {ngettext("1 quieter channel not shown.", "%{count} quieter channels not shown.", @view.hidden)}
-        </span>
-        <span :if={@view.truncated}>{gettext("Older cells were omitted.")}</span>
-      </p>
+      <p :if={@view.rows == []} class="mt-1 text-xs text-neutral-500">{gettext("No outcomes in this range.")}</p>
+      <div :if={@view.hidden > 0 or @view.expanded? or @view.truncated} class="mt-2 flex flex-wrap items-center gap-3 text-xs">
+        <button
+          :if={@view.hidden > 0 or @view.expanded?}
+          type="button"
+          phx-click="toggle-triage-heatmap-channels"
+          class="font-medium text-brand-600 hover:text-brand-700"
+        >
+          {if @view.expanded?,
+            do: gettext("Show fewer channels"),
+            else: ngettext("Show 1 more channel", "Show %{count} more channels", @view.hidden)}
+        </button>
+        <span :if={@view.truncated} class="text-neutral-500">{gettext("Older cells were omitted.")}</span>
+      </div>
     </div>
     """
   end

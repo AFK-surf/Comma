@@ -1880,115 +1880,91 @@ func TestPreprocessInvokesJQAndWritesResult(t *testing.T) {
 	}
 }
 
-func TestPreprocessInvokesImageMagickForUnsupportedImage(t *testing.T) {
-	root := t.TempDir()
-	input := filepath.Join(root, "input.heic")
-	output := filepath.Join(root, "output.png")
-	if err := os.WriteFile(input, []byte("heic"), 0o600); err != nil {
-		t.Fatal(err)
+func TestPreprocessInvokesConverterForDocumentFormats(t *testing.T) {
+	type converterCase struct {
+		name     string
+		input    string
+		output   string
+		tool     string
+		wantArgs func(input, output string) []string
+		produced func(output string) string
 	}
-
-	fake := &fakeFallbackExecutor{
-		paths: map[string]string{"magick": "/tools/magick"},
-		run: func(_ string, args []string) ([]byte, error) {
-			if len(args) != 2 || args[0] != input+"[0]" || args[1] != output {
-				t.Fatalf("unexpected ImageMagick args: %#v", args)
-			}
-			return nil, os.WriteFile(output, []byte("png"), 0o600)
+	cases := []converterCase{
+		{
+			name: "ImageMagick for unsupported image", input: "input.heic", output: "output.png", tool: "magick",
+			wantArgs: func(input, output string) []string { return []string{input + "[0]", output} },
+			produced: func(output string) string { return output },
+		},
+		{
+			name: "pdftotext for PDF", input: "report.pdf", output: "report.txt", tool: "pdftotext",
+			wantArgs: func(input, output string) []string { return []string{input, output} },
+			produced: func(output string) string { return output },
 		},
 	}
-	if err := runPreprocess(preprocessOptions{input: input, output: output, timeout: time.Second}, fake); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.calls) != 1 || fake.calls[0].tool != "/tools/magick" {
-		t.Fatalf("expected ImageMagick invocation, got %#v", fake.calls)
-	}
-}
-
-func TestPreprocessInvokesPDFText(t *testing.T) {
-	root := t.TempDir()
-	input := filepath.Join(root, "report.pdf")
-	output := filepath.Join(root, "report.txt")
-	if err := os.WriteFile(input, []byte("%PDF"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	fake := &fakeFallbackExecutor{
-		paths: map[string]string{"pdftotext": "/tools/pdftotext"},
-		run: func(_ string, args []string) ([]byte, error) {
-			if len(args) != 2 || args[0] != input || args[1] != output {
-				t.Fatalf("unexpected pdftotext args: %#v", args)
-			}
-			return nil, os.WriteFile(output, []byte("extracted text"), 0o600)
-		},
-	}
-	if err := runPreprocess(preprocessOptions{input: input, output: output, timeout: time.Second}, fake); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.calls) != 1 || fake.calls[0].tool != "/tools/pdftotext" {
-		t.Fatalf("expected pdftotext invocation, got %#v", fake.calls)
-	}
-}
-
-func TestPreprocessInvokesLibreOfficeForOfficeFormats(t *testing.T) {
 	for _, extension := range []string{".xls", ".xlsx", ".ppt", ".pptx"} {
-		t.Run(extension, func(t *testing.T) {
+		cases = append(cases, converterCase{
+			name: "LibreOffice for " + extension, input: "input" + extension, output: "converted", tool: "libreoffice",
+			wantArgs: func(input, output string) []string {
+				return []string{"--headless", "--convert-to", "html", "--outdir", output, input}
+			},
+			produced: func(output string) string { return filepath.Join(output, "input.html") },
+		})
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			input := filepath.Join(root, "input"+extension)
-			output := filepath.Join(root, "converted")
-			if err := os.WriteFile(input, []byte("office"), 0o600); err != nil {
+			input := filepath.Join(root, test.input)
+			output := filepath.Join(root, test.output)
+			if err := os.WriteFile(input, []byte("content"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
+			toolPath := "/tools/" + test.tool
 			fake := &fakeFallbackExecutor{
-				paths: map[string]string{"libreoffice": "/tools/libreoffice"},
+				paths: map[string]string{test.tool: toolPath},
 				run: func(_ string, args []string) ([]byte, error) {
-					if len(args) != 6 || args[0] != "--headless" || args[1] != "--convert-to" ||
-						args[2] != "html" || args[3] != "--outdir" || args[4] != output || args[5] != input {
-						t.Fatalf("unexpected LibreOffice args: %#v", args)
+					if want := test.wantArgs(input, output); !slices.Equal(args, want) {
+						t.Fatalf("%s args = %#v, want %#v", test.tool, args, want)
 					}
-					return nil, os.WriteFile(filepath.Join(output, "input.html"), []byte("<html>content</html>"), 0o600)
+					return nil, os.WriteFile(test.produced(output), []byte("converted"), 0o600)
 				},
 			}
 			if err := runPreprocess(preprocessOptions{input: input, output: output, timeout: time.Second}, fake); err != nil {
 				t.Fatal(err)
 			}
-			if len(fake.calls) != 1 || fake.calls[0].tool != "/tools/libreoffice" {
-				t.Fatalf("expected LibreOffice invocation, got %#v", fake.calls)
+			if len(fake.calls) != 1 || fake.calls[0].tool != toolPath {
+				t.Fatalf("expected %s invocation, got %#v", test.tool, fake.calls)
 			}
 		})
 	}
 }
 
-func TestPreprocessFailsExplicitlyForUnsupportedFormat(t *testing.T) {
-	root := t.TempDir()
-	input := filepath.Join(root, "blob.bin")
-	if err := os.WriteFile(input, []byte("unknown"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := runPreprocess(
-		preprocessOptions{input: input, output: filepath.Join(root, "out.txt"), timeout: time.Second},
-		&fakeFallbackExecutor{},
-	)
-	var pe provisionerError
-	if !errors.As(err, &pe) || pe.code != "preprocess.unsupported_format" {
-		t.Fatalf("expected explicit unsupported format, got %#v", err)
-	}
-}
-
-func TestPreprocessFailsExplicitlyWhenToolMissing(t *testing.T) {
-	root := t.TempDir()
-	input := filepath.Join(root, "input.json")
-	if err := os.WriteFile(input, []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := runPreprocess(
-		preprocessOptions{input: input, output: filepath.Join(root, "out.json"), timeout: time.Second},
-		&fakeFallbackExecutor{paths: map[string]string{}},
-	)
-	var pe provisionerError
-	if !errors.As(err, &pe) || pe.code != "preprocess.tool_missing" {
-		t.Fatalf("expected explicit missing tool, got %#v", err)
+func TestPreprocessFailsExplicitly(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		input    string
+		output   string
+		executor *fakeFallbackExecutor
+		wantCode string
+	}{
+		{"unsupported format", "blob.bin", "out.txt", &fakeFallbackExecutor{}, "preprocess.unsupported_format"},
+		{"missing tool", "input.json", "out.json", &fakeFallbackExecutor{paths: map[string]string{}}, "preprocess.tool_missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			input := filepath.Join(root, test.input)
+			if err := os.WriteFile(input, []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := runPreprocess(
+				preprocessOptions{input: input, output: filepath.Join(root, test.output), timeout: time.Second},
+				test.executor,
+			)
+			var pe provisionerError
+			if !errors.As(err, &pe) || pe.code != test.wantCode {
+				t.Fatalf("expected %s, got %#v", test.wantCode, err)
+			}
+		})
 	}
 }
 

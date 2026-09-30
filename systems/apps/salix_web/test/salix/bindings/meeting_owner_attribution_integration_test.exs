@@ -381,73 +381,55 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
     assert user_prompt =~ "会议结束后请 3720 验证会议结果"
   end
 
-  test "Feishu rejects an LLM identity that is absent from the current chat roster", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{
-        "owner" => "3720",
-        "feishu_open_id" => "ou_outsider",
-        "confidence" => "high"
-      }
-    ])
+  for %{label: label, matches: matches, item: item, transcript: transcript} <- [
+        %{
+          label: "an LLM identity that is absent from the current chat roster",
+          matches: [
+            %{"owner" => "3720", "feishu_open_id" => "ou_outsider", "confidence" => "high"}
+          ],
+          item: %{"description" => "验证会议结果", "owner" => "3720", "deadline" => ""},
+          transcript: "请 3720 验证会议结果。"
+        },
+        %{
+          label: "conflicting current-chat and outsider identities for one owner",
+          matches: [
+            %{"owner" => "3720", "feishu_open_id" => "ou_3720", "confidence" => "high"},
+            %{"owner" => "3720", "feishu_open_id" => "ou_outsider", "confidence" => "high"}
+          ],
+          item: %{"description" => "验证会议结果", "owner" => "3720", "deadline" => ""},
+          transcript: "请 3720 验证会议结果。"
+        },
+        %{
+          label: "a numeric owner even when its string form is in the prompt",
+          matches: [%{"owner" => 3720, "feishu_open_id" => "ou_3720", "confidence" => "high"}],
+          item: %{"description" => "验证", "owner" => "3720"},
+          transcript: "请 3720 验证。"
+        },
+        %{
+          label: "the whole structured result when its matches array is malformed",
+          matches: [
+            %{"owner" => "3720", "feishu_open_id" => "ou_3720", "confidence" => "high"},
+            "not-a-match-object"
+          ],
+          item: %{"description" => "验证", "owner" => "3720"},
+          transcript: "请 3720 验证。"
+        }
+      ] do
+    @matches matches
+    @item item
+    @transcript transcript
+    test "Feishu rejects #{label}", context do
+      Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, @matches)
 
-    state = %{
-      "provider" => "feishu",
-      "tenant_id" => context.tenant_id,
-      "group_id" => context.group_id,
-      "connect_id" => "feishu-current-chat",
-      "feishu_ref" => %{"chat_type" => "group", "chat_id" => "oc_current"}
-    }
+      assert {:ok, enriched} =
+               MeetingOwnerAttribution.attribute(
+                 feishu_state(context),
+                 %{"action_items" => [@item]},
+                 %{"source" => "captions", "transcript" => @transcript}
+               )
 
-    summary = %{
-      "action_items" => [
-        %{"description" => "验证会议结果", "owner" => "3720", "deadline" => ""}
-      ]
-    }
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(state, summary, %{
-               "source" => "captions",
-               "transcript" => "请 3720 验证会议结果。"
-             })
-
-    refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
-  end
-
-  test "Feishu rejects conflicting current-chat and outsider identities for one owner", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{
-        "owner" => "3720",
-        "feishu_open_id" => "ou_3720",
-        "confidence" => "high"
-      },
-      %{
-        "owner" => "3720",
-        "feishu_open_id" => "ou_outsider",
-        "confidence" => "high"
-      }
-    ])
-
-    state = %{
-      "provider" => "feishu",
-      "tenant_id" => context.tenant_id,
-      "group_id" => context.group_id,
-      "connect_id" => "feishu-current-chat",
-      "feishu_ref" => %{"chat_type" => "group", "chat_id" => "oc_current"}
-    }
-
-    summary = %{
-      "action_items" => [
-        %{"description" => "验证会议结果", "owner" => "3720", "deadline" => ""}
-      ]
-    }
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(state, summary, %{
-               "source" => "captions",
-               "transcript" => "请 3720 验证会议结果。"
-             })
-
-    refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
+      refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
+    end
   end
 
   test "Feishu never remaps a duplicate exact roster name through alias attribution", context do
@@ -473,78 +455,47 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
     refute_receive {:owner_attribution_llm_request, _request}, 100
   end
 
-  test "Feishu rejects a numeric owner even when its string form is in the prompt", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{"owner" => 3720, "feishu_open_id" => "ou_3720", "confidence" => "high"}
-    ])
+  for %{label: label, matches: matches, transcript: transcript} <- [
+        %{
+          label: "rejects every identity when one structured match has malformed fields",
+          matches: [
+            %{"owner" => "Alice", "feishu_open_id" => "ou_jinfei", "confidence" => "high"},
+            %{"owner" => "Bob", "feishu_open_id" => 123, "confidence" => "high"}
+          ],
+          transcript: "Alice will ship the summary. Bob will verify the recording."
+        },
+        %{
+          label: "validates malformed siblings even after an owner is already conflicted",
+          matches: [
+            %{"owner" => "Alice", "feishu_open_id" => "ou_jinfei", "confidence" => "high"},
+            %{"owner" => "Bob", "feishu_open_id" => "ou_outsider", "confidence" => "high"},
+            %{"owner" => "Bob", "feishu_open_id" => 123, "confidence" => "high"}
+          ],
+          transcript: "Alice will ship the summary. Bob will verify the recording."
+        }
+      ] do
+    @matches matches
+    @transcript transcript
+    test "Feishu #{label}", context do
+      Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, @matches)
 
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(
-               feishu_state(context),
-               %{"action_items" => [%{"description" => "验证", "owner" => "3720"}]},
-               %{"source" => "captions", "transcript" => "请 3720 验证。"}
-             )
+      summary = %{
+        "action_items" => [
+          %{"description" => "Ship the summary", "owner" => "Alice"},
+          %{"description" => "Verify the recording", "owner" => "Bob"}
+        ]
+      }
 
-    refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
-  end
-
-  test "Feishu rejects every identity when one structured match has malformed fields", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{
-        "owner" => "Alice",
-        "feishu_open_id" => "ou_jinfei",
-        "confidence" => "high"
-      },
-      %{"owner" => "Bob", "feishu_open_id" => 123, "confidence" => "high"}
-    ])
-
-    summary = %{
-      "action_items" => [
-        %{"description" => "Ship the summary", "owner" => "Alice"},
-        %{"description" => "Verify the recording", "owner" => "Bob"}
-      ]
-    }
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(feishu_state(context), summary, %{
-               "source" => "captions",
-               "transcript" => "Alice will ship the summary. Bob will verify the recording."
-             })
-
-    assert Enum.all?(enriched["action_items"], fn item ->
-             is_nil(item["owner_provider_identity"])
-           end)
-  end
-
-  test "Feishu validates malformed siblings even after an owner is already conflicted", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{
-        "owner" => "Alice",
-        "feishu_open_id" => "ou_jinfei",
-        "confidence" => "high"
-      },
-      %{"owner" => "Bob", "feishu_open_id" => "ou_outsider", "confidence" => "high"},
-      %{"owner" => "Bob", "feishu_open_id" => 123, "confidence" => "high"}
-    ])
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(
-               feishu_state(context),
-               %{
-                 "action_items" => [
-                   %{"description" => "Ship the summary", "owner" => "Alice"},
-                   %{"description" => "Verify the recording", "owner" => "Bob"}
-                 ]
-               },
-               %{
+      assert {:ok, enriched} =
+               MeetingOwnerAttribution.attribute(feishu_state(context), summary, %{
                  "source" => "captions",
-                 "transcript" => "Alice will ship the summary. Bob will verify the recording."
-               }
-             )
+                 "transcript" => @transcript
+               })
 
-    assert Enum.all?(enriched["action_items"], fn item ->
-             is_nil(item["owner_provider_identity"])
-           end)
+      assert Enum.all?(enriched["action_items"], fn item ->
+               is_nil(item["owner_provider_identity"])
+             end)
+    end
   end
 
   test "Feishu keeps structurally valid low confidence local to that owner", context do
@@ -579,23 +530,6 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
            }
 
     refute get_in(enriched, ["action_items", Access.at(1), "owner_provider_identity"])
-  end
-
-  test "Feishu rejects the whole structured result when its matches array is malformed",
-       context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{"owner" => "3720", "feishu_open_id" => "ou_3720", "confidence" => "high"},
-      "not-a-match-object"
-    ])
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(
-               feishu_state(context),
-               %{"action_items" => [%{"description" => "验证", "owner" => "3720"}]},
-               %{"source" => "captions", "transcript" => "请 3720 验证。"}
-             )
-
-    refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
   end
 
   defp feishu_state(context) do

@@ -537,33 +537,57 @@ defmodule SalixAgent.ToolsPeersTest do
     assert write_error["error_class"] == "vm_call_interrupted"
   end
 
-  test "copy VM lifecycle tuple errors are failed runtime tool results", %{ctx: ctx} do
-    with_fake_dispatch()
+  for {name, tool, args, error_class} <- [
+        {"copy VM lifecycle tuple errors are failed runtime tool results", "env.copy",
+         %{
+           "src_device_id" => "device-laptop",
+           "src_environment" => "cloud-vm",
+           "src_path" => "/wake",
+           "dst_environment" => "vfs",
+           "dst_path" => "/out"
+         }, "vm_waking"},
+        {"exec VM interruption is a failed runtime tool result", "env.exec",
+         %{
+           "device_id" => "device-laptop",
+           "environment" => "cloud-vm",
+           "command" => "interrupt",
+           "description" => "interrupt"
+         }, "vm_call_interrupted"},
+        {"exec VM waking is a failed runtime tool result", "env.exec",
+         %{
+           "device_id" => "device-laptop",
+           "environment" => "cloud-vm",
+           "command" => "wake",
+           "description" => "wake"
+         }, "vm_waking"},
+        {"exec VM maintenance is a failed runtime tool result", "env.exec",
+         %{
+           "device_id" => "device-laptop",
+           "environment" => "cloud-vm",
+           "command" => "maintenance",
+           "description" => "maintenance"
+         }, "vm_service_upgrading"}
+      ] do
+    test name, %{ctx: ctx} do
+      with_fake_dispatch()
 
-    ctx = external_tool_ctx(ctx)
-
-    [result] =
-      Tools.execute(
-        [
-          %{
-            "id" => "copy-waking",
-            "name" => "env.copy",
-            "args" => %{
-              "src_device_id" => "device-laptop",
-              "src_environment" => "cloud-vm",
-              "src_path" => "/wake",
-              "dst_environment" => "vfs",
-              "dst_path" => "/out"
+      [result] =
+        Tools.execute(
+          [
+            %{
+              "id" => "vm-failure",
+              "name" => unquote(tool),
+              "args" => unquote(Macro.escape(args))
             }
-          }
-        ],
-        ctx
-      )
+          ],
+          external_tool_ctx(ctx)
+        )
 
-    assert result.error == true
-    assert result.status == "error"
-    assert result.error_class == "vm_waking"
-    assert Jason.decode!(result.content)["error_class"] == "vm_waking"
+      assert result.error == true
+      assert result.status == "error"
+      assert result.error_class == unquote(error_class)
+      assert Jason.decode!(result.content)["error_class"] == unquote(error_class)
+    end
   end
 
   # ---- Exec ----
@@ -612,67 +636,6 @@ defmodule SalixAgent.ToolsPeersTest do
     assert decoded["env_id"] == "cloud-vm-env"
     assert decoded["sandbox_id"] == "sandbox-1"
     assert decoded["connection_generation"] == 42
-  end
-
-  test "exec VM interruption is a failed runtime tool result", %{ctx: ctx} do
-    with_fake_dispatch()
-
-    ctx = external_tool_ctx(ctx)
-
-    [result] =
-      Tools.execute(
-        [
-          %{
-            "id" => "vm-interrupted",
-            "name" => "env.exec",
-            "args" => %{
-              "device_id" => "device-laptop",
-              "environment" => "cloud-vm",
-              "command" => "interrupt",
-              "description" => "interrupt"
-            }
-          }
-        ],
-        ctx
-      )
-
-    assert result.error == true
-    assert result.status == "error"
-    assert result.error_class == "vm_call_interrupted"
-    assert Jason.decode!(result.content)["error_class"] == "vm_call_interrupted"
-  end
-
-  test "exec VM lifecycle tuple errors are failed runtime tool results", %{ctx: ctx} do
-    with_fake_dispatch()
-
-    ctx = external_tool_ctx(ctx)
-
-    for {command, error_class} <- [
-          {"wake", "vm_waking"},
-          {"maintenance", "vm_service_upgrading"}
-        ] do
-      [result] =
-        Tools.execute(
-          [
-            %{
-              "id" => "vm-#{command}",
-              "name" => "env.exec",
-              "args" => %{
-                "device_id" => "device-laptop",
-                "environment" => "cloud-vm",
-                "command" => command,
-                "description" => command
-              }
-            }
-          ],
-          ctx
-        )
-
-      assert result.error == true
-      assert result.status == "error"
-      assert result.error_class == error_class
-      assert Jason.decode!(result.content)["error_class"] == error_class
-    end
   end
 
   test "exec validates environment and description", %{ctx: ctx} do

@@ -31,6 +31,7 @@ defmodule Comma.Accounts.User do
     field(:avatar_id, :string)
     field(:status, :string, default: "active")
     field(:auth_epoch, :integer, default: 0)
+    field(:signup_credit_eligible, :boolean, default: false)
 
     timestamps()
   end

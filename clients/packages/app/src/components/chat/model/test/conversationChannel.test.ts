@@ -960,105 +960,51 @@ describe("ConversationChannel", () => {
     });
   });
 
-  it("projects a canonical local JPG as an image with its opaque preview ref", () => {
-    const api = createConversationApi();
-    const channel = createChannel(api);
-    const localFileRef = `lfi1_${"i".repeat(43)}`;
+  it.each([
+    { fileName: "promise.jpg", mimeType: "image/jpeg", size: 456, refChar: "i" },
+    { fileName: "motion.gif", mimeType: "image/gif", size: 120, refChar: "g" },
+    { fileName: "photo.webp", mimeType: "image/webp", size: 240, refChar: "w" },
+  ])(
+    "projects a canonical local $mimeType file as an image with its opaque preview ref",
+    ({ fileName, mimeType, refChar, size }) => {
+      const api = createConversationApi();
+      const channel = createChannel(api);
+      const localFileRef = `lfi1_${refChar.repeat(43)}`;
 
-    channel.start();
-    api.emit(
-      0,
-      {
-        type: "snapshot",
-        messages: [
-          message("msg_local_image", "user", "", undefined, {
-            content: [
-              {
-                type: "local_file",
-                display_name: "promise.jpg",
-                local_file_ref: localFileRef,
-                media_type: "image/jpeg",
-                size: 456,
-              },
-            ],
-          }),
-        ],
-      },
-      "snapshot"
-    );
+      channel.start();
+      api.emit(
+        0,
+        {
+          type: "snapshot",
+          messages: [
+            message("msg_local_image", "user", "", undefined, {
+              content: [
+                {
+                  type: "local_file",
+                  display_name: fileName,
+                  local_file_ref: localFileRef,
+                  media_type: mimeType,
+                  size,
+                },
+              ],
+            }),
+          ],
+        },
+        "snapshot"
+      );
 
-    expect(channel.getSnapshot().messages[0]?.attachments).toEqual([
-      {
-        blockType: "image",
-        fileName: "promise.jpg",
-        localFileRef,
-        mimeType: "image/jpeg",
-        size: 456,
-        title: undefined,
-      },
-    ]);
-  });
-
-  it("projects canonical local GIF and WebP files as images", () => {
-    const api = createConversationApi();
-    const channel = createChannel(api);
-    const gifRef = `lfi1_${"g".repeat(43)}`;
-    const webpRef = `lfi1_${"w".repeat(43)}`;
-
-    channel.start();
-    api.emit(
-      0,
-      {
-        type: "snapshot",
-        messages: [
-          message("msg_local_gif", "user", "", undefined, {
-            content: [
-              {
-                type: "local_file",
-                display_name: "motion.gif",
-                local_file_ref: gifRef,
-                media_type: "image/gif",
-                size: 120,
-              },
-            ],
-          }),
-          message("msg_local_webp", "user", "", undefined, {
-            content: [
-              {
-                type: "local_file",
-                display_name: "photo.webp",
-                local_file_ref: webpRef,
-                media_type: "image/webp",
-                size: 240,
-              },
-            ],
-          }),
-        ],
-      },
-      "snapshot"
-    );
-
-    expect(channel.getSnapshot().messages[0]?.attachments).toEqual([
-      {
-        blockType: "image",
-        fileName: "motion.gif",
-        localFileRef: gifRef,
-        mimeType: "image/gif",
-        size: 120,
-        title: undefined,
-      },
-    ]);
-    expect(channel.getSnapshot().messages[1]?.attachments).toEqual([
-      {
-        blockType: "image",
-        fileName: "photo.webp",
-        localFileRef: webpRef,
-        mimeType: "image/webp",
-        size: 240,
-        title: undefined,
-      },
-    ]);
-  });
+      expect(channel.getSnapshot().messages[0]?.attachments).toEqual([
+        {
+          blockType: "image",
+          fileName,
+          localFileRef,
+          mimeType,
+          size,
+          title: undefined,
+        },
+      ]);
+    }
+  );
 
   it("keeps legacy multi-text rich messages on the canonical content fallback", () => {
     const api = createConversationApi();

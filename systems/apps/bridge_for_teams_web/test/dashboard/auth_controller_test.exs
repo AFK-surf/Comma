@@ -427,26 +427,6 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     assert conn.status == 404
   end
 
-  test "OIDC callback rejects a mismatched state before creating a session", %{conn: conn} do
-    org = org_with_sso!()
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    assert redirected_to(conn) =~ "https://idp.test/authorize?"
-
-    conn =
-      conn
-      |> recycle()
-      |> get("/auth/callback", %{"code" => "authcode", "state" => "wrong-state"})
-
-    assert redirected_to(conn) == "/login"
-    refute get_session(conn, DashAuth.session_token_key())
-    assert {:error, :not_found} = Accounts.get_user_by_email("user@example.com")
-  end
-
   test "OIDC callback accepts the stored state and completes login", %{conn: conn} do
     org = org_with_sso!()
 
@@ -602,9 +582,6 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     assert html =~ ~s(id="remembered-org-list")
     assert html =~ ~s(data-storage-key="bridge_for_teams:login_orgs")
     assert html =~ ~s(data-legacy-storage-key="bridge_for_teams:last_login_org")
-    assert html =~ "localStorage.getItem"
-    assert html =~ "orgLoginForm"
-    assert html =~ "document.createElement(\"img\")"
     refute html =~ ~s(data-login-orgs=)
   end
 

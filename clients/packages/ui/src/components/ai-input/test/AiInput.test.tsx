@@ -705,22 +705,17 @@ describe("AiInput", () => {
     expect(screen.getByRole("button", { name: "Voice input" })).toHaveFocus();
   });
 
-  it("starts voice recording from the advertised Control+D shortcut", () => {
+  it.each(
+    [
+      {
+        name: "starts voice recording from the advertised Control+D shortcut",
+        richText: false,
+      },
+      { name: "starts rich voice recording from Control+D", richText: true },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { richText }) => {
     const onVoicePress = vi.fn();
-    render(<AiInput onVoicePress={onVoicePress} />);
-
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "AI prompt" }), {
-      ctrlKey: true,
-      key: "d",
-    });
-
-    expect(onVoicePress).toHaveBeenCalledOnce();
-    expect(screen.getByRole("img", { name: "Voice recording" })).toBeVisible();
-  });
-
-  it("starts rich voice recording from Control+D", () => {
-    const onVoicePress = vi.fn();
-    render(<AiInput onVoicePress={onVoicePress} richText />);
+    render(<AiInput onVoicePress={onVoicePress} richText={richText} />);
 
     fireEvent.keyDown(screen.getByRole("textbox", { name: "AI prompt" }), {
       ctrlKey: true,

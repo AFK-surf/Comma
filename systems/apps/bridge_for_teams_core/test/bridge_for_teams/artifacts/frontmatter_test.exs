@@ -30,78 +30,46 @@ defmodule BridgeForTeams.Artifacts.FrontmatterTest do
     assert body == "# Daily Briefing\n\nBody **markdown**.\n"
   end
 
-  test "input without a leading delimiter has no frontmatter" do
-    input = "# Just markdown\n\n---\nnot: frontmatter\n---\n"
-    assert Frontmatter.parse(input) == {%{}, input}
-  end
+  # {name, input, expected {meta, body}}
+  @cases [
+    {"input without a leading delimiter has no frontmatter",
+     "# Just markdown\n\n---\nnot: frontmatter\n---\n",
+     {%{}, "# Just markdown\n\n---\nnot: frontmatter\n---\n"}},
+    {"an unclosed block is not frontmatter — the whole input is the body",
+     "---\ntitle: Never closed\nkind: daily\n", {%{}, "---\ntitle: Never closed\nkind: daily\n"}},
+    {"malformed lines are skipped, valid ones kept",
+     "---\ntitle: Kept\nno colon on this line\n: empty key\n   \nkind: daily\n---\nbody",
+     {%{"title" => "Kept", "kind" => "daily"}, "body"}},
+    {"keys are downcased and trimmed", "---\n  Title : Spaced\nKIND: daily\n---\n",
+     {%{"title" => "Spaced", "kind" => "daily"}, ""}},
+    {"values keep only their first colon split",
+     "---\ngenerated_at: 2026-07-06T08:00:00Z\nsite: https://example.com/x\n---\n",
+     {%{"generated_at" => "2026-07-06T08:00:00Z", "site" => "https://example.com/x"}, ""}},
+    {"surrounding quotes are stripped, single or double",
+     ~s(---\ntitle: "Quoted: with colon"\nsummary: 'single'\n---\n),
+     {%{"title" => "Quoted: with colon", "summary" => "single"}, ""}},
+    {"lone or mismatched quotes are kept verbatim",
+     ~s(---\na: "\nb: "mismatched'\nc: it's fine\n---\n),
+     {%{"a" => ~s("), "b" => ~s("mismatched'), "c" => "it's fine"}, ""}},
+    {"duplicate keys keep the last value", "---\ntitle: First\ntitle: Second\n---\n",
+     {%{"title" => "Second"}, ""}},
+    {"CRLF input parses and the body keeps its line endings",
+     "---\r\ntitle: CRLF\r\nkind: weekly\r\n---\r\nline one\r\nline two\r\n",
+     {%{"title" => "CRLF", "kind" => "weekly"}, "line one\r\nline two\r\n"}},
+    {"empty file", "", {%{}, ""}},
+    {"file that is only an opening delimiter", "---", {%{}, "---"}},
+    {"file that is only an opening delimiter and newline", "---\n", {%{}, "---\n"}},
+    {"empty block yields empty frontmatter", "---\n---\nbody\n", {%{}, "body\n"}},
+    {"closing delimiter without trailing newline leaves an empty body", "---\ntitle: X\n---",
+     {%{"title" => "X"}, ""}},
+    {"unknown keys are preserved for the caller to ignore",
+     "---\ntitle: X\nfuture_key: whatever\n---\n",
+     {%{"title" => "X", "future_key" => "whatever"}, ""}}
+  ]
 
-  test "an unclosed block is not frontmatter — the whole input is the body" do
-    input = "---\ntitle: Never closed\nkind: daily\n"
-    assert Frontmatter.parse(input) == {%{}, input}
-  end
-
-  test "malformed lines are skipped, valid ones kept" do
-    input = "---\ntitle: Kept\nno colon on this line\n: empty key\n   \nkind: daily\n---\nbody"
-    assert Frontmatter.parse(input) == {%{"title" => "Kept", "kind" => "daily"}, "body"}
-  end
-
-  test "keys are downcased and trimmed" do
-    input = "---\n  Title : Spaced\nKIND: daily\n---\n"
-    assert {%{"title" => "Spaced", "kind" => "daily"}, ""} = Frontmatter.parse(input)
-  end
-
-  test "values keep only their first colon split" do
-    input = "---\ngenerated_at: 2026-07-06T08:00:00Z\nsite: https://example.com/x\n---\n"
-
-    assert {%{"generated_at" => "2026-07-06T08:00:00Z", "site" => "https://example.com/x"}, ""} =
-             Frontmatter.parse(input)
-  end
-
-  test "surrounding quotes are stripped, single or double" do
-    input = ~s(---\ntitle: "Quoted: with colon"\nsummary: 'single'\n---\n)
-
-    assert {%{"title" => "Quoted: with colon", "summary" => "single"}, ""} =
-             Frontmatter.parse(input)
-  end
-
-  test "lone or mismatched quotes are kept verbatim" do
-    input = ~s(---\na: "\nb: "mismatched'\nc: it's fine\n---\n)
-
-    assert {%{"a" => ~s("), "b" => ~s("mismatched'), "c" => "it's fine"}, ""} =
-             Frontmatter.parse(input)
-  end
-
-  test "duplicate keys keep the last value" do
-    input = "---\ntitle: First\ntitle: Second\n---\n"
-    assert {%{"title" => "Second"}, ""} = Frontmatter.parse(input)
-  end
-
-  test "CRLF input parses and the body keeps its line endings" do
-    input = "---\r\ntitle: CRLF\r\nkind: weekly\r\n---\r\nline one\r\nline two\r\n"
-
-    assert {%{"title" => "CRLF", "kind" => "weekly"}, "line one\r\nline two\r\n"} =
-             Frontmatter.parse(input)
-  end
-
-  test "empty file" do
-    assert Frontmatter.parse("") == {%{}, ""}
-  end
-
-  test "file that is only an opening delimiter" do
-    assert Frontmatter.parse("---") == {%{}, "---"}
-    assert Frontmatter.parse("---\n") == {%{}, "---\n"}
-  end
-
-  test "empty block yields empty frontmatter" do
-    assert Frontmatter.parse("---\n---\nbody\n") == {%{}, "body\n"}
-  end
-
-  test "closing delimiter without trailing newline leaves an empty body" do
-    assert Frontmatter.parse("---\ntitle: X\n---") == {%{"title" => "X"}, ""}
-  end
-
-  test "unknown keys are preserved for the caller to ignore" do
-    input = "---\ntitle: X\nfuture_key: whatever\n---\n"
-    assert {%{"title" => "X", "future_key" => "whatever"}, ""} = Frontmatter.parse(input)
+  for {name, input, expected} <- @cases do
+    test name do
+      assert Frontmatter.parse(unquote(input)) == unquote(Macro.escape(expected))
+    end
   end
 end

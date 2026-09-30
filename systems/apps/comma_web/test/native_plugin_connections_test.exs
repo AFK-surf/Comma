@@ -29,6 +29,35 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
     def call(conn, _) do
       case conn.request_path do
+        "/slack-mcp" ->
+          authorized = get_req_header(conn, "authorization") == ["Bearer xoxp-comma-local-token"]
+
+          if probe = Application.get_env(:comma_web, :slack_mcp_probe),
+            do: send(probe, {:slack_mcp_request, authorized})
+
+          if gate = Application.get_env(:comma_web, :slack_mcp_gate) do
+            send(gate, {:slack_mcp_blocked, self()})
+
+            receive do
+              :release -> :ok
+            after
+              5_000 -> :ok
+            end
+
+            send(gate, :slack_mcp_unblocked)
+          end
+
+          cond do
+            Application.get_env(:comma_web, :slack_mcp_rejected, false) ->
+              send_resp(conn, 400, "App not approved for Slack MCP server access.")
+
+            authorized ->
+              SalixWeb.LocalOAuthMock.mcp_resource(conn)
+
+            true ->
+              send_resp(conn, 401, "authorization required")
+          end
+
         "/v1/local-oauth/github/token" ->
           if probe = Application.get_env(:comma_web, :oauth_token_probe) do
             send(probe, {:oauth_exchange, self()})
@@ -73,7 +102,10 @@ defmodule CommaWeb.NativePluginConnectionsTest do
       {:salix_mcp, :remote_target_overrides},
       {:salix_mcp, :private_http_target_allowlist},
       {:salix_mcp, :credential_resolver_mod},
-      {:comma_web, :oauth_token_probe}
+      {:comma_web, :oauth_token_probe},
+      {:comma_web, :slack_mcp_probe},
+      {:comma_web, :slack_mcp_rejected},
+      {:comma_web, :slack_mcp_gate}
     ]
 
     previous = Enum.map(keys, fn {app, key} -> {app, key, Application.get_env(app, key)} end)
@@ -106,14 +138,21 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     Application.put_env(:salix_mcp, :remote_target_overrides, %{
       "remote:notion" => base <> "/v1/local-oauth/mcp/resource",
       "remote:github" => base <> "/v1/local-oauth/mcp/resource",
-      "remote:slack" => base <> "/v1/local-oauth/mcp/resource"
+      "remote:slack" => base <> "/slack-mcp"
     })
 
     Application.put_env(:salix_mcp, :private_http_target_allowlist, [
-      base <> "/v1/local-oauth/mcp/resource"
+      base <> "/v1/local-oauth/mcp/resource",
+      base <> "/slack-mcp"
     ])
 
     on_exit(fn ->
+      # Background MCP refreshes must not outlive this test's sandbox and mocks.
+      eventually(
+        fn -> Task.Supervisor.children(SalixWeb.OAuthMCPRefreshSupervisor) == [] end,
+        500
+      )
+
       Enum.each(previous, fn
         {app, key, nil} -> Application.delete_env(app, key)
         {app, key, value} -> Application.put_env(app, key, value)
@@ -143,6 +182,7 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     user: user,
     workspace: w
   } do
+    Application.put_env(:comma_web, :slack_mcp_probe, self())
     Application.put_env(:salix_web, :composio_settings_mod, UnconfiguredComposio)
     assert {:ok, status} = PluginConnections.get(user, %{}, w["id"], "slack")
     assert status["connection"]["id"] == "slack-managed"
@@ -168,7 +208,11 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     refute install["plugin"]["installed"]
     url = install["authorization"]["authorizationUrl"]
     assert URI.parse(url).path == "/v1/local-oauth/slack/authorize"
-    assert URI.decode_query(URI.parse(url).query)["user_scope"] =~ "channels:history"
+    scopes = URI.decode_query(URI.parse(url).query)["user_scope"] |> String.split(",")
+    assert "channels:history" in scopes
+    assert "search:read" in scopes
+    assert "search:read.public" in scopes
+    refute_received {:slack_mcp_request, _}
 
     SalixWeb.OAuthFlow.handle_callback("slack", %{
       "state" => provider_state(install),
@@ -177,10 +221,23 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
     assert {:ok, completed} = verify(user, w, "slack", install)
     assert completed["plugin"]["installed"]
-    [binding] = SalixMCP.Store.list_group_bindings(w["salix_tenant_id"], w["default_group_id"])
+    binding = await_binding_status(w, "running")
+    assert binding["connection"]["tool_count"] > 0
+    assert_received {:slack_mcp_request, true}
 
     assert {:ok, %{"SLACK_USER_TOKEN" => "xoxp-comma-local-token"}} =
              Salix.Bindings.MCPCredentials.resolve(binding)
+
+    assert {:ok, %{"status" => "completed"}} =
+             SalixMCP.Gateway.call_tool(
+               w["salix_tenant_id"],
+               w["default_group_id"],
+               binding["binding_id"],
+               "comma_local_search",
+               %{"query" => "slack oauth reuse", "source" => "slack"}
+             )
+
+    refute_received {:slack_mcp_request, false}
 
     assert {:ok, [source]} = CommaWeb.RecommendationSources.discover(w)
     assert source["kind"] == "managed_oauth"
@@ -217,6 +274,54 @@ defmodule CommaWeb.NativePluginConnectionsTest do
 
     assert {:ok, _} = PluginConnections.uninstall(user, %{}, w["id"], "slack")
     assert {:error, _} = Salix.Bindings.MCPCredentials.resolve(binding)
+  end
+
+  test "Slack MCP app rejection preserves the completed OAuth grant", %{user: user, workspace: w} do
+    Application.put_env(:comma_web, :slack_mcp_rejected, true)
+    assert {:ok, install} = PluginConnections.install(user, %{}, w["id"], "slack")
+
+    assert {:page, 200, _} =
+             SalixWeb.OAuthFlow.handle_callback("slack", %{
+               "state" => provider_state(install),
+               "code" => "test"
+             })
+
+    assert {:ok, %{"status" => "completed"}} =
+             SalixStore.OAuth.AuthState.get(provider_state(install))
+
+    assert {:ok, %{"plugin" => %{"installed" => true}}} = verify(user, w, "slack", install)
+
+    binding = await_binding_status(w, "protocol_error")
+
+    assert {:ok, %{"SLACK_USER_TOKEN" => "xoxp-comma-local-token"}} =
+             Salix.Bindings.MCPCredentials.resolve(binding)
+  end
+
+  test "slow Slack MCP discovery does not delay the OAuth completion", %{
+    user: user,
+    workspace: w
+  } do
+    Application.put_env(:comma_web, :slack_mcp_gate, self())
+    assert {:ok, install} = PluginConnections.install(user, %{}, w["id"], "slack")
+
+    assert {:page, 200, _} =
+             SalixWeb.OAuthFlow.handle_callback("slack", %{
+               "state" => provider_state(install),
+               "code" => "test"
+             })
+
+    # The callback returned while discovery is still blocked.
+    refute_received :slack_mcp_unblocked
+    assert_receive {:slack_mcp_blocked, mcp}, 5_000
+
+    assert {:ok, %{"status" => "completed"}} =
+             SalixStore.OAuth.AuthState.get(provider_state(install))
+
+    assert {:ok, %{"plugin" => %{"installed" => true}}} = verify(user, w, "slack", install)
+
+    Application.delete_env(:comma_web, :slack_mcp_gate)
+    send(mcp, :release)
+    assert await_binding_status(w, "running")["connection"]["tool_count"] > 0
   end
 
   test "GitHub callback preserves recommendation opt-out across discovery gap and supplies MCP bearer",
@@ -256,7 +361,8 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     assert {:ok, completed} = verify(user, w, "github", install)
     assert completed["plugin"]["installed"]
     assert completed["authorization"] == nil
-    [binding] = SalixMCP.Store.list_group_bindings(w["salix_tenant_id"], w["default_group_id"])
+    binding = await_binding_status(w, "running")
+    assert binding["connection"]["tool_count"] > 0
 
     assert {:ok, %{"GITHUB_ACCESS_TOKEN" => token}} =
              Salix.Bindings.MCPCredentials.resolve(binding)
@@ -803,6 +909,16 @@ defmodule CommaWeb.NativePluginConnectionsTest do
         "verify_only" => true,
         "authorization_state" => install["authorization"]["state"]
       })
+
+  defp await_binding_status(w, status) do
+    list = fn ->
+      SalixMCP.Store.list_group_bindings(w["salix_tenant_id"], w["default_group_id"])
+    end
+
+    assert eventually(fn -> match?([%{"connection" => %{"status" => ^status}}], list.()) end, 500)
+    [binding] = list.()
+    binding
+  end
 
   defp eventually(predicate, remaining \\ 100)
   defp eventually(predicate, 0), do: predicate.()

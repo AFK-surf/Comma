@@ -150,48 +150,37 @@ defmodule SalixMediaTest do
       assert req["question"] == "What is this?"
     end
 
-    test "Vision describe uses max_completion_tokens for newer OpenAI chat models" do
-      SalixMedia.MockMedia.set("/chat/completions", %{
-        "choices" => [%{"message" => %{"content" => "A UI screenshot."}}],
-        "usage" => %{"total_tokens" => 12}
-      })
+    # {name, model, max tokens, description, token field sent, token field omitted}
+    @vision_token_field_cases [
+      {"Vision describe uses max_completion_tokens for newer OpenAI chat models",
+       "openai/gpt-5-mini", 321, "A UI screenshot.", "max_completion_tokens", "max_tokens"},
+      {"Vision describe keeps max_tokens for legacy chat models", "gpt-4o-mini", 123, "A chart.",
+       "max_tokens", "max_completion_tokens"}
+    ]
 
-      assert {:ok, %{description: "A UI screenshot."}} =
-               Vision.describe("https://cdn/ui.png",
-                 question: "Describe UI",
-                 config: %{
-                   "endpoint" => Application.get_env(:salix_media, :base_url),
-                   "model" => "openai/gpt-5-mini",
-                   "max_tokens" => 321
-                 }
-               )
+    for {name, model, max_tokens, description, sent, omitted} <- @vision_token_field_cases do
+      test name do
+        SalixMedia.MockMedia.set("/chat/completions", %{
+          "choices" => [%{"message" => %{"content" => unquote(description)}}],
+          "usage" => %{"total_tokens" => 12}
+        })
 
-      assert SalixMedia.MockMedia.last_path() == "/chat/completions"
-      req = SalixMedia.MockMedia.last_request()
-      assert req["model"] == "openai/gpt-5-mini"
-      assert req["max_completion_tokens"] == 321
-      refute Map.has_key?(req, "max_tokens")
-    end
+        assert {:ok, %{description: unquote(description), usage: %{"total_tokens" => 12}}} =
+                 Vision.describe("https://cdn/ui.png",
+                   question: "Describe",
+                   config: %{
+                     "endpoint" => Application.get_env(:salix_media, :base_url),
+                     "model" => unquote(model),
+                     "max_tokens" => unquote(max_tokens)
+                   }
+                 )
 
-    test "Vision describe keeps max_tokens for legacy chat models" do
-      SalixMedia.MockMedia.set("/chat/completions", %{
-        "choices" => [%{"message" => %{"content" => "A chart."}}]
-      })
-
-      assert {:ok, %{description: "A chart."}} =
-               Vision.describe("https://cdn/chart.png",
-                 question: "Describe chart",
-                 config: %{
-                   "endpoint" => Application.get_env(:salix_media, :base_url),
-                   "model" => "gpt-4o-mini",
-                   "max_tokens" => 123
-                 }
-               )
-
-      req = SalixMedia.MockMedia.last_request()
-      assert req["model"] == "gpt-4o-mini"
-      assert req["max_tokens"] == 123
-      refute Map.has_key?(req, "max_completion_tokens")
+        assert SalixMedia.MockMedia.last_path() == "/chat/completions"
+        req = SalixMedia.MockMedia.last_request()
+        assert req["model"] == unquote(model)
+        assert req[unquote(sent)] == unquote(max_tokens)
+        refute Map.has_key?(req, unquote(omitted))
+      end
     end
 
     test "facade delegates to the right client" do

@@ -110,7 +110,18 @@ defmodule SalixAgent.DecideFixture do
                   }
 
                 "noul" ->
-                  %{"type" => "noul", "noul" => if(state == "no-match", do: 0.1, else: 0.92349)}
+                  relevant =
+                    case Application.get_env(:salix_agent, :decide_selected_miniskill) do
+                      nil ->
+                        state != "no-match"
+
+                      selected ->
+                        Enum.any?(body["state"]["miniskills"], fn skill ->
+                          skill["id"] == key and skill["name"] == selected
+                        end)
+                    end
+
+                  %{"type" => "noul", "noul" => if(relevant, do: 0.92349, else: 0.1)}
 
                 "score" ->
                   %{

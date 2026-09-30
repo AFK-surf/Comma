@@ -90,9 +90,11 @@ defmodule SalixWeb.CloudVMActivityTest do
 
   defp await_observation(_, 0), do: flunk("archive observation was not stored")
 
-  test "nine concurrent begins queue and commit one complete operation ledger", %{
+  test "nine concurrent begins commit one ledger and nine finishes remove their union", %{
     group_id: group_id
   } do
+    operation_ids = Enum.map(1..9, &"read-#{&1}")
+
     results =
       concurrent(9, fn index ->
         SalixWeb.ComputeProviders.Cloudflare.begin_operation(group_id, "read",
@@ -101,29 +103,11 @@ defmodule SalixWeb.CloudVMActivityTest do
         )
       end)
 
-    assert Enum.sort(results) == Enum.map(1..9, &{:ok, "read-#{&1}"})
+    assert Enum.sort(results) == Enum.map(operation_ids, &{:ok, &1})
 
     assert {:ok, record} = Compute.group_workload(group_id)
     assert record["active_operation_count"] == 9
-
-    assert Map.keys(record["active_operations"]) |> Enum.sort() ==
-             Enum.map(1..9, &"read-#{&1}")
-  end
-
-  test "nine concurrent finishes remove the union of completed operations", %{
-    group_id: group_id
-  } do
-    operation_ids = Enum.map(1..9, &"read-#{&1}")
-
-    assert Enum.all?(
-             concurrent(9, fn index ->
-               SalixWeb.ComputeProviders.Cloudflare.begin_operation(group_id, "read",
-                 operation_id: "read-#{index}",
-                 mutating?: false
-               )
-             end),
-             &match?({:ok, _}, &1)
-           )
+    assert Map.keys(record["active_operations"]) |> Enum.sort() == operation_ids
 
     assert Enum.all?(
              concurrent(operation_ids, fn operation_id ->

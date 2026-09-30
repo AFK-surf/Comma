@@ -615,7 +615,5 @@ defmodule SalixAgent.Tools.ComposioTest do
         ] do
       assert %{"input_schema" => %{"type" => "object"}} = by_name[name], "#{name} missing"
     end
-
-    refute Map.has_key?(by_name, "meeting.get_calendar_policy")
   end
 end

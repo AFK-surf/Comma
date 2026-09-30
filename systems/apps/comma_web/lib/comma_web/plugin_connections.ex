@@ -1372,7 +1372,7 @@ defmodule CommaWeb.PluginConnections do
     end
   end
 
-  defp start_authorization(workspace, %{"kind" => "managed_oauth"} = connection, _bindings, opts) do
+  defp start_authorization(workspace, %{"kind" => "managed_oauth"} = connection, bindings, opts) do
     SalixWeb.OAuthFlow.start_authorization(
       workspace["salix_tenant_id"],
       workspace["default_group_id"],
@@ -1386,6 +1386,7 @@ defmodule CommaWeb.PluginConnections do
         "workspace_id" => workspace["id"]
       },
       comma_operation: Keyword.get(opts, :comma_operation),
+      mcp_binding_ids: Enum.map(bindings, & &1["binding_id"]),
       expires_at: Keyword.get(opts, :expires_at)
     )
   end

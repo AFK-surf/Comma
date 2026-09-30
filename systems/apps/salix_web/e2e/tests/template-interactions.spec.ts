@@ -51,6 +51,26 @@ test.afterEach(async ({ request }) => {
     await request.delete(`/v1/admin/templates/${id}`, { headers });
 });
 
+test("the catalog scrolls inside the dashboard and not past its end", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 320 });
+  await page.goto("/dash/templates");
+  await connected(page);
+  await expect(page.locator("#private-templates")).toBeAttached();
+  const main = page.locator("main");
+  expect(
+    await main.evaluate((el) => el.scrollHeight - el.clientHeight),
+  ).toBeGreaterThan(0);
+  expect(
+    await page.evaluate(
+      () =>
+        document.scrollingElement!.scrollHeight -
+        document.scrollingElement!.clientHeight,
+    ),
+  ).toBe(0);
+});
+
 test("browser back preserves a cancelled draft", async ({ page }, info) => {
   await page.goto("/dash/templates");
   await connected(page);

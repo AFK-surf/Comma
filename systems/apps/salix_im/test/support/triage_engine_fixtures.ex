@@ -160,9 +160,6 @@ defmodule SalixIM.TriageEngineFixtures do
     accept!(server, authority, receipt, Keyword.get(opts, :expect, :accepted))
   end
 
-  @doc "The generation-scoped bucket key one receipt belongs to."
-  def scope_key(receipt), do: SalixIM.Triage.Bucketing.scope_key(receipt)
-
   @doc "Polls `fun` until it returns a non-empty value or the attempts run out."
   def eventually(fun, attempts \\ 100)
   def eventually(fun, 0), do: fun.()

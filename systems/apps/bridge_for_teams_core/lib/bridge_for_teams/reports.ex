@@ -12,7 +12,7 @@ defmodule BridgeForTeams.Reports do
 
   A `<series-slug>` is namespaced per user, exactly like report site names:
   different users share the project agent, so without a per-user suffix their
-  series would collide. The suffix comes from `user_suffix/1` — the same
+  series would collide. The suffix comes from `BridgeForTeams.Artifacts.user_suffix/1` — the same
   hashing the dashboard uses for report site names — so a series slug can be
   matched back to a project member by comparing suffixes. The slug/suffix
   implementation lives in `BridgeForTeams.Artifacts` (reports are a
@@ -100,7 +100,7 @@ defmodule BridgeForTeams.Reports do
   The namespaced slug a report series is stored under.
 
   The base name is slugified (`[a-z0-9-]`), then the owning user's
-  `user_suffix/1` is appended, mirroring how report site names are namespaced
+  `BridgeForTeams.Artifacts.user_suffix/1` is appended, mirroring how report site names are namespaced
   today. A base name with no usable characters falls back to `"report"`.
 
       iex> BridgeForTeams.Reports.series_slug("Daily Briefing", "a1b2c3d4-0000-0000-0000-000000000000")
@@ -110,28 +110,6 @@ defmodule BridgeForTeams.Reports do
   def series_slug(base_name, user_id) when is_binary(base_name) do
     Artifacts.slug(base_name, user_id, "report")
   end
-
-  @doc """
-  The form a run path takes on the workspace item artifact pointer.
-
-  Workspace item `vfs_path` stores the full path so over-long report runs can
-  still dedupe and re-notify against their exact VFS artifact.
-
-      iex> BridgeForTeams.Reports.vfs_path_column("/.salix/reports/daily-briefing-a1b2c3d4/2026-07-06.md")
-      "/.salix/reports/daily-briefing-a1b2c3d4/2026-07-06.md"
-  """
-  @spec vfs_path_column(String.t()) :: String.t()
-  def vfs_path_column(path) when is_binary(path), do: path
-
-  @doc """
-  The per-user namespacing suffix shared by report site names and report
-  series slugs: the user id with dashes removed, truncated to 8 characters.
-
-      iex> BridgeForTeams.Reports.user_suffix("a1b2c3d4-0000-0000-0000-000000000000")
-      "a1b2c3d4"
-  """
-  @spec user_suffix(String.t() | integer()) :: String.t()
-  defdelegate user_suffix(user_id), to: Artifacts
 
   defp parse_run_time([]), do: {:ok, nil}
 

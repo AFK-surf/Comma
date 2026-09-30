@@ -102,6 +102,7 @@ defmodule SalixWeb.OAuthFlow do
             "origin" => "web",
             "comma_member" => Keyword.get(opts, :comma_member),
             "comma_operation" => Keyword.get(opts, :comma_operation),
+            "mcp_binding_ids" => Keyword.get(opts, :mcp_binding_ids, []),
             "status" => "pending",
             "error" => nil,
             "binding_id" => nil,
@@ -197,14 +198,53 @@ defmodule SalixWeb.OAuthFlow do
             case SalixWeb.OAuthCommitGuard.run(auth, fn ->
                    persist_connection_and_binding(auth, provider, tokens, account || %{})
                  end) do
-              {:ok, completion} -> finish(auth, provider, completion, nil)
-              {:error, reason} -> finish(auth, provider, nil, reason)
+              {:ok, completion} ->
+                result = finish(auth, provider, completion, nil)
+                start_managed_mcp_refresh(auth, provider)
+                result
+
+              {:error, reason} ->
+                finish(auth, provider, nil, reason)
             end
 
           {:error, reason} ->
             finish(auth, provider, nil, "token exchange: " <> format_reason(reason))
         end
     end
+  end
+
+  # MCP discovery can take minutes; it runs after the grant is recorded so a
+  # slow or rejecting MCP server never delays or fails the OAuth completion.
+  defp start_managed_mcp_refresh(auth, provider) do
+    case auth["mcp_binding_ids"] do
+      [_ | _] = binding_ids ->
+        case Task.Supervisor.start_child(SalixWeb.OAuthMCPRefreshSupervisor, fn ->
+               refresh_managed_mcps(auth, provider, binding_ids)
+             end) do
+          {:ok, _pid} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("OAuth MCP refresh not started: #{inspect(reason)}")
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp refresh_managed_mcps(auth, provider, binding_ids) do
+    Enum.each(binding_ids, fn binding_id ->
+      with {:ok, binding} <-
+             SalixMCP.Store.get_binding(auth["tenant"], auth["group_id"], binding_id),
+           true <- binding["enabled"] != false,
+           true <-
+             Enum.any?(binding["oauth_binding_refs"] || %{}, fn {_name, ref} ->
+               ref["provider"] == provider and ref["alias"] == auth["alias"]
+             end) do
+        _ = SalixMCP.Gateway.refresh_binding(auth["tenant"], auth["group_id"], binding_id)
+      end
+    end)
   end
 
   defp persist_connection_and_binding(auth, provider, tokens, account) do

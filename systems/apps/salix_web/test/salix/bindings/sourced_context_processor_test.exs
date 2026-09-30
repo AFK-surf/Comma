@@ -177,23 +177,6 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
     }
   end
 
-  test "rejects same-model provider, endpoint, protocol and template drift before dispatch" do
-    request = request_with_objects([source_object("Atlas approved")])
-
-    for {key, changed} <- [
-          {"provider", "anthropic"},
-          {"base_url", "https://other.test"},
-          {"protocol", "chat_completions"},
-          {"template_id", "tmpl-other"}
-        ] do
-      assert {:error, :processor_evidence_mismatch} =
-               SourcedContextProcessor.derive(request,
-                 resolver: fn _ -> {:ok, Map.put(llm(), key, changed)} end,
-                 complete: fn _, _, _, _ -> flunk("drifted provider must not be called") end
-               )
-    end
-  end
-
   test "Router replacement invalidates the frozen contract even with the same model" do
     request = request_with_objects([source_object("Atlas approved")])
     request = %{request | agent_id: "agt-new-router"}
@@ -205,17 +188,23 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
              )
   end
 
-  test "runtime behavior headers and reasoning drift stop before dispatch" do
-    request = request_with_objects([source_object("Atlas approved")])
+  for {label, change} <- [
+        {"same-model provider drift", %{"provider" => "anthropic"}},
+        {"same-model endpoint drift", %{"base_url" => "https://other.test"}},
+        {"same-model protocol drift", %{"protocol" => "chat_completions"}},
+        {"same-model template drift", %{"template_id" => "tmpl-other"}},
+        {"runtime behavior header drift",
+         %{"default_headers" => %{"anthropic-beta" => "new-feature"}}},
+        {"runtime reasoning drift", %{"reasoning_effort" => "high"}}
+      ] do
+    @change change
+    test "#{label} is rejected before dispatch" do
+      request = request_with_objects([source_object("Atlas approved")])
 
-    for change <- [
-          %{"default_headers" => %{"anthropic-beta" => "new-feature"}},
-          %{"reasoning_effort" => "high"}
-        ] do
       assert {:error, :processor_evidence_mismatch} =
                SourcedContextProcessor.derive(request,
-                 resolver: fn _ -> {:ok, Map.merge(llm(), change)} end,
-                 complete: fn _, _, _, _ -> flunk("changed behavior must not dispatch") end
+                 resolver: fn _ -> {:ok, Map.merge(llm(), @change)} end,
+                 complete: fn _, _, _, _ -> flunk("drifted config must not dispatch") end
                )
     end
   end
@@ -229,14 +218,6 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
                end,
                complete: fn _, _, _, _ -> flunk("unsupported header must not dispatch") end
              )
-  end
-
-  test "credential headers rotate without changing evidence" do
-    config = Map.put(llm(), "default_headers", %{"authorization" => "Bearer old"})
-    rotated = put_in(config, ["default_headers", "authorization"], "Bearer new")
-
-    assert SourcedContextProcessor.evidence("agt-project-router", config) ==
-             SourcedContextProcessor.evidence("agt-project-router", rotated)
   end
 
   test "dispatch receives the same normalized behavior and the current credentials" do

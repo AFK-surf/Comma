@@ -68,31 +68,38 @@ defmodule SalixIM.Triage.ActivityProjectionTest do
     assert target["result"]["lifecycle_state"] == "decision_proposed"
   end
 
-  # The branch used to read the artifact's SHAPE and ignore the hash stored
-  # beside it, so an artifact rewritten in place — still carrying a
-  # `review_only_not_sent` readback — decided this projection's lifecycle claim.
-  test "a review artifact that disagrees with its stored hash is refused" do
-    tampered = put_in(review_artifact(), ["decision", "text"], "rewritten after the fact")
-    namespace = seed_prior_run(tampered, sha256_of: review_artifact())
+  # Each row is an artifact that must not decide this projection's lifecycle
+  # claim. The tampered row is the regression: the branch used to read the
+  # artifact's SHAPE and ignore the hash stored beside it, so an artifact
+  # rewritten in place — still carrying a `review_only_not_sent` readback —
+  # decided the claim. v1 and v2 artifacts share that readback shape, and an
+  # identity-mode prior run always carries v2, so a v1 artifact here is schema
+  # interchange, not history.
+  for {name, variant} <- [
+        {"a review artifact that disagrees with its stored hash is refused", :tampered},
+        {"a v1 review artifact is refused instead of read as identity history", :v1},
+        {"a review artifact with an unexpected extra key is refused", :extra_key}
+      ] do
+    @variant variant
+    test name do
+      namespace =
+        case @variant do
+          :tampered ->
+            review_artifact()
+            |> put_in(["decision", "text"], "rewritten after the fact")
+            |> seed_prior_run(sha256_of: review_artifact())
 
-    assert {:ok, nil} = authorize(namespace)
-  end
+          :v1 ->
+            review_artifact()
+            |> Map.put("schema", "comma.triage-review-artifact.v1")
+            |> seed_prior_run()
 
-  # v1 and v2 artifacts share the readback shape this branch used to match on,
-  # and an identity-mode prior run always carries v2. A v1 artifact here is
-  # schema interchange, not history.
-  test "a v1 review artifact is refused instead of read as identity history" do
-    v1_artifact = Map.put(review_artifact(), "schema", "comma.triage-review-artifact.v1")
-    namespace = seed_prior_run(v1_artifact)
+          :extra_key ->
+            review_artifact() |> Map.put("delivered_at", 1) |> seed_prior_run()
+        end
 
-    assert {:ok, nil} = authorize(namespace)
-  end
-
-  test "a review artifact with an unexpected extra key is refused" do
-    extra = Map.put(review_artifact(), "delivered_at", 1)
-    namespace = seed_prior_run(extra)
-
-    assert {:ok, nil} = authorize(namespace)
+      assert {:ok, nil} = authorize(namespace)
+    end
   end
 
   defp authorize(namespace) do

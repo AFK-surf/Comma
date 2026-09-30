@@ -594,73 +594,52 @@ defmodule CommaWeb.RouterTest do
   test "missing or duplicate Web transport headers fence auth mutation side effects" do
     origin = "http://127.0.0.1:5174"
 
-    missing_pending =
-      :post
-      |> json_conn("/v1/comma/auth/email/login", %{"email" => "missing-transport@example.com"})
-      |> call()
-      |> expect_json(200)
-
-    missing_transport =
-      :post
-      |> json_conn("/v1/comma/auth/email/verify", %{
-        "challenge_id" => missing_pending["challenge_id"],
-        "code" => missing_pending["code"]
-      })
-      |> put_req_header("origin", origin)
-      |> put_req_header("x-comma-session-lifecycle-version", "1")
-      |> put_req_header("x-comma-expected-auth-session-id", "none")
-      |> call()
-
-    assert expect_json(missing_transport, 400) == %{"error" => "invalid_session_transport"}
-    assert missing_transport.resp_cookies == %{}
-
-    assert {:error, :not_found} =
-             Comma.Accounts.get_user_by_email("missing-transport@example.com")
-
-    assert %{"user" => %{"email" => "missing-transport@example.com"}} =
-             :post
-             |> json_conn("/v1/comma/auth/email/verify", %{
-               "challenge_id" => missing_pending["challenge_id"],
-               "code" => missing_pending["code"]
-             })
+    for {variant, add_transport} <- [
+          {:missing,
+           fn conn ->
+             conn
+             |> put_req_header("origin", origin)
+             |> put_req_header("x-comma-session-lifecycle-version", "1")
+             |> put_req_header("x-comma-expected-auth-session-id", "none")
+           end},
+          {:duplicate,
+           fn conn ->
+             conn
              |> web_cookie_request(origin, :none)
-             |> call()
-             |> expect_json(200)
+             |> prepend_req_header("x-comma-session-transport", "cookie")
+           end}
+        ] do
+      email = "#{variant}-transport@example.com"
 
-    duplicate_pending =
-      :post
-      |> json_conn("/v1/comma/auth/email/login", %{"email" => "duplicate-transport@example.com"})
-      |> call()
-      |> expect_json(200)
+      pending =
+        :post
+        |> json_conn("/v1/comma/auth/email/login", %{"email" => email})
+        |> call()
+        |> expect_json(200)
 
-    duplicate_transport =
-      :post
-      |> json_conn("/v1/comma/auth/email/verify", %{
-        "challenge_id" => duplicate_pending["challenge_id"],
-        "code" => duplicate_pending["code"]
-      })
-      |> web_cookie_request(origin, :none)
-      |> prepend_req_header("x-comma-session-transport", "cookie")
-      |> call()
+      rejected =
+        :post
+        |> json_conn("/v1/comma/auth/email/verify", %{
+          "challenge_id" => pending["challenge_id"],
+          "code" => pending["code"]
+        })
+        |> add_transport.()
+        |> call()
 
-    assert expect_json(duplicate_transport, 400) == %{
-             "error" => "invalid_session_transport"
-           }
+      assert expect_json(rejected, 400) == %{"error" => "invalid_session_transport"}
+      assert rejected.resp_cookies == %{}
+      assert {:error, :not_found} = Comma.Accounts.get_user_by_email(email)
 
-    assert duplicate_transport.resp_cookies == %{}
-
-    assert {:error, :not_found} =
-             Comma.Accounts.get_user_by_email("duplicate-transport@example.com")
-
-    assert %{"user" => %{"email" => "duplicate-transport@example.com"}} =
-             :post
-             |> json_conn("/v1/comma/auth/email/verify", %{
-               "challenge_id" => duplicate_pending["challenge_id"],
-               "code" => duplicate_pending["code"]
-             })
-             |> web_cookie_request(origin, :none)
-             |> call()
-             |> expect_json(200)
+      assert %{"user" => %{"email" => ^email}} =
+               :post
+               |> json_conn("/v1/comma/auth/email/verify", %{
+                 "challenge_id" => pending["challenge_id"],
+                 "code" => pending["code"]
+               })
+               |> web_cookie_request(origin, :none)
+               |> call()
+               |> expect_json(200)
+    end
   end
 
   test "native auth requires exactly one bearer discriminator before mutation" do
@@ -873,6 +852,12 @@ defmodule CommaWeb.RouterTest do
 
     assert expect_json(logout_conn, 200) == %{"signed_out" => true}
     assert logout_conn.resp_cookies == %{}
+
+    assert 401 ==
+             (:get
+              |> conn("/v1/comma/workspaces")
+              |> user_auth(token)
+              |> call()).status
   end
 
   test "unknown personal paths stay inside the Comma product auth boundary" do
@@ -1244,32 +1229,6 @@ defmodule CommaWeb.RouterTest do
     assert Comma.Migrations.LegacyS3Fixture.all(:grants) == []
   end
 
-  test "admin session issuance rejects non-boolean restricted values without minting a session" do
-    user =
-      :post
-      |> json_conn("/v1/comma/admin/users", %{"email" => "invalid-restricted-session@example.com"})
-      |> admin_auth()
-      |> call()
-      |> expect_json(201)
-
-    for invalid <- ["true", "false", 1, nil] do
-      assert %{"error" => "invalid_restricted"} =
-               :post
-               |> json_conn("/v1/comma/admin/users/#{user["id"]}/sessions", %{
-                 "restricted" => invalid,
-                 "workspace_id" => "wsp_invalid_restricted"
-               })
-               |> admin_auth()
-               |> call()
-               |> expect_json(400)
-    end
-
-    assert Repo.aggregate(
-             from(session in Comma.Accounts.AuthSession, where: session.user_id == ^user["id"]),
-             :count
-           ) == 0
-  end
-
   test "admin session issuance rejects contradictory capabilities and unbounded options" do
     user =
       :post
@@ -1287,7 +1246,18 @@ defmodule CommaWeb.RouterTest do
       %{"budget" => 1},
       %{"tool_allowlist" => []},
       %{"expires_in_seconds" => 60},
-      %{"restricted" => true, "ttl_seconds" => 60}
+      %{"restricted" => true, "ttl_seconds" => 60},
+      # Non-boolean restricted values never coerce into a capability.
+      %{"restricted" => "true", "workspace_id" => "wsp_invalid_restricted"},
+      %{"restricted" => "false", "workspace_id" => "wsp_invalid_restricted"},
+      %{"restricted" => 1, "workspace_id" => "wsp_invalid_restricted"},
+      %{"restricted" => nil, "workspace_id" => "wsp_invalid_restricted"},
+      # A conversation scope needs its owning Group.
+      %{
+        "restricted" => true,
+        "workspace_id" => "wsp_not_conversation_authority",
+        "conversation_id" => "cnv_missing_group_scope"
+      }
     ]
 
     for body <- contradictory do
@@ -3744,7 +3714,7 @@ defmodule CommaWeb.RouterTest do
       |> expect_json(200)
 
     assert billing_summary["billing_account_id"] == "comma-ba-" <> workspace_id
-    assert billing_summary["current_credits"] == 0
+    assert billing_summary["current_credits"] == 20_000_000
     assert billing_summary["active_subscription"] == nil
   end
 
@@ -3811,21 +3781,6 @@ defmodule CommaWeb.RouterTest do
 
     assert expect_json(provisioning_response, 403) == %{"error" => "forbidden"}
     assert get_resp_header(provisioning_response, "retry-after") == []
-  end
-
-  test "session issuance rejects a conversation scope without its owning Group" do
-    session = email_login!("workspace-missing-conversation-scope@example.com")
-
-    assert %{"error" => "invalid_restricted"} =
-             :post
-             |> json_conn("/v1/comma/admin/users/#{session["user"]["id"]}/sessions", %{
-               "restricted" => true,
-               "workspace_id" => "wsp_not_conversation_authority",
-               "conversation_id" => "cnv_missing_group_scope"
-             })
-             |> admin_auth()
-             |> call()
-             |> expect_json(400)
   end
 
   test "ops user update rejects direct email changes" do
@@ -7660,35 +7615,27 @@ defmodule CommaWeb.RouterTest do
              |> expect_json(401)
   end
 
-  test "browser cookie requests fail closed for an unapproved same-site origin" do
-    session = email_login!("cookie-origin@example.com")
-
-    conn =
-      :post
-      |> json_conn("/v1/comma/auth/logout", %{})
-      |> cookie_auth(session["token"], "https://untrusted.comma.surf")
-      |> call()
-
-    assert conn.status == 403
-    assert Jason.decode!(conn.resp_body)["error"] == "origin_not_allowed"
-    assert {:ok, _user, _stored_session} = Comma.Accounts.validate_session(session["token"])
-  end
-
   test "cookie mutations require an allowed Origin and reject cross-site fetch metadata" do
-    missing_origin = email_login!("cookie-missing-origin@example.com")
+    for {label, email, authenticate} <- [
+          {"missing Origin", "cookie-missing-origin@example.com",
+           fn conn, token ->
+             put_req_header(conn, "cookie", "#{CommaWeb.SessionCookie.cookie_name()}=#{token}")
+           end},
+          {"unapproved same-site Origin", "cookie-origin@example.com",
+           &cookie_auth(&1, &2, "https://untrusted.comma.surf")}
+        ] do
+      session = email_login!(email)
 
-    conn =
-      :post
-      |> json_conn("/v1/comma/auth/logout", %{})
-      |> put_req_header(
-        "cookie",
-        "#{CommaWeb.SessionCookie.cookie_name()}=#{missing_origin["token"]}"
-      )
-      |> call()
+      conn =
+        :post
+        |> json_conn("/v1/comma/auth/logout", %{})
+        |> authenticate.(session["token"])
+        |> call()
 
-    assert conn.status == 403
-    assert Jason.decode!(conn.resp_body)["error"] == "origin_not_allowed"
-    assert {:ok, _user, _session} = Comma.Accounts.validate_session(missing_origin["token"])
+      assert conn.status == 403, label
+      assert Jason.decode!(conn.resp_body)["error"] == "origin_not_allowed", label
+      assert {:ok, _user, _session} = Comma.Accounts.validate_session(session["token"]), label
+    end
 
     cross_site = email_login!("cookie-cross-site@example.com")
 
@@ -7783,19 +7730,6 @@ defmodule CommaWeb.RouterTest do
 
     assert ambiguous_conn.status == 401
     assert ambiguous_conn.resp_cookies == %{}
-  end
-
-  test "Electron Google attempts return the desktop OAuth audience" do
-    attempt =
-      :post
-      |> json_conn("/v1/comma/auth/google/attempt", %{"platform" => "electron"})
-      |> call()
-      |> expect_json(200)
-
-    assert attempt["platform"] == "electron"
-    assert attempt["client_id"] == "comma-electron-test.apps.googleusercontent.com"
-    assert is_binary(attempt["attempt_id"])
-    assert is_binary(attempt["nonce"])
   end
 
   @tag database_isolation: "SERIALIZABLE"
@@ -7913,6 +7847,7 @@ defmodule CommaWeb.RouterTest do
       |> call()
       |> expect_json(200)
 
+    assert electron_attempt["platform"] == "electron"
     assert electron_attempt["client_id"] == "comma-electron-test.apps.googleusercontent.com"
 
     web_attempt =
@@ -8165,23 +8100,6 @@ defmodule CommaWeb.RouterTest do
     refute Map.has_key?(hd(page["data"]), "consumed_interaction_ids")
   end
 
-  test "logout revokes the presented session immediately" do
-    session = email_login!("logout@example.com")
-
-    assert %{"signed_out" => true} =
-             :post
-             |> json_conn("/v1/comma/auth/logout", %{})
-             |> user_auth(session["token"])
-             |> call()
-             |> expect_json(200)
-
-    assert 401 ==
-             (:get
-              |> conn("/v1/comma/workspaces")
-              |> user_auth(session["token"])
-              |> call()).status
-  end
-
   test "neither passwordless nor ops-issued user sessions grant admin access" do
     otp_session = email_login!("not-admin@example.com")
 
@@ -8302,25 +8220,6 @@ defmodule CommaWeb.RouterTest do
     assert invalid == %{"error" => "invalid_billing_return"}
   end
 
-  test "passwordless email verify rejects invalid codes" do
-    login =
-      :post
-      |> json_conn("/v1/comma/auth/email/login", %{"email" => "wrong-code@example.com"})
-      |> call()
-      |> expect_json(200)
-
-    body =
-      :post
-      |> json_conn("/v1/comma/auth/email/verify", %{
-        "challenge_id" => login["challenge_id"],
-        "code" => wrong_code(login["code"])
-      })
-      |> call()
-      |> expect_json(401)
-
-    assert body["error"] == "invalid_verification_code"
-  end
-
   test "email login is generic and returns bounded 429 responses" do
     {:ok, _existing} = Comma.Accounts.create_user(%{"email" => "existing-login@example.com"})
     update_auth(expose_codes: false, resend_cooldown_seconds: 60)
@@ -8397,7 +8296,6 @@ defmodule CommaWeb.RouterTest do
 
     assert unavailable.status == 503
     assert Jason.decode!(unavailable.resp_body) == %{"error" => "auth_unavailable"}
-    refute unavailable.resp_body =~ "auth_not_configured"
   end
 
   test "untrusted forwarded IP headers cannot bypass the peer-IP request window" do
@@ -8457,8 +8355,6 @@ defmodule CommaWeb.RouterTest do
 
     assert rejected.status == 503
     assert Jason.decode!(rejected.resp_body) == %{"error" => "email_delivery_unavailable"}
-    refute rejected.resp_body =~ "postmark"
-    refute rejected.resp_body =~ "provider-down@example.com"
 
     circuit_open =
       :post

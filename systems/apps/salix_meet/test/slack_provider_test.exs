@@ -5857,42 +5857,33 @@ defmodule SalixMeet.SlackProviderTest do
     assert first_plain.params["document_content"] == retried_plain.params["document_content"]
   end
 
-  test "a non-string Canvas detail is ignored without crashing the delivery boundary",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-hostile-detail")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
+  # A canvas_creation_failed without a content-rejection detail is terminal
+  # after the single create: no plain fallback duplicate is attempted.
+  @non_content_canvas_failures [
+    {"a non-string Canvas detail is ignored without crashing the delivery boundary",
+     "slack-canvas-hostile-detail", %{"unexpected" => ["shape"]}, "canvas_creation_failed"},
+    {"a non-content Canvas creation failure never creates a fallback duplicate",
+     "slack-canvas-no-fallback", "too_many_tabs", "too_many_tabs"}
+  ]
 
-    MockSlack.respond("canvases.create", %{
-      "ok" => false,
-      "error" => "canvas_creation_failed",
-      "detail" => %{"unexpected" => ["shape"]}
-    })
+  for {name, connect_suffix, detail, reason_part} <- @non_content_canvas_failures do
+    test name, %{tenant_id: tenant_id, group_id: group_id} do
+      connect = seed_done_meeting_connect(tenant_id, group_id, unquote(connect_suffix))
+      {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
+      meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
 
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
+      MockSlack.respond("canvases.create", %{
+        "ok" => false,
+        "error" => "canvas_creation_failed",
+        "detail" => unquote(Macro.escape(detail))
+      })
 
-    assert reason =~ "canvas_creation_failed"
-    assert [_single_create] = MockSlack.requests("canvases.create")
-  end
+      assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
+               publish_claimed_summary(meeting_agent, meeting_id)
 
-  test "a non-content Canvas creation failure never creates a fallback duplicate",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-no-fallback")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{
-      "ok" => false,
-      "error" => "canvas_creation_failed",
-      "detail" => "too_many_tabs"
-    })
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "too_many_tabs"
-    assert [_single_create] = MockSlack.requests("canvases.create")
+      assert reason =~ unquote(reason_part)
+      assert [_single_create] = MockSlack.requests("canvases.create")
+    end
   end
 
   test "a 5xx Canvas error is retryable and leaves the delivery unpublished",

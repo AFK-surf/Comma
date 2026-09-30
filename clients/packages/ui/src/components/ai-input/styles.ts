@@ -228,13 +228,16 @@ export const aiInputAttachment =
   "comma-ai-input-attachment group/attachment relative shrink-0";
 
 /**
+ * Sits inside the tile's top-right corner, `spacing-xxs` from both edges, so
+ * the tile's own footprint holds it.
+ *
  * The reveal transition lives in ai-input-attachment.css, not here: the global
  * unlayered button rule declares the whole `transition` shorthand, and an
  * unlayered rule outranks any layered utility regardless of specificity. Press
  * feedback uses the action-specific 0.94 scale in that stylesheet.
  */
 export const aiInputAttachmentClose =
-  "comma-ai-input-attachment-close absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full border-[0.5px] border-button-secondary-border bg-ai-input-panel-bg-tag p-xxs text-ai-input-panel-icon-fg outline-none " +
+  "comma-ai-input-attachment-close absolute top-xxs right-xxs inline-flex size-4 items-center justify-center rounded-full border-[0.5px] border-button-secondary-border bg-ai-input-panel-bg-tag p-xxs text-ai-input-panel-icon-fg outline-none " +
   "opacity-0 " +
   "group-hover/attachment:opacity-100 " +
   "group-focus-within/attachment:opacity-100 " +

@@ -19,8 +19,10 @@ export function creditAllowance(
   if (!summary) return undefined;
   let total = 0;
   for (const grant of summary.active_grants) {
-    const plan = plans.find(
+    const currentPlan = summary.active_subscription?.plan;
+    const plan = [currentPlan, ...plans].find(
       (item) =>
+        item &&
         item.package_code === grant.package_code &&
         item.package_version === grant.package_version
     );

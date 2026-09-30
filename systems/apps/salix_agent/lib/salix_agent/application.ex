@@ -17,6 +17,8 @@ defmodule SalixAgent.Application do
     # a crash of the cell GenServer never forgets a recorded fence.
     _ = SalixAgent.OwnershipCell.create_table()
     _ = SalixAgent.SessionResidency.create_table()
+    # Skill projections must outlive the tasks that build round configurations.
+    _ = SalixAgent.SkillProjection.create_table()
 
     fleet_max_restarts =
       Application.get_env(:salix_agent, :fleet_supervisor_max_restarts, 3)

@@ -215,10 +215,6 @@ defmodule BillingCommerce.SubscriptionsTest do
     assert grant_count("example-ba-wsp_existing_purchase") == 0
   end
 
-  test "cycle scheduler is disabled in tests" do
-    refute Process.whereis(BillingCommerce.CycleScheduler)
-  end
-
   defp seed_package(code, surface) do
     {:ok, _} =
       PackageCatalog.create_package(%{

@@ -1,8 +1,8 @@
 ------------------------- MODULE StripeCredits -------------------------
 (***************************************************************************)
 (* Paid Stripe facts create grantable cycles. Provider retries may replay  *)
-(* transitions, but a cycle is issued at most once. Refunds compensate only *)
-(* the purchased grant and never make its remaining credits negative.       *)
+(* transitions, but each cycle/payment allocation issues at most once.    *)
+(* Refunds and disputes affect only this payment and never negative credits. *)
 (*                                                                         *)
 (* Runtime anchors: BillingStripe.Events, BillingCommerce.Subscriptions,    *)
 (* BillingCore.Credits.                                                     *)
@@ -13,11 +13,12 @@ CONSTANTS Cycles, Plans, UnsafeIssueBeforePayment
 
 ASSUME Cycles # {} /\ Plans # {} /\ UnsafeIssueBeforePayment \in BOOLEAN
 
-VARIABLES paid, due, issued, remaining, refunded, subscriptionStatus, currentPlan
+VARIABLES paid, due, issued, remaining, refunded, subscriptionStatus, currentPlan, held
 
-vars == <<paid, due, issued, remaining, refunded, subscriptionStatus, currentPlan>>
+vars == <<paid, due, issued, remaining, refunded, subscriptionStatus, currentPlan, held>>
 
 Init ==
+  /\ held = FALSE
   /\ paid = FALSE
   /\ due = {}
   /\ issued = {}
@@ -31,19 +32,19 @@ InvoicePaid ==
   /\ paid' = TRUE
   /\ due' = {CHOOSE c \in Cycles : TRUE}
   /\ subscriptionStatus' = "active"
-  /\ UNCHANGED <<issued, remaining, refunded, currentPlan>>
+  /\ UNCHANGED <<held, issued, remaining, refunded, currentPlan>>
 
 CycleBecomesDue(c) ==
   /\ paid
   /\ c \notin due
   /\ due' = due \cup {c}
-  /\ UNCHANGED <<paid, issued, remaining, refunded, subscriptionStatus, currentPlan>>
+  /\ UNCHANGED <<held, paid, issued, remaining, refunded, subscriptionStatus, currentPlan>>
 
 Issue(c) ==
   /\ c \notin issued
-  /\ IF UnsafeIssueBeforePayment THEN c \in Cycles ELSE c \in due /\ paid
+  /\ IF UnsafeIssueBeforePayment THEN c \in Cycles ELSE c \in due /\ paid /\ ~held /\ refunded < 2
   /\ issued' = issued \cup {c}
-  /\ UNCHANGED <<paid, due, remaining, refunded, subscriptionStatus, currentPlan>>
+  /\ UNCHANGED <<held, paid, due, remaining, refunded, subscriptionStatus, currentPlan>>
 
 ReplayIssue(c) ==
   /\ c \in issued
@@ -52,28 +53,44 @@ ReplayIssue(c) ==
 Cancel ==
   /\ subscriptionStatus # "canceled"
   /\ subscriptionStatus' = "canceled"
-  /\ UNCHANGED <<paid, due, issued, remaining, refunded, currentPlan>>
+  /\ UNCHANGED <<held, paid, due, issued, remaining, refunded, currentPlan>>
 
 ChangePlan(plan) ==
   /\ subscriptionStatus = "active"
   /\ plan \in Plans
   /\ plan # currentPlan
   /\ currentPlan' = plan
-  /\ UNCHANGED <<paid, due, issued, remaining, refunded, subscriptionStatus>>
+  /\ UNCHANGED <<held, paid, due, issued, remaining, refunded, subscriptionStatus>>
 
 PartialRefund ==
   /\ paid
   /\ refunded = 0
   /\ refunded' = 1
-  /\ remaining' = IF remaining > 0 THEN remaining - 1 ELSE 0
-  /\ UNCHANGED <<paid, due, issued, subscriptionStatus, currentPlan>>
+  /\ remaining' = remaining
+  /\ UNCHANGED <<held, paid, due, issued, subscriptionStatus, currentPlan>>
 
 FullRefund ==
   /\ paid
   /\ refunded < 2
   /\ refunded' = 2
   /\ remaining' = 0
-  /\ UNCHANGED <<paid, due, issued, subscriptionStatus, currentPlan>>
+  /\ UNCHANGED <<held, paid, due, issued, subscriptionStatus, currentPlan>>
+
+DisputeHold ==
+  /\ paid
+  /\ ~held
+  /\ held' = TRUE
+  /\ UNCHANGED <<paid, due, issued, remaining, refunded, subscriptionStatus, currentPlan>>
+
+DisputeWin ==
+  /\ held
+  /\ held' = FALSE
+  /\ UNCHANGED <<paid, due, issued, remaining, refunded, subscriptionStatus, currentPlan>>
+
+Consume ==
+  /\ paid /\ ~held /\ remaining > 0
+  /\ remaining' = remaining - 1
+  /\ UNCHANGED <<paid, due, issued, refunded, subscriptionStatus, currentPlan, held>>
 
 Next ==
   \/ InvoicePaid
@@ -84,10 +101,14 @@ Next ==
   \/ \E plan \in Plans : ChangePlan(plan)
   \/ PartialRefund
   \/ FullRefund
+  \/ DisputeHold
+  \/ DisputeWin
+  \/ Consume
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
+  /\ held \in BOOLEAN
   /\ paid \in BOOLEAN
   /\ due \subseteq Cycles
   /\ issued \subseteq Cycles
@@ -98,7 +119,7 @@ TypeOK ==
 
 NoGrantBeforePayment == issued # {} => paid
 IssuedOnlyWhenDue == issued \subseteq due
-RefundNeverIncreasesCredits == remaining + refunded <= 2
+RefundNeverIncreasesCredits == remaining <= 2 /\ (refunded = 2 => remaining = 0)
 
 Safety == TypeOK /\ NoGrantBeforePayment /\ IssuedOnlyWhenDue /\ RefundNeverIncreasesCredits
 

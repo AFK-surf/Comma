@@ -12,7 +12,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
     * `@current_org_role` — the user's role in the active org, when known
     * `@orgs`          — orgs the user belongs to (for the switcher); default `[]`
     * `@active_nav`    — atom marking the active sidebar item
-                         (`:overview | :new_home | :projects | :fin | :operations | :triage | :members | :plugins | :settings`)
+                         (`:overview | :projects | :fin | :operations | :triage | :members | :plugins | :settings`)
     * `@breadcrumbs`   — list of `{label, path | nil}` for the topbar; default `[]`
     * `@flash`         — the flash map (always present in LiveView)
 
@@ -220,19 +220,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
         class="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-3"
         aria-label={gettext("Primary navigation")}
       >
-        <section aria-labelledby="personal-navigation-label">
-          <.sidebar_section_label id="personal-navigation-label" label={gettext("Personal")} />
-          <div class="space-y-px">
-            <.nav_item
-              label={gettext("My Space")}
-              icon="user"
-              navigate={new_home_path()}
-              active={@active_nav == :new_home}
-              close_target={@close_target}
-            />
-          </div>
-        </section>
-
         <section :if={@current_org} aria-labelledby="workspace-navigation-label">
           <.sidebar_section_label id="workspace-navigation-label" label={gettext("Workspace")} />
           <div class="space-y-px">
@@ -618,7 +605,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
           class="max-h-[min(28rem,70vh)] overflow-y-auto p-2"
           aria-label={gettext("Navigation search results")}
         >
-          <.navigation_search_item label={gettext("My Space")} scope={gettext("Personal")} icon="user" navigate={new_home_path()} />
           <.navigation_search_item :if={@current_org} label={gettext("Overview")} scope={gettext("Workspace")} icon="home" navigate={org_show_path(@current_org)} />
           <.navigation_search_item :if={@current_org} label={gettext("Agent Swarms")} scope={gettext("Workspace")} icon="folder" navigate={org_projects_path(@current_org)} />
           <.navigation_search_item :if={@current_org} label={gettext("Fin")} scope={gettext("Workspace")} icon="zap" navigate={org_fin_path(@current_org)} />
@@ -743,7 +729,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
 
   # Routes (kept as plain strings so this module has no compile dep on the
   # router macro; page agents may use ~p in their own modules).
-  defp new_home_path, do: "/new-home"
   defp orgs_path, do: "/orgs"
   defp org_show_path(org), do: "/orgs/#{org.slug}"
   defp org_projects_path(org), do: "/orgs/#{org.slug}/projects"

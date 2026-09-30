@@ -7,12 +7,16 @@
 The checked contract is deliberately narrow:
 
 - subscription cycles become grantable only after an `invoice.paid` fact;
-- duplicate webhook delivery and scheduler replay cannot issue a cycle twice;
+- duplicate delivery and scheduler replay cannot issue the same cycle/payment allocation twice;
 - cancellation changes subscription state but preserves an already-paid grant;
 - plan changes update subscription identity without rewriting or revoking
   credits from an already-paid cycle; the next paid cycle uses the new package;
-- partial/full refunds monotonically reduce only the purchased grant and never
-  produce a negative remaining balance.
+- partial refunds preserve credits and record only the monetary refund state;
+- full refunds reduce only this payment's credits, without a negative balance;
+- disputes suspend spending and issuance. Winning does not recreate spent or refunded credits.
+
+Each model cycle value represents one cycle/payment allocation. Invoice-to-Grant
+attribution and upgrade arithmetic remain covered by runtime behavior tests.
 
 Loss is modeled as the absence of an input transition; no delivery liveness is
 claimed. Stripe owns webhook retry. The application journals every accepted

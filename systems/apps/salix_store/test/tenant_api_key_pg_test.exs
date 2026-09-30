@@ -128,66 +128,37 @@ defmodule SalixStore.TenantApiKeyPgTest do
       assert {:ok, 2} = TenantApiKeyCutover.importable_count()
     end
 
-    test "fails closed on a record whose body does not round-trip to its key" do
-      key = Keys.ctl_api_key("ten_actual", "hash_m1")
-      {:ok, _} = S3.put(key, Jason.encode!(record("ten_lie", "hash_m1")), [])
+    # {name, key tenant, key hash, stored body, expected enumerate reason}
+    @invalid_corpus [
+      {"a record whose body does not round-trip to its key", "ten_actual", "hash_m1",
+       {:record, "ten_lie", %{}}, :record_address_mismatch},
+      {"a non-integer created_at (would crash from_record arithmetic)", "ten_bad", "hash_str",
+       {:record, "ten_bad", %{"created_at" => "2026-07-28T00:00:00Z"}}, :invalid_record},
+      {"a negative created_at (not a valid creation timestamp)", "ten_neg", "hash_neg",
+       {:record, "ten_neg", %{"created_at" => -1}}, :invalid_record},
+      {"an out-of-range created_at (would raise in from_record)", "ten_or", "hash_or",
+       {:record, "ten_or", %{"created_at" => 253_402_300_800}}, :invalid_record},
+      {"a non-map (top-level array) body, not a raise", "ten_arr", "hash_arr", {:raw, [1, 2, 3]},
+       :invalid_record},
+      {"a non-string name field", "ten_nm", "hash_nm", {:record, "ten_nm", %{"name" => 42}},
+       :invalid_record}
+    ]
 
-      assert {:error, {:enumerate_failed, ^key, :record_address_mismatch}} =
-               TenantApiKeyCutover.importable_count()
-    end
+    for {name, key_tenant, hash, body, reason} <- @invalid_corpus do
+      test "fails closed on #{name}" do
+        key = Keys.ctl_api_key(unquote(key_tenant), unquote(hash))
 
-    test "fails closed on a non-integer created_at (would crash from_record arithmetic)" do
-      key = Keys.ctl_api_key("ten_bad", "hash_str")
+        body =
+          case unquote(Macro.escape(body)) do
+            {:record, tenant, attrs} -> record(tenant, unquote(hash), attrs)
+            {:raw, raw} -> raw
+          end
 
-      {:ok, _} =
-        S3.put(
-          key,
-          Jason.encode!(record("ten_bad", "hash_str", %{"created_at" => "2026-07-28T00:00:00Z"})),
-          []
-        )
+        {:ok, _} = S3.put(key, Jason.encode!(body), [])
 
-      assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-               TenantApiKeyCutover.importable_count()
-    end
-
-    test "fails closed on a negative created_at (not a valid creation timestamp)" do
-      key = Keys.ctl_api_key("ten_neg", "hash_neg")
-
-      {:ok, _} =
-        S3.put(key, Jason.encode!(record("ten_neg", "hash_neg", %{"created_at" => -1})), [])
-
-      assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-               TenantApiKeyCutover.importable_count()
-    end
-
-    test "fails closed on an out-of-range created_at (would raise in from_record)" do
-      key = Keys.ctl_api_key("ten_or", "hash_or")
-
-      {:ok, _} =
-        S3.put(
-          key,
-          Jason.encode!(record("ten_or", "hash_or", %{"created_at" => 253_402_300_800})),
-          []
-        )
-
-      assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-               TenantApiKeyCutover.importable_count()
-    end
-
-    test "fails closed on a non-map (top-level array) body, not a raise" do
-      key = Keys.ctl_api_key("ten_arr", "hash_arr")
-      {:ok, _} = S3.put(key, Jason.encode!([1, 2, 3]), [])
-
-      assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-               TenantApiKeyCutover.importable_count()
-    end
-
-    test "fails closed on a non-string name field" do
-      key = Keys.ctl_api_key("ten_nm", "hash_nm")
-      {:ok, _} = S3.put(key, Jason.encode!(record("ten_nm", "hash_nm", %{"name" => 42})), [])
-
-      assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-               TenantApiKeyCutover.importable_count()
+        assert {:error, {:enumerate_failed, ^key, unquote(reason)}} =
+                 TenantApiKeyCutover.importable_count()
+      end
     end
   end
 

@@ -208,6 +208,8 @@ defmodule CommaWeb.RecommendationRuntimeTest do
 
     assert {:error, :forbidden} =
              RecommendationRuntime.authorize_tool(%{}, "recommendation.publish", %{})
+
+    assert {:error, :forbidden} = RecommendationRuntime.authorize_disclosure(%{}, "web.search")
   end
 
   defp fixture! do

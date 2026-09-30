@@ -773,141 +773,107 @@ func TestAlertRouterDesiredStateRejectsUnsafeLiveSelection(t *testing.T) {
 	}
 }
 
-func TestCommaWebCookieOriginMatchesEffectiveRuntimeConfiguration(t *testing.T) {
+func TestCommaCookieOriginsMatchEffectiveRuntimeConfiguration(t *testing.T) {
+	webOrigin := func(value any) map[string]any {
+		return map[string]any{"comma": map[string]any{"web": map[string]any{"web_cookie_origin": value}}}
+	}
 	for _, tc := range []struct {
 		name        string
+		origin      func(map[string]any, string) (string, error)
 		config      map[string]any
 		environment string
 		want        string
 		wantErr     string
 	}{
 		{
-			name:        "production default",
+			name:        "web production default",
+			origin:      commaWebCookieOrigin,
 			config:      map[string]any{},
 			environment: "production",
 			want:        "https://app.comma.surf",
 		},
 		{
-			name: "candidate override",
-			config: map[string]any{
-				"comma": map[string]any{
-					"web": map[string]any{
-						"web_cookie_origin": "  https://preview.example.test:8443  ",
-					},
-				},
-			},
+			name:        "web candidate override",
+			origin:      commaWebCookieOrigin,
+			config:      webOrigin("  https://preview.example.test:8443  "),
 			environment: "staging",
 			want:        "https://preview.example.test:8443",
 		},
 		{
-			name:        "unknown environment requires explicit origin",
+			name:        "web unknown environment requires explicit origin",
+			origin:      commaWebCookieOrigin,
 			config:      map[string]any{},
 			environment: "preview",
 			wantErr:     "must set comma.web.web_cookie_origin",
 		},
 		{
-			name: "non-string override",
-			config: map[string]any{
-				"comma": map[string]any{
-					"web": map[string]any{"web_cookie_origin": []any{"https://app.example.test"}},
-				},
-			},
+			name:        "web non-string override",
+			origin:      commaWebCookieOrigin,
+			config:      webOrigin([]any{"https://app.example.test"}),
 			environment: "staging",
 			wantErr:     "must be one origin string",
 		},
 		{
-			name: "origin with path",
-			config: map[string]any{
-				"comma": map[string]any{
-					"web": map[string]any{"web_cookie_origin": "https://app.example.test/path"},
-				},
-			},
+			name:        "web origin with path",
+			origin:      commaWebCookieOrigin,
+			config:      webOrigin("https://app.example.test/path"),
 			environment: "staging",
 			wantErr:     "absolute HTTP(S) origin",
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := commaWebCookieOrigin(tc.config, tc.environment)
-			if tc.wantErr == "" {
-				if err != nil || got != tc.want {
-					t.Fatalf("commaWebCookieOrigin() = %q, %v; want %q", got, err, tc.want)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("commaWebCookieOrigin() error = %v; want %q", err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func TestCommaAdminCookieOriginMatchesEffectiveRuntimeConfiguration(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		config      map[string]any
-		environment string
-		want        string
-		wantErr     string
-	}{
+		// Exercise both public origin selectors, including their invalid overrides.
 		{
-			name:        "production default",
+			name:        "admin production default",
+			origin:      commaAdminCookieOrigin,
 			config:      map[string]any{},
 			environment: "production",
 			want:        "https://admin.comma.surf",
 		},
 		{
-			name: "candidate override",
-			config: map[string]any{
-				"comma": map[string]any{
-					"web": map[string]any{
-						"admin_cookie_origin": "  https://admin-preview.example.test:8443  ",
-					},
-				},
-			},
+			name:   "admin candidate override",
+			origin: commaAdminCookieOrigin,
+			config: map[string]any{"comma": map[string]any{"web": map[string]any{
+				"web_cookie_origin":   "https://app.example.test",
+				"admin_cookie_origin": "  https://admin-preview.example.test:8443  ",
+			}}},
 			environment: "staging",
 			want:        "https://admin-preview.example.test:8443",
 		},
 		{
-			name:        "unknown environment requires explicit origin",
-			config:      map[string]any{},
+			name:        "admin unknown environment requires explicit origin",
+			origin:      commaAdminCookieOrigin,
+			config:      webOrigin("https://app.example.test"),
 			environment: "preview",
 			wantErr:     "must set comma.web.admin_cookie_origin",
 		},
 		{
-			name: "non-string override",
-			config: map[string]any{
-				"comma": map[string]any{
-					"web": map[string]any{
-						"admin_cookie_origin": []any{"https://admin.example.test"},
-					},
-				},
-			},
+			name:   "admin non-string override",
+			origin: commaAdminCookieOrigin,
+			config: map[string]any{"comma": map[string]any{"web": map[string]any{
+				"admin_cookie_origin": []any{"https://admin.example.test"},
+			}}},
 			environment: "staging",
 			wantErr:     "must be one origin string",
 		},
 		{
-			name: "origin with path",
-			config: map[string]any{
-				"comma": map[string]any{
-					"web": map[string]any{
-						"admin_cookie_origin": "https://admin.example.test/path",
-					},
-				},
-			},
+			name:   "admin origin with path",
+			origin: commaAdminCookieOrigin,
+			config: map[string]any{"comma": map[string]any{"web": map[string]any{
+				"admin_cookie_origin": "https://admin.example.test/path",
+			}}},
 			environment: "staging",
 			wantErr:     "absolute HTTP(S) origin",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := commaAdminCookieOrigin(tc.config, tc.environment)
+			got, err := tc.origin(tc.config, tc.environment)
 			if tc.wantErr == "" {
 				if err != nil || got != tc.want {
-					t.Fatalf("commaAdminCookieOrigin() = %q, %v; want %q", got, err, tc.want)
+					t.Fatalf("cookie origin = %q, %v; want %q", got, err, tc.want)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("commaAdminCookieOrigin() error = %v; want %q", err, tc.wantErr)
+				t.Fatalf("cookie origin error = %v; want %q", err, tc.wantErr)
 			}
 		})
 	}

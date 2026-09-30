@@ -466,7 +466,7 @@ config :esbuild,
   version: "0.23.0",
   bridge_for_teams: [
     args:
-      ~w(app=js/app.js elk-worker=vendor/elk-worker.min.js --bundle --target=es2020 --outdir=../priv/static/assets --external:/fonts/* --external:/images/*),
+      ~w(app=js/app.js --bundle --target=es2020 --outdir=../priv/static/assets --external:/fonts/* --external:/images/*),
     cd: Path.expand("../apps/bridge_for_teams_web/assets", __DIR__),
     env: %{
       "NODE_PATH" => System.get_env("MIX_DEPS_PATH") || Path.expand("../deps", __DIR__)

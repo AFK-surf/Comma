@@ -195,7 +195,21 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
       assert fact.tenant_id == SalixStore.Ids.tenant_id_from_agent!(@agent)
     end
 
-    test "a streamed round is attributed from the call site's identity" do
+    for {name, dispatch} <- [
+          {"a streamed round is attributed from the call site's identity", :complete_stream},
+          {"a plain complete is attributed", :complete},
+          {"compaction is attributed", :compact_context}
+        ] do
+      test name do
+        assert_dispatched(unquote(dispatch))
+
+        assert [request, response] = collect()
+        assert_attributed(request)
+        assert_attributed(response)
+      end
+    end
+
+    defp assert_dispatched(:complete_stream) do
       assert {:final, "Hello world"} =
                SalixAgent.LLM.complete_stream(
                  [%{role: "user"}],
@@ -204,28 +218,16 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
                  template_opts(),
                  @identity
                )
-
-      assert [request, response] = collect()
-      assert_attributed(request)
-      assert_attributed(response)
     end
 
-    test "a plain complete is attributed" do
+    defp assert_dispatched(:complete) do
       assert {:final, "sync answer"} =
                SalixAgent.LLM.complete([%{role: "user"}], [], template_opts(), @identity)
-
-      assert [request, response] = collect()
-      assert_attributed(request)
-      assert_attributed(response)
     end
 
-    test "compaction is attributed" do
+    defp assert_dispatched(:compact_context) do
       assert {:ok, _items, _meta} =
                SalixAgent.LLM.compact_context([%{role: "user"}], [], template_opts(), @identity)
-
-      assert [request, response] = collect()
-      assert_attributed(request)
-      assert_attributed(response)
     end
 
     test "a failed dispatch archives its error response attributed too" do

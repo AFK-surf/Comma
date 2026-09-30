@@ -507,9 +507,7 @@ export const NotchWidthSetting = ({
           <div className="comma-notch-width__shell" data-titled="true" ref={shellRef}>
             <span className="comma-notch-width__leading">
               <CommaLogoAnimation className="comma-notch-width__mark" size={14} />
-              <span className="comma-notch-width__title comma-shiny-text">
-                {labels.sampleTitle}
-              </span>
+              <span className="comma-notch-width__title">{labels.sampleTitle}</span>
             </span>
             <span className="comma-notch-width__camera" />
             <span className="comma-notch-width__count">1</span>

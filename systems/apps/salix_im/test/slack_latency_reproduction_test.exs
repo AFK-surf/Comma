@@ -157,12 +157,6 @@ defmodule SalixIM.SlackLatencyReproductionTest do
       {:ok, body, conn} = read_body(conn)
       params = URI.decode_query(body)
 
-      # Optional fixed provider round trip for the budget scenario.
-      case Application.get_env(:salix_im, :slow_slack_http_ms) do
-        ms when is_integer(ms) and ms > 0 -> Process.sleep(ms)
-        _ -> :ok
-      end
-
       response =
         case List.last(conn.path_info) do
           "users.info" ->
@@ -406,136 +400,7 @@ defmodule SalixIM.SlackLatencyReproductionTest do
     )
   end
 
-  # Every object-store and Slack round trip costs fixed wall time here, so the
-  # pre-LLM path takes at least (serial round trips × delay). A warm-up
-  # callback on a second fixture removes first-request costs (code loading,
-  # pools, catalogs) from the measured sample. Budgets are round-trip counts
-  # converted to milliseconds, not hardware timings.
-  @s3_rtt_ms 20
-  @slack_rtt_ms 60
-  # Serial round trips plus CPU/PostgreSQL headroom. Before the fix the same
-  # scenario measured ingress≈260 ms and activation≈715 ms; after it, cold
-  # ingress≈55 ms and activation≈190 ms, warm ingress≈50 ms and
-  # activation≈80 ms. The store operation counts are the hardware-independent
-  # Report only this fixture's objects. Timing and operation counts are
-  # diagnostic measurements, with no performance threshold in CI.
-
-  test "simulated round trips report ingress and activation costs", ctx do
-    alias SalixIM.TestSupport.SlowS3
-
-    Application.put_env(:salix_store, :s3_backend, SlowS3)
-    Application.put_env(:salix_im, :slow_s3_delay_ms, @s3_rtt_ms)
-    Application.put_env(:salix_im, :slow_slack_http_ms, @slack_rtt_ms)
-
-    on_exit(fn ->
-      Application.delete_env(:salix_im, :slow_s3_delay_ms)
-      Application.delete_env(:salix_im, :slow_slack_http_ms)
-    end)
-
-    Probe.arm([])
-    warm_up(fixture!())
-
-    SlowS3.reset_log()
-    started = Probe.now()
-    task = callback(ctx.connect)
-    assert_receive {:latency, :delivery, delivered, _}, @deadline
-    assert_receive {:latency, :llm_request, requested, llm_pid}, @deadline
-    assert Task.await(task, @deadline) == {:ok, :accepted}
-    # The provider request may precede the activation's durable fence.
-    SalixAgent.TestSupport.join_session_owner(ctx.agent, ctx.session)
-    assert_wait_yielded(ctx)
-
-    # Only this fixture's objects: the warm-up's status actor keeps writing
-    # its own window in the background.
-    own? = fn {_op, key, _pid, _at, _caller} ->
-      String.contains?(key, [ctx.agent, ctx.group, ctx.connect["connect_id"]])
-    end
-
-    ingress_ops = started |> SlowS3.ops_between(delivered) |> Enum.filter(own?)
-    activation_ops = delivered |> SlowS3.ops_between(requested) |> Enum.filter(own?)
-
-    IO.puts(
-      "slack latency sample (s3 rtt #{@s3_rtt_ms}ms, slack rtt #{@slack_rtt_ms}ms): " <>
-        "ingress=#{delivered - started}ms/#{length(ingress_ops)} store ops " <>
-        "activation=#{requested - delivered}ms/#{length(activation_ops)} store ops " <>
-        "pre_llm=#{requested - started}ms\n" <>
-        describe_ops("ingress", ingress_ops) <> describe_ops("activation", activation_ops)
-    )
-
-    # Warm: the same Router with its owner, session actor and configuration
-    # resident, as between two messages of one conversation.
-    send(llm_pid, :finish)
-    assert eventually(fn -> session_idle?(ctx) end)
-    drain_latency_marks()
-    SlowS3.reset_log()
-
-    warm_started = Probe.now()
-    warm_task = callback(ctx.connect, "1700000000.000002")
-    assert_receive {:latency, :delivery, warm_delivered, _}, @deadline
-    assert_receive {:latency, :llm_request, warm_requested, _}, @deadline
-    assert Task.await(warm_task, @deadline) == {:ok, :accepted}
-
-    warm_ingress_ops = warm_started |> SlowS3.ops_between(warm_delivered) |> Enum.filter(own?)
-
-    warm_activation_ops =
-      warm_delivered |> SlowS3.ops_between(warm_requested) |> Enum.filter(own?)
-
-    IO.puts(
-      "slack latency sample warm: " <>
-        "ingress=#{warm_delivered - warm_started}ms/#{length(warm_ingress_ops)} store ops " <>
-        "activation=#{warm_requested - warm_delivered}ms/#{length(warm_activation_ops)} store ops " <>
-        "pre_llm=#{warm_requested - warm_started}ms\n" <>
-        describe_ops("warm ingress", warm_ingress_ops) <>
-        describe_ops("warm activation", warm_activation_ops)
-    )
-  end
-
-  defp session_idle?(ctx) do
-    case InternalSessionStore.read(ctx.agent, ctx.session) do
-      {:ok, session} -> InternalSession.export(session).status == :idle
-      _ -> false
-    end
-  end
-
-  # Runs one complete callback on another fixture and lets its round finish.
-  defp warm_up(fixture) do
-    task = callback(fixture.connect)
-    assert_receive {:latency, :llm_request, _at, llm_pid}, @deadline
-    assert Task.await(task, @deadline) == {:ok, :accepted}
-    assert_receive {:latency, :status_request, _at, _params}, @deadline
-    assert eventually(fn -> status_persisted?(fixture) end)
-    send(llm_pid, :finish)
-    drain_latency_marks()
-  end
-
-  defp drain_latency_marks do
-    receive do
-      {:latency, _stage, _at, _detail} -> drain_latency_marks()
-    after
-      200 -> :ok
-    end
-  end
-
-  defp describe_ops(label, ops) do
-    base = ops |> Enum.map(&elem(&1, 3)) |> Enum.min(fn -> 0 end)
-
-    ops
-    |> Enum.map(fn {op, key, pid, at, caller} ->
-      "  #{label} +#{at - base}ms #{inspect(pid)} #{op} #{shorten(key)} <- #{caller}\n"
-    end)
-    |> Enum.join()
-  end
-
-  defp shorten(key) do
-    key
-    |> String.replace(~r/agt1_[0-9_]+/, "<agent>")
-    |> String.replace(~r/grp1_[0-9_]+/, "<group>")
-    |> String.replace(~r/ses1_[0-9_]+/, "<session>")
-    |> String.replace(~r/ten1_[0-9_]+/, "<tenant>")
-    |> String.replace(~r/imc1_[0-9_]+/, "<connect>")
-  end
-
-  defp callback(connect, ts \\ "1700000000.000001") do
+  defp callback(connect) do
     event = %{
       "type" => "event_callback",
       "api_app_id" => "A-LATENCY",
@@ -547,7 +412,7 @@ defmodule SalixIM.SlackLatencyReproductionTest do
         "text" => "<@U-LATENCY-BOT> hello",
         "channel" => "C-LATENCY",
         "channel_type" => "channel",
-        "ts" => ts
+        "ts" => "1700000000.000001"
       }
     }
 

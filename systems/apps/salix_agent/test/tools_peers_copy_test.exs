@@ -354,40 +354,35 @@ defmodule SalixAgent.ToolsPeersCopyTest do
 
   # ---- Validation / error surface ----
 
-  test "src_agent_id is rejected when src_environment is not vfs", %{peer: peer, ctx: ctx} do
-    assert_raise RuntimeError,
-                 "src_agent_id is only valid when src_environment is vfs",
-                 fn ->
-                   Peers.copy(
-                     %{
-                       "src_device_id" => "device-laptop",
-                       "src_environment" => "laptop",
-                       "src_path" => "/x",
-                       "dst_environment" => "vfs",
-                       "dst_path" => "/y",
-                       "src_agent_id" => peer["agent_id"]
-                     },
-                     ctx
-                   )
-                 end
-  end
+  for {side, args} <- [
+        {"src",
+         %{
+           "src_device_id" => "device-laptop",
+           "src_environment" => "laptop",
+           "src_path" => "/x",
+           "dst_environment" => "vfs",
+           "dst_path" => "/y"
+         }},
+        {"dst",
+         %{
+           "src_environment" => "vfs",
+           "src_path" => "/x",
+           "dst_device_id" => "device-laptop",
+           "dst_environment" => "laptop",
+           "dst_path" => "/y"
+         }}
+      ] do
+    test "#{side}_agent_id is rejected when #{side}_environment is not vfs", %{
+      peer: peer,
+      ctx: ctx
+    } do
+      side = unquote(side)
+      args = Map.put(unquote(Macro.escape(args)), "#{side}_agent_id", peer["agent_id"])
 
-  test "dst_agent_id is rejected when dst_environment is not vfs", %{peer: peer, ctx: ctx} do
-    assert_raise RuntimeError,
-                 "dst_agent_id is only valid when dst_environment is vfs",
-                 fn ->
-                   Peers.copy(
-                     %{
-                       "src_environment" => "vfs",
-                       "src_path" => "/x",
-                       "dst_device_id" => "device-laptop",
-                       "dst_environment" => "laptop",
-                       "dst_path" => "/y",
-                       "dst_agent_id" => peer["agent_id"]
-                     },
-                     ctx
-                   )
-                 end
+      assert_raise RuntimeError,
+                   "#{side}_agent_id is only valid when #{side}_environment is vfs",
+                   fn -> Peers.copy(args, ctx) end
+    end
   end
 
   test "an unknown agent_id raises an informative error naming the id", %{ctx: ctx} do

@@ -81,14 +81,14 @@ describe("consumeOauthResumeHandle", () => {
 });
 
 describe("oauthResumeUrl", () => {
-  it("targets the configured API origin only", () => {
-    expect(oauthResumeUrl("https://api.example.com", handle)).toBe(
-      `https://api.example.com/oauth2/authorize?resume=${handle}`
-    );
-  });
-
-  it("tolerates trailing slashes on the base URL", () => {
-    expect(oauthResumeUrl("https://api.example.com/", handle)).toBe(
+  it.each([
+    { name: "targets the configured API origin only", base: "https://api.example.com" },
+    {
+      name: "tolerates trailing slashes on the base URL",
+      base: "https://api.example.com/",
+    },
+  ])("$name", ({ base }) => {
+    expect(oauthResumeUrl(base, handle)).toBe(
       `https://api.example.com/oauth2/authorize?resume=${handle}`
     );
   });

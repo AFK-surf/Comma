@@ -55,7 +55,7 @@ defmodule SalixWeb.Dashboard.Layouts do
       </div>
       <div id="dash-content" class="flex min-w-0 flex-1 flex-col">
         <.topbar breadcrumbs={@breadcrumbs} />
-        <main class="min-h-0 min-w-0 flex-1 overflow-y-auto">
+        <main class="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
           <div class="mx-auto max-w-6xl px-4 py-6 sm:px-6">
             {@inner_content || render_slot(@inner_block)}
           </div>

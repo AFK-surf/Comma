@@ -83,35 +83,25 @@ describe("SystemBrowserGoogleAuth", () => {
     await expect(response.text()).resolves.toContain("登录已完成，你可以返回 Comma。");
   });
 
-  it("fails closed when the certified client rejects callback state", async () => {
-    let callbackResponse: Promise<Response> | undefined;
-    const adapter = createAdapter();
-    const auth = new SystemBrowserGoogleAuth({
-      oidcAdapter: adapter,
-      openExternal: async (href) => {
-        const authorizationUrl = new URL(href);
-        const redirectUri = requiredParameter(authorizationUrl, "redirect_uri");
-        callbackResponse = fetch(`${redirectUri}?code=provider-code&state=wrong`);
-        pendingResponses.push(callbackResponse);
+  it.each(
+    [
+      {
+        name: "fails closed when the certified client rejects callback state",
+        query: "code=provider-code&state=wrong",
       },
-    });
-
-    await expect(
-      auth.authenticate({ clientId: "desktop-client", nonce: "backend-nonce" })
-    ).rejects.toThrow("Google sign-in could not be completed.");
-    await expect(callbackResponse).resolves.toMatchObject({ status: 400 });
-  });
-
-  it("fails closed when Google returns an authorization error", async () => {
+      {
+        name: "fails closed when Google returns an authorization error",
+        query: "error=access_denied&state=oauth-state",
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", async (_name, { query }) => {
     let callbackResponse: Promise<Response> | undefined;
     const auth = new SystemBrowserGoogleAuth({
       oidcAdapter: createAdapter(),
       openExternal: async (href) => {
         const authorizationUrl = new URL(href);
         const redirectUri = requiredParameter(authorizationUrl, "redirect_uri");
-        callbackResponse = fetch(
-          `${redirectUri}?error=access_denied&state=oauth-state`
-        );
+        callbackResponse = fetch(`${redirectUri}?${query}`);
         pendingResponses.push(callbackResponse);
       },
     });

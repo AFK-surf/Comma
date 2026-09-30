@@ -779,24 +779,46 @@ describe("Comma local deterministic LLM", () => {
     assert.equal(sourceRead.args.tool, "mcp.notion.comma_local_search");
   });
 
-  it("publishes a user-authored ordinary Chat through the conversation tool", () => {
-    const decision = decide(
-      body(`
+  const internalChatContext = (fromActorType) => `
 - conversation_id: cnv1_0000000000000000001
 - conversation_kind: user_chat
 - participant_role_label: router
 - from_role_label: user
-- from_actor_type: user`),
-    );
+- from_actor_type: ${fromActorType}`;
 
-    assert.equal(decision.kind, "tool");
-    assert.equal(decision.args.tool, "im_api.internal.send_message");
-    assert.equal(
-      decision.args.params.conversation_id,
-      "cnv1_0000000000000000001",
-    );
-    assert.match(decision.args.params.content[0].text, /LOCAL_CHAT_OK/);
-  });
+  for (const { name, request } of [
+    {
+      name: "publishes a user-authored ordinary Chat through the conversation tool",
+      request: () => body(internalChatContext("user")),
+    },
+    {
+      name: "reads source context appended to the main system prompt",
+      request: () =>
+        mergedSystemBody(`
+- provider: internal${internalChatContext("user")}`),
+    },
+    {
+      // Wrapped system context must not be mistaken for the user's turn.
+      name: "reads source context that rides on a wrapped user message",
+      request: () => wrappedSystemBody(internalChatContext("agent")),
+    },
+    {
+      name: "keeps an agent-authored ordinary Chat on the explicit tool-send path",
+      request: () => body(internalChatContext("agent")),
+    },
+  ]) {
+    it(name, () => {
+      const decision = decide(request());
+
+      assert.equal(decision.kind, "tool");
+      assert.equal(decision.args.tool, "im_api.internal.send_message");
+      assert.equal(
+        decision.args.params.conversation_id,
+        "cnv1_0000000000000000001",
+      );
+      assert.match(decision.args.params.content[0].text, /LOCAL_CHAT_OK/);
+    });
+  }
 
   it("replies to a Telegram provider message through its managed connect", () => {
     const messages = [
@@ -834,63 +856,6 @@ LOCAL_CHAT_OK`,
       kind: "text",
       text: "LOCAL_TELEGRAM_TURN_COMPLETE",
     });
-  });
-
-  it("reads source context appended to the main system prompt", () => {
-    const decision = decide(
-      mergedSystemBody(`
-- provider: internal
-- conversation_id: cnv1_0000000000000000001
-- conversation_kind: user_chat
-- participant_role_label: router
-- from_role_label: user
-- from_actor_type: user`),
-    );
-
-    assert.equal(decision.kind, "tool");
-    assert.equal(decision.args.tool, "im_api.internal.send_message");
-    assert.equal(
-      decision.args.params.conversation_id,
-      "cnv1_0000000000000000001",
-    );
-  });
-
-  it("reads source context that rides on a wrapped user message", () => {
-    const context = `
-- conversation_id: cnv1_0000000000000000001
-- conversation_kind: user_chat
-- participant_role_label: router
-- from_role_label: user
-- from_actor_type: agent`;
-
-    const decision = decide(wrappedSystemBody(context));
-
-    // Wrapped system context must not be mistaken for the user's turn.
-    assert.equal(decision.kind, "tool");
-    assert.equal(decision.args.tool, "im_api.internal.send_message");
-    assert.equal(
-      decision.args.params.conversation_id,
-      "cnv1_0000000000000000001",
-    );
-  });
-
-  it("keeps an agent-authored ordinary Chat on the explicit tool-send path", () => {
-    const decision = decide(
-      body(`
-- conversation_id: cnv1_0000000000000000001
-- conversation_kind: user_chat
-- participant_role_label: router
-- from_role_label: user
-- from_actor_type: agent`),
-    );
-
-    assert.equal(decision.kind, "tool");
-    assert.equal(decision.args.tool, "im_api.internal.send_message");
-    assert.equal(
-      decision.args.params.conversation_id,
-      "cnv1_0000000000000000001",
-    );
-    assert.match(decision.args.params.content[0].text, /LOCAL_CHAT_OK/);
   });
 
   it("ignores source-like fields in manuals and hostile user text", () => {

@@ -98,26 +98,6 @@ defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
     assert html =~ slot
   end
 
-  test "index lists configured slots" do
-    t = template("IA List Template-#{System.unique_integer([:positive])}")
-    slot = "router-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Salix.Control.InitialAgentSeeds.put(
-        slot,
-        %{
-          "template_id" => t["template_id"],
-          "display_name" => "Listed Slot",
-          "is_router" => true
-        },
-        tenant_id()
-      )
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/initial-agents")
-    assert html =~ "Listed Slot"
-    assert html =~ slot
-  end
-
   test "editing a slot loads its current values and saves changes" do
     t = template("IA Edit Template-#{System.unique_integer([:positive])}")
     slot = "edit-#{System.unique_integer([:positive])}"
@@ -159,6 +139,7 @@ defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
 
     {:ok, view, html} = live(authed_conn(), "/dash/initial-agents")
     assert html =~ "Delete Me"
+    assert html =~ slot
 
     html = render_click(view, "delete", %{"slot" => slot})
     refute html =~ "Delete Me"

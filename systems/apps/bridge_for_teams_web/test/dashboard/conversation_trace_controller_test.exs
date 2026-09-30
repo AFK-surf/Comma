@@ -199,96 +199,36 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationTraceControllerTest do
     assert Process.get(:dashboard_trace_limit) == 100
   end
 
-  test "dashboard trace rejects ambiguous agent participants without guessing", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    conn =
-      get(
-        conn,
-        "/orgs/#{org.slug}/projects/#{project.id}/tasks/task-dashboard-1/debug-trace"
-      )
+  # {label, task path suffix, status, error, runtime must stay uncalled?}
+  for {label, path, status, error, runtime_untouched?} <- [
+        {"rejects ambiguous agent participants without guessing", "task-dashboard-1/debug-trace",
+         400, "trace_participant_required", false},
+        {"validates limit before calling the runtime",
+         "task-dashboard-1/debug-trace?participant=worker&limit=abc", 400, "invalid_limit", true},
+        {"reports missing conversations without calling the runtime",
+         "missing/debug-trace?participant=worker", 404, "conversation_not_found", true},
+        {"reports missing runtime sessions as trace session not found",
+         "trace-gone/debug-trace?participant=worker", 404, "trace_session_not_found", false},
+        {"reports conversations without traceable participants",
+         "no-trace/debug-trace?participant=worker", 404, "trace_session_not_found", false},
+        {"reports unexpected runtime failures as server errors",
+         "task-dashboard-1/debug-trace?participant=delegator", 500, "trace_unavailable", false}
+      ] do
+    @path path
+    @status status
+    @error error
+    @runtime_untouched? runtime_untouched?
 
-    assert conn.status == 400
-    assert json_body(conn) == %{"error" => "trace_participant_required"}
-  end
+    test "dashboard trace #{label}", %{conn: conn, org: org, project: project} do
+      conn = get(conn, "/orgs/#{org.slug}/projects/#{project.id}/tasks/#{@path}")
 
-  test "dashboard trace validates limit before calling the runtime", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    conn =
-      get(
-        conn,
-        "/orgs/#{org.slug}/projects/#{project.id}/tasks/task-dashboard-1/debug-trace?participant=worker&limit=abc"
-      )
+      assert conn.status == @status
+      assert json_body(conn) == %{"error" => @error}
 
-    assert conn.status == 400
-    assert json_body(conn) == %{"error" => "invalid_limit"}
-    refute Process.get(:dashboard_trace_target)
-  end
-
-  test "dashboard trace reports missing conversations without calling the runtime", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    conn =
-      get(
-        conn,
-        "/orgs/#{org.slug}/projects/#{project.id}/tasks/missing/debug-trace?participant=worker"
-      )
-
-    assert conn.status == 404
-    assert json_body(conn) == %{"error" => "conversation_not_found"}
-    refute Process.get(:dashboard_trace_target)
-  end
-
-  test "dashboard trace reports missing runtime sessions as trace session not found", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    conn =
-      get(
-        conn,
-        "/orgs/#{org.slug}/projects/#{project.id}/tasks/trace-gone/debug-trace?participant=worker"
-      )
-
-    assert conn.status == 404
-    assert json_body(conn) == %{"error" => "trace_session_not_found"}
-  end
-
-  test "dashboard trace reports conversations without traceable participants", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    conn =
-      get(
-        conn,
-        "/orgs/#{org.slug}/projects/#{project.id}/tasks/no-trace/debug-trace?participant=worker"
-      )
-
-    assert conn.status == 404
-    assert json_body(conn) == %{"error" => "trace_session_not_found"}
-  end
-
-  test "dashboard trace reports unexpected runtime failures as server errors", %{
-    conn: conn,
-    org: org,
-    project: project
-  } do
-    conn =
-      get(
-        conn,
-        "/orgs/#{org.slug}/projects/#{project.id}/tasks/task-dashboard-1/debug-trace?participant=delegator"
-      )
-
-    assert conn.status == 500
-    assert json_body(conn) == %{"error" => "trace_unavailable"}
+      if @runtime_untouched? do
+        refute Process.get(:dashboard_trace_target)
+      end
+    end
   end
 
   defp json_body(conn), do: Jason.decode!(conn.resp_body)

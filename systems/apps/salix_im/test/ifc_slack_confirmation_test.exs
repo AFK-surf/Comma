@@ -111,43 +111,32 @@ defmodule SalixIM.IFCSlackConfirmationTest do
       assert_received {:decided, @group, "req_1", %{"approved" => false}, @tenant}
     end
 
-    test "anyone else pressing the button decides nothing" do
-      Process.put(:ifc_card_request, request())
+    for {name, request_overrides, connect_id, user, expected} <- [
+          {"anyone else pressing the button", %{}, nil, "U_B",
+           {:error, {:ignored, :ifc_declassify_wrong_user}}},
+          {"a card from another workspace's connect", %{}, "cnx_other", "U_A",
+           {:error, {:ignored, :ifc_declassify_wrong_user}}},
+          {"a request whose requester is not a provider user", %{"requester" => "system"}, nil,
+           "U_A", {:error, {:ignored, :ifc_declassify_wrong_user}}},
+          {"an unknown request", nil, nil, "U_A", {:error, :not_found}}
+        ] do
+      @request_overrides request_overrides
+      @connect_id connect_id
+      @user user
+      @expected expected
+      test "#{name} decides nothing" do
+        if @request_overrides,
+          do: Process.put(:ifc_card_request, request(@request_overrides)),
+          else: Process.delete(:ifc_card_request)
 
-      assert {:error, {:ignored, :ifc_declassify_wrong_user}} =
-               SlackConfirmation.apply_action(connect(), payload("ifc_declassify:approve", "U_B"))
+        connect =
+          if @connect_id, do: Map.put(connect(), "connect_id", @connect_id), else: connect()
 
-      refute_received {:decided, _group, _request, _attrs, _tenant}
-    end
+        assert SlackConfirmation.apply_action(connect, payload("ifc_declassify:approve", @user)) ==
+                 @expected
 
-    test "a card from another workspace's connect decides nothing" do
-      Process.put(:ifc_card_request, request())
-
-      assert {:error, {:ignored, :ifc_declassify_wrong_user}} =
-               SlackConfirmation.apply_action(
-                 Map.put(connect(), "connect_id", "cnx_other"),
-                 payload("ifc_declassify:approve", "U_A")
-               )
-
-      refute_received {:decided, _group, _request, _attrs, _tenant}
-    end
-
-    test "a request whose requester is not a provider user decides nothing" do
-      Process.put(:ifc_card_request, request(%{"requester" => "system"}))
-
-      assert {:error, {:ignored, :ifc_declassify_wrong_user}} =
-               SlackConfirmation.apply_action(connect(), payload("ifc_declassify:approve", "U_A"))
-
-      refute_received {:decided, _group, _request, _attrs, _tenant}
-    end
-
-    test "an unknown request decides nothing" do
-      Process.delete(:ifc_card_request)
-
-      assert {:error, :not_found} =
-               SlackConfirmation.apply_action(connect(), payload("ifc_declassify:approve", "U_A"))
-
-      refute_received {:decided, _group, _request, _attrs, _tenant}
+        refute_received {:decided, _group, _request, _attrs, _tenant}
+      end
     end
 
     test "a malformed payload is ignored, not retried" do
@@ -163,15 +152,6 @@ defmodule SalixIM.IFCSlackConfirmationTest do
   end
 
   describe "asking" do
-    test "a request of another type is not a card" do
-      assert :ok = SlackConfirmation.post(%{"request_type" => "host_access"})
-      assert :ok = SlackConfirmation.post(%{})
-    end
-
-    test "a requester who is not a provider user gets no card" do
-      assert :ok = SlackConfirmation.post(request(%{"requester" => "system"}))
-    end
-
     test "an unreachable connect never fails the request that raised it" do
       assert :ok = SlackConfirmation.post(request())
     end

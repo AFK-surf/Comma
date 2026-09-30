@@ -288,7 +288,9 @@ config :bridge_for_teams_core, BridgeForTeams.Artifacts.Sweeper, enabled: false
 # Ephemeral HTTP port for the web suite.
 config :bridge_for_teams_web,
   port: 0,
-  public_base_url: "http://localhost:4102"
+  public_base_url: "http://localhost:4102",
+  # The React dashboard build is not part of the Elixir suite; serve a fixture.
+  spa_index_path: Path.expand("../apps/bridge_for_teams_web/test/support/spa_index.html", __DIR__)
 
 config :salix_web, oauth_return_base_urls: ["http://localhost:4102"]
 

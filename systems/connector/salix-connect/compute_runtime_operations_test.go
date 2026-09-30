@@ -29,41 +29,32 @@ func TestRuntimeOperationReconcileDoesNotResurrectSettledActivity(t *testing.T) 
 	}
 }
 
-func TestRuntimeOperationLateStoppedSnapshotDoesNotDeleteNewActivity(t *testing.T) {
-	target := testComputeRuntimeExecutionTarget()
-	var coordinator runtimeOperationCoordinator
-	started := coordinator.reconciliationStarted()
-	if _, err := coordinator.beginAcquire("auth:family", "auth:family", "auth_operation", target); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coordinator.finishAcquire("auth:family", true, nil); err != nil {
-		t.Fatal(err)
-	}
+func TestRuntimeOperationLateReconciliationSnapshotDoesNotChangeNewActivity(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		reconcile func(*runtimeOperationCoordinator, map[string]any, uint64)
+	}{
+		{"stopped snapshot does not delete", (*runtimeOperationCoordinator).reconcileStopped},
+		{"failed snapshot does not fence", (*runtimeOperationCoordinator).finishUnknownReconciliation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := testComputeRuntimeExecutionTarget()
+			var coordinator runtimeOperationCoordinator
+			started := coordinator.reconciliationStarted()
+			if _, err := coordinator.beginAcquire("auth:family", "auth:family", "auth_operation", target); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := coordinator.finishAcquire("auth:family", true, nil); err != nil {
+				t.Fatal(err)
+			}
 
-	coordinator.reconcileStopped(target, started)
+			test.reconcile(&coordinator, target, started)
 
-	right, err := coordinator.requireActiveFamily("auth:family")
-	if err != nil || right.ActivityID != "auth:family" {
-		t.Fatalf("late stopped snapshot changed new activity = %+v, %v", right, err)
-	}
-}
-
-func TestRuntimeOperationLateFailedSnapshotDoesNotFenceNewActivity(t *testing.T) {
-	target := testComputeRuntimeExecutionTarget()
-	var coordinator runtimeOperationCoordinator
-	started := coordinator.reconciliationStarted()
-	if _, err := coordinator.beginAcquire("auth:family", "auth:family", "auth_operation", target); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coordinator.finishAcquire("auth:family", true, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	coordinator.finishUnknownReconciliation(target, started)
-
-	right, err := coordinator.requireActiveFamily("auth:family")
-	if err != nil || right.ActivityID != "auth:family" {
-		t.Fatalf("late failed snapshot changed new activity = %+v, %v", right, err)
+			right, err := coordinator.requireActiveFamily("auth:family")
+			if err != nil || right.ActivityID != "auth:family" {
+				t.Fatalf("late snapshot changed new activity = %+v, %v", right, err)
+			}
+		})
 	}
 }
 

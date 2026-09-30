@@ -102,21 +102,6 @@ defmodule SalixStore.OAuthAppsCutoverTest do
     assert {:error, :not_found} = OAuthProviderApps.get("ten_x", "github")
   end
 
-  test "a provider-app body whose provider does not round-trip to its key aborts" do
-    lying = %{
-      "tenant_id" => "ten_a",
-      "provider" => "google",
-      "client_id" => "x",
-      "client_secret" => "y",
-      "updated_at" => 1
-    }
-
-    key = Keys.ctl_oauth_provider_app("ten_a", "github")
-    {:ok, _} = S3.put(key, Jason.encode!(lying), [])
-
-    assert {:error, {:enumerate_failed, ^key, :record_address_mismatch}} = OAuthAppsCutover.run()
-  end
-
   test "enumeration is fail-closed on a GET fault" do
     key = Keys.ctl_oauth_provider_app("ten_i", "github")
     seed_provider_app("ten_i", "github")
@@ -307,34 +292,6 @@ defmodule SalixStore.OAuthAppsCutoverTest do
     assert {:error, :not_found} = OAuthProviderApps.get("ten_a", "github")
   end
 
-  test "a non-map (top-level array) body fails closed as enumerate_failed, not a raise" do
-    key = Keys.ctl_oauth_provider_app("ten_arr", "github")
-    {:ok, _} = S3.put(key, Jason.encode!([1, 2, 3]), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} =
-             OAuthAppsCutover.importable_count()
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = OAuthAppsCutover.run()
-    refute OAuthAppsCutover.marker_present?()
-  end
-
-  test "a non-string typed field (client_secret as a number) fails closed" do
-    key = Keys.ctl_oauth_provider_app("ten_ns", "github")
-
-    bad = %{
-      "tenant_id" => "ten_ns",
-      "provider" => "github",
-      "client_id" => "x",
-      "client_secret" => 12_345,
-      "updated_at" => 1_753_300_000
-    }
-
-    {:ok, _} = S3.put(key, Jason.encode!(bad), [])
-
-    assert {:error, {:enumerate_failed, ^key, :invalid_record}} = OAuthAppsCutover.run()
-    refute OAuthAppsCutover.marker_present?()
-  end
-
   test "a non-canonical S3 key (no .json suffix) is not imported and writes no marker" do
     # A backup/variant object under the prefix whose path does not round-trip to
     # a canonical Keys path must fail closed — never become an active credential.
@@ -394,25 +351,50 @@ defmodule SalixStore.OAuthAppsCutoverTest do
              OAuthAppsCutover.importable_count()
   end
 
-  test "a non-canonical default-app key (no .json suffix) fails closed" do
-    no_suffix = "ctl/oauth/default_apps/google"
+  # {name, S3 key (literal or Keys function and args), stored body, expected reason}
+  @invalid_records [
+    {"a provider-app body whose provider does not round-trip to its key aborts",
+     {:ctl_oauth_provider_app, ["ten_a", "github"]},
+     %{
+       "tenant_id" => "ten_a",
+       "provider" => "google",
+       "client_id" => "x",
+       "client_secret" => "y",
+       "updated_at" => 1
+     }, :record_address_mismatch},
+    {"a non-map (top-level array) body fails closed as enumerate_failed, not a raise",
+     {:ctl_oauth_provider_app, ["ten_arr", "github"]}, [1, 2, 3], :invalid_record},
+    {"a non-string typed field (client_secret as a number) fails closed",
+     {:ctl_oauth_provider_app, ["ten_ns", "github"]},
+     %{
+       "tenant_id" => "ten_ns",
+       "provider" => "github",
+       "client_id" => "x",
+       "client_secret" => 12_345,
+       "updated_at" => 1_753_300_000
+     }, :invalid_record},
+    {"a non-canonical default-app key (no .json suffix) fails closed",
+     "ctl/oauth/default_apps/google",
+     %{"provider" => "google", "client_id" => "x", "client_secret" => "y", "updated_at" => 1},
+     :record_address_mismatch}
+  ]
 
-    {:ok, _} =
-      S3.put(
-        no_suffix,
-        Jason.encode!(%{
-          "provider" => "google",
-          "client_id" => "x",
-          "client_secret" => "y",
-          "updated_at" => 1
-        }),
-        []
-      )
+  for {name, key_spec, body, reason} <- @invalid_records do
+    test "#{name} (audit + run, no marker)" do
+      key =
+        case unquote(Macro.escape(key_spec)) do
+          {fun, args} -> apply(Keys, fun, args)
+          literal when is_binary(literal) -> literal
+        end
 
-    assert {:error, {:enumerate_failed, ^no_suffix, :record_address_mismatch}} =
-             OAuthAppsCutover.run()
+      {:ok, _} = S3.put(key, Jason.encode!(unquote(Macro.escape(body))), [])
 
-    refute OAuthAppsCutover.marker_present?()
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} =
+               OAuthAppsCutover.importable_count()
+
+      assert {:error, {:enumerate_failed, ^key, unquote(reason)}} = OAuthAppsCutover.run()
+      refute OAuthAppsCutover.marker_present?()
+    end
   end
 
   test "marker_status distinguishes absent, present, and unreadable" do

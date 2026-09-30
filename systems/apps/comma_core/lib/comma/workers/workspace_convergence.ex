@@ -92,6 +92,7 @@ defmodule Comma.Workers.WorkspaceConvergence do
     result =
       try do
         with :ok <- ensure_billing(payload),
+             :ok <- Comma.Billing.SignupCredits.ensure(payload),
              :ok <- ensure_selfhost_entitlement(payload),
              :ok <- Comma.Salix.Client.impl().provision_workspace_scope(payload),
              :ok <- maybe_update_vm(payload, operation),

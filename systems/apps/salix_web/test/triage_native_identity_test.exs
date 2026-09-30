@@ -905,14 +905,38 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     refute_receive {:triage_messages, _messages}
   end
 
-  test "identity-enabled evaluator rejects a decision without identity interpretation" do
-    decision = %{
-      "action" => "reply",
-      "text" => "I am BFT.",
-      "source_refs" => ["bft://projects/project-atlas/agents/agent-router"]
-    }
-
-    assert {:error, :invalid_triage_decision} = evaluate(decision)
+  for {label, decision} <- [
+        {"a decision without identity interpretation",
+         %{
+           "action" => "reply",
+           "text" => "I am BFT.",
+           "source_refs" => ["bft://projects/project-atlas/agents/agent-router"]
+         }},
+        {"a source outside the frozen closure",
+         %{
+           "action" => "reply",
+           "text" => "I am BFT.",
+           "source_refs" => ["meeting://invented/fact"],
+           "identity_interpretation" => %{
+             "topic" => "self_identity",
+             "referenced_principal_refs" => ["comma-agent://agt1_atlas_router"]
+           }
+         }},
+        {"remember over an identity-specific source",
+         %{
+           "action" => "remember",
+           "fact" => "BFT is the router agent.",
+           "source_refs" => ["bft://projects/project-atlas/agents/agent-router"],
+           "identity_interpretation" => %{
+             "topic" => "none",
+             "referenced_principal_refs" => []
+           }
+         }}
+      ] do
+    @decision decision
+    test "identity-enabled evaluator rejects #{label}" do
+      assert {:error, :invalid_triage_decision} = evaluate(@decision)
+    end
   end
 
   test "identity-enabled evaluator accepts the exact shared interpretation contract" do
@@ -2011,20 +2035,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert [%{"tool_name" => "triage_run.get"}] = proof["tool_receipts"]
   end
 
-  test "identity-enabled evaluator rejects a source outside the frozen closure" do
-    decision = %{
-      "action" => "reply",
-      "text" => "I am BFT.",
-      "source_refs" => ["meeting://invented/fact"],
-      "identity_interpretation" => %{
-        "topic" => "self_identity",
-        "referenced_principal_refs" => ["comma-agent://agt1_atlas_router"]
-      }
-    }
-
-    assert {:error, :invalid_triage_decision} = evaluate(decision)
-  end
-
   test "identity read failure is returned once to the model without transport retry" do
     {:ok, script} = Agent.start_link(fn -> 0 end)
 
@@ -2175,20 +2185,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert receipt["error"] == true
     assert receipt["error_class"] == "timeout"
     assert proof["request_count"] == 2
-  end
-
-  test "identity-enabled evaluator rejects remember over an identity-specific source" do
-    decision = %{
-      "action" => "remember",
-      "fact" => "BFT is the router agent.",
-      "source_refs" => ["bft://projects/project-atlas/agents/agent-router"],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    assert {:error, :invalid_triage_decision} = evaluate(decision)
   end
 
   defp evaluate(decision, provider_opts \\ %{}) do

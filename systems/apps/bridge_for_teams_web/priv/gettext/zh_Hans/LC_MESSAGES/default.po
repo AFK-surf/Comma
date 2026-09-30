@@ -12316,21 +12316,6 @@ msgstr "Agent 决定"
 
 #: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
 #, elixir-autogen, elixir-format
-msgid "Last 7 days by channel"
-msgstr "最近 7 天（按频道）"
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
-msgid "Fewer"
-msgstr "少"
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
-msgid "More"
-msgstr "多"
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
 msgid "Replied or reacted"
 msgstr "已回复或回应"
 
@@ -12339,12 +12324,6 @@ msgstr "已回复或回应"
 msgid "1 outcome"
 msgid_plural "%{count} outcomes"
 msgstr[0] "%{count} 条结果"
-
-#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
-#, elixir-autogen, elixir-format
-msgid "1 quieter channel not shown."
-msgid_plural "%{count} quieter channels not shown."
-msgstr[0] "另有 %{count} 个较安静的频道未显示。"
 
 #: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
 #, elixir-autogen, elixir-format
@@ -12360,3 +12339,74 @@ msgstr "显示此时间之前的活动"
 #, elixir-autogen, elixir-format
 msgid "Show latest"
 msgstr "显示最新"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Activity by channel"
+msgstr "按频道的活动"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "24h"
+msgstr "24 小时"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "7d"
+msgstr "7 天"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Total"
+msgstr "总数"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Replied"
+msgstr "已回复"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Silent"
+msgstr "沉默"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Show fewer channels"
+msgstr "收起频道"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "Show 1 more channel"
+msgid_plural "Show %{count} more channels"
+msgstr[0] "再显示 %{count} 个频道"
+
+#: lib/bridge_for_teams_web/dashboard/live/triage_live/index.ex
+#, elixir-autogen, elixir-format
+msgid "No outcomes in this range."
+msgstr "这个时间范围内没有结果。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "Usage for %{name} could not be refreshed"
+msgstr "%{name} 的用量未能刷新"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "The numbers shown may be out of date."
+msgstr "显示的数字可能不是最新的。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "Agents that run on it cannot start new work."
+msgstr "在它上面运行的 Agent 无法开始新的工作。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "Runner %{name} is degraded"
+msgstr "Runner %{name} 运行降级"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "Runner %{name} is offline"
+msgstr "Runner %{name} 已离线"

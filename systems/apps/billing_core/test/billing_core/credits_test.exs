@@ -88,17 +88,23 @@ defmodule BillingCore.CreditsTest do
     assert merged["storage_hard_cap"] == %{"mode" => "limit", "bytes" => 100}
   end
 
-  test "issue_grant/1 requires time-bounded grants" do
-    assert_raise ArgumentError, ~r/missing grant field expires_at/, fn ->
-      Credits.issue_grant(%{
-        state: State.new(),
-        billing_account_id: "acct_1",
-        credits: 100,
-        valid_from: @now,
-        source_type: "manual_contract",
-        source_id: "manual_1",
-        idempotency_key: "manual:acct_1:missing-expiry"
-      })
-    end
+  test "grants without expiry remain available after a paid billing period" do
+    assert {:ok, %{grant: grant}, state} =
+             Credits.issue_grant(%{
+               state: State.new(),
+               billing_account_id: "acct_1",
+               credits: 100,
+               valid_from: @now,
+               source_type: "comma_signup",
+               source_id: "user_1",
+               source_event_id: "user_1",
+               idempotency_key: "comma_signup:user_1"
+             })
+
+    assert is_nil(grant.expires_at)
+    assert grant.remaining_credits == 100
+
+    assert Credits.active_policies(state.grants, "acct_1", ~U[2027-06-17 00:00:00Z]) ==
+             [Policy.default()]
   end
 end

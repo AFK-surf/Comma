@@ -7,33 +7,35 @@ afterEach(() => {
 });
 
 describe("initializeElectronMainI18n", () => {
-  it("prefers the Electron app locale selected by --lang over OS preferences", () => {
-    expect(
-      initializeElectronMainI18n({
+  it.each(
+    [
+      {
+        name: "prefers the Electron app locale selected by --lang over OS preferences",
         appLocale: "zh-CN",
         preferredSystemLanguages: ["en-US"],
-      })
-    ).toBe("zh-CN");
-    expect(messages.nav_inbox()).toBe("收件箱");
-  });
-
-  it("keeps an English app locale ahead of a Simplified Chinese OS preference", () => {
-    expect(
-      initializeElectronMainI18n({
+        expected: "zh-CN",
+        inbox: "收件箱",
+      },
+      {
+        name: "keeps an English app locale ahead of a Simplified Chinese OS preference",
         appLocale: "en-US",
         preferredSystemLanguages: ["zh-CN"],
-      })
-    ).toBe("en");
-    expect(messages.nav_inbox()).toBe("Inbox");
-  });
-
-  it("falls through an unsupported app locale to a supported OS preference", () => {
-    expect(
-      initializeElectronMainI18n({
+        expected: "en",
+        inbox: "Inbox",
+      },
+      {
+        name: "falls through an unsupported app locale to a supported OS preference",
         appLocale: "fr-FR",
         preferredSystemLanguages: ["zh-SG", "en-US"],
-      })
-    ).toBe("zh-CN");
+        expected: "zh-CN",
+        inbox: "收件箱",
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { appLocale, preferredSystemLanguages, expected, inbox }) => {
+    expect(initializeElectronMainI18n({ appLocale, preferredSystemLanguages })).toBe(
+      expected
+    );
+    expect(messages.nav_inbox()).toBe(inbox);
   });
 
   it("localizes the shutdown-safety dialog in Electron Main", () => {

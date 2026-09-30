@@ -3,29 +3,11 @@ import {
   commaChatSidebarMinWidth,
   commaHomeContentMinWidth,
   commaHomeGreetFoldWidth,
-  commaHomeGreetPreferredMinWidth,
   commaHomeTasksFoldWidth,
-  commaHomeTasksFullWidth,
-  commaHomeTasksPreferredWidth,
   commaSidebarRailWidth,
   railFitsFrame,
   resolveHomeRailFolds,
 } from "../components/shellGeometry";
-
-// Keep the CSS floor and automatic fold thresholds in agreement.
-describe("home rail reflow geometry", () => {
-  it("matches the route widths the layout reflows and folds across", () => {
-    // Rails start at 300px but can reflow to 240px.
-    expect(commaHomeGreetPreferredMinWidth).toBe(300);
-    expect(commaHomeTasksPreferredWidth).toBe(300);
-    expect(commaHomeTasksFullWidth).toBe(1057);
-    expect(commaHomeTasksFoldWidth).toBe(997);
-    // Greeting folds only when it cannot fit beside chat.
-    expect(commaHomeGreetFoldWidth).toBe(681);
-    // Both folded, the chat column keeps the whole route down to its floor.
-    expect(commaHomeContentMinWidth).toBe(425);
-  });
-});
 
 describe("resolveHomeRailFolds", () => {
   const open = { greet: false, tasks: false };

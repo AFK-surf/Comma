@@ -11,6 +11,7 @@ import {
   SlackProviderLogo,
 } from "../ProviderBrandLogos";
 import { LarkProviderLogo } from "../LarkProviderLogo";
+import { SignalProviderMark } from "../SignalProviderLogo";
 import { resolveProviderBrandLogo } from "../providerBrandLogoResolver";
 
 describe("ProviderBrandLogos", () => {
@@ -61,6 +62,21 @@ describe("ProviderBrandLogos", () => {
       expect(logo).toHaveAttribute("height", "24");
       expect(logo).toHaveAttribute("viewBox");
       expect(logo).toHaveAttribute("width", "24");
+    }
+  });
+
+  it("draws the Signal chip mark as the logo in white on a Signal-blue disc", () => {
+    const { container } = render(<SignalProviderMark />);
+
+    expect(container.querySelector("svg")).toHaveAttribute(
+      "data-provider-logo",
+      "signal"
+    );
+    expect(container.querySelector("circle")).toHaveAttribute("fill", "#3B45FD");
+    const paths = [...container.querySelectorAll("path")];
+    expect(paths).toHaveLength(2);
+    for (const path of paths) {
+      expect(path).toHaveAttribute("fill", "#FFFFFF");
     }
   });
 

@@ -7,8 +7,6 @@ defmodule SalixWeb.Dashboard.ActivityTimelineTest do
 
   alias SalixWeb.Dashboard.ActivityTimeline
 
-  @t0 "2026-09-04 10:00:00.000"
-
   defp at(offset_ms) do
     ~U[2026-09-04 10:00:00.000Z]
     |> DateTime.add(offset_ms, :millisecond)
@@ -241,16 +239,6 @@ defmodule SalixWeb.Dashboard.ActivityTimelineTest do
     assert lanes |> Enum.map(& &1.round_ids) |> Enum.sort() == [["r1"], ["r2"], ["r3"], ["r4"]]
   end
 
-  test "lanes are newest first" do
-    rows = [
-      row("llm", "s1", "old", 0, 1_000),
-      row("llm", "s2", "new", 60_000, 1_000)
-    ]
-
-    %{lanes: lanes} = ActivityTimeline.build(rows)
-    assert Enum.map(lanes, & &1.lane_id) == ["new", "old"]
-  end
-
   test "model calls get mechanical verdicts: error, absolute slow, slow for the model" do
     baseline = for i <- 1..5, do: row("llm", "s#{i}", "b#{i}", i * 10_000, 2_000)
 
@@ -397,12 +385,6 @@ defmodule SalixWeb.Dashboard.ActivityTimelineTest do
   test "pct is relative to the lane scale" do
     assert ActivityTimeline.pct(500, 2_000) == 25.0
     assert ActivityTimeline.pct(500, 0) == 0.0
-  end
-
-  test "timestamps parse as UTC milliseconds" do
-    rows = [row("llm", "s1", "r1", 0, 1_000, %{"started_at" => @t0})]
-    %{lanes: [lane]} = ActivityTimeline.build(rows)
-    assert lane.start_ms == DateTime.to_unix(~U[2026-09-04 10:00:00Z], :millisecond)
   end
 
   test "recorded phases replace the unknown stretches and lead the round" do

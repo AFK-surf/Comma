@@ -289,7 +289,7 @@ defmodule Comma.ReleasePlan do
   defp pending?(id, _facts) when is_binary(id), do: raise("unsupported V2 release step id: #{id}")
 
   defp provider_pending_ids(facts) do
-    if(facts.require_provider, do: ["billing-provider"], else: [])
+    ["comma-signup-credits" | if(facts.require_provider, do: ["billing-provider"], else: [])]
     |> Enum.sort()
   end
 

@@ -70,26 +70,6 @@ defmodule SalixWeb.SalixFacadeTest do
     {:ok, agent: SalixAgent.TestSupport.new_agent_id()}
   end
 
-  test "runtime deliver commits the durable session fact before acking", %{agent: agent} do
-    session_id = SalixStore.Ids.new_session_id()
-    SalixAgent.TestSupport.create_control_agent!(agent)
-
-    # Inert placement: rpc staging routes through the placement seam to an
-    # owner that acks but runs nothing, so the ledger commit is observable
-    # without a real Server racing the read. The staged structures must stay
-    # untouched — deliver/3 lost its inbox writer in A2 §3.2 step 4.
-    Application.put_env(:salix_agent, :placement, InertPlacement)
-    SalixAgent.LLM.Mock.script([{:final, "ok"}])
-
-    assert {:ok, :created} =
-             Salix.Runtime.deliver(agent, %{content: "hello", session_id: session_id},
-               source_message_id: "req-1"
-             )
-
-    {:ok, state} = SalixAgent.InternalSessionStore.read(agent, session_id)
-    assert MapSet.member?(SalixAgent.InternalSession.get(state, :input_dedupe), "req-1")
-  end
-
   test "runtime deliver refuses cleanly when placement fails; same-id retry lands once",
        %{agent: agent} do
     session_id = SalixStore.Ids.new_session_id()

@@ -418,21 +418,37 @@ describe("Electron e2e hooks", () => {
     }
   });
 
-  it("can isolate the secure session file from the Chromium profile", () => {
-    expect(
-      resolveElectronE2eHooks({
-        createUserDataPath: () => "/tmp/comma-e2e-user-data",
+  it.each(
+    [
+      {
+        name: "can isolate the secure session file from the Chromium profile",
         env: {
           COMMA_ELECTRON_E2E_SECURE_SESSION_FILE_PATH:
             " /tmp/comma-session-fixture/secure-session.bin ",
-          NODE_ENV: "test",
         },
+        expected: {
+          secureSessionFilePath: "/tmp/comma-session-fixture/secure-session.bin",
+        },
+      },
+      {
+        name: "keeps API base URL override separate from startup Session setup",
+        env: { COMMA_API_BASE_URL: " http://127.0.0.1:7899 " },
+        expected: { apiBaseUrl: "http://127.0.0.1:7899" },
+      },
+      {
+        name: "resolves a Main-only Google credential for unpackaged e2e launches",
+        env: { COMMA_ELECTRON_E2E_GOOGLE_ID_TOKEN: " provider-id-token " },
+        expected: { googleIdToken: "provider-id-token" },
+      },
+    ].map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { env, expected }) => {
+    expect(
+      resolveElectronE2eHooks({
+        createUserDataPath: () => "/tmp/comma-e2e-user-data",
+        env: { ...env, NODE_ENV: "test" },
         isPackaged: false,
       })
-    ).toEqual({
-      secureSessionFilePath: "/tmp/comma-session-fixture/secure-session.bin",
-      fallbackUserDataPath: "/tmp/comma-e2e-user-data",
-    });
+    ).toEqual({ ...expected, fallbackUserDataPath: "/tmp/comma-e2e-user-data" });
   });
 
   it.each(["real", "static"] as const)(
@@ -453,38 +469,6 @@ describe("Electron e2e hooks", () => {
       });
     }
   );
-
-  it("keeps API base URL override separate from startup Session setup", () => {
-    expect(
-      resolveElectronE2eHooks({
-        createUserDataPath: () => "/tmp/comma-e2e-user-data",
-        env: {
-          COMMA_API_BASE_URL: " http://127.0.0.1:7899 ",
-          NODE_ENV: "test",
-        },
-        isPackaged: false,
-      })
-    ).toEqual({
-      apiBaseUrl: "http://127.0.0.1:7899",
-      fallbackUserDataPath: "/tmp/comma-e2e-user-data",
-    });
-  });
-
-  it("resolves a Main-only Google credential for unpackaged e2e launches", () => {
-    expect(
-      resolveElectronE2eHooks({
-        createUserDataPath: () => "/tmp/comma-e2e-user-data",
-        env: {
-          COMMA_ELECTRON_E2E_GOOGLE_ID_TOKEN: " provider-id-token ",
-          NODE_ENV: "test",
-        },
-        isPackaged: false,
-      })
-    ).toEqual({
-      googleIdToken: "provider-id-token",
-      fallbackUserDataPath: "/tmp/comma-e2e-user-data",
-    });
-  });
 
   it("writes the e2e session through SecureSessionStore and reconciles Main", async () => {
     const setSession = vi.fn(async () => {});

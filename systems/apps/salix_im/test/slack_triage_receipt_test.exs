@@ -1112,162 +1112,94 @@ defmodule SalixIM.SlackTriageReceiptTest do
     assert Process.alive?(recovery)
   end
 
-  test "recovery advances from an invalid-only page to a healthy typed receipt" do
-    tenant_id = Ids.new_tenant_id()
-    group_id = Ids.new_group_id(tenant_id)
-    agent_id = Ids.new_agent_id(group_id)
+  # With one key per page, recovery must page past keys it cannot decode
+  # (an invalid key, an empty folder marker, a trailing-space key) and still
+  # reach the healthy receipt behind them.
+  for {name, label, poison_objects} <- [
+        {"recovery advances from an invalid-only page to a healthy typed receipt", "invalid-page",
+         [{"!invalid-key", Jason.encode!(%{"raw" => "poison"})}]},
+        {"recovery converges past a folder marker and a trailing-space key", "poison-keys",
+         [{"", ""}, {"!poison ", Jason.encode!(%{"raw" => "poison"})}]}
+      ] do
+    @label label
+    @poison_objects poison_objects
+    test name do
+      tenant_id = Ids.new_tenant_id()
+      group_id = Ids.new_group_id(tenant_id)
+      agent_id = Ids.new_agent_id(group_id)
 
-    authority =
-      authority()
-      |> Map.put("tenant_id", tenant_id)
-      |> Map.put("group_id", group_id)
-      |> Map.put("connect_id", Ids.new_connect_id())
-      |> Map.put("inbound_agent_id", agent_id)
+      authority =
+        authority()
+        |> Map.put("tenant_id", tenant_id)
+        |> Map.put("group_id", group_id)
+        |> Map.put("connect_id", Ids.new_connect_id())
+        |> Map.put("inbound_agent_id", agent_id)
 
-    group = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "router_agent_id" => authority["inbound_agent_id"],
-      "router_conversation_id" => "conv-atlas"
-    }
+      group = %{
+        "tenant_id" => authority["tenant_id"],
+        "group_id" => authority["group_id"],
+        "router_agent_id" => authority["inbound_agent_id"],
+        "router_conversation_id" => "conv-atlas"
+      }
 
-    connect =
-      authority
-      |> Map.put("bot_token", "xoxb-private")
-      |> Map.put("disabled_at", nil)
-      |> Map.put("deleted_at", nil)
+      connect =
+        authority
+        |> Map.put("bot_token", "xoxb-private")
+        |> Map.put("disabled_at", nil)
+        |> Map.put("deleted_at", nil)
 
-    assert {:ok, ^group} = CasRecord.create(Keys.ctl_group(authority["group_id"]), group)
+      assert {:ok, ^group} = CasRecord.create(Keys.ctl_group(authority["group_id"]), group)
 
-    assert {:ok, ^connect} =
-             CasRecord.create(
-               Keys.ctl_im_connect(authority["group_id"], authority["connect_id"]),
-               connect
-             )
+      assert {:ok, ^connect} =
+               CasRecord.create(
+                 Keys.ctl_im_connect(authority["group_id"], authority["connect_id"]),
+                 connect
+               )
 
-    prefix = Keys.ctl_im_slack_event_receipts_prefix()
+      prefix = Keys.ctl_im_slack_event_receipts_prefix()
 
-    assert {:ok, _meta} =
-             S3.put(prefix <> "!invalid-key", Jason.encode!(%{"raw" => "poison"}),
-               if_none_match: "*"
-             )
+      for {suffix, body} <- @poison_objects do
+        assert {:ok, _meta} = S3.put(prefix <> suffix, body, if_none_match: "*")
+      end
 
-    assert {:ok, :created, receipt} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-recovery-after-invalid-key")
-             )
+      assert {:ok, :created, receipt} =
+               ProviderReceipts.record_slack_triage_root(
+                 authority,
+                 verified_root(authority, "Ev-recovery-after-#{@label}")
+               )
 
-    namespace = "triage-recovery-invalid-page-#{System.unique_integer([:positive])}"
+      namespace = "triage-recovery-#{@label}-#{System.unique_integer([:positive])}"
 
-    runtime =
-      start_supervised!(
-        {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
-        id: make_ref()
-      )
+      runtime =
+        start_supervised!(
+          {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
+          id: make_ref()
+        )
 
-    recovery =
-      start_supervised!(
-        {SalixIM.Triage.ReceiptRecovery,
-         name: nil,
-         runtime: runtime,
-         page_limit: 1,
-         interval_ms: 1,
-         full_ring_idle_ms: 5,
-         held_poll_ms: 5,
-         lease_key: "ctl/test/triage-recovery-invalid-page/#{System.unique_integer([:positive])}",
-         lease_ttl_ms: 5_000},
-        id: make_ref()
-      )
+      recovery =
+        start_supervised!(
+          {SalixIM.Triage.ReceiptRecovery,
+           name: nil,
+           runtime: runtime,
+           page_limit: 1,
+           interval_ms: 1,
+           full_ring_idle_ms: 5,
+           held_poll_ms: 5,
+           lease_key: "ctl/test/triage-recovery-#{@label}/#{System.unique_integer([:positive])}",
+           lease_ttl_ms: 5_000},
+          id: make_ref()
+        )
 
-    bucket_key =
-      SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, Bucketing.scope_key(receipt))
+      bucket_key =
+        SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, Bucketing.scope_key(receipt))
 
-    assert eventually(fn ->
-             match?({:ok, %{"open_receipts" => [^receipt]}}, CasRecord.get(bucket_key))
-           end),
-           inspect(:sys.get_state(recovery))
+      assert eventually(fn ->
+               match?({:ok, %{"open_receipts" => [^receipt]}}, CasRecord.get(bucket_key))
+             end),
+             inspect(:sys.get_state(recovery))
 
-    assert Process.alive?(recovery)
-  end
-
-  test "recovery converges past a folder marker and a trailing-space key" do
-    tenant_id = Ids.new_tenant_id()
-    group_id = Ids.new_group_id(tenant_id)
-    agent_id = Ids.new_agent_id(group_id)
-
-    authority =
-      authority()
-      |> Map.put("tenant_id", tenant_id)
-      |> Map.put("group_id", group_id)
-      |> Map.put("connect_id", Ids.new_connect_id())
-      |> Map.put("inbound_agent_id", agent_id)
-
-    group = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "router_agent_id" => authority["inbound_agent_id"],
-      "router_conversation_id" => "conv-atlas"
-    }
-
-    connect =
-      authority
-      |> Map.put("bot_token", "xoxb-private")
-      |> Map.put("disabled_at", nil)
-      |> Map.put("deleted_at", nil)
-
-    assert {:ok, ^group} = CasRecord.create(Keys.ctl_group(authority["group_id"]), group)
-
-    assert {:ok, ^connect} =
-             CasRecord.create(
-               Keys.ctl_im_connect(authority["group_id"], authority["connect_id"]),
-               connect
-             )
-
-    prefix = Keys.ctl_im_slack_event_receipts_prefix()
-
-    assert {:ok, _marker} = S3.put(prefix, "", if_none_match: "*")
-
-    assert {:ok, _poison} =
-             S3.put(prefix <> "!poison ", Jason.encode!(%{"raw" => "poison"}), if_none_match: "*")
-
-    assert {:ok, :created, receipt} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-recovery-after-poison-keys")
-             )
-
-    namespace = "triage-recovery-poison-keys-#{System.unique_integer([:positive])}"
-
-    runtime =
-      start_supervised!(
-        {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
-        id: make_ref()
-      )
-
-    recovery =
-      start_supervised!(
-        {SalixIM.Triage.ReceiptRecovery,
-         name: nil,
-         runtime: runtime,
-         page_limit: 1,
-         interval_ms: 1,
-         full_ring_idle_ms: 5,
-         held_poll_ms: 5,
-         lease_key: "ctl/test/triage-recovery-poison-keys/#{System.unique_integer([:positive])}",
-         lease_ttl_ms: 5_000},
-        id: make_ref()
-      )
-
-    bucket_key =
-      SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, Bucketing.scope_key(receipt))
-
-    assert eventually(fn ->
-             match?({:ok, %{"open_receipts" => [^receipt]}}, CasRecord.get(bucket_key))
-           end),
-           inspect(:sys.get_state(recovery))
-
-    assert Process.alive?(recovery)
+      assert Process.alive?(recovery)
+    end
   end
 
   test "a duplicate connect discovered on a later authority page removes every channel authority" do

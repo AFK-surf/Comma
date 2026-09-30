@@ -65,6 +65,12 @@ const registry = createSettingsRegistry({
   ],
 });
 
+const ReportButton = ({ onReport }: { onReport: () => void }) => (
+  <button onClick={onReport} type="button">
+    Report from content
+  </button>
+);
+
 const StatefulSettings = () => {
   const [enabled, setEnabled] = useState(false);
   const statefulRegistry = createSettingsRegistry({
@@ -110,6 +116,86 @@ const StatefulSettings = () => {
 };
 
 describe("SettingsPage", () => {
+  it("renders only the row whose setting changed, and every row acts on current state", async () => {
+    let unchangedRowRenders = 0;
+    const reports: string[] = [];
+    const RenderCount = () => {
+      unchangedRowRenders += 1;
+      return null;
+    };
+    const Owner = () => {
+      const [enabled, setEnabled] = useState(false);
+      const ownerRegistry = createSettingsRegistry({
+        groups: [
+          {
+            id: "application",
+            categories: [
+              {
+                id: "general",
+                icon: "general",
+                label: "General",
+                sections: [
+                  {
+                    id: "general.features",
+                    title: "Features",
+                    items: [
+                      {
+                        id: "feature.enabled",
+                        title: "Enable feature",
+                        control: {
+                          type: "toggle",
+                          checked: enabled,
+                          onChange: (event) => setEnabled(event.target.checked),
+                        },
+                      },
+                      {
+                        id: "feature.report",
+                        title: "Report",
+                        icon: <RenderCount />,
+                        control: {
+                          type: "button",
+                          label: "Report state",
+                          onPress: () => reports.push(`row:${enabled}`),
+                        },
+                      },
+                      {
+                        id: "feature.content",
+                        title: "Content",
+                        content: (
+                          <ReportButton
+                            onReport={() => reports.push(`content:${enabled}`)}
+                          />
+                        ),
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      return (
+        <SettingsPage
+          registry={ownerRegistry}
+          searchAriaLabel="Search settings"
+          searchPlaceholder="Search settings"
+        />
+      );
+    };
+
+    render(<Owner />);
+    const rendersAtRest = unchangedRowRenders;
+    await userEvent.click(screen.getByRole("switch", { name: "Enable feature" }));
+    expect(screen.getByRole("switch", { name: "Enable feature" })).toBeChecked();
+    // The report row's callback changed identity, but not what the row shows.
+    expect(unchangedRowRenders).toBe(rendersAtRest);
+
+    await userEvent.click(screen.getByRole("button", { name: "Report state" }));
+    await userEvent.click(screen.getByRole("button", { name: "Report from content" }));
+    expect(reports).toEqual(["row:true", "content:true"]);
+  });
+
   it("owns category navigation and global settings search", async () => {
     const { container } = render(
       <SettingsPage

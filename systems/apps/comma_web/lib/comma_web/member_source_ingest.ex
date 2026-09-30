@@ -81,13 +81,16 @@ defmodule CommaWeb.MemberSourceIngest do
   end
 
   def perform(%Oban.Job{args: %{"group_id" => group, "user_id" => owner}}) do
-    with {:ok, workspace, ctx, _home} <- HomeMail.context(%{"id" => owner}, %{}, group),
+    with {:ok, workspace, ctx, home} <- HomeMail.context(%{"id" => owner}, %{}, group),
          true <- workspace["owner_user_id"] == owner,
          # This chain replaced the default proactive Loops; they converge here.
          :ok <- ProactiveWatch.retire_defaults(ctx, owner),
          # The chain collects for the owner's automatic messages. While they are
          # off it stops; turning them on starts it again.
          {:ok, true} <- Proactive.automatic?(group, owner) do
+      # Task matters the owner already answered in the Task close here.
+      CommaWeb.ProactiveTask.reconcile(ctx, home, owner)
+
       case ingest(workspace, owner, proactive: true) do
         {:ok, outcome} ->
           Logger.info("member_source_ingest outcome=#{inspect(outcome)}")

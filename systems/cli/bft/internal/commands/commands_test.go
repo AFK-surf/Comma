@@ -156,56 +156,40 @@ func TestAuthDeviceLoginTextOutputShowsApprovalURLBeforeSavedResult(t *testing.T
 	}
 }
 
-func TestAuthDeviceLoginCancelDoesNotPersistConfig(t *testing.T) {
-	server := httptest.NewServer(deviceLoginTerminalStatusHandler(t, "cancelled"))
-	defer server.Close()
+func TestAuthDeviceLoginTerminalStatusDoesNotPersistConfig(t *testing.T) {
+	for _, test := range []struct {
+		status string
+		code   string
+	}{
+		{"cancelled", "cli_device_login_cancelled"},
+		{"expired", "cli_device_login_expired"},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			server := httptest.NewServer(deviceLoginTerminalStatusHandler(t, test.status))
+			defer server.Close()
 
-	configPath := filepath.Join(t.TempDir(), "cli.json")
-	exitCode, stdout, stderr := runCLI(t, []string{
-		"auth", "login",
-		"--url", server.URL,
-		"--config", configPath,
-		"--json",
-	}, nil)
+			configPath := filepath.Join(t.TempDir(), "cli.json")
+			exitCode, stdout, stderr := runCLI(t, []string{
+				"auth", "login",
+				"--url", server.URL,
+				"--config", configPath,
+				"--json",
+			}, nil)
 
-	if exitCode != output.ExitUsage {
-		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+			if exitCode != output.ExitUsage {
+				t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			var body map[string]any
+			decodeJSON(t, stderr, &body)
+			if body["error"].(map[string]any)["code"] != test.code {
+				t.Fatalf("stderr body = %#v", body)
+			}
+			assertNoPersistedToken(t, configPath)
+		})
 	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want empty", stdout)
-	}
-	var body map[string]any
-	decodeJSON(t, stderr, &body)
-	if body["error"].(map[string]any)["code"] != "cli_device_login_cancelled" {
-		t.Fatalf("stderr body = %#v", body)
-	}
-	assertNoPersistedToken(t, configPath)
-}
-
-func TestAuthDeviceLoginExpiredDoesNotPersistConfig(t *testing.T) {
-	server := httptest.NewServer(deviceLoginTerminalStatusHandler(t, "expired"))
-	defer server.Close()
-
-	configPath := filepath.Join(t.TempDir(), "cli.json")
-	exitCode, stdout, stderr := runCLI(t, []string{
-		"auth", "login",
-		"--url", server.URL,
-		"--config", configPath,
-		"--json",
-	}, nil)
-
-	if exitCode != output.ExitUsage {
-		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want empty", stdout)
-	}
-	var body map[string]any
-	decodeJSON(t, stderr, &body)
-	if body["error"].(map[string]any)["code"] != "cli_device_login_expired" {
-		t.Fatalf("stderr body = %#v", body)
-	}
-	assertNoPersistedToken(t, configPath)
 }
 
 func TestAuthDeviceLoginStopsPollingAtServerExpiry(t *testing.T) {
@@ -849,13 +833,24 @@ func TestEarlyParserErrorOutputTextOverridesNonTTYDefaultJSON(t *testing.T) {
 	}
 }
 
-func TestFieldsRequireJSONOutput(t *testing.T) {
-	exitCode, stdout, stderr := runCLI(t, []string{"commands", "--fields", "mode"}, nil)
-	if exitCode != output.ExitUsage {
-		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "Use --fields only with JSON output") {
-		t.Fatalf("stderr = %q", stderr)
+func TestInvalidOutputOptionsFailFast(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"fields require JSON output", []string{"commands", "--fields", "mode"}, "Use --fields only with JSON output"},
+		{"unsupported output format", []string{"commands", "--output", "xml"}, "Unsupported output format"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exitCode, stdout, stderr := runCLI(t, test.args, nil)
+			if exitCode != output.ExitUsage {
+				t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+			}
+			if !strings.Contains(stderr, test.want) {
+				t.Fatalf("stderr = %q", stderr)
+			}
+		})
 	}
 }
 
@@ -2928,16 +2923,6 @@ func TestAPISuccessOutputRedactsSecretLikeFields(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "[REDACTED]") {
 		t.Fatalf("stdout = %s", stdout)
-	}
-}
-
-func TestInvalidOutputFormatFailsFast(t *testing.T) {
-	exitCode, stdout, stderr := runCLI(t, []string{"commands", "--output", "xml"}, nil)
-	if exitCode != output.ExitUsage {
-		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "Unsupported output format") {
-		t.Fatalf("stderr = %q", stderr)
 	}
 }
 

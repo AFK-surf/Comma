@@ -33,56 +33,45 @@ describe("createMainWindowOptions", () => {
     });
   });
 
-  it("uses native macOS traffic lights with a hidden inset title bar", () => {
+  it.each(
+    (
+      [
+        {
+          name: "uses native macOS traffic lights with a hidden inset title bar",
+          input: { platform: "darwin" },
+          expected: {
+            titleBarStyle: "hiddenInset",
+            trafficLightPosition: { x: 12, y: 15 },
+            webPreferences: { scrollBounce: true },
+          },
+        },
+        {
+          name: "leaves elastic overscroll off outside macOS",
+          input: { platform: "linux" },
+          expected: { webPreferences: { scrollBounce: false } },
+        },
+        {
+          name: "uses the dark window token when Electron resolves dark mode",
+          input: { darkMode: true },
+          expected: { backgroundColor: "#0f0f10" },
+        },
+        {
+          name: "keeps the pointer visible while typing in the main window",
+          input: { platform: "darwin" },
+          expected: { disableAutoHideCursor: true },
+        },
+      ] as const
+    ).map((row) => [row.name, row] as [string, typeof row])
+  )("%s", (_name, { input, expected }) => {
     const options = createMainWindowOptions({
-      platform: "darwin",
+      ...input,
       windowId: "win_main",
       windowRole: "main-window",
       preloadPath: "/tmp/comma-preload.js",
       productName: "Comma Test",
     });
 
-    expect(options).toMatchObject({
-      titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 12, y: 15 },
-    });
-    expect(options.webPreferences?.scrollBounce).toBe(true);
-  });
-
-  it("leaves elastic overscroll off outside macOS", () => {
-    const options = createMainWindowOptions({
-      platform: "linux",
-      windowId: "win_main",
-      windowRole: "main-window",
-      preloadPath: "/tmp/comma-preload.js",
-      productName: "Comma Test",
-    });
-
-    expect(options.webPreferences?.scrollBounce).toBe(false);
-  });
-
-  it("uses the dark window token when Electron resolves dark mode", () => {
-    const options = createMainWindowOptions({
-      darkMode: true,
-      windowId: "win_main",
-      windowRole: "main-window",
-      preloadPath: "/tmp/comma-preload.js",
-      productName: "Comma Test",
-    });
-
-    expect(options.backgroundColor).toBe("#0f0f10");
-  });
-
-  it("keeps the pointer visible while typing in the main window", () => {
-    const options = createMainWindowOptions({
-      platform: "darwin",
-      windowId: "win_main",
-      windowRole: "main-window",
-      preloadPath: "/tmp/comma-preload.js",
-      productName: "Comma Test",
-    });
-
-    expect(options.disableAutoHideCursor).toBe(true);
+    expect(options).toMatchObject(expected);
   });
 });
 

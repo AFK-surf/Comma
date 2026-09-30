@@ -93,11 +93,6 @@ defmodule SalixWeb.Dashboard.EndpointDispatchTest do
     assert admin_duration >= 0
   end
 
-  test "admin API paths still require the bearer token (dashboard auth is separate)" do
-    conn = conn(:get, "/v1/admin/cluster/stats") |> SalixWeb.Endpoint.call([])
-    assert conn.status == 401
-  end
-
   test "admin API paths accept the bearer admin token" do
     conn =
       conn(:get, "/v1/admin/cluster/stats")

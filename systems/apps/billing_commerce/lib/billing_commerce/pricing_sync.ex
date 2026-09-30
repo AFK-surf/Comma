@@ -35,7 +35,7 @@ defmodule BillingCommerce.PricingSync do
       }
 
       case PackageCatalog.get_package_version(query) do
-        {:ok, actual} -> version_matches?(actual, expected)
+        {:ok, actual} -> PackageCatalog.version_terms_match?(actual, expected)
         {:error, :not_found} -> false
       end
     end)
@@ -70,14 +70,5 @@ defmodule BillingCommerce.PricingSync do
       {:ok, results} -> {:ok, Enum.reverse(results)}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp version_matches?(actual, expected) do
-    Enum.all?(
-      ~w(package_code version surface kind billing_period grant_credits grant_period currency amount_minor usage_policy status)a,
-      fn key ->
-        Map.get(actual, key) == (Map.get(expected, key) || Map.get(expected, Atom.to_string(key)))
-      end
-    )
   end
 end

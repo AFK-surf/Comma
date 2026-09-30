@@ -51,26 +51,20 @@ defmodule SalixLlm.ConvertTest do
            ] = blocks
   end
 
-  test "assistant turn with neither text nor tool calls is dropped" do
-    {_system, messages} =
-      Convert.to_anthropic([
-        %{role: "user", content: "hi"},
-        %{role: "assistant", content: "", tool_calls: []},
-        %{role: "user", content: "still there?"}
-      ])
+  for {name, content} <- [
+        {"assistant turn with neither text nor tool calls is dropped", ""},
+        {"assistant turn with only whitespace and no tool calls is dropped", " \n\t"}
+      ] do
+    test name do
+      {_system, messages} =
+        Convert.to_anthropic([
+          %{role: "user", content: "hi"},
+          %{role: "assistant", content: unquote(content), tool_calls: []},
+          %{role: "user", content: "still there?"}
+        ])
 
-    assert Enum.map(messages, & &1["role"]) == ["user", "user"]
-  end
-
-  test "assistant turn with only whitespace and no tool calls is dropped" do
-    {_system, messages} =
-      Convert.to_anthropic([
-        %{role: "user", content: "hi"},
-        %{role: "assistant", content: " \n\t", tool_calls: []},
-        %{role: "user", content: "still there?"}
-      ])
-
-    assert Enum.map(messages, & &1["role"]) == ["user", "user"]
+      assert Enum.map(messages, & &1["role"]) == ["user", "user"]
+    end
   end
 
   test "plain final assistant text is unchanged (prompt-cache stability)" do

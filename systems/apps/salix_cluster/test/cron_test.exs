@@ -26,6 +26,9 @@ defmodule SalixCluster.CronTest do
     {DateTime.to_date(dt), DateTime.to_time(dt)}
   end
 
+  defp wall_result({:ok, ms}, tz), do: {:ok, wall(ms, tz)}
+  defp wall_result(error, _tz), do: error
+
   describe "parse/1" do
     test "accepts standard 5-field expressions" do
       assert {:ok, _} = Cron.parse("0 9 * * 1-5")
@@ -42,62 +45,42 @@ defmodule SalixCluster.CronTest do
   end
 
   describe "next_after_ms/3 — strictly after the anchor" do
-    test "every minute: returns the next whole minute, never the anchor itself" do
-      anchor = ms(~D[2026-06-18], ~T[10:30:00], "UTC")
-      assert {:ok, next} = Cron.next_after_ms("* * * * *", anchor, "UTC")
-      assert wall(next, "UTC") == {~D[2026-06-18], ~T[10:31:00]}
-    end
-
-    test "anchor exactly on a boundary skips to the next occurrence" do
-      anchor = ms(~D[2026-06-18], ~T[09:00:00], "UTC")
-      assert {:ok, next} = Cron.next_after_ms("0 9 * * *", anchor, "UTC")
-      assert wall(next, "UTC") == {~D[2026-06-19], ~T[09:00:00]}
-    end
-
-    test "ranges + day-of-week: weekdays at 09:00 skips the weekend" do
+    # {name, expression, anchor wall-clock, zone, expected result}. `:ok` rows
+    # carry the expected next wall-clock in the same zone.
+    @next_after_cases [
+      {"every minute: returns the next whole minute, never the anchor itself", "* * * * *",
+       {~D[2026-06-18], ~T[10:30:00]}, "UTC", {:ok, {~D[2026-06-18], ~T[10:31:00]}}},
+      {"anchor exactly on a boundary skips to the next occurrence", "0 9 * * *",
+       {~D[2026-06-18], ~T[09:00:00]}, "UTC", {:ok, {~D[2026-06-19], ~T[09:00:00]}}},
       # Friday 2026-06-19 10:00 → next weekday 09:00 is Monday.
-      anchor = ms(~D[2026-06-19], ~T[10:00:00], "UTC")
-      assert {:ok, next} = Cron.next_after_ms("0 9 * * 1-5", anchor, "UTC")
-      assert wall(next, "UTC") == {~D[2026-06-22], ~T[09:00:00]}
-    end
-
-    test "step values: */15 minutes" do
-      anchor = ms(~D[2026-06-18], ~T[10:07:00], "UTC")
-      assert {:ok, next} = Cron.next_after_ms("*/15 * * * *", anchor, "UTC")
-      assert wall(next, "UTC") == {~D[2026-06-18], ~T[10:15:00]}
-    end
-
-    test "lists + month rollover: midnight on the 1st of Jan or Jul" do
-      anchor = ms(~D[2026-03-10], ~T[12:00:00], "UTC")
-      assert {:ok, next} = Cron.next_after_ms("0 0 1 1,7 *", anchor, "UTC")
-      assert wall(next, "UTC") == {~D[2026-07-01], ~T[00:00:00]}
-    end
-
-    test "day-of-month AND day-of-week when both restricted (crontab semantics)" do
+      {"ranges + day-of-week: weekdays at 09:00 skips the weekend", "0 9 * * 1-5",
+       {~D[2026-06-19], ~T[10:00:00]}, "UTC", {:ok, {~D[2026-06-22], ~T[09:00:00]}}},
+      {"step values: */15 minutes", "*/15 * * * *", {~D[2026-06-18], ~T[10:07:00]}, "UTC",
+       {:ok, {~D[2026-06-18], ~T[10:15:00]}}},
+      {"lists + month rollover: midnight on the 1st of Jan or Jul", "0 0 1 1,7 *",
+       {~D[2026-03-10], ~T[12:00:00]}, "UTC", {:ok, {~D[2026-07-01], ~T[00:00:00]}}},
       # NOTE: the `crontab` library requires BOTH day-of-month and day-of-week to
       # match when both are restricted (AND), unlike Vixie cron's OR rule. So
       # "0 0 13 * 5" (the 13th AND a Friday) next matches 2026-11-13, a Friday
       # the 13th — not the nearer 2026-06-12. Document the actual behavior.
-      anchor = ms(~D[2026-06-08], ~T[00:00:00], "UTC")
-      assert {:ok, next} = Cron.next_after_ms("0 0 13 * 5", anchor, "UTC")
-      assert wall(next, "UTC") == {~D[2026-11-13], ~T[00:00:00]}
-    end
-
-    test "computes wall-clock in the schedule's timezone" do
+      {"day-of-month AND day-of-week when both restricted (crontab semantics)", "0 0 13 * 5",
+       {~D[2026-06-08], ~T[00:00:00]}, "UTC", {:ok, {~D[2026-11-13], ~T[00:00:00]}}},
       # 09:00 daily in New York, evaluated from a UTC-expressed instant.
-      anchor = ms(~D[2026-06-19], ~T[10:00:00], "America/New_York")
-      assert {:ok, next} = Cron.next_after_ms("0 9 * * 1-5", anchor, "America/New_York")
-      assert wall(next, "America/New_York") == {~D[2026-06-22], ~T[09:00:00]}
-    end
+      {"computes wall-clock in the schedule's timezone", "0 9 * * 1-5",
+       {~D[2026-06-19], ~T[10:00:00]}, "America/New_York", {:ok, {~D[2026-06-22], ~T[09:00:00]}}},
+      {"unsatisfiable but parseable spec returns :no_occurrence", "0 0 30 2 *",
+       {~D[2026-06-18], ~T[00:00:00]}, "UTC", {:error, :no_occurrence}},
+      {"invalid expression surfaces :invalid_cron", "nope", {~D[2026-06-18], ~T[00:00:00]}, "UTC",
+       {:error, :invalid_cron}}
+    ]
 
-    test "unsatisfiable but parseable spec returns :no_occurrence" do
-      anchor = ms(~D[2026-06-18], ~T[00:00:00], "UTC")
-      assert {:error, :no_occurrence} = Cron.next_after_ms("0 0 30 2 *", anchor, "UTC")
-    end
-
-    test "invalid expression surfaces :invalid_cron" do
-      anchor = ms(~D[2026-06-18], ~T[00:00:00], "UTC")
-      assert {:error, :invalid_cron} = Cron.next_after_ms("nope", anchor, "UTC")
+    for {name, expr, anchor, tz, expected} <- @next_after_cases do
+      test name do
+        {date, time} = unquote(Macro.escape(anchor))
+        tz = unquote(tz)
+        result = Cron.next_after_ms(unquote(expr), ms(date, time, tz), tz)
+        assert wall_result(result, tz) == unquote(Macro.escape(expected))
+      end
     end
   end
 
@@ -131,17 +114,19 @@ defmodule SalixCluster.CronTest do
   end
 
   describe "latest_at_or_before_ms/3" do
-    test "returns the most recent past occurrence at or before now" do
-      now = ms(~D[2026-06-19], ~T[10:00:00], "UTC")
-      assert {:ok, prev} = Cron.latest_at_or_before_ms("0 9 * * 1-5", now, "UTC")
-      assert wall(prev, "UTC") == {~D[2026-06-19], ~T[09:00:00]}
-    end
-
-    test "skips weekends backward" do
+    @latest_cases [
+      {"returns the most recent past occurrence at or before now", {~D[2026-06-19], ~T[10:00:00]},
+       {~D[2026-06-19], ~T[09:00:00]}},
       # Monday 08:00 → latest weekday 09:00 at/before is the previous Friday.
-      now = ms(~D[2026-06-22], ~T[08:00:00], "UTC")
-      assert {:ok, prev} = Cron.latest_at_or_before_ms("0 9 * * 1-5", now, "UTC")
-      assert wall(prev, "UTC") == {~D[2026-06-19], ~T[09:00:00]}
+      {"skips weekends backward", {~D[2026-06-22], ~T[08:00:00]}, {~D[2026-06-19], ~T[09:00:00]}}
+    ]
+
+    for {name, now, expected} <- @latest_cases do
+      test name do
+        {date, time} = unquote(Macro.escape(now))
+        result = Cron.latest_at_or_before_ms("0 9 * * 1-5", ms(date, time, "UTC"), "UTC")
+        assert wall_result(result, "UTC") == {:ok, unquote(Macro.escape(expected))}
+      end
     end
   end
 end

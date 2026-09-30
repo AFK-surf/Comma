@@ -246,70 +246,41 @@ defmodule Salix.Bindings.MeetingOwnerAttributionTest do
   describe "parse_matches/2" do
     setup do: %{ids: MapSet.new(["U1", "U2", "U3"])}
 
-    test "maps confident, valid, non-null matches", %{ids: ids} do
-      content =
-        ~s({"matches":[{"owner":"Zanwei Guo","slack_id":"U1","confidence":"high"},) <>
-          ~s({"owner":"sky dark","slack_id":"U2","confidence":"medium"}]})
-
-      assert Attr.parse_matches(content, ids) == %{"Zanwei Guo" => "U1", "sky dark" => "U2"}
-    end
-
-    test "drops ids that are not in the roster (no hallucinated mentions)", %{ids: ids} do
-      content = ~s({"matches":[{"owner":"X","slack_id":"U999","confidence":"high"}]})
-      assert Attr.parse_matches(content, ids) == %{}
-    end
-
-    test "rejects an oversized provider response before decoding it", %{ids: ids} do
-      content =
-        String.duplicate(" ", 70_000) <>
-          ~s({"matches":[{"owner":"Alice","slack_id":"U1","confidence":"high"}]})
-
-      assert Attr.parse_matches(content, ids, MapSet.new(["Alice"])) == %{}
-    end
-
-    test "drops owners omitted from the bounded prompt", %{ids: ids} do
-      content = ~s({"matches":[{"owner":"Bob","slack_id":"U1","confidence":"high"}]})
-
-      assert Attr.parse_matches(content, ids, MapSet.new(["Alice"])) == %{}
-    end
-
-    test "drops conflicting confident ids for one owner but accepts duplicate agreement", %{
-      ids: ids
-    } do
-      conflict =
-        ~s({"matches":[) <>
-          ~s({"owner":"Alice","slack_id":"U1","confidence":"high"},) <>
-          ~s({"owner":"Alice","slack_id":"U2","confidence":"medium"}]})
-
-      assert Attr.parse_matches(conflict, ids, MapSet.new(["Alice"])) == %{}
-
-      agreement =
-        ~s({"matches":[) <>
-          ~s({"owner":"Alice","slack_id":"U1","confidence":"high"},) <>
-          ~s({"owner":"Alice","slack_id":"U1","confidence":"medium"}]})
-
-      assert Attr.parse_matches(agreement, ids, MapSet.new(["Alice"])) == %{
-               "Alice" => "U1"
-             }
-    end
-
-    test "drops null slack_id and low confidence", %{ids: ids} do
-      content =
-        ~s({"matches":[{"owner":"A","slack_id":null,"confidence":"high"},) <>
-          ~s({"owner":"B","slack_id":"U1","confidence":"low"}]})
-
-      assert Attr.parse_matches(content, ids) == %{}
-    end
-
-    test "parses code-fenced JSON", %{ids: ids} do
-      content =
-        "```json\n{\"matches\":[{\"owner\":\"A\",\"slack_id\":\"U3\",\"confidence\":\"high\"}]}\n```"
-
-      assert Attr.parse_matches(content, ids) == %{"A" => "U3"}
-    end
-
-    test "non-JSON content yields empty map", %{ids: ids} do
-      assert Attr.parse_matches("sorry, no JSON here", ids) == %{}
+    # Rows with nil prompt owners exercise parse_matches/2; others pass the
+    # bounded prompt owners to parse_matches/3.
+    for {label, owners, expected, content} <- [
+          {"maps confident, valid, non-null matches", nil,
+           %{"Zanwei Guo" => "U1", "sky dark" => "U2"},
+           ~s({"matches":[{"owner":"Zanwei Guo","slack_id":"U1","confidence":"high"},) <>
+             ~s({"owner":"sky dark","slack_id":"U2","confidence":"medium"}]})},
+          {"drops ids that are not in the roster (no hallucinated mentions)", nil, %{},
+           ~s({"matches":[{"owner":"X","slack_id":"U999","confidence":"high"}]})},
+          {"rejects an oversized provider response before decoding it", ["Alice"], %{},
+           String.duplicate(" ", 70_000) <>
+             ~s({"matches":[{"owner":"Alice","slack_id":"U1","confidence":"high"}]})},
+          {"drops owners omitted from the bounded prompt", ["Alice"], %{},
+           ~s({"matches":[{"owner":"Bob","slack_id":"U1","confidence":"high"}]})},
+          {"drops conflicting confident ids for one owner", ["Alice"], %{},
+           ~s({"matches":[) <>
+             ~s({"owner":"Alice","slack_id":"U1","confidence":"high"},) <>
+             ~s({"owner":"Alice","slack_id":"U2","confidence":"medium"}]})},
+          {"accepts duplicate confident agreement for one owner", ["Alice"], %{"Alice" => "U1"},
+           ~s({"matches":[) <>
+             ~s({"owner":"Alice","slack_id":"U1","confidence":"high"},) <>
+             ~s({"owner":"Alice","slack_id":"U1","confidence":"medium"}]})},
+          {"drops null slack_id and low confidence", nil, %{},
+           ~s({"matches":[{"owner":"A","slack_id":null,"confidence":"high"},) <>
+             ~s({"owner":"B","slack_id":"U1","confidence":"low"}]})},
+          {"parses code-fenced JSON", nil, %{"A" => "U3"},
+           "```json\n{\"matches\":[{\"owner\":\"A\",\"slack_id\":\"U3\",\"confidence\":\"high\"}]}\n```"},
+          {"non-JSON content yields empty map", nil, %{}, "sorry, no JSON here"}
+        ] do
+      @owners owners
+      @expected expected
+      @content content
+      test label, %{ids: ids} do
+        assert parse_matches(@content, ids, @owners) == @expected
+      end
     end
   end
 
@@ -342,4 +313,9 @@ defmodule Salix.Bindings.MeetingOwnerAttributionTest do
              ]
     end
   end
+
+  defp parse_matches(content, ids, nil), do: Attr.parse_matches(content, ids)
+
+  defp parse_matches(content, ids, owners),
+    do: Attr.parse_matches(content, ids, MapSet.new(owners))
 end

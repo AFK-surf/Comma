@@ -130,7 +130,11 @@ const shortNames = [[/^Claude (Opus|Sonnet|Haiku|Fable) /, "$1 "]];
 
 const skipped = /(realtime|image|live|tts|transcribe|embedding|computer-use|deep-research|moderation|guard)/;
 // Gateway pricing tiers of a model, not models of their own.
-const tiers = /(-fast|-free|-flex|-priority)$|\((fast|free|\d+% off)\)/i;
+const tiers = /(-fast|-free|-flex|-priority)$/i;
+// Gateway routing aliases and placeholders that name no model.
+const aliases = new Set(["auto", "auto-beta", "free", "big-pickle"]);
+// Ids a source uses for a model that the key rules cannot tie together.
+const sameAs = { "kimi-code": { k3: "kimi-k3" } };
 const effortOrder = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 const tail = (id) => id.replace(/^@cf\//, "").split("/").at(-1);
@@ -143,6 +147,8 @@ function modelKey(source, id) {
     .replace(/@.*$/, "")
     .replace(/-v\d+:\d+$/, "")
     .replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "")
+    .replace(/-latest$/, "")
+    .replace(/^deepseek-chat-v/, "deepseek-v")
     .replace(/[._]/g, "-");
 }
 
@@ -168,7 +174,9 @@ function efforts(entry) {
 const display = (name) =>
   shortNames.reduce(
     (value, [pattern, replacement]) => value.replace(pattern, replacement),
-    name.replace(/^[^:]+:\s*/, "").replace(/\s*\(latest\)$/i, "")
+    name
+      .replace(/^[^:]+:\s*/, "")
+      .replace(/\s*\((latest|\d+% off)\)$/i, "")
   );
 
 const models = new Map();
@@ -183,8 +191,9 @@ for (const [source, config] of canonicalFirst) {
     if (!protocol) continue;
     for (const entry of Object.values(entries)) {
       if (entry.id.includes(":") || skipped.test(entry.id.toLowerCase())) continue;
-      if (tiers.test(entry.id) || tiers.test(entry.name ?? "")) continue;
-      const key = modelKey(source, entry.id);
+      if (tiers.test(entry.id) || /\((fast|free)\)/i.test(entry.name ?? "")) continue;
+      if (aliases.has(tail(entry.id).toLowerCase())) continue;
+      const key = modelKey(source, sameAs[source]?.[entry.id] ?? entry.id);
       const vendor = vendorOf(source, entry.id);
       let model = models.get(key);
       if (!model) {

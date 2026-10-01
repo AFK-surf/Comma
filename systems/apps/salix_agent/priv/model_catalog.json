@@ -843,24 +843,13 @@
      "model": "gpt-5.2-chat-latest",
      "protocol": "responses"
     },
-    "azure-openai": {
-     "model": "gpt-5.2-chat-latest",
-     "protocol": "responses"
-    }
-   }
-  },
-  {
-   "id": "gpt-5.2-chat",
-   "name": "GPT-5.2 Chat",
-   "vendor": "openai",
-   "efforts": [],
-   "images": true,
-   "context_tokens": 128000,
-   "max_tokens": 32000,
-   "routes": {
     "openrouter": {
      "model": "openai/gpt-5.2-chat",
      "protocol": "chat_completions"
+    },
+    "azure-openai": {
+     "model": "gpt-5.2-chat-latest",
+     "protocol": "responses"
     }
    }
   },
@@ -1376,6 +1365,10 @@
     "vercel-ai-gateway": {
      "model": "openai/gpt-5.6-sol",
      "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "gpt-5.6-sol",
+     "protocol": "responses"
     },
     "cloudflare-ai-gateway": {
      "model": "gpt-5.6-sol",
@@ -3590,18 +3583,7 @@
     "openrouter": {
      "model": "deepseek/deepseek-chat-v3-0324",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "deepseek-v3-0324",
-   "name": "DeepSeek V3 0324",
-   "vendor": "deepseek",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 163840,
-   "max_tokens": 163840,
-   "routes": {
+    },
     "huggingface": {
      "model": "deepseek-ai/DeepSeek-V3-0324",
      "protocol": "chat_completions"
@@ -3624,22 +3606,7 @@
     "openrouter": {
      "model": "deepseek/deepseek-chat-v3.1",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "deepseek-v3.1",
-   "name": "DeepSeek V3.1",
-   "vendor": "deepseek",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": false,
-   "context_tokens": 163840,
-   "max_tokens": 128000,
-   "routes": {
+    },
     "vercel-ai-gateway": {
      "model": "deepseek/deepseek-v3.1",
      "protocol": "anthropic"
@@ -3843,24 +3810,6 @@
     },
     "baseten": {
      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "deepseek-v4-flash-latest",
-   "name": "DeepSeek V4 Flash Latest",
-   "vendor": "deepseek",
-   "efforts": [
-    "high",
-    "xhigh"
-   ],
-   "images": false,
-   "context_tokens": 1048576,
-   "max_tokens": 131072,
-   "routes": {
-    "openrouter": {
-     "model": "~deepseek/deepseek-v4-flash-latest",
      "protocol": "chat_completions"
     }
    }
@@ -5989,28 +5938,13 @@
      "model": "moonshotai/Kimi-K3",
      "protocol": "chat_completions"
     },
-    "github-copilot": {
-     "model": "kimi-k3",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "k3",
-   "name": "Kimi K3",
-   "vendor": "kimi",
-   "efforts": [
-    "low",
-    "high",
-    "max"
-   ],
-   "images": true,
-   "context_tokens": 1048576,
-   "max_tokens": 131072,
-   "routes": {
     "kimi-code": {
      "model": "k3",
      "protocol": "anthropic"
+    },
+    "github-copilot": {
+     "model": "kimi-k3",
+     "protocol": "chat_completions"
     }
    }
   },
@@ -6240,6 +6174,25 @@
    "routes": {
     "vercel-ai-gateway": {
      "model": "zai/glm-4.7-flashx",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "glm-5.3-promo-50",
+   "name": "GLM 5.3",
+   "vendor": "glm",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": false,
+   "context_tokens": 1048576,
+   "max_tokens": 1048576,
+   "routes": {
+    "vercel-ai-gateway": {
+     "model": "zai/glm-5.3-promo-50",
      "protocol": "anthropic"
     }
    }
@@ -7046,6 +6999,10 @@
     "mistral": {
      "model": "codestral-latest",
      "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "mistral/codestral",
+     "protocol": "anthropic"
     }
    }
   },
@@ -7317,18 +7274,7 @@
     "mistral": {
      "model": "ministral-3b-latest",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "ministral-3b",
-   "name": "Ministral 3B",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": true,
-   "context_tokens": 128000,
-   "max_tokens": 4000,
-   "routes": {
+    },
     "vercel-ai-gateway": {
      "model": "mistral/ministral-3b",
      "protocol": "anthropic"
@@ -7347,18 +7293,7 @@
     "mistral": {
      "model": "ministral-8b-latest",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "ministral-8b",
-   "name": "Ministral 8B",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": true,
-   "context_tokens": 128000,
-   "max_tokens": 4000,
-   "routes": {
+    },
     "vercel-ai-gateway": {
      "model": "mistral/ministral-8b",
      "protocol": "anthropic"
@@ -7396,21 +7331,6 @@
    }
   },
   {
-   "id": "codestral",
-   "name": "Mistral Codestral",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 128000,
-   "max_tokens": 4000,
-   "routes": {
-    "vercel-ai-gateway": {
-     "model": "mistral/codestral",
-     "protocol": "anthropic"
-    }
-   }
-  },
-  {
    "id": "mistral-large-latest",
    "name": "Mistral Large",
    "vendor": "mistral",
@@ -7422,18 +7342,7 @@
     "mistral": {
      "model": "mistral-large-latest",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "mistral-large",
-   "name": "Mistral Large",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 128000,
-   "max_tokens": 102400,
-   "routes": {
+    },
     "openrouter": {
      "model": "mistralai/mistral-large",
      "protocol": "chat_completions"
@@ -7520,6 +7429,10 @@
     "mistral": {
      "model": "mistral-medium-latest",
      "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "mistral/mistral-medium",
+     "protocol": "anthropic"
     }
    }
   },
@@ -7580,21 +7493,6 @@
     "openrouter": {
      "model": "mistralai/mistral-medium-3.1",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "mistral-medium",
-   "name": "Mistral Medium 3.1",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": true,
-   "context_tokens": 128000,
-   "max_tokens": 64000,
-   "routes": {
-    "vercel-ai-gateway": {
-     "model": "mistral/mistral-medium",
-     "protocol": "anthropic"
     }
    }
   },
@@ -7683,18 +7581,7 @@
     "mistral": {
      "model": "mistral-small-latest",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "mistral-small",
-   "name": "Mistral Small",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": true,
-   "context_tokens": 32000,
-   "max_tokens": 4000,
-   "routes": {
+    },
     "vercel-ai-gateway": {
      "model": "mistral/mistral-small",
      "protocol": "anthropic"
@@ -8941,63 +8828,6 @@
    }
   },
   {
-   "id": "auto",
-   "name": "Auto",
-   "vendor": "other",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": true,
-   "context_tokens": 2000000,
-   "max_tokens": 30000,
-   "routes": {
-    "openrouter": {
-     "model": "auto",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "auto-beta",
-   "name": "Auto Router (Beta)",
-   "vendor": "other",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": true,
-   "context_tokens": 2000000,
-   "max_tokens": 4096,
-   "routes": {
-    "openrouter": {
-     "model": "openrouter/auto-beta",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "big-pickle",
-   "name": "Big Pickle",
-   "vendor": "other",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": false,
-   "context_tokens": 200000,
-   "max_tokens": 32000,
-   "routes": {
-    "opencode": {
-     "model": "big-pickle",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
    "id": "seed-1.8",
    "name": "Bytedance Seed 1.8",
    "vendor": "other",
@@ -9057,25 +8887,6 @@
    "routes": {
     "openrouter": {
      "model": "cohere/command-r-plus-08-2024",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "free",
-   "name": "Free Models Router",
-   "vendor": "other",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": true,
-   "context_tokens": 200000,
-   "max_tokens": 4096,
-   "routes": {
-    "openrouter": {
-     "model": "openrouter/free",
      "protocol": "chat_completions"
     }
    }

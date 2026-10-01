@@ -68,6 +68,7 @@ These mappings do not make their IDs interchangeable.
 | Agent Template | Model and related configuration selected for an Agent. Global and Tenant-private templates are not Agent instances. Main-model display name and vendor metadata are values on the template, separate from its configuration alias and transport provider. An Agent either selects one template or follows its platform role default. |
 | Agent Default | Platform pointers supply live role defaults. Tenant pointers supply initial choices for new Agents. These are values on existing configuration records. |
 | Comma Model Selection Policy | One Comma-wide rule lists global Agent Templates that users can newly select. It does not own templates, defaults, or Agent bindings. |
+| Model Catalog | Platform data that names models across sources. A catalog model has a model id, a display name, its maker, and one request id and protocol for each source that serves it. A source is an API-key provider or a subscription plan. It owns no credentials, tenant data, or Agent bindings. |
 | Runtime Session | An Agent's input, model, and tool execution context. A configured current Router has one canonical Session. A Worker can have many. |
 | Internal / External Runtime | Execution inside Salix or through an external runtime. Platform support does not imply product admission for every Agent role. |
 | Session Activity | One accepted execution activity. It is separate from an input batch, Task lifecycle, and device availability. |
@@ -102,6 +103,16 @@ selections of global templates. An empty list admits none. Tenant-private
 templates and Default remain selectable. Existing Agent bindings and the Worker
 creation default continue to resolve after an ID leaves the list. The rule does
 not change runtime inference or the administrator support path.
+
+The Model Catalog is separate from Agent Templates because a template binds one model
+to one provider configuration. The catalog says that `openai/gpt-5.5` at OpenRouter and
+`gpt-5.5` at OpenAI are the same model, which no template or account can express.
+Its identity is the catalog model id, platform-wide. [SalixAgent.Models](../../systems/apps/salix_agent/lib/salix_agent/models.ex)
+owns it as read-only data compiled from `priv/model_catalog.json`.
+`scripts/generate-model-catalog.mjs` regenerates that file from the provider model data
+in the pinned pi-ai package; a release changes it, no runtime path does.
+Sources name what an account pool account connects to. Templates and accounts may
+reference catalog ids and source ids; the catalog references neither.
 
 An external Runtime Session owns its runtime binding and accepted-input queue in
 [ExternalSessionStore](../../systems/apps/salix_agent/lib/salix_agent/external_session_store.ex).

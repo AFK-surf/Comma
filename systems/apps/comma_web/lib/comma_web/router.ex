@@ -1354,6 +1354,18 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  # Platform data: every model, and the request id each source uses for it.
+  get "/v1/comma/model-catalog" do
+    with_user(conn, fn _user, _session ->
+      conn
+      |> put_resp_header("cache-control", "private, max-age=300")
+      |> send_json(200, %{
+        "sources" => SalixAgent.Models.sources(),
+        "models" => SalixAgent.Models.list()
+      })
+    end)
+  end
+
   post "/v1/comma/workspaces/:workspace_id/model-discovery" do
     conn = put_resp_header(conn, "cache-control", "no-store")
 

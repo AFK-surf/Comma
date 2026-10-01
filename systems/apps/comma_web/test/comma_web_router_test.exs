@@ -8408,6 +8408,23 @@ defmodule CommaWeb.RouterTest do
     end
   end
 
+  test "the model catalog gives signed-in users each source's request id" do
+    conn(:get, "/v1/comma/model-catalog") |> call() |> expect_json(401)
+
+    login = email_login!("model-catalog@example.com")
+
+    catalog =
+      conn(:get, "/v1/comma/model-catalog")
+      |> user_auth(login["token"])
+      |> call()
+      |> expect_json(200)
+
+    gpt = Enum.find(catalog["models"], &(&1["id"] == "gpt-5.5"))
+    assert gpt["routes"]["openai"]["model"] == "gpt-5.5"
+    assert gpt["routes"]["openrouter"]["model"] == "openai/gpt-5.5"
+    assert catalog["sources"]["codex"]["kind"] == "subscription"
+  end
+
   defp json_conn(method, path, body) do
     conn(method, path, Jason.encode!(body))
     |> put_req_header("content-type", "application/json")

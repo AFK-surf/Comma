@@ -12,6 +12,20 @@ Built by AFK Inc., Comma is our attempt to create an open agentic system that ke
 
 You can use the hosted service at [comma.surf](https://comma.surf), or run your own instance from this repository.
 
+## See Comma in action
+
+### No more applications.
+
+Hand over your work and life. Comma gets it done.
+
+https://github.com/user-attachments/assets/cefa2954-f29c-4434-9246-a82cb19a51fe
+
+### Personal context, aligned.
+
+Save money. Shop smarter based on your preferences. Check out on your trusted device.
+
+https://github.com/user-attachments/assets/486cde78-d927-4ff0-85de-00c46edc498e
+
 ## Philosophy
 
 - **Sessionless**

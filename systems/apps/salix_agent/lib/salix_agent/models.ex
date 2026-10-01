@@ -5,7 +5,8 @@ defmodule SalixAgent.Models do
   A model has three names. Its catalog id says which model it is, whichever
   source serves it. Each source has a request id for it: `gpt-5.5` is
   `gpt-5.5` at OpenAI and `openai/gpt-5.5` at OpenRouter. Its display name is
-  for people. A source is what a Profile connects to: an API-key provider or a
+  for people, and its family names the line it belongs to across versions
+  (Opus 4.8 and Opus 5 are both `Opus`). A source is what a Profile connects to: an API-key provider or a
   subscription plan.
 
   The catalog is platform data, generated from the provider model data that

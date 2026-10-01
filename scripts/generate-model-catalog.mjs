@@ -126,7 +126,11 @@ const wordVendors = [
 ];
 // Names that are recognisable without their maker drop it, so a picker grouped
 // by maker reads "Opus 5" rather than "Claude Opus 5".
-const shortNames = [[/^Claude (Opus|Sonnet|Haiku|Fable) /, "$1 "]];
+const shortNames = [
+  [/^(Anthropic|OpenAI|Google|MoonshotAI|xAI)\s+(?=\S)/, ""],
+  [/^Claude (Opus|Sonnet|Haiku|Fable)\b/, "$1"],
+  [/^Claude (\d+(\.\d+)?) (Opus|Sonnet|Haiku)\b/, "$3 $1"],
+];
 
 const skipped = /(realtime|image|live|tts|transcribe|embedding|computer-use|deep-research|moderation|guard)/;
 // Gateway pricing tiers of a model, not models of their own.
@@ -153,14 +157,16 @@ function modelKey(source, id) {
 }
 
 function vendorOf(source, id) {
-  if (sources[source].vendor) return sources[source].vendor;
+  const word = tail(id).toLowerCase().replace(/^[a-z]+-(?=glm|kimi|qwen|deepseek)/, "");
+  const named = wordVendors.find(([pattern]) => pattern.test(word))?.[1];
+  // A maker's API can list another maker's model (Mistral serves GLM).
+  if (sources[source].vendor) return named ?? sources[source].vendor;
   const parts = id.replace(/^@cf\//, "").split("/");
   if (parts.length > 1) {
     const vendor = prefixVendors[parts.at(-2).toLowerCase()];
     if (vendor) return vendor;
   }
-  const word = tail(id).toLowerCase();
-  return wordVendors.find(([pattern]) => pattern.test(word))?.[1] ?? "other";
+  return named ?? "other";
 }
 
 function efforts(entry) {
@@ -178,6 +184,23 @@ const display = (name) =>
       .replace(/^[^:]+:\s*/, "")
       .replace(/\s*\((latest|\d+% off)\)$/i, "")
   );
+
+// A family is the line a model belongs to across versions: Opus 4.8 and
+// Opus 5 are both Opus, GPT-5.4 mini and GPT-5.5 mini are both GPT mini.
+// It is the display name without version, size, date and release-stage words.
+const familyNoise = /^(v|k|m)?\d+(\.\d+)*[a-z]?$|^\d+[bk]$|^a\d+b$|^\d{4}$|^(preview|latest|instruct|exp|experimental|it|thinking|turbo|chat|fp8|fast|highspeed|beta|v\d+(\.\d+)*)$/i;
+
+function familyOf(name) {
+  const words = name
+    .replace(/\(.*?\)/g, " ")
+    .split(/[\s-]+/)
+    .filter((word) => word && !familyNoise.test(word))
+    .map((word) => word.replace(/^([A-Za-z]+)\d+(\.\d+)*$/, "$1"));
+  const family = words.join(" ") || name;
+  // One label per family, whatever casing a gateway uses for it.
+  return (familyLabels[family.toLowerCase()] ??= family);
+}
+const familyLabels = { "gpt oss": "GPT OSS", r: "DeepSeek R" };
 
 const models = new Map();
 const canonicalFirst = Object.entries(sources).sort(
@@ -200,6 +223,7 @@ for (const [source, config] of canonicalFirst) {
         model = {
           id: config.vendor && config.kind === "api_key" ? entry.id.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "") : tail(entry.id).toLowerCase(),
           name: display(entry.name ?? entry.id),
+          family: familyOf(display(entry.name ?? entry.id)),
           vendor,
           efforts: efforts(entry),
           images: (entry.input ?? []).includes("image"),

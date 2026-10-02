@@ -257,6 +257,27 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
       },
       true
     );
+    // A right-click on a link asks the host for the menu chat gives its own
+    // links; the host cannot see events inside this frame.
+    document.addEventListener(
+      "contextmenu",
+      (event) => {
+        const link =
+          event.target instanceof Element ? event.target.closest("a[href]") : null;
+        if (!link) return;
+        event.preventDefault();
+        if (stopped || !event.isTrusted) return;
+        const url = new URL(link.getAttribute("href")!);
+        if (url.protocol === "https:" && !url.username && !url.password)
+          send({
+            type: "link-menu",
+            url: url.href,
+            x: event.clientX,
+            y: event.clientY,
+          });
+      },
+      true
+    );
     const stop = (reason: string) => {
       if (stopped) return;
       stopped = true;

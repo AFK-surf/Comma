@@ -18,7 +18,13 @@ import {
 import { initializeCommaI18n } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { Toaster, toast } from "@comma/ui";
-import { useMemo, useState, type ComponentProps, type ReactElement } from "react";
+import {
+  useMemo,
+  useState,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +65,36 @@ vi.mock("../../../../analytics/client", () => ({
   },
 }));
 
+// A widget frame cannot be scripted in jsdom; the stub stands in for its
+// runtime and asks for the link menu the way a right-click in the frame does.
+vi.mock("../../dynamic-ui/DynamicUiWidget", async (importOriginal) => {
+  const [actual, React] = await Promise.all([
+    importOriginal<typeof import("../../dynamic-ui/DynamicUiWidget")>(),
+    import("react"),
+  ]);
+  return {
+    ...actual,
+    DynamicUiWidget: () => {
+      const openLinkMenu = React.useContext(actual.DynamicUiLinkMenuContext);
+      const frame = React.useRef<HTMLIFrameElement>(null);
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement("iframe", { ref: frame, sandbox: "", title: "widget" }),
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            onClick: () =>
+              openLinkMenu?.("https://example.com/pr/2300", 140, 90, frame.current!),
+          },
+          "Right-click widget link"
+        )
+      );
+    },
+  };
+});
+
 vi.mock("@comma/ui", async (importOriginal) => {
   const [actual, React] = await Promise.all([
     importOriginal<typeof import("@comma/ui")>(),
@@ -72,6 +108,7 @@ vi.mock("@comma/ui", async (importOriginal) => {
       content,
       className,
       final,
+      inlineElements,
       maxAnimatedCharacters,
       showCursor,
       smoothStreaming,
@@ -88,6 +125,7 @@ vi.mock("@comma/ui", async (importOriginal) => {
       content: string;
       className?: string;
       final?: boolean;
+      inlineElements?: ReadonlyMap<string, ReactNode>;
       maxAnimatedCharacters?: number;
       showCursor?: boolean;
       smoothStreaming?: boolean | "auto";
@@ -117,7 +155,8 @@ vi.mock("@comma/ui", async (importOriginal) => {
           ? decorator
             ? decorator({ anchor, href: markdownLink[2] as string })
             : anchor
-          : content
+          : content,
+        ...(inlineElements ? [...inlineElements.values()] : [])
       );
     },
   };
@@ -2143,6 +2182,47 @@ describe("ConversationView", () => {
     );
 
     openSpy.mockRestore();
+  });
+
+  it("opens the same link menu for a link inside a widget frame", async () => {
+    const user = userEvent.setup();
+    const onOpenInCommaBrowser = vi.fn();
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={createActions()}
+        onOpenInCommaBrowser={onOpenInCommaBrowser}
+        state={state({
+          messages: [
+            message("msg_widget_link", "assistant", "PR review", {
+              parts: [
+                { kind: "markdown", text: "PR review" },
+                {
+                  kind: "dynamic-ui",
+                  uiRef: "prs",
+                  contentId: "blob-prs",
+                  version: 1,
+                  summary: "PR review card",
+                  conversationId: "conversation",
+                  messageId: "msg_widget_link",
+                  originTaskId: "task",
+                  attachmentIndex: 0,
+                },
+              ],
+            }),
+          ],
+        })}
+      />
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Right-click widget link" })
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Open in External Browser" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Copy Link" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Open in Comma" }));
+    expect(onOpenInCommaBrowser).toHaveBeenCalledWith("https://example.com/pr/2300");
   });
 
   it("does not open the link menu for same-origin links", async () => {

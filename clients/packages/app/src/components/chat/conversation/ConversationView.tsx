@@ -8,6 +8,7 @@ import {
 import {
   DynamicUiDraftContext,
   DynamicUiLinkContext,
+  DynamicUiLinkMenuContext,
 } from "../dynamic-ui/DynamicUiWidget";
 import { HomeLayout } from "../../home/HomeRailFolds";
 import { ConversationParticipants } from "../session-history/SessionHistory";
@@ -815,6 +816,26 @@ export const ConversationView = memo(function ConversationView({
     ]
   );
 
+  // Widget frames keep their events, so a right-click on a widget link arrives
+  // as a request with viewport coordinates instead of a contextmenu event.
+  const handleDynamicUiLinkMenu = useCallback(
+    (url: string, clientX: number, clientY: number, frame: HTMLIFrameElement) => {
+      const route = routeRef.current;
+      if (!route) return;
+      const article = resolveChatMessageArticleFromEventTarget(frame, route);
+      if (!article) return;
+      linkMenuUrlRef.current = url;
+      linkMenuMessageTextRef.current = resolveChatMessageText(
+        article,
+        state.messages,
+        state.assistantDraft
+      );
+      setCopyMenuOpen(false);
+      openLinkMenuAtPointer(route, clientX, clientY, frame);
+    },
+    [openLinkMenuAtPointer, setCopyMenuOpen, state.assistantDraft, state.messages]
+  );
+
   const handleLinkMenuAction = useCallback(
     (action: LinkContextMenuAction) => {
       const url = linkMenuUrlRef.current;
@@ -1173,30 +1194,32 @@ export const ConversationView = memo(function ConversationView({
         <MarkdownStreamLinkDecoratorContext.Provider value={linkDecorator}>
           <InlineTaskLinkAdapterProvider adapter={resolvedInlineTaskLinkAdapter}>
             <DynamicUiLinkContext.Provider value={onOpenInCommaBrowser}>
-              <DynamicUiDraftContext.Provider value={replyFromDynamicUi}>
-                <ConversationThread
-                  api={api}
-                  assistantDraft={state.assistantDraft}
-                  assistantResponseSlotId={state.conversation?.id ?? "conversation"}
-                  conversationId={state.conversation?.id}
-                  conversationKind={isTask ? "agent_task" : "user_chat"}
-                  defaultAssistantActorRole={isTask ? undefined : "router"}
-                  groupId={threadGroupId}
-                  afterMessages={transcriptTail}
-                  anchoredTails={labelProposalsTails}
-                  responseFeedback={isTask ? undefined : responseFeedback}
-                  messages={state.messages}
-                  onOpenConversationRef={onOpenConversationRef}
-                  onOutgoingAnimationComplete={finishOutgoingLaunch}
-                  onPreviewLocalFile={actions.previewLocalFile}
-                  onDiscard={actionsMemo.discard}
-                  onRetry={actionsMemo.retry}
-                  outgoingLaunches={outgoingLaunches}
-                  revealTurnHandle={revealTurnHandleRef}
-                  variant={variant === "side-chat" ? "side-chat" : "default"}
-                  workspaceId={threadWorkspaceId}
-                />
-              </DynamicUiDraftContext.Provider>
+              <DynamicUiLinkMenuContext.Provider value={handleDynamicUiLinkMenu}>
+                <DynamicUiDraftContext.Provider value={replyFromDynamicUi}>
+                  <ConversationThread
+                    api={api}
+                    assistantDraft={state.assistantDraft}
+                    assistantResponseSlotId={state.conversation?.id ?? "conversation"}
+                    conversationId={state.conversation?.id}
+                    conversationKind={isTask ? "agent_task" : "user_chat"}
+                    defaultAssistantActorRole={isTask ? undefined : "router"}
+                    groupId={threadGroupId}
+                    afterMessages={transcriptTail}
+                    anchoredTails={labelProposalsTails}
+                    responseFeedback={isTask ? undefined : responseFeedback}
+                    messages={state.messages}
+                    onOpenConversationRef={onOpenConversationRef}
+                    onOutgoingAnimationComplete={finishOutgoingLaunch}
+                    onPreviewLocalFile={actions.previewLocalFile}
+                    onDiscard={actionsMemo.discard}
+                    onRetry={actionsMemo.retry}
+                    outgoingLaunches={outgoingLaunches}
+                    revealTurnHandle={revealTurnHandleRef}
+                    variant={variant === "side-chat" ? "side-chat" : "default"}
+                    workspaceId={threadWorkspaceId}
+                  />
+                </DynamicUiDraftContext.Provider>
+              </DynamicUiLinkMenuContext.Provider>
             </DynamicUiLinkContext.Provider>
           </InlineTaskLinkAdapterProvider>
         </MarkdownStreamLinkDecoratorContext.Provider>

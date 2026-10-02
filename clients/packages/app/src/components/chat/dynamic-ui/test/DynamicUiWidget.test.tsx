@@ -6,6 +6,7 @@ import {
   DynamicUiWidget,
   DynamicUiDraftContext,
   DynamicUiLinkContext,
+  DynamicUiLinkMenuContext,
 } from "../DynamicUiWidget";
 import { compileMessageMarkdown } from "../../thread/inline/MessageInlineElements";
 import { MarkdownStream } from "@comma/ui";
@@ -650,4 +651,45 @@ it("routes valid widget links to the host sidebar callback and rejects unsafe UR
     port.postMessage({ type: "open-link", url: "https://example.test/train" });
   });
   expect(open).toHaveBeenCalledExactlyOnceWith("https://example.test/train");
+});
+
+it("opens the host link menu at the frame's viewport position for safe links", async () => {
+  const openMenu = vi.fn();
+  const { container } = render(
+    <DynamicUiLinkMenuContext.Provider value={openMenu}>
+      <DynamicUiWidget
+        part={part}
+        api={apiClient()}
+        groupId="group"
+        workspaceId="workspace"
+      />
+    </DynamicUiLinkMenuContext.Provider>
+  );
+  await waitFor(() => expect(container.querySelector("iframe")).not.toBeNull());
+  const iframe = container.querySelector("iframe")!;
+  vi.spyOn(iframe, "getBoundingClientRect").mockReturnValue(
+    DOMRect.fromRect({ x: 100, y: 200, width: 400, height: 300 })
+  );
+  const { port } = await connect(iframe);
+  act(() => {
+    port.postMessage({ type: "link-menu", url: "javascript:alert(1)", x: 1, y: 1 });
+    port.postMessage({
+      type: "link-menu",
+      url: "https://example.test/pr",
+      x: "1",
+      y: 1,
+    });
+    port.postMessage({
+      type: "link-menu",
+      url: "https://example.test/pr",
+      x: 12,
+      y: 34,
+    });
+  });
+  expect(openMenu).toHaveBeenCalledExactlyOnceWith(
+    "https://example.test/pr",
+    112,
+    234,
+    iframe
+  );
 });

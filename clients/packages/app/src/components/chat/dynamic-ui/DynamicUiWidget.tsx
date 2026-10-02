@@ -33,6 +33,11 @@ export const DynamicUiDraftContext = createContext<
 export const DynamicUiLinkContext = createContext<((url: string) => void) | undefined>(
   undefined
 );
+/** Opens the host's link menu for a right-click inside a widget, at viewport coordinates. */
+export const DynamicUiLinkMenuContext = createContext<
+  | ((url: string, clientX: number, clientY: number, frame: HTMLIFrameElement) => void)
+  | undefined
+>(undefined);
 type Props = {
   part: Extract<ChatMessagePart, { kind: "dynamic-ui" }>;
   api: CommaApiClient | undefined;
@@ -72,6 +77,9 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
   const openLink = useContext(DynamicUiLinkContext);
   const openLinkRef = useRef(openLink);
   openLinkRef.current = openLink;
+  const openLinkMenu = useContext(DynamicUiLinkMenuContext);
+  const openLinkMenuRef = useRef(openLinkMenu);
+  openLinkMenuRef.current = openLinkMenu;
   const themeName = useCommaUiThemeName();
   const currentTheme = useRef(themeName);
   currentTheme.current = themeName;
@@ -346,6 +354,29 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
               openLinkRef.current?.(url.href);
           } catch {
             /* Ignore invalid navigation requests. */
+          }
+        }
+        if (
+          message.type === "link-menu" &&
+          typeof message.url === "string" &&
+          message.url.length <= 4000 &&
+          Number.isFinite(message.x) &&
+          Number.isFinite(message.y) &&
+          frame.current
+        ) {
+          try {
+            const url = new URL(message.url);
+            // Frame coordinates are relative to its own viewport.
+            const bounds = frame.current.getBoundingClientRect();
+            if (url.protocol === "https:" && !url.username && !url.password)
+              openLinkMenuRef.current?.(
+                url.href,
+                bounds.left + message.x,
+                bounds.top + message.y,
+                frame.current
+              );
+          } catch {
+            /* Ignore invalid link menu requests. */
           }
         }
         if (message.type === "card-state") {

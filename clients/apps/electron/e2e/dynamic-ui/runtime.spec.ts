@@ -1442,6 +1442,31 @@ test("whole-item links require user activation and leave navigation to the host"
   expect(requests).toEqual([]);
 });
 
+test("a right-click on a link asks the host for its link menu", async () => {
+  await mount("", '<p>Before</p><a href="https://example.test/pr">PR #2300</a>');
+  const link = page.frameLocator("iframe").locator("a");
+  await expect(link).toBeVisible();
+  await page.frameLocator("iframe").locator("p").click({ button: "right" });
+  await link.dispatchEvent("contextmenu");
+  expect((await messages()).filter((m) => m.type === "link-menu")).toEqual([]);
+  await link.click({ button: "right", position: { x: 5, y: 6 } });
+  await expect
+    .poll(async () => (await messages()).filter((m) => m.type === "link-menu").length)
+    .toBe(1);
+  const request = (await messages()).find((m) => m.type === "link-menu");
+  expect(request?.url).toBe("https://example.test/pr");
+  const box = await link.boundingBox();
+  const frameBox = await page.locator("iframe").boundingBox();
+  // Frame coordinates are relative to the frame's viewport, within a pixel of rounding.
+  expect(Math.abs(Number(request?.x) - (box!.x - frameBox!.x + 5))).toBeLessThanOrEqual(
+    1
+  );
+  expect(Math.abs(Number(request?.y) - (box!.y - frameBox!.y + 6))).toBeLessThanOrEqual(
+    1
+  );
+  expect((await messages()).filter((m) => m.type === "open-link")).toEqual([]);
+});
+
 test("Worker cannot forge a link activation", async () => {
   await mount('postMessage({type:"open-link",url:"https://example.test/forged"})');
   await expect

@@ -128,10 +128,11 @@ describe("ChatLinkHoverCard", () => {
     expect(screen.queryByTestId("recommendation-link-card")).toBeNull();
   });
 
-  it("opens a remembered 404 straight on the generic card without re-reading", async () => {
+  it("opens a remembered failure straight on the generic card without re-reading", async () => {
+    // A GitHub PR the connected account cannot see comes back as 503.
     const getRecommendationLinkPreview = vi
       .fn()
-      .mockRejectedValue(new CommaApiError(404, "not_found"));
+      .mockRejectedValue(new CommaApiError(503, "workspace_unavailable"));
     const api = previewApi(getRecommendationLinkPreview);
     const view = render(
       <ChatLinkHoverCard

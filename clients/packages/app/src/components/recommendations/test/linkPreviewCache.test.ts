@@ -95,21 +95,50 @@ describe("loadRecommendationLinkPreview", () => {
     expect(api.getRecommendationLinkPreview).toHaveBeenCalledWith("wsp_1", link);
   });
 
-  it("drops failed reads so the next hover retries", async () => {
-    const api = {
-      getRecommendationLinkPreview: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("boom"))
-        .mockResolvedValueOnce(preview),
-    } as unknown as CommaApiClient;
+  it("remembers other failures briefly, then retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = {
+        getRecommendationLinkPreview: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("boom"))
+          .mockResolvedValueOnce(preview),
+      } as unknown as CommaApiClient;
 
-    await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toThrow(
-      "boom"
-    );
-    await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).resolves.toBe(
-      preview
-    );
-    expect(api.getRecommendationLinkPreview).toHaveBeenCalledTimes(2);
+      await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toThrow(
+        "boom"
+      );
+      expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBe("missing");
+      await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toThrow(
+        "boom"
+      );
+      vi.advanceTimersByTime(60_000 + 1);
+      await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).resolves.toBe(
+        preview
+      );
+      expect(api.getRecommendationLinkPreview).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("remembers a provider failure (503) for a minute, not the full TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = {
+        getRecommendationLinkPreview: vi
+          .fn()
+          .mockRejectedValue(new CommaApiError(503, "workspace_unavailable")),
+      } as unknown as CommaApiClient;
+
+      await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toThrow();
+      vi.advanceTimersByTime(59_000);
+      expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBe("missing");
+      vi.advanceTimersByTime(2_000);
+      expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("remembers a 404 so the next hover settles without a request", async () => {

@@ -5,6 +5,10 @@ import {
 } from "../../api";
 
 const PREVIEW_TTL_MS = 5 * 60_000;
+// Other failures are remembered briefly: the server reports a provider that
+// cannot read the link (e.g. a GitHub repo the account cannot see) as 503,
+// alongside genuine outages, so it must not stick as long as a definite 404.
+const FAILED_PREVIEW_TTL_MS = 60_000;
 const MAX_PREVIEW_ENTRIES = 64;
 // Mirrors CommaWeb.RecommendationLinkPreview: GitHub pull requests, Linear
 // issues, Notion pages, Google Calendar events (public ones render; the
@@ -36,10 +40,10 @@ type PreviewCacheEntry = {
   expiresAt: number;
   promise: Promise<CommaRecommendationLinkPreview> | undefined;
   value?: CommaRecommendationLinkPreview;
-  // The server answered 404: no connected source can read this link (no
-  // access, private event, deleted message). Remembered like a value so every
-  // hover doesn't re-ask and flash the skeleton before the generic card.
-  missing?: CommaApiError;
+  // The read failed (no source, no access, private event, deleted message,
+  // outage). Remembered like a value so every hover doesn't re-ask and flash
+  // the skeleton before the generic card.
+  missing?: unknown;
 };
 
 type PreviewLink = { href: string; sourceId?: string | undefined };
@@ -58,7 +62,7 @@ export function peekRecommendationLinkPreview(
 ): CommaRecommendationLinkPreview | "missing" | undefined {
   const current = previewCache(api).get(cacheKey(workspaceId, link));
   if (!current || current.expiresAt <= Date.now()) return undefined;
-  return current.value ?? (current.missing ? "missing" : undefined);
+  return current.value ?? (current.missing !== undefined ? "missing" : undefined);
 }
 
 /** Session-scoped, bounded and concurrent-deduplicated inline-link previews. */
@@ -77,7 +81,7 @@ export function loadRecommendationLinkPreview(
       touch(cache, key, current);
       return Promise.resolve(current.value);
     }
-    if (current.missing) {
+    if (current.missing !== undefined) {
       touch(cache, key, current);
       return Promise.reject(current.missing);
     }
@@ -104,15 +108,13 @@ export function loadRecommendationLinkPreview(
     },
     (error: unknown) => {
       if (cache.get(key) === entry) {
-        // Only a definite 404 is remembered; transient failures retry on the
-        // next hover.
-        if (error instanceof CommaApiError && error.status === 404) {
-          entry.promise = undefined;
-          entry.missing = error;
-          entry.expiresAt = Date.now() + PREVIEW_TTL_MS;
-        } else {
-          cache.delete(key);
-        }
+        entry.promise = undefined;
+        entry.missing = error;
+        entry.expiresAt =
+          Date.now() +
+          (error instanceof CommaApiError && error.status === 404
+            ? PREVIEW_TTL_MS
+            : FAILED_PREVIEW_TTL_MS);
       }
       throw error;
     }

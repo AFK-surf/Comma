@@ -1,4 +1,8 @@
-import type { CommaApiClient, CommaRecommendationLinkPreview } from "../../api";
+import {
+  CommaApiError,
+  type CommaApiClient,
+  type CommaRecommendationLinkPreview,
+} from "../../api";
 
 const PREVIEW_TTL_MS = 5 * 60_000;
 const MAX_PREVIEW_ENTRIES = 64;
@@ -32,24 +36,51 @@ type PreviewCacheEntry = {
   expiresAt: number;
   promise: Promise<CommaRecommendationLinkPreview> | undefined;
   value?: CommaRecommendationLinkPreview;
+  // The server answered 404: no connected source can read this link (no
+  // access, private event, deleted message). Remembered like a value so every
+  // hover doesn't re-ask and flash the skeleton before the generic card.
+  missing?: CommaApiError;
 };
 
+type PreviewLink = { href: string; sourceId?: string | undefined };
+
 let sessionCaches = new WeakMap<CommaApiClient, Map<string, PreviewCacheEntry>>();
+
+/**
+ * The settled, unexpired answer for this link without a request: the preview,
+ * `"missing"` when the server has no preview for it, or `undefined` when it
+ * still needs a read. Lets a hover card skip its loading state on a hit.
+ */
+export function peekRecommendationLinkPreview(
+  api: CommaApiClient,
+  workspaceId: string,
+  link: PreviewLink
+): CommaRecommendationLinkPreview | "missing" | undefined {
+  const current = previewCache(api).get(cacheKey(workspaceId, link));
+  if (!current || current.expiresAt <= Date.now()) return undefined;
+  return current.value ?? (current.missing ? "missing" : undefined);
+}
 
 /** Session-scoped, bounded and concurrent-deduplicated inline-link previews. */
 export function loadRecommendationLinkPreview(
   api: CommaApiClient,
   workspaceId: string,
-  link: { href: string; sourceId?: string | undefined }
+  link: PreviewLink
 ) {
   const cache = previewCache(api);
-  const key = `${workspaceId} ${link.sourceId ?? ""} ${link.href}`;
+  const key = cacheKey(workspaceId, link);
   const current = cache.get(key);
   const now = Date.now();
 
-  if (current?.value && current.expiresAt > now) {
-    touch(cache, key, current);
-    return Promise.resolve(current.value);
+  if (current && current.expiresAt > now) {
+    if (current.value) {
+      touch(cache, key, current);
+      return Promise.resolve(current.value);
+    }
+    if (current.missing) {
+      touch(cache, key, current);
+      return Promise.reject(current.missing);
+    }
   }
   if (current?.promise) {
     touch(cache, key, current);
@@ -72,7 +103,17 @@ export function loadRecommendationLinkPreview(
       return preview;
     },
     (error: unknown) => {
-      if (cache.get(key) === entry) cache.delete(key);
+      if (cache.get(key) === entry) {
+        // Only a definite 404 is remembered; transient failures retry on the
+        // next hover.
+        if (error instanceof CommaApiError && error.status === 404) {
+          entry.promise = undefined;
+          entry.missing = error;
+          entry.expiresAt = Date.now() + PREVIEW_TTL_MS;
+        } else {
+          cache.delete(key);
+        }
+      }
       throw error;
     }
   );
@@ -80,6 +121,10 @@ export function loadRecommendationLinkPreview(
   touch(cache, key, entry);
   evictOverflow(cache);
   return promise;
+}
+
+function cacheKey(workspaceId: string, link: PreviewLink) {
+  return `${workspaceId} ${link.sourceId ?? ""} ${link.href}`;
 }
 
 function previewCache(api: CommaApiClient) {

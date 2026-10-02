@@ -98,6 +98,7 @@ import {
 import {
   hasRecommendationLinkPreview,
   loadRecommendationLinkPreview,
+  peekRecommendationLinkPreview,
 } from "./linkPreviewCache";
 import {
   recommendationLinkHrefAttribute,
@@ -1986,6 +1987,17 @@ function RecommendationLinkHoverCard({
 
   const handleOpenChange = (open: boolean) => {
     if (!open || link.previewText || !richPreview || preview !== undefined) return;
+    // A settled answer renders at once: no skeleton flash, no request.
+    const cached = peekRecommendationLinkPreview(
+      previewContext.api,
+      previewContext.workspaceId,
+      { href: link.href, sourceId: link.sourceId }
+    );
+    if (cached === "missing") return;
+    if (cached) {
+      setPreview(cached);
+      return;
+    }
     const generation = ++requestGeneration.current;
     setPreview("loading");
     void loadRecommendationLinkPreview(previewContext.api, previewContext.workspaceId, {

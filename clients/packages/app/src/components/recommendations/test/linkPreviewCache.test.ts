@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient, CommaRecommendationLinkPreview } from "../../../api";
+import {
+  CommaApiError,
+  type CommaApiClient,
+  type CommaRecommendationLinkPreview,
+} from "../../../api";
 import {
   hasRecommendationLinkPreview,
   loadRecommendationLinkPreview,
+  peekRecommendationLinkPreview,
   resetRecommendationLinkPreviewCacheForTests,
 } from "../linkPreviewCache";
 
@@ -105,6 +110,46 @@ describe("loadRecommendationLinkPreview", () => {
       preview
     );
     expect(api.getRecommendationLinkPreview).toHaveBeenCalledTimes(2);
+  });
+
+  it("remembers a 404 so the next hover settles without a request", async () => {
+    const missing = new CommaApiError(404, "not_found");
+    const api = {
+      getRecommendationLinkPreview: vi.fn().mockRejectedValue(missing),
+    } as unknown as CommaApiClient;
+
+    expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBeUndefined();
+    await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toBe(
+      missing
+    );
+    expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBe("missing");
+    await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toBe(
+      missing
+    );
+    expect(api.getRecommendationLinkPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-reads a remembered 404 once it expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = {
+        getRecommendationLinkPreview: vi
+          .fn()
+          .mockRejectedValueOnce(new CommaApiError(404, "not_found"))
+          .mockResolvedValueOnce(preview),
+      } as unknown as CommaApiClient;
+
+      await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).rejects.toThrow();
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBeUndefined();
+      await expect(loadRecommendationLinkPreview(api, "wsp_1", link)).resolves.toBe(
+        preview
+      );
+      expect(peekRecommendationLinkPreview(api, "wsp_1", link)).toBe(preview);
+      expect(api.getRecommendationLinkPreview).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("omits an absent sourceId from the request", async () => {

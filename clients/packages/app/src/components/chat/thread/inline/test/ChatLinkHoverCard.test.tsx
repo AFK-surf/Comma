@@ -2,9 +2,10 @@ import { render, screen, waitFor } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  CommaApiClient,
-  CommaRecommendationLinkPreview,
+import {
+  CommaApiError,
+  type CommaApiClient,
+  type CommaRecommendationLinkPreview,
 } from "../../../../../api";
 import { resetRecommendationLinkPreviewCacheForTests } from "../../../../recommendations/linkPreviewCache";
 import { ChatLinkHoverCard } from "../ChatLinkHoverCard";
@@ -125,6 +126,78 @@ describe("ChatLinkHoverCard", () => {
     expect(card).toHaveTextContent("GitHub · github.com/AFK-surf/Comma/pull/845");
     expect(card).not.toHaveClass("comma-recommendation-rich-link-hover-card");
     expect(screen.queryByTestId("recommendation-link-card")).toBeNull();
+  });
+
+  it("opens a remembered 404 straight on the generic card without re-reading", async () => {
+    const getRecommendationLinkPreview = vi
+      .fn()
+      .mockRejectedValue(new CommaApiError(404, "not_found"));
+    const api = previewApi(getRecommendationLinkPreview);
+    const view = render(
+      <ChatLinkHoverCard
+        anchor={<a href={PR_HREF}>PR #845</a>}
+        api={api}
+        href={PR_HREF}
+        workspaceId="wsp_1"
+      />
+    );
+
+    const user = userEvent.setup();
+    setInteractionModality("pointer");
+    await user.hover(screen.getByRole("link", { name: "PR #845" }));
+    await screen.findByRole("tooltip", {}, { timeout: 3_000 });
+    await waitFor(() =>
+      expect(screen.queryByTestId("recommendation-link-card-skeleton")).toBeNull()
+    );
+    view.unmount();
+
+    // A fresh card (another message, a remount) for the same link.
+    render(
+      <ChatLinkHoverCard
+        anchor={<a href={PR_HREF}>PR #845</a>}
+        api={api}
+        href={PR_HREF}
+        workspaceId="wsp_1"
+      />
+    );
+    await user.hover(screen.getByRole("link", { name: "PR #845" }));
+    const card = await screen.findByRole("tooltip", {}, { timeout: 3_000 });
+    expect(screen.queryByTestId("recommendation-link-card-skeleton")).toBeNull();
+    expect(card).toHaveTextContent("GitHub · github.com/AFK-surf/Comma/pull/845");
+    expect(getRecommendationLinkPreview).toHaveBeenCalledOnce();
+  });
+
+  it("opens a cached preview straight on the rich card in a fresh card", async () => {
+    const getRecommendationLinkPreview = vi.fn().mockResolvedValue(pullRequestPreview);
+    const api = previewApi(getRecommendationLinkPreview);
+    const view = render(
+      <ChatLinkHoverCard
+        anchor={<a href={PR_HREF}>PR #845</a>}
+        api={api}
+        href={PR_HREF}
+        workspaceId="wsp_1"
+      />
+    );
+
+    const user = userEvent.setup();
+    setInteractionModality("pointer");
+    await user.hover(screen.getByRole("link", { name: "PR #845" }));
+    await screen.findByTestId("recommendation-link-card", {}, { timeout: 3_000 });
+    view.unmount();
+
+    render(
+      <ChatLinkHoverCard
+        anchor={<a href={PR_HREF}>PR #845</a>}
+        api={api}
+        href={PR_HREF}
+        workspaceId="wsp_1"
+      />
+    );
+    await user.hover(screen.getByRole("link", { name: "PR #845" }));
+    await screen.findByRole("tooltip", {}, { timeout: 3_000 });
+    expect(screen.queryByTestId("recommendation-link-card-skeleton")).toBeNull();
+    expect(screen.getByTestId("recommendation-link-card")).toBeInTheDocument();
+    expect(getRecommendationLinkPreview).toHaveBeenCalledOnce();
   });
 
   it("labels the generic card with the link host when the anchor has no text", async () => {

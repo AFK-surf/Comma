@@ -392,6 +392,8 @@ function sessionDeviceLabel(session: AdminSession) {
       return "Web browser";
     case "electron":
       return "Comma Desktop";
+    case "android":
+      return "Comma Android app";
     case "api":
       return "API client";
     case "ssh":
@@ -407,6 +409,8 @@ function clientKindLabel(clientKind: AdminSession["client_kind"]) {
       return "Web";
     case "electron":
       return "Desktop";
+    case "android":
+      return "Android";
     case "api":
       return "API";
     case "ssh":

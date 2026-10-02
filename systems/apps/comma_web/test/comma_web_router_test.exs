@@ -7793,6 +7793,45 @@ defmodule CommaWeb.RouterTest do
            }
   end
 
+  @tag database_isolation: "SERIALIZABLE"
+  test "Android Google completion verifies the Credential Manager ID token and issues a bearer session" do
+    attempt =
+      :post
+      |> json_conn("/v1/comma/auth/google/attempt", %{"platform" => "android"})
+      |> call()
+      |> expect_json(200)
+
+    assert attempt["platform"] == "android"
+    assert attempt["client_id"] == "comma-web-test.apps.googleusercontent.com"
+
+    credential = "router-android-id-token"
+
+    put_google_credential!(credential, attempt, %{
+      "sub" => "router-android-google-subject",
+      "email" => "router-android@gmail.com",
+      "azp" => "comma-android-test.apps.googleusercontent.com"
+    })
+
+    session =
+      :post
+      |> json_conn("/v1/comma/auth/google", %{
+        "attempt_id" => attempt["attempt_id"],
+        "nonce" => attempt["nonce"],
+        "credential" => credential,
+        "client_kind" => "android",
+        "client_platform" => "android"
+      })
+      |> call()
+      |> expect_json(200)
+
+    assert "comma_sess_" <> _ = session["token"]
+    assert session["user"]["email"] == "router-android@gmail.com"
+
+    stored = Repo.get!(AuthSession, session["session_id"])
+    assert stored.client_kind == "android"
+    assert stored.device_label == "Comma Android app"
+  end
+
   test "Electron Google completion rejects non-loopback redirects before consuming the attempt" do
     Application.put_env(:comma_core, :google_adapter_fake_exchange_pid, self())
 

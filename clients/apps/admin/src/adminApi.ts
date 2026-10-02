@@ -62,7 +62,7 @@ const adminSessionSchema = z.strictObject({
   expires_at: z.number(),
   last_seen_at: z.number().nullable(),
   revoked_at: z.number().nullable(),
-  client_kind: z.enum(["web", "electron", "api", "ssh"]).nullable(),
+  client_kind: z.enum(["web", "electron", "android", "api", "ssh"]).nullable(),
   device_label: z.string().nullable(),
   restricted: z.boolean(),
 });

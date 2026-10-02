@@ -217,6 +217,7 @@
     "google_auth": {
       "web_client_id": "replace-with-web-client-id.apps.googleusercontent.com",
       "electron_client_id": "replace-with-desktop-client-id.apps.googleusercontent.com",
+      "android_client_ids": [],
       "electron_client_secret": "replace-with-desktop-client-secret"
     },
     "synchronicity": {

@@ -74,10 +74,11 @@ defmodule Comma.Auth.GoogleAdapter.Oidcc do
          {:ok, client_context} <-
            ClientContext.from_configuration_worker(@provider, client_id, :unauthenticated),
          {:ok, claims} <-
-           Token.validate_id_token(credential, client_context, %{
-             nonce: nonce,
-             refresh_jwks: &refresh_jwks/2
-           }) do
+           Token.validate_id_token(
+             credential,
+             client_context,
+             id_token_validation_opts(nonce, Keyword.get(opts, :authorized_parties))
+           ) do
       {:ok, claims}
     else
       {:error, :provider_not_ready} -> {:error, :google_provider_unavailable}
@@ -91,6 +92,16 @@ defmodule Comma.Auth.GoogleAdapter.Oidcc do
   end
 
   def verify_id_token(_credential, _opts), do: {:error, :invalid_google_credential}
+
+  defp id_token_validation_opts(nonce, authorized_parties)
+       when is_list(authorized_parties) and authorized_parties != [] do
+    nonce
+    |> id_token_validation_opts(nil)
+    |> Map.put(:validate_azp, authorized_parties)
+  end
+
+  defp id_token_validation_opts(nonce, _authorized_parties),
+    do: %{nonce: nonce, refresh_jwks: &refresh_jwks/2}
 
   defp normalize_exchange_error({:http_error, status, %{"error" => error}})
        when status in 400..499 and error in ["invalid_client", "unauthorized_client"],

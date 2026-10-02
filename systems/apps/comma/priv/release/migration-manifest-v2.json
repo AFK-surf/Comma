@@ -4702,6 +4702,17 @@
       "postconditions": [
         "billing_core.migration-ledger/20260930132400=applied-and-schema-ready"
       ]
+    },
+    {
+      "id": "comma-20261002000000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261002000000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261002000000_allow_android_session_client_kind.exs",
+      "checksum": "sha256:b8efd68b9682cdb0a3eb11efd0dde111fb88e15081a3d1587481b9396a4b1251",
+      "postconditions": [
+        "postgres.comma_auth_sessions=android-client-kind-allowed"
+      ]
     }
   ],
   "orderingConstraints": [

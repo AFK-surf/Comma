@@ -171,6 +171,7 @@ config :comma_core, :google_auth,
   web_client_id: "comma-web-test.apps.googleusercontent.com",
   electron_client_id: "comma-electron-test.apps.googleusercontent.com",
   electron_client_secret: "comma-electron-test-client-secret",
+  android_client_ids: ["comma-android-test.apps.googleusercontent.com"],
   attempt_ttl_seconds: 300
 
 config :comma_core,

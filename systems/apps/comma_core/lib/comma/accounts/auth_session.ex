@@ -92,7 +92,9 @@ defmodule Comma.Accounts.AuthSession do
       allow_nil: true
     )
     |> validate_inclusion(:session_source, ["user_login", "ops_api", "channel_task_panel"])
-    |> validate_inclusion(:client_kind, ["web", "electron", "api", "ssh"], allow_nil: true)
+    |> validate_inclusion(:client_kind, ["web", "electron", "android", "api", "ssh"],
+      allow_nil: true
+    )
     |> validate_inclusion(
       :client_platform,
       ["android", "ios", "windows", "macos", "linux", "unknown"],

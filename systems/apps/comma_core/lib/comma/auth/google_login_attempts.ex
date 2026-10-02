@@ -1,6 +1,8 @@
 defmodule Comma.Auth.GoogleLoginAttempts do
   @moduledoc "One-time, nonce-bound state issued before starting Google Identity Services."
 
+  @platforms ["web", "electron", "android"]
+
   @purpose "google_login_attempt"
   @default_ttl_seconds 300
   @max_attempts 2
@@ -10,7 +12,7 @@ defmodule Comma.Auth.GoogleLoginAttempts do
   @spec create(String.t(), map()) :: {:ok, map()} | {:error, :google_not_configured | term()}
   def create(platform \\ "web", attrs \\ %{})
 
-  def create(platform, attrs) when platform in ["web", "electron"] and is_map(attrs) do
+  def create(platform, attrs) when platform in @platforms and is_map(attrs) do
     with {:ok, client_id} <- client_id(platform),
          {:ok, ip_fingerprint} <- ip_fingerprint(attrs),
          attempt_id <- random_id(platform),
@@ -43,7 +45,7 @@ defmodule Comma.Auth.GoogleLoginAttempts do
 
   @spec consume(map(), String.t()) :: {:ok, map()} | {:error, :invalid_google_attempt | term()}
   def consume(attrs, expected_platform)
-      when is_map(attrs) and expected_platform in ["web", "electron"] do
+      when is_map(attrs) and expected_platform in @platforms do
     # Protocol anchor: tla/google_desktop_auth/GoogleDesktopAuth.tla
     attempt_id = trim(value(attrs, "attempt_id"))
     nonce = trim(value(attrs, "nonce"))
@@ -70,6 +72,21 @@ defmodule Comma.Auth.GoogleLoginAttempts do
 
   def consume(_attrs, _expected_platform), do: {:error, :invalid_google_attempt}
 
+  @doc "Android OAuth client IDs accepted as the `azp` of an Android Credential Manager ID token."
+  @spec android_client_ids() :: [String.t()]
+  def android_client_ids do
+    case google_config()[:android_client_ids] do
+      ids when is_list(ids) ->
+        ids
+        |> Enum.filter(&is_binary/1)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      _other ->
+        []
+    end
+  end
+
   defp client_id(platform) do
     case {client_id_for(platform), platform_configured?(platform)} do
       {value, true} when is_binary(value) and value != "" -> {:ok, value}
@@ -78,6 +95,8 @@ defmodule Comma.Auth.GoogleLoginAttempts do
   end
 
   defp platform_configured?("web"), do: true
+
+  defp platform_configured?("android"), do: android_client_ids() != []
 
   defp platform_configured?("electron") do
     case google_config()[:electron_client_secret] do
@@ -90,6 +109,9 @@ defmodule Comma.Auth.GoogleLoginAttempts do
 
   defp client_id_for("electron"),
     do: google_config()[:electron_client_id] |> normalize_client_id()
+
+  # Android Credential Manager issues ID tokens whose audience is the web client.
+  defp client_id_for("android"), do: client_id_for("web")
 
   defp client_id_for(_platform), do: nil
 

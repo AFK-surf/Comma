@@ -924,6 +924,25 @@ if is_binary(comma_google_electron_client_id) and comma_google_electron_client_i
   config :comma_core, :google_auth, electron_client_id: comma_google_electron_client_id
 end
 
+comma_google_android_client_ids =
+  case SalixStore.ConfigJson.get(salix_config, ~w(comma google_auth android_client_ids)) do
+    nil ->
+      []
+
+    ids when is_list(ids) ->
+      Enum.map(ids, fn
+        id when is_binary(id) and id != "" -> id
+        _invalid -> raise("comma.google_auth.android_client_ids must contain nonempty strings")
+      end)
+
+    _invalid ->
+      raise("comma.google_auth.android_client_ids must be a list")
+  end
+
+if comma_google_android_client_ids != [] do
+  config :comma_core, :google_auth, android_client_ids: comma_google_android_client_ids
+end
+
 comma_google_electron_client_secret =
   SalixStore.ConfigJson.string(salix_config, ~w(comma google_auth electron_client_secret)) ||
     System.get_env("COMMA_GOOGLE_ELECTRON_CLIENT_SECRET")

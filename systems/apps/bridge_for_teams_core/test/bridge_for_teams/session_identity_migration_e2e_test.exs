@@ -2,7 +2,7 @@ defmodule BridgeForTeams.SessionIdentityMigrationE2ETest do
   use BridgeForTeams.DataCase, async: false
 
   alias BridgeForTeams.{Accounts, Agents, Orgs, Repo}
-  alias BridgeForTeams.Schema.{UserOnboarding, WorkspaceItem}
+  alias BridgeForTeams.Schema.UserOnboarding
   alias SalixStore.SessionIdMigration
 
   setup do
@@ -36,23 +36,27 @@ defmodule BridgeForTeams.SessionIdentityMigrationE2ETest do
     task_session_id = "router-bft-task-session"
     routine_session_id = "im-bft-routine-session"
 
-    workspace_item =
-      %WorkspaceItem{}
-      |> WorkspaceItem.changeset(%{
-        user_id: user.id,
-        org_id: org.id,
-        project_id: project.id,
-        title: "Delegated task",
-        category: "tasks",
-        kind: "agent_task",
-        platform: "comma",
-        status: "in_progress",
-        source: "projection",
-        source_refs: %{
-          "origin_session_id" => task_session_id
-        }
-      })
-      |> Repo.insert!()
+    # The product code for this table is retired; the row is seeded with SQL
+    # because the identity migration still rewrites any stored data.
+    workspace_item_id = Ecto.UUID.generate()
+
+    Repo.query!(
+      """
+      INSERT INTO workspace_items (
+        id, user_id, org_id, project_id, title, category, kind, status, source,
+        source_refs, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, 'Delegated task', 'tasks', 'agent_task',
+              'in_progress', 'projection', $5, NOW(), NOW())
+      """,
+      [
+        Ecto.UUID.dump!(workspace_item_id),
+        Ecto.UUID.dump!(user.id),
+        Ecto.UUID.dump!(org.id),
+        Ecto.UUID.dump!(project.id),
+        %{"origin_session_id" => task_session_id}
+      ]
+    )
 
     onboarding =
       %UserOnboarding{}
@@ -86,10 +90,9 @@ defmodule BridgeForTeams.SessionIdentityMigrationE2ETest do
 
     assert {:ok, _summary} = BridgeForTeams.Migrations.SessionIdentity.run(maps)
 
-    migrated_workspace_item = Repo.get!(WorkspaceItem, workspace_item.id)
     migrated_onboarding = Repo.get!(UserOnboarding, onboarding.id)
 
-    assert migrated_workspace_item.source_refs["origin_session_id"] == task_target_session_id
+    assert origin_session_id(workspace_item_id) == task_target_session_id
 
     assert get_in(migrated_onboarding.capabilities, [
              "_paused",
@@ -106,10 +109,19 @@ defmodule BridgeForTeams.SessionIdentityMigrationE2ETest do
 
     assert {:ok, _summary} = BridgeForTeams.Migrations.SessionIdentity.run(maps)
 
-    assert Repo.get!(WorkspaceItem, workspace_item.id).source_refs["origin_session_id"] ==
-             task_target_session_id
+    assert origin_session_id(workspace_item_id) == task_target_session_id
 
     assert {:ok, migrated_refs} = BridgeForTeams.Migrations.SessionIdentity.inventory_refs()
     assert {agent.salix_agent_id, task_target_session_id} in migrated_refs
+  end
+
+  defp origin_session_id(workspace_item_id) do
+    [[origin_session_id]] =
+      Repo.query!(
+        "SELECT source_refs->>'origin_session_id' FROM workspace_items WHERE id = $1",
+        [Ecto.UUID.dump!(workspace_item_id)]
+      ).rows
+
+    origin_session_id
   end
 end

@@ -3,10 +3,10 @@ import * as messages from "./paraglide/messages.js";
 
 /**
  * Canonical task-status vocabulary. Three layers hang off this one order:
- * raw server statuses fold into these buckets (taskStatusBucket in @comma/ui),
- * the status-indicator element's segment ids map 1:1 from them
- * (statusMapping in @comma/ui), and the display labels below are the single
- * localized name for each bucket.
+ * raw server statuses fold into these buckets (taskStatusBucket below), the
+ * status-indicator element's segment ids map 1:1 from them (statusMapping in
+ * @comma/ui), and the display labels below are the single localized name for
+ * each bucket.
  */
 export const visibleTaskStatusBuckets = [
   "backlog",
@@ -20,6 +20,41 @@ export const taskStatusBuckets = [...visibleTaskStatusBuckets, "archived"] as co
 export type VisibleTaskStatusBucket = (typeof visibleTaskStatusBuckets)[number];
 
 export type TaskStatusBucket = (typeof taskStatusBuckets)[number];
+
+export function normalizeTaskStatus(status: string): string {
+  return status.trim().toLowerCase();
+}
+
+/** The bucket a raw server status folds into, in every client surface and Electron Main. */
+export function taskStatusBucket(status: string): TaskStatusBucket {
+  const normalized = normalizeTaskStatus(status);
+  if (normalized === "archived") return "archived";
+  if (["cancelled", "canceled", "failed", "error"].includes(normalized)) {
+    return "cancelled";
+  }
+  if (
+    ["closed", "completed", "done", "success", "succeeded", "terminal"].includes(
+      normalized
+    )
+  ) {
+    return "done";
+  }
+  if (
+    [
+      "escalated",
+      "needs_review",
+      "ready_for_review",
+      "review",
+      "waiting_for_review",
+    ].includes(normalized)
+  ) {
+    return "needs_review";
+  }
+  if (["active", "in_progress", "running", "working"].includes(normalized)) {
+    return "in_progress";
+  }
+  return "backlog";
+}
 
 export function taskStatusBucketLabel(
   bucket: TaskStatusBucket,

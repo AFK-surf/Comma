@@ -1265,6 +1265,28 @@ body {
   padding-top: 18px;
 }
 
+.admin-guest-tenant {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.admin-guest-tenant code {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  user-select: all;
+}
+
+.admin-guest-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
 .admin-model-policy-modes {
   display: flex;
   flex-wrap: wrap;

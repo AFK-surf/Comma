@@ -137,6 +137,16 @@ defmodule SalixAgent.ExternalSessionStoreTest do
           :persistent_term.erase({__MODULE__, :resolution_error})
           {:error, reason}
 
+        {:resolve_with_fault, fault} ->
+          :persistent_term.erase({__MODULE__, :resolution_error})
+          :ok = S3.Fake.set_fault_for(self(), fault)
+          resolved_binding(config)
+
+        {:with_fault, fault, reason} ->
+          :persistent_term.put({__MODULE__, :resolution_error}, reason)
+          S3.Fake.set_fault(fault)
+          {:error, reason}
+
         reason ->
           {:error, reason}
       end
@@ -1681,6 +1691,158 @@ defmodule SalixAgent.ExternalSessionStoreTest do
     send(notifier_pid, {:release_notification, ref})
     :persistent_term.erase(@blocked_notification_key)
     assert {:ok, :committed} = Task.await(stage_task)
+  end
+
+  test "financial refusal retires only its input and stays refused after restart" do
+    {agent, pid, _} = start_external_session()
+    denial = SalixAgent.BillingAvailability.error(%{reason: "insufficient_credits"})
+    :persistent_term.put({RuntimeEnv, :resolution_error}, denial)
+    assert {:ok, :committed} = stage(pid, "credit-refusal", "keep rejected message")
+
+    assert eventually(fn ->
+             {:ok, state} = ExternalSessionStore.get_session_record(agent, @session_id)
+             state["input_message_queue"] == []
+           end)
+
+    assert {:ok, records} = ExternalSessionStore.load_records(agent, @session_id)
+
+    assert {:ok, history, _, _} =
+             ExternalSessionRecords.tail(agent, @session_id, records, 20, nil)
+
+    assert Enum.any?(
+             history,
+             &(&1["type"] == "message" and &1["data"]["content"] == "keep rejected message")
+           )
+
+    assert Enum.any?(
+             history,
+             &(&1["type"] == "session.error" and &1["data"]["reason"] == "insufficient_credits")
+           )
+
+    :sys.get_state(pid)
+
+    assert {:ok, %{"status" => "failed", "issue" => "insufficient_credits", "message" => message}} =
+             ExternalSessionStatus.get(agent, @session_id)
+
+    assert message =~ "credits"
+    refute_receive {:runtime_request, _, _}, 30
+    assert :ok = GenServer.stop(pid, :normal)
+    :persistent_term.erase({RuntimeEnv, :resolution_error})
+
+    {:ok, restarted} =
+      ExternalSessionActor.start_link(
+        agent_id: agent,
+        session_id: @session_id,
+        process_on_init: true
+      )
+
+    refute_receive {:runtime_request, _, _}, 100
+
+    assert {:ok, %{"issue" => "insufficient_credits"}} =
+             ExternalSessionStatus.get(agent, @session_id)
+
+    assert {:ok, :committed} = stage(restarted, "after-credit", "new input after funding")
+    assert_receive {:runtime_request, _, request}, 2_000
+
+    assert Enum.map(queued_inputs(request.input_messages), & &1["content"]) == [
+             "new input after funding"
+           ]
+  end
+
+  test "financial refusal of new input preserves the running native execution" do
+    {agent, pid, _} = start_external_session()
+    assert {:ok, :committed} = stage(pid, "already-accepted", "running work")
+    assert_receive {:runtime_request, runtime_pid, request}, @receive_budget_ms
+    event = lifecycle(request.dispatch_id, "accepted-execution", "running")
+
+    assert {:ok, %{"ok" => true}} =
+             ExternalSessionActor.commit_connector_event(
+               pid,
+               request.binding["runtime_capability"],
+               %{"connector_run_id" => request.binding["connector_run_id"], "event" => event}
+             )
+
+    send(runtime_pid, {:runtime_return, accepted(request, %{})})
+
+    assert eventually(fn ->
+             {:ok, state} = ExternalSessionStore.get_session_record(agent, @session_id)
+             state["input_message_queue"] == []
+           end)
+
+    :persistent_term.put(
+      {RuntimeEnv, :resolution_error},
+      SalixAgent.BillingAvailability.error(%{reason: "insufficient_credits"})
+    )
+
+    assert {:ok, :committed} = stage(pid, "refused-steer", "new unpaid input")
+
+    assert eventually(fn ->
+             {:ok, state} = ExternalSessionStore.get_session_record(agent, @session_id)
+             state["input_message_queue"] == []
+           end)
+
+    :sys.get_state(pid)
+
+    assert {:ok,
+            %{
+              "work_status" => "running",
+              "execution_id" => "accepted-execution",
+              "dispatch_id" => dispatch
+            }} = ExternalSessionStatus.get(agent, @session_id)
+
+    assert dispatch == request.dispatch_id
+
+    assert {:ok, %{"ok" => true}} =
+             ExternalSessionActor.commit_connector_event(
+               pid,
+               request.binding["runtime_capability"],
+               %{
+                 "connector_run_id" => request.binding["connector_run_id"],
+                 "event" => Map.put(event, "work_state", "settled")
+               }
+             )
+
+    assert {:ok, %{"status" => "idle"}} = ExternalSessionStatus.get(agent, @session_id)
+    refute_receive {:runtime_request, _, _}, 30
+  end
+
+  test "the same actor recovers a logged refusal after a failed state write without replay" do
+    {agent, pid, _} = start_external_session()
+    error = SalixAgent.BillingAvailability.error(%{reason: "insufficient_credits"})
+
+    :persistent_term.put(
+      {RuntimeEnv, :resolution_error},
+      {:with_fault, {:fail, 503, :put, Keys.agent_external_runtime_session(agent, @session_id)},
+       error}
+    )
+
+    assert {:ok, :committed} = stage(pid, "failed-state", "refused prefix")
+
+    assert eventually(fn ->
+             {:ok, records} = ExternalSessionStore.load_records(agent, @session_id)
+
+             {:ok, history, _, _} =
+               ExternalSessionRecords.tail(agent, @session_id, records, 20, nil)
+
+             Enum.any?(history, &is_map(&1["billing_rejection"]))
+           end)
+
+    # A call barrier waits for this actor's failed write and index reload.
+    :persistent_term.erase({RuntimeEnv, :resolution_error})
+    assert {:ok, :committed} = stage(pid, "new-tail", "preserve next input")
+    assert_receive {:runtime_request, _, request}, 2_000
+
+    assert Enum.map(queued_inputs(request.input_messages), & &1["content"]) == [
+             "preserve next input"
+           ]
+
+    {:ok, fresh} = ExternalSessionStore.load_records(agent, @session_id)
+    assert {:ok, history, _, _} = ExternalSessionRecords.tail(agent, @session_id, fresh, 20, nil)
+
+    assert Enum.count(
+             history,
+             &(&1["type"] == "message" and &1["data"]["content"] == "refused prefix")
+           ) == 1
   end
 
   test "lost readiness notification resumes durable input after actor restart without a Session timer" do
@@ -3370,6 +3532,111 @@ defmodule SalixAgent.ExternalSessionStoreTest do
     # Same id, one second later: not the same record.
     assert {:error, :external_session_record_conflict} =
              ExternalSessionActor.commit_connector_event(pid, capability, event.(1_750_000_001))
+  end
+
+  @tag :dispatch_admission
+  test "failed durable dispatch admission preserves input and sends only after a successful retry" do
+    {agent_id, pid, agent} = start_external_session()
+    assert {:ok, :committed} = stage(pid, "dispatch-admission-seed", "seed", no_wake: true)
+    assert {:ok, records} = ExternalSessionRecords.load(agent_id, @session_id)
+
+    assert {:ok, _binding, _state, _records} =
+             ExternalSessionStore.begin_session(
+               agent_id,
+               @session_id,
+               agent["tenant_id"],
+               agent["runtime_config"],
+               records
+             )
+
+    session_key = Keys.agent_external_runtime_session(agent_id, @session_id)
+
+    :persistent_term.put(
+      {RuntimeEnv, :resolution_error},
+      {:resolve_with_fault, {:pause, :put, session_key}}
+    )
+
+    assert {:ok, :committed} = stage(pid, "dispatch-admission-input", "run")
+    assert eventually(&S3.Fake.paused?/0)
+
+    on_exit(fn ->
+      if S3.Fake.paused?(), do: S3.Fake.release_pause()
+      S3.Fake.clear_blackhole()
+    end)
+
+    :ok = S3.Fake.blackhole({:fail, 503, :put, session_key})
+    :ok = S3.Fake.release_pause()
+    :sys.get_state(pid)
+    assert {:ok, state} = ExternalSessionStore.get_session_record(agent_id, @session_id)
+
+    assert is_map(
+             get_in(
+               List.last(state["input_message_queue"]),
+               ["do_not_send_to_llm", "prepared_activation"]
+             )
+           )
+
+    assert state["status_projection_target"] == nil
+
+    assert Enum.map(queue(agent_id), & &1["source_message_id"]) ==
+             ["dispatch-admission-seed", "dispatch-admission-input"]
+
+    refute_receive {:runtime_request, _, _}, 200
+
+    :ok = S3.Fake.clear_blackhole()
+    assert :ok = ExternalSessionActor.wake(agent_id, @session_id)
+    assert_receive {:runtime_request, runtime_pid, request}, @receive_budget_ms
+    assert {:ok, admitted} = ExternalSessionStore.get_session_record(agent_id, @session_id)
+    assert admitted["status_projection_target"]["dispatch_id"] == request.dispatch_id
+
+    assert admitted["status_projection_target"]["source_message_ids"] ==
+             ["dispatch-admission-seed", "dispatch-admission-input"]
+
+    send(runtime_pid, {:runtime_return, {:accepted, %{"dispatch_id" => request.dispatch_id}}})
+    assert eventually(fn -> queue(agent_id) == [] end)
+    refute_receive {:runtime_request, _, _}, 200
+  end
+
+  for projection_failure <- [:get, :put] do
+    @tag :dispatch_admission
+    test "unavailable starting projection #{projection_failure} does not retire an active execution or park its queued steer" do
+      {agent_id, pid, agent, _capability, _request} =
+        start_running_execution("projection-steer-seed", "retained-execution")
+
+      status_key = Keys.agent_external_runtime_session_status(agent_id, @session_id)
+      :ok = S3.Fake.blackhole({:fail, 503, unquote(projection_failure), status_key})
+      on_exit(fn -> S3.Fake.clear_blackhole() end)
+
+      assert {:ok, :committed} = stage(pid, "projection-steer-input", "continue")
+      assert_receive {:runtime_request, runtime_pid, request}, @receive_budget_ms
+      :ok = S3.Fake.clear_blackhole()
+      send(runtime_pid, {:runtime_return, {:error, :native_rejected}})
+
+      assert eventually(fn ->
+               case ExternalSessionStore.session_records(agent, @session_id, limit: 10) do
+                 {:ok, %{"records" => records}} ->
+                   Enum.any?(
+                     records,
+                     &(&1["type"] == "session.error" and
+                         &1["data"]["dispatch_id"] == request.dispatch_id)
+                   )
+
+                 _ ->
+                   false
+               end
+             end)
+
+      assert {:ok, status} = ExternalSessionStatus.get(agent_id, @session_id)
+      assert status["status"] == "running"
+      assert status["execution_id"] == "retained-execution"
+      assert Enum.map(queue(agent_id), & &1["source_message_id"]) == ["projection-steer-input"]
+
+      assert :ok = ExternalSessionActor.wake(agent_id, @session_id)
+      assert_receive {:runtime_request, retry_pid, retry}, @receive_budget_ms
+      assert retry.dispatch_id == request.dispatch_id
+      send(retry_pid, {:runtime_return, {:accepted, %{"dispatch_id" => retry.dispatch_id}}})
+      assert eventually(fn -> queue(agent_id) == [] end)
+    end
   end
 
   test "matching lifecycle recovers after the starting projection write fails" do
@@ -6556,6 +6823,95 @@ defmodule SalixAgent.ExternalSessionStoreTest do
     assert {:ok, %{records: []}} = SessionWorkIndex.list_discovery(workload_id: rebound_id)
     assert {:ok, [marker]} = SessionWorkIndex.list(agent_id)
     refute Map.has_key?(marker, "workload_id")
+  end
+
+  test "Codex Compute without a chosen Codex template keeps the runtime's own default model" do
+    previous_resolver = Application.get_env(:salix_agent, :llm_resolver)
+    Application.put_env(:salix_agent, :llm_resolver, LiveLlmResolver)
+
+    :persistent_term.put(
+      {LiveLlmResolver, :config},
+      %{"model" => "platform-default", "provider" => "openai", "reasoning_effort" => "high"}
+    )
+
+    on_exit(fn ->
+      :persistent_term.erase({LiveLlmResolver, :config})
+      restore_env(:llm_resolver, previous_resolver)
+    end)
+
+    {:ok, chosen} =
+      SalixAgent.Templates.create(%{"name" => "Plain template", "model" => "gpt-5.5"})
+
+    codex_choice = %{
+      "model" => "gpt-5.5",
+      "provider" => "openai",
+      "reasoning_effort" => "high",
+      "runtime_provider" => "codex"
+    }
+
+    claude_choice = %{
+      "model" => "claude-opus-5",
+      "provider" => "anthropic",
+      "runtime_provider" => "claude"
+    }
+
+    platform_default = :persistent_term.get({LiveLlmResolver, :config})
+
+    for {template_id, config} <- [
+          {nil, platform_default},
+          {chosen["template_id"], platform_default},
+          {chosen["template_id"], codex_choice},
+          {chosen["template_id"], claude_choice}
+        ] do
+      :persistent_term.put({LiveLlmResolver, :config}, config)
+      {agent_id, pid, agent} = start_external_session()
+      prefix = "codex-default-" <> ULID.generate()
+
+      fixture =
+        SalixStore.TestSupport.ExternalWorkerTargetFixture.create(
+          prefix,
+          "codex-default-project",
+          agent["group_id"],
+          "codex",
+          agent["tenant_id"]
+        )
+
+      runtime = %{
+        "kind" => "compute_workload",
+        "workload_id" => fixture.workload.id,
+        "runtime_spec" => %{"provider" => "codex"},
+        "owner_scope" => %{"type" => "project", "id" => "codex-default-project"},
+        "binding_revision" => 1
+      }
+
+      assert {:ok, _} =
+               SalixAgent.Control.rebind_external_worker(
+                 agent_id,
+                 agent["tenant_id"],
+                 Map.delete(runtime, "binding_revision"),
+                 0,
+                 "codex-default-initial"
+               )
+
+      assert {:ok, _} =
+               SalixAgent.Control.configure(
+                 agent_id,
+                 %{"template_id" => template_id},
+                 agent["tenant_id"]
+               )
+
+      assert {:ok, :committed} = stage(pid, "codex-default-input", "work", no_wake: true)
+      assert {:ok, binding} = ExternalSessionActor.begin_session(pid, agent["tenant_id"], runtime)
+
+      # Codex gets only a runtime choice made for Codex: never the role
+      # default, a plain template, or a choice made for Claude Code.
+      if config == codex_choice do
+        assert binding["runtime_spec"]["model"] == "gpt-5.5"
+        assert binding["runtime_spec"]["reasoning_effort"] == "high"
+      else
+        assert binding["runtime_spec"] == %{"provider" => "codex"}
+      end
+    end
   end
 
   test "Compute dispatch fills a missing runtime model from the live Agent template" do

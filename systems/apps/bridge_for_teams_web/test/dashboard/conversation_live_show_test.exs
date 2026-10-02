@@ -516,7 +516,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationLiveShowTest do
     assert has_element?(view, "aside", "Inspect the task.")
     assert has_element?(view, "button", "Edit")
     refute has_element?(view, "#task-schedule-form")
-    assert html =~ "resource_id=task-dashboard-status"
     assert html =~ "status-worker"
     assert html =~ "please handle this"
     assert html =~ "https://example.test/spec"

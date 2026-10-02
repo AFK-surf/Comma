@@ -17,9 +17,9 @@ BFT owns access/setup. Salix owns devices/runtimes/dispatch. Projects map to Gro
 
 Tools target environments. Agents bind device_runtime. Dispatch resolves runs.
 ExecutionTarget tags IDs, not access. Aliases cannot select targets. PID/port/socket/run route requests.
-Codex IDs use normalized, trimmed entry paths. Same-path upgrades retain IDs.
-Keep symlinks. Resolve bundles on execution. Never replace missing versions.
-Rebind only new Sessions to discovered entries. Retain old bindings, input and runtime state.
+Codex IDs use normalized entry paths. Upgrades and fallback retain IDs.
+Preserve symlinks. Resolve bundles at execution.
+Rebind only new Sessions to discovered entries. Preserve old bindings, input, and native state.
 
 ## Installation
 
@@ -192,7 +192,9 @@ Manifest external mounts/services/files. unmet dependencies block cutover. Histo
 | --- | --- |
 | Codex 0.153.0 | Keep stdio JSON-RPC and thread/resume(threadId,cwd). Move selected rollout/references into target CODEX_HOME sessions; verify with thread/read. Do not fork or copy the whole home/auth store. |
 | Claude 2.1.258 | Resume native ID. Move its project JSONL, subagents, and sidecars. Use target cwd without history rewrite. |
-| Pi 0.84.4 | Use session-dir and session path/ID. Move selected JSONL/branch state into Connector `external-runtime/pi/<session>`; do not discover it from source cwd. |
+| Pi 0.87.1 | Use session-dir and session path/ID. Move selected JSONL/branch state into Connector `external-runtime/pi/<session>`; do not discover it from source cwd. |
+
+Cloudflare includes uv 0.12.22 and uvx.
 
 Reuse Go providers, not an SDK; versions are in `systems/runtime-images/runtime-dependencies.lock.json`.
 Test locked-CLI resume. Kimi returns `unsupported_provider`; never substitute provider/Session.

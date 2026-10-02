@@ -12,7 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommaApiSessionTransport, SessionHostController } from "../index";
 
 vi.mock("../components/LoginScreen", () => ({
-  LoginScreen: () => <h1>Mock login</h1>,
+  LoginScreen: ({ guestHandoffNotice }: { guestHandoffNotice?: string }) => (
+    <>
+      <h1>Mock login</h1>
+      {guestHandoffNotice ? <p>{guestHandoffNotice}</p> : null}
+    </>
+  ),
 }));
 
 describe("CommaAuthGate with an injected Session host", () => {
@@ -192,6 +197,70 @@ describe("CommaAuthGate with an injected Session host", () => {
         generation: 1,
       },
     ]);
+  });
+
+  it("shows a guest by name only and keeps the handoff notice through sign-in", async () => {
+    const controller = new FakeSessionHostController(signedOutSnapshot());
+    const { CommaAuthGate, useCommaAuth } = await import("../components/AuthGate");
+    const { CommaSessionHostProvider } = await import("../session/react");
+
+    function Product() {
+      const auth = useCommaAuth();
+      return (
+        <output>
+          {auth.isGuest ? "guest" : "registered"}:{auth.userDisplayName}
+        </output>
+      );
+    }
+
+    render(
+      <CommaSessionHostProvider controller={controller}>
+        <CommaAuthGate>
+          <Product />
+        </CommaAuthGate>
+      </CommaSessionHostProvider>
+    );
+    await screen.findByRole("heading", { name: "Mock login" });
+
+    const guest = signedInSnapshot();
+    act(() => {
+      controller.publish({
+        ...guest,
+        principal: {
+          email: "g-0123abcd@guest.comma.invalid",
+          kind: "guest",
+          userId: "guest-user",
+        },
+      });
+    });
+    expect(await screen.findByText("guest:Guest")).toBeVisible();
+    expect(screen.queryByText(/guest\.comma\.invalid/)).toBeNull();
+
+    act(() => {
+      controller.publish({
+        ...signedOutSnapshot(),
+        generation: 2,
+        reason: "guest_handoff",
+        revision: 3,
+      });
+    });
+    const notice = "Sign in or create an account to keep your guest chat.";
+    expect(await screen.findByText(notice)).toBeVisible();
+    act(() => {
+      const { reason: _reason, ...signedOut } = signedOutSnapshot();
+      controller.publish({
+        ...signedOut,
+        generation: 2,
+        phase: "authenticating",
+        revision: 4,
+      });
+    });
+    expect(screen.getByText(notice)).toBeVisible();
+
+    act(() => {
+      controller.publish({ ...signedInSnapshot(), generation: 3, revision: 5 });
+    });
+    expect(await screen.findByText(/^registered:/)).toBeVisible();
   });
 
   it("passes the host-owned product transport without an invalidate command", async () => {

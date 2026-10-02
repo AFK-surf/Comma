@@ -12,6 +12,8 @@ type Options = {
   openMain: () => unknown;
   openSideChat: () => unknown;
   openSideChatBackground?: () => unknown;
+  /** False hides Open Side Chat, as Side Chat is turned off in General. */
+  sideChatEnabled: () => boolean;
 };
 const accelerators = (entries: ApplicationMenuItems) =>
   JSON.stringify(
@@ -88,6 +90,8 @@ export function installApplicationMenu(options: Options) {
         );
       }
     }
+    const sideChatItem = menu.getMenuItemById("open-side-chat");
+    if (sideChatItem) sideChatItem.visible = options.sideChatEnabled();
   }
 
   function build() {
@@ -209,7 +213,9 @@ export function installApplicationMenu(options: Options) {
             },
           },
           {
+            id: "open-side-chat",
             label: t("Open Side Chat"),
+            visible: options.sideChatEnabled(),
             click: () => {
               void options.openSideChat();
             },
@@ -237,4 +243,5 @@ export function installApplicationMenu(options: Options) {
   app.on("browser-window-focus", update);
   app.on("browser-window-blur", update);
   build();
+  return { update };
 }

@@ -396,6 +396,7 @@ function createTestContext(overrides: Partial<ElectronMainRuntimeDeps> = {}) {
   return createElectronMainContext({
     appPreferencesFilePath: join(root, "app-preferences.json"),
     appPreferencesPlatform: {
+      authorizeSystemNotifications: vi.fn(async () => true),
       getLaunchAtLogin: vi.fn(() => ({ enabled: false })),
       getSystemNotificationsStatus: vi.fn(() => "available" as const),
       setLaunchAtLogin: vi.fn((enabled: boolean) => ({ enabled })),
@@ -434,6 +435,7 @@ function createTestContext(overrides: Partial<ElectronMainRuntimeDeps> = {}) {
       setContentSize: vi.fn(() => ({ revision: 0 })),
       setInteractiveProgress: vi.fn(() => ({ revision: 0 })),
       updateDebugSettings: vi.fn(() => defaultSideChatDebugSettings),
+      setEnabled: vi.fn(),
       updateShortcut: vi.fn(() => defaultSideChatShortcut),
     },
     windowAppearance: {

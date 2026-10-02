@@ -42,33 +42,39 @@ defmodule BridgeForTeamsWeb.Dashboard.I18nTest do
       %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
       {:ok, _user} = Accounts.update_locale(user, "zh_Hans")
 
-      {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
+      {:ok, _view, html} = live(conn, swarm_page(org))
 
-      assert html =~ "成员"
-      assert html =~ "邀请成员"
+      assert html =~ "会议"
       # Sidebar nav is translated too.
       assert html =~ "概览"
       assert html =~ "工作区"
-      refute html =~ "Invite member"
+      refute html =~ "Workspace"
     end
 
     test "renders English by default", %{conn: conn} do
       %{conn: conn, org: org} = register_and_log_in_user(%{conn: conn})
 
-      {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
+      {:ok, _view, html} = live(conn, swarm_page(org))
 
-      assert html =~ "Invite member"
-      refute html =~ "邀请成员"
+      assert html =~ "Workspace"
+      refute html =~ "工作区"
     end
 
     test "falls back to the org default locale when the user has no preference", %{conn: conn} do
       %{conn: conn, org: org} = register_and_log_in_user(%{conn: conn})
       {:ok, _org} = Orgs.update_org(org, %{"default_locale" => "zh_Hans"})
 
-      {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/members")
+      {:ok, _view, html} = live(conn, swarm_page(org))
 
       assert html =~ "成员"
     end
+  end
+
+  # Org pages are the React dashboard; the LiveView shell renders on an Agent
+  # Swarm page.
+  defp swarm_page(org) do
+    project = bare_project_fixture(org)
+    ~p"/orgs/#{org.slug}/projects/#{project.id}/plugins"
   end
 
   describe "GET /locale/:locale" do

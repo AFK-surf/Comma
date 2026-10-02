@@ -1,5 +1,5 @@
 import { gunzipSync } from "node:zlib";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../../e2e/helpers/browser-auth";
 
 type Event = { event: string; properties: Record<string, unknown> };
@@ -60,40 +60,42 @@ async function captureEvents(
   return { events, requests, waitForInitialPageview, releaseInitialPageview };
 }
 
-async function installSession(page: Page) {
-  await page.route(`${apiBaseUrl}/v1/**`, async (route) => {
-    const origin = route.request().headers().origin ?? "http://127.0.0.1:4187";
-    const pathname = new URL(route.request().url()).pathname;
-    await route.fulfill({
-      status: route.request().method() === "OPTIONS" ? 204 : 200,
-      headers: {
-        "access-control-allow-origin": origin,
-        "access-control-allow-credentials": "true",
-        "access-control-allow-headers": "content-type,x-comma-session-transport",
-        "access-control-allow-methods": "GET,POST,OPTIONS",
-        "content-type": "application/json",
-      },
-      body:
-        route.request().method() === "OPTIONS"
-          ? ""
-          : JSON.stringify(
-              pathname === "/v1/comma/me/profile"
-                ? {
-                    id: "analytics-user",
-                    email: "private@example.com",
-                    name: "Private Person",
-                    avatar_id: null,
-                  }
-                : { data: [] }
-            ),
-    });
+const privateProfile = {
+  id: "analytics-user",
+  email: "private@example.com",
+  name: "Private Person",
+  avatar_id: null,
+  locale: "en",
+};
+
+function fulfillApi(route: Route, body: unknown) {
+  const origin = route.request().headers().origin ?? "http://127.0.0.1:4187";
+  return route.fulfill({
+    status: route.request().method() === "OPTIONS" ? 204 : 200,
+    headers: {
+      "access-control-allow-origin": origin,
+      "access-control-allow-credentials": "true",
+      "access-control-allow-headers": "content-type,x-comma-session-transport",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "content-type": "application/json",
+    },
+    body: route.request().method() === "OPTIONS" ? "" : JSON.stringify(body),
   });
+}
+
+async function installSession(page: Page) {
+  await page.route(`${apiBaseUrl}/v1/**`, (route) => fulfillApi(route, { data: [] }));
   await installBrowserTestSession(page, {
     apiBaseUrl,
     email: "private@example.com",
     token: "comma_sess_private",
     userId: "analytics-user",
   });
+  // The session helper serves the profile from a reachable backend only. This
+  // backend is the page's routes, so the profile route goes last and wins.
+  await page.route(`${apiBaseUrl}/v1/comma/me/profile`, (route) =>
+    fulfillApi(route, privateProfile)
+  );
 }
 
 for (const deferInitialPageview of [false, true]) {

@@ -7,6 +7,7 @@ export interface FeatureSurfaceManifestEntry {
     | "createSitePermissionMenuWindowOptions"
     | "createMeetingRecorderWindowOptions"
     | "createMainWindowOptions"
+    | "createOnboardingWindowOptions"
     | "createRuntimeWorkbenchWindowOptions"
     | "createSideChatTestWindowOptions"
     | "createSideChatWindowOptions";
@@ -27,6 +28,11 @@ export const FEATURE_SURFACES = [
     id: "main-window",
     kind: "window",
     optionFactory: "createMainWindowOptions",
+  },
+  {
+    id: "onboarding-window",
+    kind: "window",
+    optionFactory: "createOnboardingWindowOptions",
   },
   {
     id: "runtime-workbench",

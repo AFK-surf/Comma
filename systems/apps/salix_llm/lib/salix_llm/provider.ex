@@ -46,10 +46,25 @@ defmodule SalixLlm.Provider do
   @impl true
   def compact_context(messages, tools, llm_opts) do
     case protocol(llm_opts) do
-      "responses" -> OpenAIResponses.compact_context(messages, tools, llm_opts)
-      other -> {:unsupported, {:protocol, other}}
+      "responses" ->
+        if native_compaction?(llm_opts),
+          do: OpenAIResponses.compact_context(messages, tools, llm_opts),
+          else: {:unsupported, :route}
+
+      other ->
+        {:unsupported, {:protocol, other}}
     end
   end
+
+  # A route can speak Responses without a compact endpoint (a Grok
+  # subscription); the caller then uses summary compaction.
+  defp native_compaction?(opts) when is_map(opts),
+    do: Map.get(opts, "native_compaction", Map.get(opts, :native_compaction)) != false
+
+  defp native_compaction?(opts) when is_list(opts),
+    do: not (Keyword.keyword?(opts) and Keyword.get(opts, :native_compaction) == false)
+
+  defp native_compaction?(_), do: true
 
   defp protocol(llm_opts), do: ProviderConfig.resolve(llm_opts).protocol
 

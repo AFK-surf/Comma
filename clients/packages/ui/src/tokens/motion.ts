@@ -128,6 +128,65 @@ export const motionDuration = {
    */
   pictureInPictureEnter: 250,
   pictureInPictureExit: 150,
+  /**
+   * First-launch onboarding. Before anything else, the screen dims from the
+   * desktop (or the product) into the onboarding's light: slowly, so it is
+   * felt rather than watched.
+   */
+  onboardingDim: 3000,
+  /**
+   * The Comma mark arriving in the middle of the dimmed screen. Unhurried: it
+   * is the first thing the onboarding shows.
+   */
+  onboardingLogoEnter: 900,
+  /** The welcome and Start, each arriving under the mark. */
+  onboardingIntroPartEnter: 700,
+  /** From the welcome starting to arrive to Start starting to arrive. */
+  onboardingIntroStagger: 280,
+  /** How long Start, once it has appeared, waits before the onboarding begins by itself. */
+  onboardingAutoStart: 8000,
+  /** The mark moving up from the middle to head the conversation. */
+  onboardingLogoTravel: 640,
+  /** From the mark settling at the top to Comma's first line. */
+  onboardingFirstLine: 400,
+  /** Gap between one of Comma's bubbles being sent and the next one. */
+  onboardingBubbleStagger: 2500,
+  /**
+   * The onboarding thread making room, as a chat does: what is already there
+   * glides to where a card arriving or leaving puts it.
+   */
+  onboardingSettle: 440,
+  /** From the user's reply landing to Comma answering it. */
+  onboardingReplyBeat: 1000,
+  /** From Comma's last line landing to the light that clears it for the welcome page. */
+  onboardingWelcomeBeat: 1200,
+  /**
+   * From Comma's last line landing to the conversation stepping back for the
+   * Open Comma shortcut: time to read what Comma said last.
+   */
+  onboardingShortcutBeat: 3500,
+  /**
+   * A white light sweeping up the screen, clearing the conversation for the
+   * welcome page. Quick, but slow enough to follow as one stroke of light.
+   */
+  onboardingSweep: 1000,
+  /** The light field and the dim fading away to reveal what lies behind. */
+  onboardingExit: 600,
+  /**
+   * The onboarding's last step: from the Side Chat shortcut's keys all
+   * pressed (green, the step's words the success) to the light that clears
+   * the step for the welcome page.
+   */
+  onboardingShortcutDone: 800,
+  /** How long the note that a wrong key was pressed stays. */
+  onboardingKeyHint: 3000,
+  /**
+   * The light field changing intensity between stages, and each step deeper
+   * it takes as the setup goes on.
+   */
+  onboardingLightShift: 1200,
+  /** One slow drift loop of a light-field glow; each glow runs a multiple. */
+  onboardingLightDrift: 30000,
 } as const;
 
 export const motionEasing = {
@@ -160,6 +219,28 @@ export const motionEasing = {
    * matching enter.
    */
   sharpIn: "cubic-bezier(0.4, 0, 1, 1)",
+  /**
+   * A contextual icon trading places with another in the same spot: both stay
+   * mounted and cross-fade, the arriving one growing out of a blur.
+   */
+  contextualIcon: "cubic-bezier(0.2, 0, 0, 1)",
+  /**
+   * A slow, even in-out (a sine): a change meant to be felt rather than
+   * watched, such as the screen dimming as the onboarding begins.
+   */
+  calmInOut: "cubic-bezier(0.37, 0, 0.63, 1)",
+  /**
+   * A soft ease-out (a cubic) for an arrival meant to be unhurried, such as
+   * the onboarding's welcome. It spends its time more evenly than smoothOut,
+   * so a long duration reads as calm rather than as a quick arrival with a
+   * long settle.
+   */
+  calmOut: "cubic-bezier(0.33, 1, 0.68, 1)",
+  /**
+   * A strong in-out for a stroke of light across the screen: it gathers at
+   * one edge, is fastest crossing the middle, and eases out past the other.
+   */
+  lightSweep: "cubic-bezier(0.65, 0, 0.35, 1)",
 } as const;
 
 export const motionScale = {
@@ -178,6 +259,10 @@ export const motionScale = {
   loginCodePress: 0.97,
   /** The floating video window grows from, and shrinks back to, its docked corner. */
   pictureInPicture: 0.96,
+  /** An onboarding card popping in under Comma's question, and leaving. */
+  onboardingCard: 0.98,
+  /** The onboarding's Comma mark arriving in the middle of the screen. */
+  onboardingLogo: 0.96,
 } as const;
 
 /** Pixel distances travelled by moving surfaces during stage transitions. */
@@ -199,6 +284,8 @@ export const motionRotate = {
 export const motionBlur = {
   menuEnter: 2,
   loginStage: 8,
+  /** A contextual icon or small label arriving out of soft focus. */
+  revealItem: 4,
 } as const;
 
 /**

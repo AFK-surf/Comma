@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 
-// Primary dashboard flows for BridgeForTeams, driven through the real LiveView UI
+// Primary dashboard flows for BridgeForTeams, driven through the real dashboard UI
 // (port 4101). Auth uses the guarded /dev/login bypass against the seeded user
 // (e2e@example.com) + org (slug "e2e"). Run serially: tests share + mutate the
 // seeded org.
@@ -13,13 +13,18 @@ const PNG_ICON = Buffer.from(
 const uniq = () =>
   Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
 
+// Organization pages are the React dashboard, which carries the session's
+// CSRF token in its page; so are an Agent Swarm's Overview, Agents, Devices,
+// Tasks and Settings. Its other pages (Plugins, Skills, ...) are still
+// LiveView pages.
+const SPA_PAGE = `/orgs/${ORG_SLUG}`;
+
 async function login(page: Page) {
-  // Land on a LiveView page: the organization Overview is the React dashboard.
   await page.goto(
-    `/dev/login?email=${encodeURIComponent(EMAIL)}&to=/orgs/${ORG_SLUG}/projects`,
+    `/dev/login?email=${encodeURIComponent(EMAIL)}&to=${SPA_PAGE}`,
   );
-  await expect(page).toHaveURL(new RegExp(`/orgs/${ORG_SLUG}/projects$`));
-  await expectLiveViewConnected(page);
+  await expect(page).toHaveURL(new RegExp(`${SPA_PAGE}$`));
+  await expect(page.locator('meta[name="csrf-token"]')).toHaveCount(1);
 }
 
 async function gotoDashboard(page: Page, path: string) {
@@ -33,6 +38,105 @@ async function expectLiveViewConnected(page: Page) {
   await expect(liveViewRoot).toHaveClass(/(^|\s)phx-connected(\s|$)/);
 }
 
+// Settings are React pages; drive their JSON API with the session's CSRF
+// token, which every dashboard page carries.
+async function settingsApi(
+  page: Page,
+  method: string,
+  path: string,
+  data?: Record<string, unknown>,
+) {
+  if ((await page.locator('meta[name="csrf-token"]').count()) === 0) {
+    await page.goto(SPA_PAGE);
+  }
+  const token = await page
+    .locator('meta[name="csrf-token"]')
+    .getAttribute("content");
+  const response = await page.request.fetch(
+    `/dashboard/api/v1/orgs/${ORG_SLUG}/settings/${path}`,
+    { method, data, headers: { "x-csrf-token": token || "" } },
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json()).data;
+}
+
+// The Agent Swarms list is a React page; find a seeded swarm through its API.
+async function projectIdByName(page: Page, name: string): Promise<string> {
+  const response = await page.request.get(
+    `/dashboard/api/v1/orgs/${ORG_SLUG}/projects?query=${encodeURIComponent(name)}`,
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  const { data } = await response.json();
+  const project = data.projects.find(
+    (item: { name: string }) => item.name === name,
+  );
+  expect(project, `Agent Swarm ${name}`).toBeTruthy();
+  return project.id;
+}
+
+// The LiveView shell (sidebar and org switcher) of a seeded Agent Swarm.
+async function gotoLiveViewPage(page: Page) {
+  const projectId = await projectIdByName(page, "E2E External Runtime");
+  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/plugins`);
+}
+
+// The React Agents page of an Agent Swarm, its list loaded. The list shows
+// what Salix knows: a new swarm's Router appears only after its reconcile, so
+// a just-created swarm may show the empty list.
+async function gotoAgents(page: Page, projectId: string) {
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/agents`);
+  await expect(
+    page.getByRole("main").getByRole("heading", { level: 1, name: "Agents" }),
+  ).toBeVisible();
+  await expect(
+    agentRows(page)
+      .first()
+      .or(
+        page
+          .getByRole("main")
+          .getByText("No agents yet. New agents appear after provisioning."),
+      ),
+  ).toBeVisible();
+}
+
+const agentRows = (page: Page) =>
+  page
+    .getByRole("main")
+    .getByRole("region", { name: "All agents" })
+    .getByRole("row");
+
+// Opens an agent in the detail rail from its row.
+async function openAgent(page: Page, name: string) {
+  await agentRows(page)
+    .filter({ hasText: name })
+    .getByRole("link", { name, exact: true })
+    .click();
+  const rail = page.getByRole("complementary", { name });
+  await expect(rail).toBeVisible();
+  return rail;
+}
+
+// Chooses an option of a dashboard dropdown, by its text or the first one.
+async function chooseOption(
+  page: Page,
+  dropdown: Locator,
+  option?: string | RegExp,
+) {
+  await dropdown.click();
+  const options = page.getByRole("option");
+  await (option ? options.filter({ hasText: option }) : options).first().click();
+}
+
+// A task row of the React Tasks page; its link opens the LiveView task detail.
+async function openTask(page: Page, projectId: string, title: string) {
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
+  const link = page.getByRole("row").filter({ hasText: title }).getByRole("link");
+  await expect(link).toBeVisible();
+  await link.click();
+  await expect(page).toHaveURL(/\/tasks\/cnv1_/);
+  await expectLiveViewConnected(page);
+}
+
 async function clickAndExpectVisible(trigger: Locator, target: Locator) {
   await expect(trigger).toBeVisible();
   await expect(trigger).toBeEnabled();
@@ -41,117 +145,156 @@ async function clickAndExpectVisible(trigger: Locator, target: Locator) {
 }
 
 async function waitForProvisionedAgent(page: Page, name: string) {
-  const row = page.locator("#agents tr").filter({ hasText: name });
+  const row = agentRows(page).filter({ hasText: name });
   await expect
     .poll(async () => {
-      await page.locator('button[phx-click="retry_agents"]').first().click();
+      await page
+        .getByRole("main")
+        .getByRole("button", { name: "Refresh", exact: true })
+        .click();
       return row.isVisible();
     }, { timeout: 15_000, intervals: [500, 1_000] })
     .toBe(true);
   return row;
 }
 
-async function selectFirstNonblankOption(select: Locator) {
-  const value = await select.locator("option").nth(1).getAttribute("value");
-  expect(value).toBeTruthy();
-  await select.selectOption(value!);
-}
-
 test.beforeEach(async ({ page }) => {
   await login(page);
 });
 
-test("Triage Agent groups support selection and Escape", async ({
+test("Slack triage Agent picker keeps the chosen Agent in the address", async ({
   page,
 }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/triage`);
-  const setupDismiss = page.getByRole("button", {
-    name: "Maybe later",
-    exact: true,
-  });
-  if (await setupDismiss.isVisible()) await setupDismiss.click();
+  // The picker shows only when the org has more than one router Agent; the
+  // seed has one Agent Swarm, and a new one brings its own router Agent.
+  await createAndOpenProject(page, `triage-${uniq()}`);
+  await page.goto(`/orgs/${ORG_SLUG}/triage`);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Slack triage" }),
+  ).toBeVisible();
 
-  const picker = page.locator("#triage-agent-picker");
-  await picker.locator("summary").click();
-  const group = picker.getByRole("group").first();
-  await expect(group).toBeVisible();
+  // The trigger is named by its selection and its label: "<Agent> Agent".
+  const picker = page
+    .getByRole("main")
+    .getByRole("button", { name: / Agent$/ });
+  await picker.click();
+  const options = page.getByRole("option");
+  await expect(options.first()).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(group).toBeHidden();
-  await picker.locator("summary").click();
-  const option = picker.getByRole("option").first();
-  const agentId = (await option.getAttribute("id"))!.replace("triage-agent-option-", "");
-  await option.click();
-  await expect(group).toBeHidden();
-  await expect(page).toHaveURL(new RegExp(`agent=${agentId}`));
-  await picker.locator("summary").click();
-  await expect(option).toHaveAttribute("aria-selected", "true");
+  await expect(options.first()).toBeHidden();
+  await picker.click();
+  const last = options.last();
+  const name = (await last.innerText()).split("\n")[0];
+  await last.click();
+  await expect(page).toHaveURL(/[?&]agent=[^&]+/);
+  await expect(picker).toContainText(name);
+
+  // The Timeline and Knowledge pages keep the same Agent.
+  await page.getByRole("link", { name: "Timeline", exact: true }).click();
+  await expect(picker).toContainText(name);
 });
 
-test("Triage Worker selection and archive confirmation preserve the configured assignment", async ({ page }, testInfo) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
-  const projectName = process.env.E2E_TRIAGE_PROJECT_NAME || "E2E External Runtime";
-  await page.locator("#projects tr").filter({ hasText: projectName }).click();
-  await page.waitForURL(/projects\/[0-9a-f-]+/);
-  await expectLiveViewConnected(page);
-  const projectId = page.url().match(/projects\/([0-9a-f-]+)/)![1];
-  const routerId = (await page.locator('#agents tr[id^="agent-"]').filter({ hasText: "Router" }).first().getAttribute("id"))!.slice("agent-".length);
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/triage?agent=${routerId}`);
+test("Triage Worker selection and archive confirmation preserve the configured assignment", async ({
+  page,
+}, testInfo) => {
+  const projectName =
+    process.env.E2E_TRIAGE_PROJECT_NAME || "E2E External Runtime";
+  const projectId = await projectIdByName(page, projectName);
+  // The Agents API names the group Router.
+  const response = await page.request.get(
+    `/dashboard/api/v1/orgs/${ORG_SLUG}/projects/${projectId}/agents`,
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  const routerId = (await response.json()).data.agents.find(
+    (agent: { group_router: boolean }) => agent.group_router,
+  ).id;
+  await page.goto(`/orgs/${ORG_SLUG}/triage?agent=${routerId}`);
   const panel = page.locator("#triage-worker-configuration");
-  const selector = panel.locator('select[name="worker_id"]');
+  const selector = panel.getByRole("button", { name: "Worker for Triage" });
   const workerName = process.env.E2E_TRIAGE_WORKER_NAME || "e2e-triage-worker";
-  const option = selector.getByRole("option", { name: workerName, exact: true });
-  const workerId = await option.getAttribute("value");
-  expect(workerId).toBeTruthy();
-  await selector.selectOption(workerId!);
-  await expect(panel.locator("#triage-worker-preview")).toContainText("Configured");
+  await selector.click();
+  await page.getByRole("option", { name: workerName, exact: true }).click();
+  await expect(panel.locator("#triage-worker-preview")).toContainText(
+    "Configured",
+  );
   await panel.getByRole("button", { name: "Save", exact: true }).click();
   await expect(panel).toContainText("Triage Worker updated");
   await page.reload();
-  await expect(selector).toHaveValue(workerId!);
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/triage?agent=${routerId}`);
-  await expect(selector).toHaveValue(workerId!);
+  await expect(selector).toContainText(workerName);
   await page.setViewportSize({ width: 375, height: 812 });
   await panel.scrollIntoViewIfNeeded();
-  await expect(panel.getByRole("button", { name: "Save", exact: true })).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "Save", exact: true }),
+  ).toBeVisible();
   const bounds = await panel.boundingBox();
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
-  await page.screenshot({ path: testInfo.outputPath("worker-for-triage-mobile.png") });
+  await page.screenshot({
+    path: testInfo.outputPath("worker-for-triage-mobile.png"),
+  });
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({ path: testInfo.outputPath("worker-for-triage.png"), fullPage: true });
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/agents`);
-  const assignedRow = page.locator("#agents tr").filter({ hasText: "Used by Triage" });
+  await page.screenshot({
+    path: testInfo.outputPath("worker-for-triage.png"),
+    fullPage: true,
+  });
+  await gotoAgents(page, projectId);
+  const assignedRow = agentRows(page).filter({ hasText: "Used by Triage" });
   await expect(assignedRow).toHaveCount(1);
-  await assignedRow.getByRole("link", { name: "Used by Triage", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/triage[?]agent=${routerId}#triage-worker-configuration$`));
-  await expect(selector).toHaveValue(workerId!);
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/agents`);
-  await assignedRow.getByRole("button", { name: "Archive", exact: true }).click();
-  const modal = page.locator("#archive-agent-modal");
-  await expect(modal.locator("#archive-triage-warning")).toContainText("stop new Triage assignments");
-  await page.screenshot({ path: testInfo.outputPath("archive-triage-worker.png"), fullPage: true });
-  await modal.getByRole("link", { name: "Choose another Worker in Triage" }).click();
-  await expect(selector).toHaveValue(workerId!);
-  await selector.selectOption("");
+  await assignedRow
+    .getByRole("link", { name: "Used by Triage", exact: true })
+    .click();
+  await expect(page).toHaveURL(
+    new RegExp(`/triage[?]agent=${routerId}#triage-worker-configuration$`),
+  );
+  await expect(selector).toContainText(workerName);
+  await gotoAgents(page, projectId);
+  const rail = await openAgent(page, workerName);
+  await rail.getByRole("button", { name: "Archive", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "Archive agent" });
+  await expect(modal.locator("#archive-triage-warning")).toContainText(
+    "stop new Triage assignments",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("archive-triage-worker.png"),
+    fullPage: true,
+  });
+  await modal
+    .getByRole("link", { name: "Choose another Worker in Triage" })
+    .click();
+  await expect(selector).toContainText(workerName);
+  await selector.click();
+  await page
+    .getByRole("option", { name: "Not assigned — pause new tasks" })
+    .click();
   await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel).toContainText("Triage Worker updated");
   await page.reload();
-  await expect(selector).toHaveValue("");
+  await expect(selector).toContainText("Not assigned");
   await expect(panel).toContainText("New Triage tasks are paused");
 });
 
-test("organization Overview renders in the React dashboard", async ({ page }) => {
+test("organization Overview renders in the React dashboard", async ({
+  page,
+}) => {
   await page.goto(`/orgs/${ORG_SLUG}`);
 
-  await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Agent Swarms" }).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Overview" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Agent Swarms" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Needs attention" }),
+  ).toBeVisible();
   await expect(page.getByText("E2E Org").first()).toBeVisible();
 });
 
 test("dashboard main content scrolls at narrow viewport widths", async ({
   page,
 }) => {
+  const projectId = await projectIdByName(page, "E2E External Runtime");
   await page.setViewportSize({ width: 390, height: 480 });
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/fin`);
+  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/plugins`);
 
   const mainScroll = page.locator("[data-scroll-main]");
   await expect(mainScroll).toBeVisible();
@@ -173,248 +316,193 @@ test("dashboard main content scrolls at narrow viewport widths", async ({
     .toBeGreaterThan(0);
 });
 
-test("runner rows are collapsed by default and preserve aggregate information", async ({
+test("Runners API lists the seeded runner with its connector summary", async ({
   page,
 }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/fin`);
-  await expect(page.locator("#fin-fleet-summary")).toHaveCount(0);
-  await expect(
-    page.getByRole("link", { name: "Open diagnostics" }),
-  ).toHaveCount(0);
-
-  const runner = page
-    .locator("#fin-mac-minis > article")
-    .filter({ hasText: "E2E Runner" })
-    .first();
-  const toggle = runner.locator('[id^="fin-runner-toggle-"]');
-  const details = runner.locator('[id^="fin-runner-details-"]');
-
-  await expect(
-    runner.getByRole("heading", { name: /E2E Runner/ }),
-  ).toBeVisible();
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(toggle).toHaveAccessibleName(
-    /Expand E2E Runner.*Capacity.*Connectors.*Provisioning.*2 connected.*1 failed.*1 stopped/,
+  // The Runners page (/orgs/:org/fin) is the React dashboard; this checks the
+  // API it renders from against the seeded fleet.
+  const response = await page.request.get(
+    `/dashboard/api/v1/orgs/${ORG_SLUG}/runners`,
   );
-  await expect(toggle).toContainText("Capacity");
-  await expect(toggle).toContainText("Connectors");
-  await expect(toggle).toContainText("Provisioning");
-  await expect(toggle).toContainText("2 connected");
-  await expect(toggle).toContainText("1 failed");
-  await expect(toggle).toContainText("1 stopped");
-  await expect(details).toBeHidden();
+  expect(response.ok()).toBe(true);
+  const { data } = await response.json();
+  expect(data.viewer).toEqual({ can_manage: true });
 
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(toggle).toHaveAccessibleName(
-    /Collapse E2E Runner.*Capacity.*Connectors.*Provisioning/,
+  const runner = data.runners.find(
+    (item: { name: string }) => item.name === "E2E Runner",
   );
-  await expect(details).toBeVisible();
-  await expect(details).toContainText("Host");
-  await expect(details).toContainText("Version");
-
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(details).toBeHidden();
+  expect(runner).toBeTruthy();
+  const counts = Object.fromEntries(
+    runner.connectors.by_status.map(
+      (entry: { status: string; count: number }) => [entry.status, entry.count],
+    ),
+  );
+  expect(counts).toMatchObject({ connected: 2, failed: 1, stopped: 1 });
 });
 
-test("organizations page lists the seeded organization", async ({ page }) => {
-  await gotoDashboard(page, "/orgs");
+test("/orgs opens an organization whose switcher lists the seeded one", async ({
+  page,
+}) => {
+  // The React dashboard serves /orgs and opens the first organization.
+  await page.goto("/orgs");
+  await expect(page).toHaveURL(/\/orgs\/[^/]+$/);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Overview" }),
+  ).toBeVisible();
 
-  await expect(
-    page.getByRole("heading", { name: "Organizations" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /E2E Org/ }).first(),
-  ).toBeVisible();
+  await page.getByRole("button", { name: /^Switch organization/ }).click();
+  await expect(page.getByRole("menuitem", { name: "E2E Org" })).toBeVisible();
 });
 
 test("create a project in the org", async ({ page }) => {
   const name = `proj-${uniq()}`;
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
+  const id = await createAndOpenProject(page, name);
 
-  const form = page.locator("#new-project-form");
-  await clickAndExpectVisible(page.locator("#new-project-button"), form);
-  await form.locator('input[name="project[name]"]').fill(name);
-  await form.locator('input[name="project[slug]"]').fill(name);
-  await form.locator('button[type="submit"]').click();
-
-  // The new project row appears with its canonical Salix group id.
-  const row = page.locator("#projects").getByText(name).first();
-  await expect(row).toBeVisible();
-  await expect(
-    page.locator("#projects").getByText(/grp1_/).first(),
-  ).toBeVisible();
+  // The Agent Swarms list shows it with its canonical Salix group id.
+  await page.goto(`/orgs/${ORG_SLUG}/projects`);
+  await page.getByRole("searchbox", { name: "Filter Agent Swarms" }).fill(name);
+  const row = page.getByRole("row").filter({ hasText: name });
+  await expect(row.getByRole("link", { name })).toHaveAttribute(
+    "href",
+    `/orgs/${ORG_SLUG}/projects/${id}`,
+  );
+  await expect(row).toContainText(/grp1_/);
 });
 
 test("project detail: settings + create an agent", async ({ page }) => {
   const id = await createAndOpenProject(page, `agents-${uniq()}`);
 
-  // Runtime identity stays out of navigation and is available from the Settings
-  // title when an operator needs to copy it.
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${id}/settings`);
-  const runtimeIds = page.locator(`#project-runtime-ids-${id}`);
-  await expect(runtimeIds).toBeHidden();
-  await page.locator(`#project-runtime-ids-trigger-${id}`).hover();
-  await expect(runtimeIds).toBeVisible();
-  await expect(runtimeIds).toContainText("Agent Swarm runtime id");
-  await expect(runtimeIds).toContainText(/grp1_/);
+  // Settings is a React page: runtime ids are plain rows with copy buttons,
+  // and Access adds users in a dialog.
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${id}/settings`);
+  const main = page.getByRole("main");
   await expect(
-    page.locator(`#agent-swarm-navigation-${id} [aria-controls]`),
-  ).toHaveCount(0);
-  await runtimeIds.locator(`#copy-agent-swarm-runtime-id-${id}`).click();
-
-  const accessForm = page.locator("#grant-access-form");
-  await expect(accessForm).toHaveCount(0);
-  await clickAndExpectVisible(
-    page.getByRole("button", { name: "Add user" }),
-    accessForm,
-  );
-  await page
-    .locator("#grant-access-modal")
-    .getByRole("button", { name: "Cancel" })
+    main.getByRole("heading", { level: 1, name: "Settings" }),
+  ).toBeVisible();
+  await expect(main.getByText(/^grp1_/)).toBeVisible();
+  await main
+    .getByRole("button", { name: "Copy Agent Swarm runtime id" })
     .click();
-  await expect(accessForm).toHaveCount(0);
-
-  // Agents tab → create an agent.
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${id}/agents`);
-  const form = page.locator("#new-agent-form");
+  const addUser = page.getByRole("dialog", { name: "Add user" });
   await clickAndExpectVisible(
-    page.locator('button[phx-click="new_agent"]').first(),
+    main.getByRole("button", { name: "Add user" }),
+    addUser,
+  );
+  await addUser.getByRole("button", { name: "Cancel" }).click();
+  await expect(addUser).toHaveCount(0);
+
+  // Agents → create an agent. The page is React; a new agent appears once
+  // provisioned.
+  await gotoAgents(page, id);
+  const form = page.getByRole("dialog", { name: "New agent" });
+  await clickAndExpectVisible(
+    page.getByRole("button", { name: "New agent" }),
     form,
   );
-  await expect(form.locator('select[name="agent[agent_type]"]')).toHaveCount(0);
-  await expect(form.locator('select[name="agent[role]"]')).toHaveCount(0);
-  await form.getByText("External Agent", { exact: true }).click();
+  await chooseOption(page, form.getByRole("button", { name: /Type/ }), "External agent");
   await expect(
     form.getByText("No connected devices are available for this Agent Swarm."),
   ).toBeVisible();
-  await form.getByText("Internal", { exact: true }).click();
+  await chooseOption(page, form.getByRole("button", { name: /Type/ }), "Internal");
   const workerName = `worker-${uniq()}`;
   await form.getByLabel("Name").fill(workerName);
-  await form.locator('button[type="submit"]').click();
+  await form.getByRole("button", { name: "Create agent" }).click();
 
-  await expect(page.getByText("Agent creation accepted. Refresh the list after provisioning.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Agent creation accepted. Refresh the list after provisioning.",
+    ),
+  ).toBeVisible();
   const workerRow = await waitForProvisionedAgent(page, workerName);
-  await expect(workerRow).toContainText("worker");
-  await workerRow.getByRole("button", { name: "Archive" }).click();
-  const archiveModal = page.locator("#archive-agent-modal");
+  await expect(workerRow).toContainText("Worker");
+  const rail = await openAgent(page, workerName);
+  await rail.getByRole("button", { name: "Archive", exact: true }).click();
+  const archiveModal = page.getByRole("dialog", { name: "Archive agent" });
   await expect(archiveModal).toBeVisible();
   await expect(archiveModal).toContainText(workerName);
   await archiveModal.getByRole("button", { name: "Cancel" }).click();
   await expect(archiveModal).toHaveCount(0);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${id}/settings`);
+  await gotoAgents(page, id);
   await clickAndExpectVisible(
-    page.getByRole("button", { name: "Add user" }),
-    accessForm,
-  );
-  await expect(page.locator("#grant-access-modal-container")).toBeVisible();
-  await page
-    .locator("#grant-access-modal")
-    .getByRole("button", { name: "Cancel" })
-    .click();
-
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${id}/agents`);
-  await clickAndExpectVisible(
-    page.locator('button[phx-click="new_agent"]').first(),
+    page.getByRole("button", { name: "New agent" }),
     form,
   );
-  await expect(page.locator("#new-agent-modal-container")).toBeVisible();
-  await expect(form.getByText("Internal", { exact: true })).toBeVisible();
-  await expect(form.getByText("External Agent", { exact: true })).toBeVisible();
+  await expect(form.getByLabel("Name")).toBeVisible();
+  await expect(form.getByRole("button", { name: /Type/ })).toBeVisible();
 });
 
 test("project detail: create and rebind external Codex agents", async ({
   page,
 }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
-  const projectRow = page
-    .locator("#projects tr")
-    .filter({ hasText: "E2E External Runtime" });
-  await expect(projectRow).toBeVisible();
-  await projectRow.click();
-  await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/);
-
-  const projectId = page.url().match(/projects\/([0-9a-f-]+)/)![1];
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/agents`);
+  const projectId = await projectIdByName(page, "E2E External Runtime");
+  // The Agent Swarm overview is the React dashboard.
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}`);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "E2E External Runtime" }),
+  ).toBeVisible();
+  await gotoAgents(page, projectId);
 
   const externalName = `external-${uniq()}`;
-  const newAgentForm = page.locator("#new-agent-form");
+  const newAgentForm = page.getByRole("dialog", { name: "New agent" });
   await clickAndExpectVisible(
-    page.locator('button[phx-click="new_agent"]').first(),
+    page.getByRole("button", { name: "New agent" }),
     newAgentForm,
   );
-  await newAgentForm.getByText("External Agent", { exact: true }).click();
-  await newAgentForm.getByLabel("Name").fill(externalName);
-  await selectFirstNonblankOption(
-    newAgentForm
-      .getByTestId("connected-target-picker")
-      .getByLabel("Connected Device"),
+  await chooseOption(
+    page,
+    newAgentForm.getByRole("button", { name: /Type/ }),
+    "External agent",
   );
-  await selectFirstNonblankOption(newAgentForm.getByLabel("External runtime"));
-  await newAgentForm.locator('button[type="submit"]').click();
-  await expect(page.getByText("Agent creation accepted. Refresh the list after provisioning.")).toBeVisible();
+  await newAgentForm.getByLabel("Name").fill(externalName);
+  await chooseOption(
+    page,
+    newAgentForm.getByRole("button", { name: /Connected Device$/ }),
+  );
+  await chooseOption(
+    page,
+    newAgentForm.getByRole("button", { name: /External runtime/ }),
+  );
+  await newAgentForm.getByRole("button", { name: "Create agent" }).click();
+  await expect(
+    page.getByText(
+      "Agent creation accepted. Refresh the list after provisioning.",
+    ),
+  ).toBeVisible();
   await waitForProvisionedAgent(page, externalName);
 
-  const agentRow = page
-    .locator("#agents tr")
-    .filter({ hasText: "e2e-external-worker" });
+  const rail = await openAgent(page, "e2e-external-worker");
+  const form = page.getByRole("dialog", {
+    name: "Rebind runtime for e2e-external-worker",
+  });
   await clickAndExpectVisible(
-    agentRow.getByRole("button", { name: "Rebind" }),
-    page.locator("#rebind-agent-runtime-form"),
+    rail.getByRole("button", { name: "Rebind runtime" }),
+    form,
   );
 
-  const form = page.locator("#rebind-agent-runtime-form");
-  const deviceSelect = form
-    .getByTestId("connected-target-picker")
-    .getByLabel("Connected Device");
-  const initialDevice = await deviceSelect.inputValue();
-  const nextDevice = await deviceSelect
-    .locator("option")
-    .evaluateAll(
-      (options, current) =>
-        options
-          .map((option) => (option as HTMLOptionElement).value)
-          .find((value) => value !== "" && value !== current),
-      initialDevice,
-    );
-  expect(nextDevice).toBeTruthy();
-
-  await deviceSelect.selectOption(nextDevice!);
-  const runtimeSelect = form.getByLabel("External runtime");
-  await expect(runtimeSelect.locator("option")).toHaveCount(2);
-  const nextRuntime = await runtimeSelect
-    .locator("option")
-    .nth(1)
-    .getAttribute("value");
-  expect(nextRuntime).toBeTruthy();
-  await runtimeSelect.selectOption(nextRuntime!);
+  // Move new sessions to the other seeded device.
+  const deviceSelect = form.getByRole("button", { name: /Connected Device$/ });
+  const initialDevice = (await deviceSelect.innerText()).split("\n")[0];
+  await deviceSelect.click();
+  const nextDevice = page
+    .getByRole("option")
+    .filter({ hasNotText: initialDevice });
+  await expect(nextDevice.first()).toBeVisible();
+  await nextDevice.first().click();
+  await chooseOption(page, form.getByRole("button", { name: /External runtime/ }));
   await expect(
-    form
-      .getByTestId("rebind-codex-runtime-readiness")
-      .getByText(/codex-e2e-[ab]/),
+    form.getByTestId("runtime-readiness").getByText(/codex-e2e-[ab]/),
   ).toBeVisible();
 
-  await form.locator('button[type="submit"]').click();
-  await expect(
-    page.getByText("Agent runtime rebound."),
-  ).toBeVisible();
+  await form.getByRole("button", { name: "Save runtime" }).click();
+  await expect(page.getByText("Agent runtime rebound.")).toBeVisible();
 });
 
 test("organization owner deletes an Agent Swarm skill created by another Agent", async ({
   page,
 }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
-  const projectRow = page
-    .locator("#projects tr")
-    .filter({ hasText: "E2E External Runtime" });
-  await expect(projectRow).toBeVisible();
-  await projectRow.click();
-  await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/);
-
-  const projectId = page.url().match(/projects\/([0-9a-f-]+)/)![1];
+  const projectId = await projectIdByName(page, "E2E External Runtime");
   await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/skills`);
 
   const skillCard = page.locator("#project-skill-e2e-cross-agent-skill");
@@ -431,24 +519,9 @@ test("task detail manages a conversation-owned Schedule in place", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
-  const projectRow = page
-    .locator("#projects tr")
-    .filter({ hasText: "E2E External Runtime" });
-  await expect(projectRow).toBeVisible();
-  await projectRow.click();
-  await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/);
-
-  const projectId = page.url().match(/projects\/([0-9a-f-]+)/)![1];
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
-
+  const projectId = await projectIdByName(page, "E2E External Runtime");
   const taskTitle = "E2E conversation-owned Task Schedule";
-  const taskRow = page
-    .locator('[id^="conversation-"]')
-    .filter({ hasText: taskTitle });
-  await expect(taskRow).toBeVisible();
-  await taskRow.click();
-  await expect(page).toHaveURL(/\/tasks\/cnv1_/);
+  await openTask(page, projectId, taskTitle);
   const taskId = page.url().match(/\/tasks\/([^/?]+)/)![1];
 
   const workbench = await page
@@ -575,14 +648,13 @@ test("task detail manages a conversation-owned Schedule in place", async ({
     await expect(scheduleForm).not.toBeVisible();
   }
 
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
-  const oneShotRow = page
-    .locator('[id^="conversation-"]')
-    .filter({ hasText: taskTitle });
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
+  const oneShotRow = page.getByRole("row").filter({ hasText: taskTitle });
+  await expect(oneShotRow).toBeVisible();
   await expect(oneShotRow.getByText("Scheduled", { exact: true })).toHaveCount(
     0,
   );
-  await oneShotRow.click();
+  await openTask(page, projectId, taskTitle);
   await expect(scheduleForm).not.toBeVisible();
   await expect(page.getByText("Scheduled", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Add schedule" }).click();
@@ -622,16 +694,15 @@ test("task detail manages a conversation-owned Schedule in place", async ({
     scheduleForm.locator('select[name="schedule[interval_unit]"]'),
   ).toHaveValue("hours");
   await page.getByRole("button", { name: "Cancel" }).click();
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
-  await page.getByRole("button", { name: /Scheduled/ }).click();
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
   await expect(
-    page.locator('[id^="conversation-"]').filter({ hasText: taskTitle }),
+    page
+      .getByRole("row")
+      .filter({ hasText: taskTitle })
+      .getByText("Scheduled", { exact: true }),
   ).toBeVisible();
 
-  await page
-    .locator('[id^="conversation-"]')
-    .filter({ hasText: taskTitle })
-    .click();
+  await openTask(page, projectId, taskTitle);
   await page.getByRole("button", { name: "Edit" }).click();
   await expect(scheduleForm).toBeVisible();
   await scheduleForm.getByText("At a fixed time", { exact: true }).click();
@@ -661,12 +732,11 @@ test("task detail manages a conversation-owned Schedule in place", async ({
   ).toHaveValue("Asia/Shanghai");
   await page.getByRole("button", { name: "Cancel" }).click();
 
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projectId}/schedules`,
-  );
+  // The retired Schedules page opens the Scheduled view of Tasks.
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/schedules`);
+  await expect(page).toHaveURL(/\/tasks\?view=scheduled$/);
   const taskScheduleRow = page
-    .locator("#schedules tr")
+    .getByRole("row")
     .filter({ hasText: "Every Wednesday at 6:30 PM (Asia/Shanghai)" });
   await expect(taskScheduleRow).toBeVisible();
   await expect(
@@ -694,22 +764,8 @@ test("task detail receives guidance sent from another dashboard session", async 
   page,
   context,
 }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
-  const projectRow = page
-    .locator("#projects tr")
-    .filter({ hasText: "E2E External Runtime" });
-  await expect(projectRow).toBeVisible();
-  await projectRow.click();
-  await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/);
-  const projectId = page.url().match(/projects\/([0-9a-f-]+)/)![1];
-
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
-  const taskRow = page
-    .locator('[id^="conversation-"]')
-    .filter({ hasText: "E2E conversation-owned Task Schedule" });
-  await expect(taskRow).toBeVisible();
-  await taskRow.click();
-  await expect(page).toHaveURL(/\/tasks\/cnv1_/);
+  const projectId = await projectIdByName(page, "E2E External Runtime");
+  await openTask(page, projectId, "E2E conversation-owned Task Schedule");
   const taskPath = new URL(page.url()).pathname;
 
   const receiver = await context.newPage();
@@ -729,22 +785,32 @@ test("project detail: create a project device request on a runner", async ({
   const id = await createAndOpenProject(page, `devices-${uniq()}`);
   const name = `staging-${uniq()}`;
 
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${id}/devices`);
-  const form = page.locator("#new-env-form");
+  // The React Devices page. A new swarm lists only its cloud computer.
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${id}/devices`);
+  const main = page.getByRole("main");
+  await expect(
+    main.getByRole("heading", { level: 1, name: "Devices" }),
+  ).toBeVisible();
+  await expect(main.getByRole("row", { name: /Cloud computer/ })).toBeVisible();
+
+  const dialog = page.getByRole("dialog", { name: "Add device" });
   await clickAndExpectVisible(
-    page.getByRole("button", { name: "Add device" }).first(),
-    form,
+    main.getByRole("button", { name: "Add device" }),
+    dialog,
   );
-  await form.getByLabel("Name").fill(name);
-  await form.getByLabel("Alias").fill(`dev-${uniq()}`);
-  await form.getByLabel("Runner").selectOption({ label: "E2E Runner" });
-  await form.locator('button[type="submit"]').click();
+  await dialog.getByLabel("Name").fill(name);
+  await dialog.getByLabel("Alias").fill(`dev-${uniq()}`);
+  // Other tests may add runners; choose the seeded one.
+  await dialog.getByRole("button", { name: /Runner$/ }).click();
+  await page.getByRole("option", { name: "E2E Runner" }).click();
+  await dialog.getByRole("button", { name: "Create on runner" }).click();
 
   await expect(
     page.getByText("Device connection request created."),
   ).toBeVisible();
-  await expect(page.locator("#environments")).toBeVisible();
-  await expect(page.locator("#environment-provision-requests")).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
+  // The request is not a device until the runner attaches it.
+  await expect(main.getByRole("row", { name: /Cloud computer/ })).toBeVisible();
   await expect(page.getByText(name, { exact: true })).toHaveCount(0);
 });
 
@@ -803,32 +869,35 @@ test("create a project Slack provider-connect", async ({ page }) => {
   expect(installScopes).toContain("users.profile:read");
 });
 
-test("members list shows the owner", async ({ page }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/members`);
-  await expect(page.locator("#members")).toBeVisible();
-  await expect(page.locator("#members").getByText(EMAIL)).toBeVisible();
-  // Owner role is shown via the per-member role <select>.
-  await expect(
-    page.locator("#members").getByRole("combobox").first(),
-  ).toHaveValue("owner");
+async function listMembers(page: Page) {
+  const response = await page.request.get(
+    `/dashboard/api/v1/orgs/${ORG_SLUG}/members`,
+  );
+  expect(response.ok()).toBe(true);
+  return (await response.json()).data;
+}
+
+test("Members API lists the owner", async ({ page }) => {
+  // The Members page is the React dashboard; this checks the API it renders.
+  const data = await listMembers(page);
+  expect(data.viewer).toMatchObject({ role: "owner", can_manage: true });
+  expect(data.members).toContainEqual(
+    expect.objectContaining({ email: EMAIL, role: "owner" }),
+  );
 });
 
-test("settings OAuth tab opens pre-populated app creation links", async ({
+test("Settings API returns pre-populated OAuth app creation links", async ({
   page,
 }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/settings/oauth`);
+  const { oauth } = await settingsApi(page, "GET", "integrations");
+  const setupHref = (provider: string) =>
+    oauth.apps.find((app: { provider: string }) => app.provider === provider)
+      ?.setup_href as string;
 
-  const linearLink = page
-    .locator(
-      '#oauth-app-linear a[href^="https://linear.app/settings/api/applications/new"]',
-    )
-    .first();
-  await expect(linearLink).toBeVisible();
-
-  const href = await linearLink.getAttribute("href");
+  const href = setupHref("linear");
   expect(href).toBeTruthy();
 
-  const url = new URL(href!);
+  const url = new URL(href);
   expect(url.origin + url.pathname).toBe(
     "https://linear.app/settings/api/applications/new",
   );
@@ -848,15 +917,10 @@ test("settings OAuth tab opens pre-populated app creation links", async ({
   );
   expect(url.searchParams.get("oauth.grant_types")).toBe("authorization_code");
 
-  const slackLink = page
-    .locator('#oauth-app-slack a[href^="https://api.slack.com/apps"]')
-    .first();
-  await expect(slackLink).toBeVisible();
-
-  const slackHref = await slackLink.getAttribute("href");
+  const slackHref = setupHref("slack");
   expect(slackHref).toBeTruthy();
 
-  const slackUrl = new URL(slackHref!);
+  const slackUrl = new URL(slackHref);
   expect(slackUrl.origin + slackUrl.pathname).toBe(
     "https://api.slack.com/apps",
   );
@@ -870,17 +934,10 @@ test("settings OAuth tab opens pre-populated app creation links", async ({
   ]);
   expect(slackManifest.oauth_config.scopes.user).toEqual(["users:read"]);
 
-  const githubLink = page
-    .locator(
-      '#oauth-app-github a[href^="https://github.com/settings/apps/new"]',
-    )
-    .first();
-  await expect(githubLink).toBeVisible();
-
-  const githubHref = await githubLink.getAttribute("href");
+  const githubHref = setupHref("github");
   expect(githubHref).toBeTruthy();
 
-  const githubUrl = new URL(githubHref!);
+  const githubUrl = new URL(githubHref);
   expect(githubUrl.origin + githubUrl.pathname).toBe(
     "https://github.com/settings/apps/new",
   );
@@ -900,42 +957,33 @@ test("settings configures Feishu SSO and completes a phone-only browser login", 
 }) => {
   const appId = `feishu-${uniq()}`;
 
-  // New Feishu flow: credentials are registered once in the org Feishu apps tab.
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/settings/feishu`);
-  const bindingForm = page.locator("#feishu-binding-form");
-  await expect(bindingForm).toBeVisible();
-  await bindingForm
-    .locator('input[name="feishu_binding[display_name]"]')
-    .fill("E2E Feishu SSO");
-  await bindingForm.locator('input[name="feishu_binding[app_id]"]').fill(appId);
-  await bindingForm
-    .locator('input[name="feishu_binding[app_secret]"]')
-    .fill("e2e-feishu-secret");
-  await bindingForm
-    .locator('input[type="checkbox"][name="feishu_binding[sso_enabled]"]')
-    .check();
-  await bindingForm.locator('button[type="submit"]').click();
-  await expect(page.getByText("Feishu app saved.")).toBeVisible();
+  // Credentials are registered once as an org Feishu app (Settings →
+  // Integrations), through the API the React page uses.
+  await settingsApi(page, "POST", "integrations/feishu/apps", {
+    display_name: "E2E Feishu SSO",
+    app_id: appId,
+    app_secret: "e2e-feishu-secret",
+    sso_enabled: true,
+  });
 
-  // The SSO card now reuses that binding and only refines login policy/scope.
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/settings/sso`);
-  const form = page.locator("#sso-form");
-  await expect(form).toBeVisible();
-  await form.locator('select[name="sso[provider]"]').selectOption("feishu");
-  await expect(
-    form.locator('input[name="sso[provider_config][scope]"]'),
-  ).toBeVisible();
-  await expect(
-    form.locator('select[name="sso[provider_config][provisioning_policy]"]'),
-  ).toHaveValue("jit");
-  await expect(form.locator('input[name="sso[client_id]"]')).toHaveCount(0);
-  await expect(form.locator('input[name="sso[client_secret]"]')).toHaveCount(0);
-  await form
-    .locator('input[name="sso[provider_config][scope]"]')
-    .fill("contact:user.base:readonly");
-  await form.locator('select[name="sso[default_role]"]').selectOption("member");
-  await form.locator('button[type="submit"]').click();
-  await expect(page.getByText("SSO connection saved.")).toBeVisible();
+  // Single sign-on reuses that app and only refines login policy and scope.
+  const sso = await settingsApi(page, "GET", "sso");
+  expect(sso.feishu_app).toMatchObject({
+    app_id: appId,
+    app_secret_configured: true,
+  });
+
+  const saved = await settingsApi(page, "PUT", "sso", {
+    provider: "feishu",
+    provider_config: { scope: "contact:user.base:readonly" },
+    default_role: "member",
+  });
+  expect(saved.connection).toMatchObject({
+    provider: "feishu",
+    client_id: appId,
+    client_secret_configured: true,
+    provider_config: { provisioning_policy: "jit" },
+  });
 
   await page.context().clearCookies();
 
@@ -977,11 +1025,14 @@ test("settings configures Feishu SSO and completes a phone-only browser login", 
   // Verify provisioning as the seeded owner — the fresh SSO user is still
   // mid-onboarding and gated away from dashboard surfaces.
   await login(page);
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/members`);
-  await expect(page.locator("#members").getByText("Feishu User")).toBeVisible();
-  await expect(
-    page.locator("#members").getByText("+10000000000"),
-  ).toBeVisible();
+  const { members } = await listMembers(page);
+  expect(members).toContainEqual(
+    expect.objectContaining({
+      name: "Feishu User",
+      mobile: "+10000000000",
+      sso: true,
+    }),
+  );
 });
 
 test("login page renders localStorage org shortcuts and submits the selected org", async ({
@@ -1047,27 +1098,17 @@ test("login page renders localStorage org shortcuts and submits the selected org
   expect(postData).toContain("_csrf_token=");
 });
 
-test("settings uploads an organization icon", async ({ page }) => {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/settings`);
-  const form = page.locator("#org-form");
-  await expect(form).toBeVisible();
+test("Settings API saves an organization icon shown in the sidebar", async ({
+  page,
+}) => {
+  const icon = `data:image/png;base64,${PNG_ICON.toString("base64")}`;
+  const general = await settingsApi(page, "PATCH", "general", { icon });
+  expect(general.organization.icon).toBe(icon);
 
-  await form.locator("#org-settings-icon-file").setInputFiles({
-    name: "org-icon.png",
-    mimeType: "image/png",
-    buffer: PNG_ICON,
-  });
-
-  await expect(form.locator('input[name="organization[icon]"]')).toHaveValue(
-    /^data:image\/png;base64,/,
-  );
-  await form.locator('button[type="submit"]').click();
-
-  await expect(page.getByText("Organization updated.")).toBeVisible();
-  await page.reload();
+  await gotoLiveViewPage(page);
   await expect(
-    page.locator("#org-settings-icon [data-org-icon-preview]"),
-  ).toHaveAttribute("src", /^data:image\/png;base64,/);
+    page.locator(`#org-switcher img[src="${icon}"]`).first(),
+  ).toBeAttached();
 });
 
 test("org switcher keeps long organization names inside the sidebar", async ({
@@ -1103,29 +1144,26 @@ test("org switcher keeps long organization names inside the sidebar", async ({
   }
 });
 
-// Helper: create a project, open it, and return its id (from the detail URL).
+// Helper: create a project in the React Agent Swarms list, which opens it,
+// and return its id (from the detail URL).
 async function createAndOpenProject(page: Page, name: string): Promise<string> {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects`);
-  const form = page.locator("#new-project-form");
-  await clickAndExpectVisible(page.locator("#new-project-button"), form);
-  await form.locator('input[name="project[name]"]').fill(name);
-  await form.locator('input[name="project[slug]"]').fill(name);
-  await form.locator('button[type="submit"]').click();
-  const row = page.locator("#projects").getByText(name).first();
-  await expect(row).toBeVisible();
-  await row.click();
+  await page.goto(`/orgs/${ORG_SLUG}/projects`);
+  const dialog = page.getByRole("dialog", { name: "New Agent Swarm" });
+  await clickAndExpectVisible(
+    page.getByRole("button", { name: "New Agent Swarm" }),
+    dialog,
+  );
+  await dialog.getByLabel("Name").fill(name);
+  await dialog.getByLabel("Slug").fill(name);
+  await dialog.getByRole("button", { name: "Create Agent Swarm" }).click();
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/);
   return page.url().match(/projects\/([0-9a-f-]+)/)![1];
 }
 
 async function renameOrg(page: Page, name: string): Promise<string> {
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/settings`);
-  const form = page.locator("#org-form");
-  await expect(form).toBeVisible();
-  const nameInput = form.locator('input[name="organization[name]"]');
-  const originalName = await nameInput.inputValue();
-  await nameInput.fill(name);
-  await form.locator('button[type="submit"]').click();
+  const { organization } = await settingsApi(page, "GET", "general");
+  await settingsApi(page, "PATCH", "general", { name });
+  await gotoLiveViewPage(page);
   await expect(page.locator("#org-switcher")).toContainText(name);
-  return originalName;
+  return organization.name;
 }

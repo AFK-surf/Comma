@@ -1,9 +1,10 @@
 @import "./components/chat/session-history/sessionHistory.css";
-@import "./components/chat/suggestions/suggestionAcceptance.css";
 @import "@comma/ui/styles.css";
 @import "./auth/styles.css";
 @import "./components/commaAppearance.css";
 @import "./components/commaCustomThemeStudio.css";
+@import "./components/onboarding/onboarding.css";
+@import "./components/onboarding/window/onboardingWindow.css";
 
 @source "./";
 @source "../../../apps/web/src";
@@ -57,6 +58,9 @@ body,
   min-height: 100%;
 }
 
+/* Root containment in Chromium 148 stops body overflow from reaching the
+   viewport. Clip it explicitly so narrow native windows do not add scrollbars. */
+html,
 body {
   overflow: hidden;
 }
@@ -99,8 +103,16 @@ body.comma-window-is-resizing .comma-chat-sidebar {
 
 [data-slot="dropdown-popover"],
 [data-slot="menu-popover"] {
-  pointer-events: auto;
   -webkit-app-region: no-drag;
+}
+
+/* Unlayered, so it would beat the layered `data-[exiting]:pointer-events-none`
+   of the popover surfaces. A closing popover takes no input: a closing menu
+   under the pointer opened a submenu on hover, and that submenu then took the
+   next click only to close itself. */
+[data-slot="dropdown-popover"]:not([data-exiting]),
+[data-slot="menu-popover"]:not([data-exiting]) {
+  pointer-events: auto;
 }
 
 /* Keep native no-drag ownership on the stable route rectangle. Registering
@@ -405,7 +417,7 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
   line-height: 1.0625rem;
 }
 
-@media (max-width: 720px) {
+@container comma-window (width <= 720px) {
   .comma-settings-route {
     padding: 28px 24px;
   }
@@ -1309,7 +1321,7 @@ html[data-comma-routine-dragging="true"] * {
 .comma-recommendation-items {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-none);
+  gap: 1px;
 }
 
 .comma-recommendation-text-item {
@@ -2184,6 +2196,14 @@ html[data-comma-routine-dragging="true"] * {
   color: var(--color-alpha-white-90);
 }
 
+.comma-recommendations-reconnect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xs);
+}
+
 .comma-recommendations-empty-copy {
   margin: 0;
   color: var(--color-text-quaternary);
@@ -2493,6 +2513,108 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   }
 }
 
+/* The Task as a report: the Worker's latest reply, then one line per message. */
+.comma-embedded-task-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3xl);
+  margin-block: var(--spacing-2xl) var(--spacing-3xl);
+}
+
+.comma-embedded-task-reply {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.comma-embedded-task-eyebrow {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-embedded-task-lead {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.5;
+}
+
+.comma-embedded-task-reply > [data-folded] {
+  max-height: 9rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 60%, transparent);
+}
+
+.comma-embedded-task-more {
+  align-self: flex-start;
+  padding: 0;
+  color: var(--color-text-brand-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-embedded-task-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  border-top: var(--border-width-0-5) solid var(--color-border-primary);
+  padding-top: var(--spacing-xl);
+}
+
+.comma-embedded-task-progress ol {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comma-embedded-task-step {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  padding-block: var(--spacing-md);
+  font-size: var(--text-sm);
+  line-height: 1.25rem;
+  text-align: start;
+}
+
+.comma-embedded-task-step-meta {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-embedded-task-step-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+[data-current] > .comma-embedded-task-step .comma-embedded-task-step-summary {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-embedded-task-step-status {
+  display: inline-flex;
+  margin-inline-end: var(--spacing-sm);
+  vertical-align: -0.2em;
+}
+
+.comma-embedded-task-step-full {
+  margin-bottom: var(--spacing-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  padding: var(--spacing-md) var(--spacing-lg);
+}
+
 .comma-embedded-task-filter-bar {
   width: 100%;
   max-width: var(--container-sm);
@@ -2693,15 +2815,6 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   from {
     opacity: 0;
   }
-}
-
-.comma-embedded-task-conversation {
-  width: 100%;
-  max-width: var(--container-sm);
-  min-height: 0;
-  flex: 1;
-  margin-inline: auto;
-  padding: var(--spacing-lg);
 }
 
 .comma-task-panel[data-layout="embedded"] .comma-task-panel-inner {
@@ -3720,13 +3833,19 @@ button.comma-task-label-chip:focus-visible {
      container query units. A percentage would resolve against the nearest
      shrink-to-fit ancestor and collapse short messages narrower than natural
      (the slot settles at bubble+42 and the text wraps early). */
-  max-width: min(500px, calc(100cqi - 42px));
+  max-width: min(
+    500px,
+    calc(100cqi - var(--comma-chat-user-bubble-actions-width, 42px))
+  );
   flex: none;
   justify-content: flex-end;
 }
 
 .comma-chat-user-bubble {
   --comma-chat-user-bubble-background: var(--color-bg-brand-solid);
+  /* Text and the washes on links, task pills and the toggle derive from this,
+     so a platform bubble with a light background can swap it for dark ink. */
+  --comma-chat-user-bubble-foreground: var(--color-text-white);
   --comma-chat-user-bubble-collapsed-block-size: 480px;
   --comma-chat-user-bubble-padding-block: 10px;
 
@@ -3738,7 +3857,7 @@ button.comma-task-label-chip:focus-visible {
   background: var(--comma-chat-user-bubble-background);
   padding-block: var(--comma-chat-user-bubble-padding-block);
   padding-inline: 13px;
-  color: var(--color-text-white);
+  color: var(--comma-chat-user-bubble-foreground);
   /* Same ramp as the agent body (text-sm, 13px/20px) so a turn reads at one
      size; the bubble used to sit a step above it at text-regular. */
   font-size: var(--text-sm);
@@ -3749,23 +3868,27 @@ button.comma-task-label-chip:focus-visible {
 
 /*
  * Inline Task mention inside the user bubble (Figma: Comma App 1480:17892). The
- * pill drops to the xs ramp (12px/18px, medium) on a 20% white wash, hugging
- * the 20px line without vertical padding, and the title and status icon take
- * the bubble's own text token instead of the status colours the icon carries
- * elsewhere: on brand-solid a green/yellow/grey glyph reads as noise, and the
- * hover preview still shows the status in full.
+ * pill drops to the xs ramp (12px/18px, medium) on a 20% wash of the bubble's
+ * ink, hugging the 20px line without vertical padding, and the title and
+ * status icon take the bubble's own text token instead of the status colours
+ * the icon carries elsewhere: on brand-solid a green/yellow/grey glyph reads as
+ * noise, and the hover preview still shows the status in full.
  */
 .comma-chat-user-bubble .comma-inline-task {
   margin: 0 var(--spacing-xxs);
   padding: 0 var(--spacing-xs);
-  background-color: var(--color-alpha-white-20);
+  background-color: color-mix(
+    in srgb,
+    var(--comma-chat-user-bubble-foreground) 20%,
+    transparent
+  );
   font-size: var(--text-xs);
   font-weight: var(--font-weight-medium);
   line-height: var(--text-xs--line-height);
 }
 
 .comma-chat-user-bubble .markdown-stream-link {
-  color: var(--color-text-white);
+  color: var(--comma-chat-user-bubble-foreground);
   text-decoration-line: underline;
 }
 
@@ -3773,12 +3896,12 @@ button.comma-task-label-chip:focus-visible {
   .comma-inline-task:not(.comma-inline-task--archived):not(
     .comma-inline-task--unavailable
   ) {
-  color: var(--color-text-white);
+  color: var(--comma-chat-user-bubble-foreground);
 }
 
 .comma-chat-user-bubble .comma-inline-task--archived,
 .comma-chat-user-bubble .comma-inline-task--unavailable {
-  color: var(--color-alpha-white-50);
+  color: color-mix(in srgb, var(--comma-chat-user-bubble-foreground) 50%, transparent);
 }
 
 /* Unlayered on purpose so it beats the icon's own layered colour utility. */
@@ -3794,7 +3917,11 @@ button.comma-task-label-chip:focus-visible {
     .comma-inline-task:not(.comma-inline-task--unavailable):not(
       .comma-inline-task--archived
     ):not(.comma-inline-task--passive):hover {
-    background-color: var(--color-alpha-white-30);
+    background-color: color-mix(
+      in srgb,
+      var(--comma-chat-user-bubble-foreground) 30%,
+      transparent
+    );
   }
 }
 
@@ -3802,7 +3929,11 @@ button.comma-task-label-chip:focus-visible {
   .comma-inline-task:not(.comma-inline-task--unavailable):not(
     .comma-inline-task--archived
   ):not(.comma-inline-task--passive):active {
-  background-color: var(--color-alpha-white-30);
+  background-color: color-mix(
+    in srgb,
+    var(--comma-chat-user-bubble-foreground) 30%,
+    transparent
+  );
 }
 
 .comma-chat-browser-inspection-context {
@@ -3894,6 +4025,15 @@ button.comma-task-label-chip:focus-visible {
   right: 0;
   bottom: 0;
   pointer-events: none;
+}
+
+/* A start-aligned flight (outgoingBubbleMotion.ts) is anchored on its start
+   edge: its material plane and the composer's chrome hang from there. */
+[data-outgoing-align="start"]
+  .comma-chat-user-bubble[data-outgoing-presentation="flying"][popover]::before,
+[data-outgoing-align="start"] .comma-chat-outgoing-composer-chrome {
+  right: auto;
+  left: 0;
 }
 
 .comma-chat-user-bubble[data-outgoing-presentation="flying"]::backdrop {
@@ -3996,7 +4136,7 @@ button.comma-task-label-chip:focus-visible {
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: color-mix(in srgb, var(--color-text-white) 72%, transparent);
+  color: color-mix(in srgb, var(--comma-chat-user-bubble-foreground) 72%, transparent);
   cursor: pointer;
   pointer-events: auto;
 }
@@ -4009,11 +4149,11 @@ button.comma-task-label-chip:focus-visible {
 }
 
 button.comma-chat-user-bubble-toggle:hover {
-  color: var(--color-text-white);
+  color: var(--comma-chat-user-bubble-foreground);
 }
 
 button.comma-chat-user-bubble-toggle:focus-visible {
-  outline: 2px solid var(--color-text-white);
+  outline: 2px solid var(--comma-chat-user-bubble-foreground);
   outline-offset: 1px;
 }
 
@@ -4068,8 +4208,14 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.comma-chat-thread
+/* The first-launch onboarding's thread draws its bubbles with the same tails:
+   the user's on the right, and Comma's own bubble, the user bubble in the
+   assistant's material, on the left. */
+:is(.comma-chat-thread, .comma-onboarding-thread)
   [data-bubble-tail="right"]
+  .comma-chat-user-bubble:not([data-outgoing-presentation="flying"]),
+.comma-onboarding-thread
+  [data-bubble-tail="left"]
   .comma-chat-user-bubble:not([data-outgoing-presentation="flying"]),
 .comma-chat-thread
   [data-bubble-tail="left"]
@@ -4083,8 +4229,11 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   backdrop-filter: none;
 }
 
-.comma-chat-thread
+:is(.comma-chat-thread, .comma-onboarding-thread)
   [data-bubble-tail="right"]
+  .comma-chat-user-bubble:not([data-outgoing-presentation="flying"])::before,
+.comma-onboarding-thread
+  [data-bubble-tail="left"]
   .comma-chat-user-bubble:not([data-outgoing-presentation="flying"])::before,
 .comma-chat-thread
   [data-bubble-tail="left"]
@@ -4118,6 +4267,9 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   content: "";
 }
 
+.comma-onboarding-thread
+  [data-bubble-tail="left"]
+  .comma-chat-user-bubble:not([data-outgoing-presentation="flying"])::before,
 .comma-chat-thread
   [data-bubble-tail="left"]
   .node-slot:not(:has(~ .node-slot))
@@ -4550,13 +4702,22 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   gap: var(--spacing-sm);
 }
 
+/* The 42px default is Copy (28) + row gap + slack; a source icon (24) and its
+   gap widen the actions by 28 more. */
+.comma-chat-user-bubble-row:has(.comma-chat-platform-badge):has(
+    .comma-chat-message-action-button
+  ) {
+  --comma-chat-user-bubble-actions-width: 70px;
+}
+
 .comma-chat-message-actions {
   display: flex;
-  width: 28px;
+  min-width: 28px;
   min-height: 28px;
   flex: none;
   align-items: center;
   justify-content: center;
+  gap: var(--spacing-xxs);
   margin-top: 6px;
   color: var(--color-text-tertiary);
   opacity: 0;
@@ -5271,6 +5432,17 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   margin-inline-start: calc(-1 * var(--comma-chat-avatar-gutter));
 }
 
+/* Held back while the first-launch onboarding covers the product: hidden at
+   once, then faded back in as the onboarding leaves. */
+.comma-chat-empty[data-onboarding-hold] {
+  opacity: 0;
+}
+
+.comma-chat-empty:not([data-onboarding-hold]) {
+  transition: opacity var(--motion-duration-dialog-enter)
+    var(--motion-easing-smooth-out);
+}
+
 .comma-chat-column
   > .comma-chat-empty
   ~ .comma-chat-activity-slot[data-active="false"] {
@@ -5642,6 +5814,11 @@ button.comma-chat-user-bubble-toggle:focus-visible {
     1fr
     minmax(0, calc(var(--comma-window-bar-search-max-width) + var(--spacing-md) * 2))
     1fr;
+}
+
+/* The guest sign-up prompt takes the search hint's slot and needs a wider one. */
+.comma-window-bar[data-guest="true"] {
+  --comma-window-bar-search-max-width: 560px;
 }
 
 .comma-window-frame {
@@ -6187,7 +6364,7 @@ html[data-comma-sidebar-dragging="true"] * {
   flex: 0 0 auto;
 }
 
-@media (max-width: 860px) {
+@container comma-window (width <= 860px) {
   /* Only the standing rail narrows; a tab row owns the card's full width. */
   .comma-settings-page[data-layout="rail"] .comma-settings-sidebar {
     width: clamp(196px, 30vw, 240px);
@@ -6832,76 +7009,7 @@ body[data-comma-window-role="meeting-recorder"]
   max-width: min(500px, 100%);
 }
 
-.comma-chat-suggestions {
-  min-width: 0;
-}
-
-.comma-chat-suggestion {
-  flex: none;
-  max-width: 450px;
-  border: 0;
-  border-radius: var(--radius-full);
-  background: var(--color-markdown-bg-message);
-  padding: var(--spacing-xs) var(--spacing-lg);
-  color: var(--color-markdown-text-primary);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
-  text-align: start;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  overflow: hidden;
-  cursor: pointer;
-  /* Each capsule reveals just after the one before it, so the row reads left
-     to right instead of appearing as one block. */
-  animation: comma-chat-suggestion-reveal var(--motion-duration-reveal-item)
-    var(--motion-easing-smooth-out) backwards;
-  animation-delay: calc(
-    var(--comma-chat-suggestion-index, 0) * var(--motion-duration-reveal-stagger)
-  );
-  transition:
-    background-color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
-    color var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
-    scale var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
-}
-
-/* The token set has no hover step for markdown/bg-message, and borrowing one
-   from another background family inverts between light and dark. Layer the
-   markdown surface's own hover veil over the capsule fill instead — it is
-   already defined as a darkening in light mode and a lightening in dark. */
-.comma-chat-suggestion:hover {
-  background-image: linear-gradient(
-    var(--color-markdown-image-hover),
-    var(--color-markdown-image-hover)
-  );
-}
-
-.comma-chat-suggestion[data-pressed] {
-  scale: var(--motion-scale-tactile-pressed);
-  transition-duration: var(--motion-duration-feedback-in);
-}
-
-.comma-chat-suggestion[data-focus-visible] {
-  outline: none;
-  box-shadow: var(--shadow-focus-gray);
-}
-
-@keyframes comma-chat-suggestion-reveal {
-  from {
-    opacity: 0;
-    scale: var(--motion-scale-reveal-item);
-    translate: var(--spacing-md) 0;
-  }
-}
-
-/* A suggestion never makes the empty compact editor wrap. Drafts still wrap. */
-.comma-chat-composer .ai-input-rich-editor:empty::before {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.comma-chat-credit-warning {
+.comma-chat-credit-warning-frame > .comma-chat-notice-card {
   margin-top: 0;
   margin-bottom: var(--spacing-md);
 }

@@ -66,9 +66,18 @@ export type {
   LoginCopy,
   LoginEmailProps,
   LoginProps,
+  LoginSecondaryAction,
   LoginVerificationProps,
 } from "./login";
 export { Toggle } from "./toggle";
+export { ModelPicker } from "./model-picker";
+export type {
+  ModelPickerAccount,
+  ModelPickerLabels,
+  ModelPickerModel,
+  ModelPickerProps,
+  ModelPickerValue,
+} from "./model-picker";
 export type { ToggleProps, ToggleSize } from "./toggle";
 export { Checkbox, CheckboxGroup } from "./checkbox";
 export type {
@@ -395,7 +404,9 @@ export {
   ChatPanelAttachmentPill,
   ChatPanelAudio,
   downloadMediaSource,
+  isMediaMuteShortcut,
   mediaControlShortcuts,
+  MediaVolumeControl,
   resolveMediaFullWindowShortcut,
   ChatPanelFile,
   ChatPanelFileOpenInMenu,
@@ -430,6 +441,8 @@ export type {
   ChatPanelVideoProps,
   ChatPanelVideoSurface,
   DownloadMediaSourceOptions,
+  MediaVolumeControlLabels,
+  MediaVolumeControlProps,
 } from "./chat-panel";
 export {
   createMarkdownStreamDocumentNodes,
@@ -557,6 +570,8 @@ export {
   CodeIcon,
   CubeIcon,
   EyeIcon,
+  BellIcon,
+  WindowCursorIcon,
   OpenAiIcon,
   ClaudeAiIcon,
   SunIcon,
@@ -642,6 +657,8 @@ export {
   SlackBrandIcon,
   TelegramBrandIcon,
   WechatBrandIcon,
+  DiscordBrandIcon,
+  ChatBubbleIcon,
 } from "./icons";
 export type { IconProps } from "./icons";
 export { brandMarks, isBrandKey, type BrandKey } from "./icons/brandMarks";
@@ -656,11 +673,14 @@ export {
   NotionProviderLogo,
   PiProviderLogo,
   resolveProviderBrandLogo,
+  SignalAppTileLogo,
   SignalProviderLogo,
   SignalProviderMark,
   SlackProviderLogo,
+  TelegramAppTileLogo,
   TelegramProviderLogo,
   LarkProviderLogo,
+  WeChatAppTileLogo,
   WeChatProviderLogo,
 } from "./provider-brand-logos";
 export type { ProviderBrandLogoProps } from "./provider-brand-logos";
@@ -691,3 +711,4 @@ export {
 export { MediaContextMenu } from "./menu/MediaContextMenu";
 export type { MediaContextMenuAction } from "./menu/MediaContextMenu";
 export { plainTextWithLinks } from "./markdown-stream/plainTextLinks";
+export { ComputeDiskUsage, formatComputeBytes } from "./compute-disk/ComputeDiskUsage";

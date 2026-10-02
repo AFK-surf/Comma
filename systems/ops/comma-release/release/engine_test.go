@@ -16,6 +16,7 @@ type memoryStore struct {
 	exists       bool
 	updateCalls  int
 	failUpdateAt int
+	archives     map[string]State
 }
 
 func (s *memoryStore) Load(context.Context) (Record, error) {
@@ -846,6 +847,9 @@ func (f *fakePlatform) Quiesce(context.Context, State) (int, error) {
 	return 2, nil
 }
 func (f *fakePlatform) Apply(context.Context, State) (ApplyEvidence, error) {
+	if f.fail == "apply" {
+		return ApplyEvidence{}, errors.New("candidate not ready")
+	}
 	f.applied = true
 	if f.applyEvidence.HelmRevision != 0 {
 		return f.applyEvidence, nil
@@ -858,6 +862,9 @@ func (f *fakePlatform) Verify(context.Context, State) (ApplyEvidence, error) {
 	return ApplyEvidence{HelmRevision: 4}, nil
 }
 func (f *fakePlatform) Restore(context.Context, State) error {
+	if f.fail == "restore" {
+		return errors.New("snapshot not ready")
+	}
 	if f.cleanupDeletesSnapshot && !f.snapshotCandidateAvailable {
 		return errors.New("snapshot candidate was garbage collected")
 	}
@@ -1613,5 +1620,114 @@ func TestStaleRecoveryFenceCannotTouchANewerRelease(t *testing.T) {
 	}
 	if store.record.State.ReleaseID != before.State.ReleaseID || store.record.State.Phase != before.State.Phase || platform.restored {
 		t.Fatalf("stale recovery mutated active release: %#v", store.record.State)
+	}
+}
+
+func (s *memoryStore) Archive(_ context.Context, state State) error {
+	if s.archives == nil {
+		s.archives = map[string]State{}
+	}
+	s.archives[state.ReleaseID] = state
+	return nil
+}
+func (s *memoryStore) Archived(_ context.Context, id string) (State, error) {
+	state, ok := s.archives[id]
+	if !ok {
+		return State{}, ErrNotFound
+	}
+	return state, nil
+}
+func (f *fakePlatform) CheckRepairInstallation(context.Context) error { return nil }
+
+func TestRepairPreservesPreviousFactsAndMigratesNewLedgerPlan(t *testing.T) {
+	old := NewState("staging", "old", "broken", 43, time.Now())
+	old.Phase = PhaseRecovering
+	old.RequiredMode = ModeOnline
+	old.ManifestDigest = "sha256:" + strings.Repeat("c", 64)
+	old.InitialPending = []string{"completed"}
+	old.Attempts = []JobAttempt{{Stage: "online", Attempt: 1, Name: JobName("old", "online", 1), Status: "complete", AllowedStepIDs: []string{"completed"}}}
+	store := &memoryStore{exists: true, record: Record{State: old, Version: "1"}}
+	platform := &fakePlatform{plan: testPlan(t, ModeOnline), currentHelmRevisionErr: errors.New("failed Helm release")}
+	engine := Engine{Store: store, Platform: platform, Now: time.Now}
+	if _, err := engine.Prepare(context.Background(), "staging", "new", "fixed", []byte("bundle")); err == nil {
+		t.Fatal("normal prepare accepted failed Helm")
+	}
+	state, err := engine.PrepareRepair(context.Background(), "staging", "new", "fixed", []byte("bundle"), "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, _ := store.Archived(context.Background(), "old")
+	if archived.Phase != PhaseRecovering || archived.ManifestDigest != old.ManifestDigest || len(archived.Attempts) != 1 || archived.Attempts[0].Status != "complete" || state.RepairFrom != "old" || state.Helm.SnapshotRevision != 43 {
+		t.Fatal("repair lost predecessor facts")
+	}
+	if _, err = engine.PrepareRepair(context.Background(), "staging", "new", "fixed", []byte("bundle"), "old"); err != nil {
+		t.Fatal("repair retry failed", err)
+	}
+	state, err = engine.Reconcile(context.Background())
+	if err != nil || state.Phase != PhaseSucceeded || !platform.verified {
+		t.Fatalf("repair did not finish full pipeline: %v %v", state.Phase, err)
+	}
+}
+
+func TestRepairRejectsUnsafeReplacement(t *testing.T) {
+	for _, kind := range []string{"wrong-owner", "cutover", "exclusive", "hard-cut", "completed-step", "new-exclusive", "abort-failure"} {
+		t.Run(kind, func(t *testing.T) {
+			old := NewState("staging", "old", "broken", 43, time.Now())
+			old.Phase = PhaseRecovering
+			old.RequiredMode = ModeOnline
+			store := &memoryStore{exists: true, record: Record{State: old, Version: "1"}}
+			platform := &fakePlatform{plan: testPlan(t, ModeOnline)}
+			engine := Engine{Store: store, Platform: platform, Now: time.Now}
+			previous := "old"
+			switch kind {
+			case "wrong-owner":
+				previous = "other"
+			case "cutover":
+				store.record.State.CutoverMayHaveStarted = true
+			case "exclusive":
+				store.record.State.RequiredMode = ModeExclusive
+			case "hard-cut":
+				engine.RequireLifecycleWriterEpoch = true
+			case "completed-step":
+				store.record.State.Attempts = []JobAttempt{{Stage: "online", Status: "complete", AllowedStepIDs: platform.plan.CorePending()}}
+			case "new-exclusive":
+				platform.plan = testPlan(t, ModeExclusive)
+			case "abort-failure":
+				platform.abortErr = errors.New("old job remains running")
+			}
+			if _, err := engine.PrepareRepair(context.Background(), "staging", "new", "fixed", []byte("bundle"), previous); err == nil {
+				t.Fatal("unsafe replacement accepted")
+			}
+			if platform.applied || len(platform.jobs) > 0 {
+				t.Fatal("unsafe repair dispatched migration or workload")
+			}
+		})
+	}
+}
+
+func TestRepairResumesAfterCandidatePersistenceAndKeepsFailedRolloutNonterminal(t *testing.T) {
+	old := NewState("staging", "old", "broken", 43, time.Now())
+	old.Phase = PhaseRecovering
+	old.RequiredMode = ModeOnline
+	store := &memoryStore{exists: true, record: Record{State: old, Version: "1"}, failUpdateAt: 2}
+	platform := &fakePlatform{plan: testPlan(t, ModeOnline)}
+	engine := Engine{Store: store, Platform: platform, Now: time.Now}
+	if _, err := engine.PrepareRepair(context.Background(), "staging", "new", "fixed", []byte("bundle"), "old"); err == nil {
+		t.Fatal("injected interrupted plan accepted")
+	}
+	store.failUpdateAt = 0
+	if _, err := engine.PrepareRepair(context.Background(), "staging", "new", "changed", []byte("bundle"), "old"); err == nil {
+		t.Fatal("candidate drift accepted")
+	}
+	if _, err := engine.PrepareRepair(context.Background(), "staging", "new", "fixed", []byte("bundle"), "old"); err != nil {
+		t.Fatal(err)
+	}
+	platform.fail = "apply"
+	if _, err := engine.Reconcile(context.Background()); err == nil {
+		t.Fatal("failed candidate succeeded")
+	}
+	platform.fail = "restore"
+	if _, err := engine.Recover(context.Background(), "new"); err == nil || store.record.State.Phase != PhaseRecovering {
+		t.Fatal("unhealthy snapshot counted as recovered")
 	}
 }

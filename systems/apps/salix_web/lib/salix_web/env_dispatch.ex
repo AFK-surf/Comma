@@ -670,6 +670,7 @@ defmodule SalixWeb.EnvDispatch do
       {:error, {:vm_waking, %{"retry_after_ms" => 1_000, "env_id" => environment_id}}}
     else
       {:ok, _} -> {:error, SalixWeb.ComputeProviders.Cloudflare.unavailable_error(group_id)}
+      {:error, %{"error_class" => _}} = error -> error
       _ -> {:error, :no_environment}
     end
   end

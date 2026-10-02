@@ -454,6 +454,63 @@ func TestKimiReadinessRejectsNativeAuthSnapshotWithoutModel(t *testing.T) {
 	}
 }
 
+func TestKimiRecoveryDuringWebSocketHandshake(t *testing.T) {
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	// Keep the handshake write in flight when the recovery prompt emits lifecycle events.
+	t.Setenv("SALIX_TEST_FAKE_KIMI_LARGE_HANDSHAKE", "1")
+	statePath := filepath.Join(t.TempDir(), "state")
+	decisionPath := filepath.Join(t.TempDir(), "decisions")
+	if err := os.WriteFile(statePath, []byte("complete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SALIX_TEST_FAKE_RECOVERY_STATE_PATH", statePath)
+	t.Setenv("SALIX_TEST_FAKE_RECOVERY_DECISION_PATH", decisionPath)
+	t.Setenv("SALIX_TEST_FAKE_KIMI_LOG", filepath.Join(t.TempDir(), "native.log"))
+	c, err := newConnector(config{name: "kimi-handshake", root: t.TempDir(), systemInfoInterval: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c.closeExternalRuntimes()
+		if c.bridgeServer != nil {
+			_ = c.bridgeServer.Shutdown(context.Background())
+		}
+	})
+	input := externalRuntimeInput{
+		sessionID: "kimi-handshake", dispatchID: "dispatch", executionID: "execution",
+		token: "token", command: fakePortableRuntimeCommand(t, "kimi"), workspace: t.TempDir(),
+		payload: map[string]any{"session_id": "kimi-native"},
+	}
+	if err := c.watchExternalRuntime("kimi", input); err != nil {
+		t.Fatal(err)
+	}
+	i := c.runtimeImplementations["kimi"].(*kimiRuntimeImplementation)
+	if err := i.Restore(input); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := i.Check(ctx, input.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	for c.externalRuntimeState.watched("kimi", input.sessionID) && ctx.Err() == nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c.externalRuntimeState.watched("kimi", input.sessionID) {
+		t.Fatal("recovery lifecycle was lost during the WebSocket handshake")
+	}
+	slot := i.sessionSlot(input.sessionID)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.session == nil || !slot.session.running() {
+		t.Fatal("native fixture exited during concurrent handshake and recovery events")
+	}
+	decisions, err := os.ReadFile(decisionPath)
+	if err != nil || string(decisions) != "complete\n" {
+		t.Fatalf("recovery decisions = %q, %v", decisions, err)
+	}
+}
+
 func TestPiReadinessRequiresProviderEvidence(t *testing.T) {
 	for _, configured := range []bool{false, true} {
 		t.Run(map[bool]string{false: "missing", true: "configured"}[configured], func(t *testing.T) {
@@ -591,7 +648,7 @@ func TestPortableRuntimeZeroExitRecovery(t *testing.T) {
 				case *claudeRuntimeImplementation:
 					i.authGeneration.wait.Add(1)
 					s := &claudeRuntimeSession{implementation: i, connector: c, cmd: cmd, done: make(chan struct{}),
-						diagnostics:    &claudeDiagnosticBuffer{},
+						diagnostics:    &harnessDiagnosticBuffer{},
 						authGeneration: i.authGeneration, sessionID: input.sessionID, nativeID: nativeID, token: input.token,
 						dispatchID: input.dispatchID, executionID: input.executionID, workState: workState, abandoned: state == "stopped"}
 					i.sessionSlot(input.sessionID).session = s

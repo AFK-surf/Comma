@@ -4,7 +4,11 @@ import { conversationMessageTurnKey as messageTurnKey } from "../../model/visibl
 import type { ChatOutgoingLaunch } from "../outgoing/outgoingPresentation";
 import { useOutgoingPresentations } from "../outgoing/useOutgoingPresentations";
 import { useAnchoredTails, type AnchoredTail } from "../turns/useAnchoredTails";
-import { appendAssistantDraft, buildConversationLayout } from "./conversationLayout";
+import {
+  appendAssistantDraft,
+  assistantDraftTurnIndex,
+  buildConversationLayout,
+} from "./conversationLayout";
 
 export type TranscriptLayout = ReturnType<typeof useTranscriptLayout>;
 
@@ -41,7 +45,12 @@ export function useTranscriptLayout({
   const conversationLayout = useMemo(
     () =>
       assistantDraft
-        ? appendAssistantDraft(canonicalLayout, assistantDraft, assistantResponseSlotId)
+        ? appendAssistantDraft(
+            canonicalLayout,
+            assistantDraft,
+            assistantResponseSlotId,
+            assistantDraftTurnIndex(canonicalLayout, assistantDraft)
+          )
         : canonicalLayout,
     [assistantDraft, assistantResponseSlotId, canonicalLayout]
   );

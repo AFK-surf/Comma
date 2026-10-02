@@ -14,8 +14,6 @@
 | BFT 用户 | 产品身份 | [`BridgeForTeams.Schema.User`](../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user.ex) | — |
 | BFT Organization | 产品范围 | [`BridgeForTeams.Schema.Organization`](../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/organization.ex) | — |
 | BFT Agent Swarm | 产品范围 | [`BridgeForTeams.Schema.Project`](../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/project.ex) | — |
-| BFT 当前 Assistant Chat | 产品绑定 | [`BridgeForTeams.Schema.UserAssistantChat`](../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user_assistant_chat.ex) | — |
-| Agent 工作范围的 Chat-ready 条件 | 产品生命周期 | [`BridgeForTeams.AssistantChats.ensure_chat/4`](../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex) | [invalid router config creates no chat](../../../systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs) |
 | Conversation | 协作事实 | [`SalixIM.ConversationActor`](../../../systems/apps/salix_im/lib/salix_im/conversation_actor.ex) | — |
 | Participant 接收目标 | 协作事实 | [`SalixIM.ConversationParticipantActor`](../../../systems/apps/salix_im/lib/salix_im/conversation_participant_actor.ex) | — |
 | Message | 协作事实 | [`SalixIM.ConversationMessage`](../../../systems/apps/salix_im/lib/salix_im/conversation_message.ex) | — |
@@ -27,7 +25,6 @@
 | Comma Workspace → Group scope revision | 产品授权 | [`Comma.WorkspaceGroupBinding`](../../../systems/apps/comma_core/lib/comma/workspace_group_binding.ex) | — |
 | Comma 控制面显式重新指定 Group Router：固定 Conversation 发送 | 产品生命周期 | [`Comma.Conversations.send_message/5`](../../../systems/apps/comma_core/lib/comma/conversations.ex) | [the next Comma Chat send follows an explicitly reassigned Group Router](../../../systems/apps/comma_web/test/comma_api_test.exs) |
 | Group 固定 Router Conversation 显式重新指定收敛 | Salix 产品编排 | [`SalixIM.RouterConversationInput`](../../../systems/apps/salix_im/lib/salix_im/router_conversation_input.ex) | [concurrent Router reassignment cannot deactivate both desired Router participants](../../../systems/apps/salix_im/test/conversations_test.exs) |
-| BFT 控制面显式重新指定 Group Router | 产品生命周期 | [`BridgeForTeams.AssistantChats`](../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex) | [revalidates canonical kind, current Router, and BFT provider before reuse](../../../systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs) |
 | Comma Center Recommendation 产品 Projection SSOT | 产品 Projection | [`Comma.Recommendations`](../../../systems/apps/comma_core/lib/comma/recommendations.ex)<br>[`RecommendationProfile`](../../../systems/apps/comma_core/lib/comma/data/recommendation_profile.ex)<br>[`RecommendationRun`](../../../systems/apps/comma_core/lib/comma/data/recommendation_run.ex) | [a repeated manual refresh atomically supersedes the active run and clears its evidence](../../../systems/apps/comma_core/test/comma/recommendations_test.exs)<br>[source changes supersede an active run and stop exposing refreshing state](../../../systems/apps/comma_core/test/comma/recommendations_test.exs) |
 | Recommendation 有界 Source Collector 与受限 Renderer | 产品 Runtime | [`CommaWeb.RecommendationSourceCollector`](../../../systems/apps/comma_web/lib/comma_web/recommendation_source_collector.ex)<br>[`RecommendationRuntime`](../../../systems/apps/comma_web/lib/comma_web/recommendation_runtime.ex) | [HTTP refresh durably queues work before collection and publishes one stateless model response](../../../systems/apps/comma_web/test/local_recommendation_flow_test.exs) |
 | Recommendation 版本化 Contract 与 Electron Media Intake | 客户端边界 | [`@comma/recommendation-contract`](../../../clients/packages/recommendation-contract/src/index.ts)<br>[`recommendationMedia.load`](../../../clients/packages/native-bridge/src/capability-leaves.ts)<br>[`Electron Recommendation Media`](../../../clients/apps/electron/src/main/modules/recommendation-media/index.ts) | [rejects a hostname if any returned address is private](../../../clients/apps/electron/src/main/test/recommendation-media.test.ts) |
@@ -40,6 +37,7 @@
 | --- | --- | --- | --- |
 | [@comma/admin](../../../clients/apps/admin/package.json) | 应用 | @comma/app<br>@comma/config<br>@comma/ui | — |
 | [@comma/app](../../../clients/packages/app/package.json) | 包 | @comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/layout-inspector<br>@comma/native-bridge<br>@comma/product-inbox-runtime<br>@comma/recommendation-contract<br>@comma/session-contract<br>@comma/session-history-runtime<br>@comma/ui | — |
+| [@comma/bft](../../../clients/apps/bft/package.json) | 应用 | @comma/ui | — |
 | [@comma/chat-contract](../../../clients/packages/chat-contract/package.json) | 包 | — | — |
 | [@comma/config](../../../clients/packages/config/package.json) | 包 | — | — |
 | [@comma/electron](../../../clients/apps/electron/package.json) | 应用 | @comma/app<br>@comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/native-bridge<br>@comma/product-inbox-runtime<br>@comma/session-contract<br>@comma/session-history-runtime | — |
@@ -109,12 +107,12 @@
 | `airDrop` | 3 | 1 | 1 | airDrop.act<br>airDrop.preview<br>airDrop.state<br>airDrop.state.changed |
 | `appearance` | 2 | 0 | 0 | appearance.fontFamilies<br>appearance.setResolvedTheme |
 | `applicationMenu` | 1 | 1 | 0 | applicationMenu.command<br>applicationMenu.update |
-| `appPreferences` | 4 | 1 | 1 | appPreferences.initializeClientSettings<br>appPreferences.openNotificationSettings<br>appPreferences.state<br>appPreferences.state.changed<br>appPreferences.update |
+| `appPreferences` | 5 | 1 | 1 | appPreferences.initializeClientSettings<br>appPreferences.openNotificationSettings<br>appPreferences.requestNotificationAuthorization<br>appPreferences.state<br>appPreferences.state.changed<br>appPreferences.update |
 | `audioCapture` | 11 | 1 | 1 | audioCapture.cancel<br>audioCapture.microphones<br>audioCapture.openPermissionSettings<br>audioCapture.openSaved<br>audioCapture.pause<br>audioCapture.resume<br>audioCapture.selectMicrophone<br>audioCapture.sources<br>audioCapture.start<br>audioCapture.state<br>audioCapture.state.changed<br>audioCapture.stop |
 | `browserSidebar` | 7 | 2 | 0 | browserSidebar.capture<br>browserSidebar.changed<br>browserSidebar.close<br>browserSidebar.inspect<br>browserSidebar.navigate<br>browserSidebar.open<br>browserSidebar.openTabRequested<br>browserSidebar.showPermissions<br>browserSidebar.update |
 | `chat` | 23 | 2 | 2 | chat.acceptTaskReview<br>chat.acknowledgeIntakeFailures<br>chat.attach<br>chat.attachLocalFiles<br>chat.beginSendIntent<br>chat.cancelSendIntent<br>chat.clearPresentation<br>chat.discard<br>chat.drafts<br>chat.drafts.changed<br>chat.listSkills<br>chat.pickAttachments<br>chat.presentInSideChat<br>chat.readGroupImage<br>chat.refresh<br>chat.release<br>chat.removeAttachment<br>chat.resolveWorkspaceChat<br>chat.retain<br>chat.retry<br>chat.retryAttachment<br>chat.send<br>chat.setDraft<br>chat.state<br>chat.state.changed |
 | `clipboard` | 4 | 0 | 0 | clipboard.readImage<br>clipboard.readText<br>clipboard.writeImage<br>clipboard.writeText |
-| `computeNode` | 6 | 1 | 1 | computeNode.configure<br>computeNode.drain<br>computeNode.rebuild<br>computeNode.remove<br>computeNode.repair<br>computeNode.state<br>computeNode.state.changed |
+| `computeNode` | 14 | 1 | 1 | computeNode.abandon<br>computeNode.configure<br>computeNode.disposeLocal<br>computeNode.drain<br>computeNode.localOverview<br>computeNode.localWorkloads<br>computeNode.rebuild<br>computeNode.recover<br>computeNode.recoveryCandidates<br>computeNode.refresh<br>computeNode.remove<br>computeNode.repair<br>computeNode.resumeLocalDisposal<br>computeNode.state<br>computeNode.state.changed |
 | `computerUse` | 2 | 0 | 0 | computerUse.getPermissions<br>computerUse.openPermissionFlow |
 | `connectorRuntime` | 4 | 1 | 1 | connectorRuntime.copyConnectCommand<br>connectorRuntime.scope<br>connectorRuntime.setScope<br>connectorRuntime.state<br>connectorRuntime.state.changed |
 | `driveCatalog` | 2 | 1 | 1 | driveCatalog.query<br>driveCatalog.state<br>driveCatalog.state.changed |
@@ -126,6 +124,7 @@
 | `messageNotifications` | 0 | 1 | 0 | messageNotifications.event |
 | `native` | 1 | 0 | 0 | native.info |
 | `notch` | 10 | 1 | 0 | notch.close<br>notch.event<br>notch.hide<br>notch.open<br>notch.preview<br>notch.pulse<br>notch.show<br>notch.status<br>notch.stop<br>notch.toggle<br>notch.update |
+| `onboarding` | 3 | 2 | 1 | onboarding.closeWindow<br>onboarding.handoff<br>onboarding.presentWindow<br>onboarding.window<br>onboarding.window.changed |
 | `peers` | 1 | 0 | 0 | peers.connect |
 | `productInbox` | 4 | 1 | 1 | productInbox.refresh<br>productInbox.release<br>productInbox.retain<br>productInbox.state<br>productInbox.state.changed |
 | `recommendationMedia` | 1 | 0 | 0 | recommendationMedia.load |
@@ -137,6 +136,7 @@
 | `subscriptionAuthorization` | 3 | 0 | 0 | subscriptionAuthorization.cancel<br>subscriptionAuthorization.start<br>subscriptionAuthorization.status |
 | `surfaces` | 2 | 3 | 2 | surfaces.changed<br>surfaces.state<br>surfaces.windowFullScreen<br>surfaces.windowFullScreen.changed<br>surfaces.windowResizeSettled |
 | `synchronicity` | 21 | 0 | 0 | synchronicity.adopt<br>synchronicity.adoptTree<br>synchronicity.delete<br>synchronicity.importFile<br>synchronicity.list<br>synchronicity.openLocalRoot<br>synchronicity.pickFolder<br>synchronicity.pin<br>synchronicity.read<br>synchronicity.replicaSet<br>synchronicity.replicaSync<br>synchronicity.restart<br>synchronicity.saveDownload<br>synchronicity.scan<br>synchronicity.setDomain<br>synchronicity.setSpaceSettings<br>synchronicity.sourceAdd<br>synchronicity.sourceRemove<br>synchronicity.state<br>synchronicity.versions<br>synchronicity.write |
+| `tokenDanceAuthorization` | 4 | 0 | 0 | tokenDanceAuthorization.cancel<br>tokenDanceAuthorization.save<br>tokenDanceAuthorization.start<br>tokenDanceAuthorization.status |
 | `transport` | 1 | 0 | 0 | transport.status |
 | `windows` | 3 | 0 | 0 | windows.close<br>windows.create<br>windows.focus |
 

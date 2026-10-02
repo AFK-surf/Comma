@@ -171,6 +171,7 @@ config :comma_core, :google_auth,
   web_client_id: "comma-web-test.apps.googleusercontent.com",
   electron_client_id: "comma-electron-test.apps.googleusercontent.com",
   electron_client_secret: "comma-electron-test-client-secret",
+  android_client_ids: ["comma-android-test.apps.googleusercontent.com"],
   attempt_ttl_seconds: 300
 
 config :comma_core,
@@ -189,8 +190,6 @@ config :comma_core, Comma.Repo,
   pool_size: 8,
   telemetry_prefix: [:comma, :repo],
   migration_primary_key: [name: :id, type: :binary_id]
-
-config :comma_core, :chat_suggestions, false
 
 config :comma_core, Oban,
   name: Comma.Oban,
@@ -280,10 +279,6 @@ config :bridge_for_teams_core, BridgeForTeams.Salix.TenantConfigChecker, enabled
 # Mac mini provision-request watching is also driven directly by tests. The
 # background loop has no SQL sandbox connection.
 config :bridge_for_teams_core, BridgeForTeams.EnvironmentProvisioning.Reconciler, enabled: false
-
-# The artifact-document sweeper stays off under the SQL sandbox; sweeper tests
-# start their own supervised instance and drive it via sweep_once/1.
-config :bridge_for_teams_core, BridgeForTeams.Artifacts.Sweeper, enabled: false
 
 # Ephemeral HTTP port for the web suite.
 config :bridge_for_teams_web,
@@ -378,6 +373,7 @@ config :salix_agent,
   trajectory_eval_tenant_mod: nil
 
 config :salix_agent, session_history_enabled: false
+config :salix_agent, dependency_tenant_limit_refresh_ms: nil
 
 config :salix_agent, :subscription_storage_key, String.duplicate("s", 32)
 

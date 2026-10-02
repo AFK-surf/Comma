@@ -42,9 +42,9 @@ export interface AiInputAutoSizeOptions extends HeightReportTarget {
  * answer commits, before the frame paints, so the resize transition starts
  * with the text. A host that sizes itself from the reported heights (a native
  * window around the composer) reads at the edit instead, so it hears the new
- * size ahead of the frame that paints it. A value written from outside (a
- * restored draft, an accepted suggestion) is measured in the layout pass that
- * writes it, so motion that follows sees the layout settled.
+ * size ahead of the frame that paints it. A value written from outside (such
+ * as a restored draft) is measured in the layout pass that writes it, so
+ * motion that follows sees the layout settled.
  */
 export function useAiInputAutoSize(options: AiInputAutoSizeOptions) {
   const { isSmall, maxHeightOverride, measurementWidthMode, minHeightOverride } =
@@ -160,8 +160,7 @@ export function useAiInputAutoSize(options: AiInputAutoSizeOptions) {
 
   // The switch slides the prompt from where it was, starting in the frame
   // the resize starts: the flush commits the offset, so the transform then
-  // transitions home. It stays on the prompt itself: the accepted-suggestion
-  // wave waits for it to settle.
+  // transitions home. It stays on the prompt itself.
   useLayoutEffect(() => {
     const previousLeft = pendingPromptLeft.current;
     const prompt = options.promptRef.current;

@@ -8,6 +8,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
   useContext,
@@ -51,6 +52,9 @@ import { traceCommaNav } from "../devtools/commaNavTrace";
 import { useConversation } from "./chat/conversation/useConversation";
 import { useWorkspaceSkills } from "./chat/useWorkspaceSkills";
 import { CommaAuthContext } from "./auth-context";
+import { useOnboardingHandoff } from "./onboarding/onboardingHandoff";
+import { useOnboardingOpen } from "./onboarding/onboardingPresence";
+import { useOnboardingAhead } from "./onboarding/useOnboardingAhead";
 import { getUserDisplayName } from "./UserAvatar";
 import { RecommendationRail } from "./recommendations/RecommendationRail";
 
@@ -245,8 +249,26 @@ function WorkspaceResolutionFeedback({
 }) {
   const messages = useCommaMessages();
   const status = state.status;
+  // The first-launch onboarding covers Home and reports workspace preparation
+  // itself. This feedback waits for it to close, then shows what still applies.
+  const onboardingOpen = useOnboardingOpen();
+  const heldBack = useRef(onboardingOpen);
 
   useEffect(() => {
+    if (onboardingOpen) {
+      heldBack.current = true;
+      return undefined;
+    }
+    if (heldBack.current) {
+      heldBack.current = false;
+      // Home's few automatic retries may have run out under a long
+      // onboarding while the workspace was still being prepared: ask again
+      // once, so the composer the onboarding hands over can send.
+      if (status === "provisioning" || status === "error") {
+        onRetry();
+        return undefined;
+      }
+    }
     const retry = { label: messages.common_retry(), onPress: onRetry };
     let toastId: string | number;
     if (status === "provisioning") {
@@ -273,7 +295,7 @@ function WorkspaceResolutionFeedback({
     return () => {
       toast.dismiss(toastId);
     };
-  }, [messages, onRetry, status]);
+  }, [messages, onRetry, onboardingOpen, status]);
 
   return null;
 }
@@ -317,6 +339,13 @@ function HomeConversation({
   const greetingName = auth
     ? getUserDisplayName({ displayName: auth.userDisplayName, email: auth.userEmail })
     : undefined;
+  // A guest Session has only its Router chat: no skills, recommendations, or Tasks.
+  const guest = auth?.isGuest === true;
+  // The Routines wait for the first-launch onboarding: its apps step starts
+  // them once, with every app it connected (useOnboardingRoutines). Read
+  // before or under it, they would start before any app is connected and
+  // restart with each connection.
+  const onboardingAhead = useOnboardingAhead();
   const messages = useCommaMessages();
   const api = useChatApi();
   const registry = useChatRegistry();
@@ -325,8 +354,13 @@ function HomeConversation({
   const workspaceId = conversationTarget?.workspaceId;
   const conversation = useConversation(workspaceId, groupId, conversationId);
   const recommendationChannel = conversation.channel;
-  const skills = useWorkspaceSkills(api, workspaceId ?? "");
+  const skills = useWorkspaceSkills(api, guest ? "" : (workspaceId ?? ""));
   const { openBrowser, openChat } = useChatSidebar();
+  // The onboarding's "Start chatting" lands on this composer.
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  useOnboardingHandoff(() => {
+    if (surfaceActive) setComposerFocusRequest((request) => request + 1);
+  });
 
   useLayoutEffect(() => {
     if (!workspaceId || !groupId || !conversationId) return;
@@ -475,6 +509,7 @@ function HomeConversation({
       workspaceState.status === "unauthorized");
   const composerPresentation: ConversationComposerPresentation = {
     disabled: composerDisabled,
+    focusRequest: composerFocusRequest,
     feedback: (
       <HomeResolutionFeedback
         onRetry={onRetry}
@@ -495,12 +530,13 @@ function HomeConversation({
       composerPresentation={composerPresentation}
       draftSource={draftSource}
       groupId={groupId}
-      onOpenConversationRef={handleOpenConversationRef}
-      onOpenInCommaBrowser={handleOpenInCommaBrowser}
+      // A guest has no Tasks or in-app browser; links open normally.
+      onOpenConversationRef={guest ? undefined : handleOpenConversationRef}
+      onOpenInCommaBrowser={guest ? undefined : handleOpenInCommaBrowser}
       recommendationsContent={
-        workspaceId && conversationId ? (
+        workspaceId && conversationId && !guest ? (
           <RecommendationRail
-            active={surfaceActive}
+            active={surfaceActive && !onboardingAhead}
             api={api}
             greetingName={greetingName}
             onConnectApps={onConnectApps}
@@ -515,8 +551,8 @@ function HomeConversation({
       state={state}
       surfaceActive={surfaceActive}
       tasksContent={
-        workspaceState.status === "hidden" ||
-        workspaceState.status === "unauthorized" ? (
+        guest ? undefined : workspaceState.status === "hidden" ||
+          workspaceState.status === "unauthorized" ? (
           <HomeTasksRailLoading />
         ) : (
           <HomeTasksRail enabled={surfaceActive} />

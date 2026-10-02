@@ -73,4 +73,4 @@ KUBECONFIG="${kubeconfig}" \
   COMMA_HELM_BIN="${helm_bin}" \
   GOCACHE="/tmp/comma-release-go-cache" \
   go test -C systems/ops/comma-release ./release \
-    -run 'TestDisposableNamespaceRecoveryMatrix|TestHelmRecoveryE2E|TestRuntimeBundleActivationReceivesReleaseWorkerIdentity' -count=1 -timeout=15m -v
+    -run 'TestDisposableNamespaceRecoveryMatrix|TestHelmRecoveryE2E|TestHelmRepairE2E|TestRuntimeBundleActivationReceivesReleaseWorkerIdentity' -count=1 -timeout=15m -v

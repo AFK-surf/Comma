@@ -28,6 +28,51 @@ defmodule CommaWeb.ProactiveDelivery do
     end
   end
 
+  @doc """
+  The owner's bound personal chats where the Router may send a reminder it
+  decided on, as the exact reply tool and arguments. The server never sends
+  through them. WeChat can only reply after the owner has written once since
+  binding; until then its target is not `ready`. Credentials stay out.
+  """
+  def personal_targets(workspace, owner) do
+    telegram =
+      case telegram_target(workspace, owner) do
+        {:ok, %{"connect_id" => connect, "chat_id" => chat}} ->
+          [
+            %{
+              "provider" => "telegram",
+              "tool" => "im_api.telegram.send_message",
+              "connect_id" => connect,
+              "chat_id" => chat,
+              "ready" => true
+            }
+          ]
+
+        _ ->
+          []
+      end
+
+    telegram ++ wechat_target(workspace, owner)
+  end
+
+  defp wechat_target(workspace, owner) do
+    with {:ok, %{current: id}} when is_binary(id) <- Comma.WeChatLinks.references(workspace["id"]),
+         {:ok, %{"managed_by" => "comma_product", "owner_user_id" => ^owner} = connect} <-
+           ProviderConnects.get_active_connect_by_id(workspace["default_group_id"], id, "wechat") do
+      [
+        %{
+          "provider" => "wechat",
+          "tool" => "im_api.wechat.reply_text",
+          "connect_id" => id,
+          "ready" =>
+            is_binary(connect["latest_context_token"]) and connect["latest_context_token"] != ""
+        }
+      ]
+    else
+      _ -> []
+    end
+  end
+
   @doc "The owner's current bound Telegram private chat, shared with Task review cards."
   def telegram_target(workspace, owner) do
     case Comma.TelegramLinks.get_link(workspace["id"]) do

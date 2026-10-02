@@ -15,10 +15,12 @@ from pathlib import Path
 import plistlib
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
 import time
+import uuid
 
 
 def request(path, token, **payload):
@@ -34,6 +36,120 @@ def request(path, token, **payload):
                     assert response.get("ok"), response
                     return response
     raise AssertionError("helper exited without a final response")
+
+
+def test_standalone_application(root, packaged_app):
+    nested = root / "Comma.app/Contents/Resources/Comma Computer Use.app"
+    shutil.copytree(packaged_app, nested, symlinks=True)
+    # Isolate the installed app and TCC identity from developer and release apps.
+    identifier = "surf.comma.test.isolation." + uuid.uuid4().hex
+    info_path = nested / "Contents/Info.plist"
+    with info_path.open("rb") as source:
+        info = plistlib.load(source)
+    info["CFBundleIdentifier"] = identifier
+    with info_path.open("wb") as output:
+        plistlib.dump(info, output)
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(nested)], check=True)
+    executable = nested / "Contents/MacOS/CommaComputerUseDaemon"
+    installed = Path(subprocess.check_output([str(executable), "--prepare-app"], text=True, timeout=20).strip())
+    assert installed.name == nested.name and installed.parent.name == identifier, installed
+    assert not any(parent.suffix == ".app" for parent in installed.parents), installed
+    path = root / "standalone.sock"
+    token = secrets.token_hex(24)
+    try:
+        subprocess.run(["codesign", "--verify", "--deep", "--strict", str(installed)], check=True)
+        assert subprocess.check_output([str(executable), "--prepare-app"], text=True, timeout=20).strip() == str(installed)
+        for attempt in range(2):
+            output_path = root / f"standalone-{attempt}.log"
+            subprocess.run([
+                "open", "-n", "-g", "--stdout", str(output_path), "--stderr", str(output_path),
+                "--env", f"COMMA_COMPUTER_USE_AUTH_TOKEN={token}",
+                "--env", f"COMMA_COMPUTER_USE_SOCKET_PATH={path}", str(installed),
+            ], check=True, timeout=15)
+            deadline = time.monotonic() + 15
+            while not path.exists():
+                assert time.monotonic() < deadline, output_path.read_text()
+                time.sleep(0.1)
+            assert request(path, token, control="hello")["message"] == "comma-computer-use-daemon"
+            # LaunchServices must register the independent app, including after relaunch.
+            asn = subprocess.check_output([
+                "lsappinfo", "find", f"bundleid={identifier}",
+            ], text=True, timeout=10).strip()
+            assert asn, "helper did not register with LaunchServices"
+            identity = subprocess.check_output([
+                "lsappinfo", "info", "-only", "bundlepath", "-only", "CFBundleIdentifier", asn,
+            ], text=True, timeout=10)
+            assert str(installed) in identity and identifier in identity, identity
+            request(path, token, control="permissions-status")
+            request(path, token, control="shutdown")
+            while path.exists():
+                assert time.monotonic() < deadline, "helper did not release its socket"
+                time.sleep(0.1)
+        print("PASS: nested distribution installs and relaunches with an independent LaunchServices identity", flush=True)
+    finally:
+        if path.exists():
+            request(path, token, control="shutdown")
+        shutil.rmtree(installed.parent)
+
+
+def test_restart_during_shutdown(root, app):
+    path = root / "restart.sock"
+    token = secrets.token_hex(24)
+    environment = dict(os.environ, COMMA_COMPUTER_USE_AUTH_TOKEN=token,
+                       COMMA_COMPUTER_USE_SOCKET_PATH=str(path))
+    processes = []
+
+    def wait_for(predicate, message):
+        deadline = time.monotonic() + 10
+        while not predicate():
+            assert time.monotonic() < deadline, message
+            time.sleep(0.001)
+
+    with (root / "restart.log").open("w+") as log:
+        def launch():
+            process = subprocess.Popen(
+                [str(app / "Contents/MacOS/CommaComputerUseDaemon")],
+                env=environment, stdout=log, stderr=log)
+            processes.append(process)
+            wait_for(lambda: path.exists() or process.poll() is not None,
+                     "helper did not open its socket")
+            assert process.poll() is None, f"helper exited: {process.returncode}"
+            assert request(path, token, control="hello")["message"] == "comma-computer-use-daemon"
+            return process
+
+        try:
+            old = launch()
+            request(path, token, control="shutdown")
+            wait_for(lambda: not path.exists(), "old helper did not release its socket")
+            # Hold the old process before its final cleanup. The replacement must
+            # remain reachable when that cleanup runs, regardless of launch speed.
+            old.send_signal(signal.SIGSTOP)
+            assert old.poll() is None, "old helper exited before the restart overlap"
+            replacement = launch()
+            old.send_signal(signal.SIGCONT)
+            assert old.wait(timeout=10) == 0
+            assert replacement.poll() is None, "replacement helper exited"
+            assert path.exists(), "old helper removed the replacement socket"
+            assert request(path, token, control="hello")["message"] == "comma-computer-use-daemon"
+            request(path, token, control="shutdown")
+            assert replacement.wait(timeout=10) == 0
+            assert not path.exists(), "replacement helper left its socket after shutdown"
+            print("PASS: replacement helper remains reachable after old helper exits", flush=True)
+        except BaseException:
+            log.flush()
+            log.seek(0)
+            print(log.read()[-12000:], flush=True)
+            raise
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.send_signal(signal.SIGCONT)
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
 
 
 def test_drag_panel(root, app, build, profile):
@@ -96,6 +212,8 @@ def main():
         app = root / "Comma Computer Use.app"
         shutil.copytree(args.app, app, symlinks=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+        test_restart_during_shutdown(root, app)
+        test_standalone_application(root, app)
         token = secrets.token_hex(24)
         path = root / "daemon.sock"
         environment = dict(os.environ, COMMA_COMPUTER_USE_AUTH_TOKEN=token,

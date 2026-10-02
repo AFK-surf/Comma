@@ -1,0 +1,943 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		049627DDF26B8C81AC0FE616 /* CommaCore in Frameworks */ = {isa = PBXBuildFile; productRef = 56CCD65D279D60FAF1526F35 /* CommaCore */; };
+		0766614D8E9B6E9FFD820697 /* RoutineCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD5FC06C3B1F7F7FBCA49D3A /* RoutineCards.swift */; };
+		0BAA520FE796BD6A94D0CBB0 /* TaskActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 535D78BF2EDA34ECD2C62543 /* TaskActivityAttributes.swift */; };
+		0CD14B6756F3965A055F6C69 /* WatchPairingBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F67F8AA2C44B0A691A970D46 /* WatchPairingBridge.swift */; };
+		0DECC364A1D73AB3B8FE161E /* CommaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C39271F823687E408F205F0 /* CommaStore.swift */; };
+		14B63BFFCAE3FAB1616C2621 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 28A62DC33B5998B1C3DB747A /* PrivacyInfo.xcprivacy */; };
+		17D467F1FFF2807D91E98004 /* PhoneNotificationSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEAE5DCB86F6D83B2F48525E /* PhoneNotificationSystem.swift */; };
+		194FDEA7C957633852F7382A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 28A62DC33B5998B1C3DB747A /* PrivacyInfo.xcprivacy */; };
+		20136AC921E711ECD61F7742 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AD76F748A0FF05289B1EBBF /* ProfileView.swift */; };
+		238CC6E734245580BFA77C73 /* CommaTaskLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = D69295E3257A8EBC09977B5A /* CommaTaskLiveActivity.swift */; };
+		28DBB72FED1641A57E4523ED /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 49443DEDD1E35A0CC33BFDCE /* Localizable.xcstrings */; };
+		293B34606E22D95127FF7996 /* CommaTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86119434A6F0C8F7EBE4B25E /* CommaTheme.swift */; };
+		2E097D57FEF5E80E0FCBBF7E /* RoutinesViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32B900560B691F3D7FDC3212 /* RoutinesViews.swift */; };
+		2E8B631ECD77BE59CF8913CA /* CommaWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02AAA9A7645D17BE2D1206AC /* CommaWatchApp.swift */; };
+		304DCE7E3F4594363FB2F6B6 /* CommonViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F4C1DAEA1AC4059D6EAFD4 /* CommonViews.swift */; };
+		33BCB4230D178323792B6986 /* TaskDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F511EF868CC5C568C7528C /* TaskDock.swift */; };
+		37D923A0E0F8E67B014BEF68 /* ChatComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82AB0A4C1B136F4F96868445 /* ChatComponents.swift */; };
+		3E42DEB0BBCFCB1718FC009B /* TaskActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4308AE92579A672A8D1DE4B /* TaskActions.swift */; };
+		4B0A3964EA81E6017CF11E80 /* PhoneConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFC6426415D1FCCD79D6809 /* PhoneConversationView.swift */; };
+		55E7E591D40010AF710363F1 /* CommaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C39271F823687E408F205F0 /* CommaStore.swift */; };
+		56E860A2F2871C65704019C7 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = E0D50C9B473FC97FE7061DD2 /* Markdown */; };
+		588D302CCAB9814D2BC4B396 /* ChatTranscriptModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 047A699998DEC85199A13BE8 /* ChatTranscriptModelTests.swift */; };
+		669358B8F57D91A14C87E1EA /* CommaLogoAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0C66105BF3F0AC1FA5FE34 /* CommaLogoAnimation.swift */; };
+		67B5B4759B3FA26C3F14590B /* CommaTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86119434A6F0C8F7EBE4B25E /* CommaTheme.swift */; };
+		74D79CF4991AD6C0E43E539E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B4326F993F90AE7A48E47397 /* Assets.xcassets */; };
+		75635DF6CC0F401C1AE05F33 /* PhonePairingBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82915ED22DA69DE834678AAF /* PhonePairingBridge.swift */; };
+		75FB049F3F85E4BDE13A5196 /* CommaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E76C34F58C96F0FB5051DAD3 /* CommaApp.swift */; };
+		7A6F7A5D2234B541DEABF0B7 /* MarkdownBubbles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6616107B385CC44980D6A40C /* MarkdownBubbles.swift */; };
+		7B6C7AFFFA9A84C6467EAF8B /* RoutinesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EE3B24A9379E2A8E2A64686 /* RoutinesModel.swift */; };
+		7BF33BD7AA09986724129F6C /* TaskActivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA1B9869D51BD019BCC463A8 /* TaskActivityCoordinator.swift */; };
+		7FB0142258A54935C6C2CAB7 /* CommaLogoAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0C66105BF3F0AC1FA5FE34 /* CommaLogoAnimation.swift */; };
+		944C6BBEAD53BC1E2DC90CF7 /* WatchPairingEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CA3DAC51C9A793F80723160 /* WatchPairingEnvelope.swift */; };
+		946E08F52D1E813505F8783E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B4326F993F90AE7A48E47397 /* Assets.xcassets */; };
+		9A5E9FF2C4CF15C2CD0A9E87 /* TaskLabelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89290E2DEBFB54DDD2647232 /* TaskLabelsView.swift */; };
+		9D320602F179EE4CAFDBC72E /* CommaCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8970130E0FF10DCF85EFFCE5 /* CommaCore */; };
+		A1D1261B2E950EC4EDABCC3C /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 49443DEDD1E35A0CC33BFDCE /* Localizable.xcstrings */; };
+		A49C4B826BD01A4DB152C7A1 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 55DA6538B412739CB4EEC8F4 /* AppIcon.icon */; };
+		A5467CE56E94A70457690044 /* HomeShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEC83315A3250E3CCB8E9750 /* HomeShellView.swift */; };
+		AEA64C4C5DF98F82EF78942C /* WatchPairingEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CA3DAC51C9A793F80723160 /* WatchPairingEnvelope.swift */; };
+		B2BC5241B4EA6EC71D665E84 /* ConversationPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFE3B7BF8412DF2B5F48845 /* ConversationPane.swift */; };
+		B34FD957B281608BDC7C0B44 /* AppleCredentialMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3DECBCD7CF15575B2826728 /* AppleCredentialMonitor.swift */; };
+		B9AB73EF00FFA2B5A5929EDE /* WorkerHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25FCFDA8B00F98E963A1CA2A /* WorkerHistoryView.swift */; };
+		BC9968F48069FE05294CA7FB /* OutgoingBubbleFlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98A3E50CA6209A1DA52CD58 /* OutgoingBubbleFlight.swift */; };
+		C9A15B1779270E20D7E3C978 /* AppConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0005C365D62087E68D1986C9 /* AppConfiguration.swift */; };
+		CA0E59BD57A946C0A0D3BE1F /* CommonViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F4C1DAEA1AC4059D6EAFD4 /* CommonViews.swift */; };
+		CEFA951D887DA2894919EBE2 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 6E558909BEA20914625CEE60 /* Markdown */; };
+		D1C0768CCDB3E73FA249A6A2 /* ChatTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE4DB56750AB1858D8EC2455 /* ChatTranscriptView.swift */; };
+		D330E3E387D4198495BD83FF /* CommaLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1657D1937A036B5E36829AD3 /* CommaLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D425070CAB866B8FCD0BAE7A /* MarkdownBubbles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6616107B385CC44980D6A40C /* MarkdownBubbles.swift */; };
+		DB8BFC4819FA29A5DFDB6D93 /* AppConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0005C365D62087E68D1986C9 /* AppConfiguration.swift */; };
+		E01CADA80BDC56A2689FD92B /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6230F93B47A29CB3A9F05787 /* AccountView.swift */; };
+		E0ED644F8C8654D6A78D0835 /* PhoneNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2478B3E094ED536BC3856828 /* PhoneNotificationTests.swift */; };
+		E5C9E4E9189BB8D74969985D /* RoutinesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EE3B24A9379E2A8E2A64686 /* RoutinesModel.swift */; };
+		E6E22EF19EB3DCECD6A49BEA /* PhoneAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E8D0A913DFA2C8BE5DCB32 /* PhoneAppDelegate.swift */; };
+		E8A208FCB9F7BF76AA7AD93D /* CommaStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AB9B0BCCD4ABB787B8B3F05 /* CommaStoreTests.swift */; };
+		E8B4D78ADCCE689ECFD6878A /* CommaWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 67F9E7533EC24EB3E13D1F94 /* CommaWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EB1A0864720EAA6C01BD1B57 /* TaskDetailsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A9D47A7EF8E4F1250D58DA /* TaskDetailsPanel.swift */; };
+		EE049A1F429F8F770FC5C190 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 55DA6538B412739CB4EEC8F4 /* AppIcon.icon */; };
+		EF5CE5761ADC0E01E19E9429 /* TaskActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 535D78BF2EDA34ECD2C62543 /* TaskActivityAttributes.swift */; };
+		F231291D0DDDA554DBAEBC17 /* ChatComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82AB0A4C1B136F4F96868445 /* ChatComponents.swift */; };
+		F3648A7F25F26826C3F3AF09 /* ConversationPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFE3B7BF8412DF2B5F48845 /* ConversationPane.swift */; };
+		F6F0A025DCF5A78E4A821232 /* TaskNotificationScreenshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 755425FD840182AABFC957E8 /* TaskNotificationScreenshotTests.swift */; };
+		FA61E14B9314EA1CE5EDDCC1 /* PhoneLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC6692FF337A6233CEFC96BA /* PhoneLoginView.swift */; };
+		FA8613D8AA4EB343C4941DB3 /* CommaCore in Frameworks */ = {isa = PBXBuildFile; productRef = 100452C6644496408457EB38 /* CommaCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		06789C17EA38855E7BC77062 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 89B77013DFD75789494E933D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0760E4155DC20A8AE2FCDF82;
+			remoteInfo = CommaWatch;
+		};
+		5C79A30C41635D9E26695EA7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 89B77013DFD75789494E933D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B5126DD464475B7E4B870E25;
+			remoteInfo = Comma;
+		};
+		60CEF18659C68A51C1E10902 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 89B77013DFD75789494E933D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3319846F01DA8955F32A9A95;
+			remoteInfo = CommaLiveActivity;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		48BFB40BACAFC76E804E9101 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				E8B4D78ADCCE689ECFD6878A /* CommaWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42D92B724A8FA0B887B530A /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D330E3E387D4198495BD83FF /* CommaLiveActivity.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0005C365D62087E68D1986C9 /* AppConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfiguration.swift; sourceTree = "<group>"; };
+		02AAA9A7645D17BE2D1206AC /* CommaWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaWatchApp.swift; sourceTree = "<group>"; };
+		047A699998DEC85199A13BE8 /* ChatTranscriptModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscriptModelTests.swift; sourceTree = "<group>"; };
+		0F67699C8D289AE75DCD4AFB /* CommaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CommaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1657D1937A036B5E36829AD3 /* CommaLiveActivity.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CommaLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1C39271F823687E408F205F0 /* CommaStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaStore.swift; sourceTree = "<group>"; };
+		2478B3E094ED536BC3856828 /* PhoneNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneNotificationTests.swift; sourceTree = "<group>"; };
+		25FCFDA8B00F98E963A1CA2A /* WorkerHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerHistoryView.swift; sourceTree = "<group>"; };
+		28A62DC33B5998B1C3DB747A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		2CA3DAC51C9A793F80723160 /* WatchPairingEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPairingEnvelope.swift; sourceTree = "<group>"; };
+		32B900560B691F3D7FDC3212 /* RoutinesViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutinesViews.swift; sourceTree = "<group>"; };
+		49443DEDD1E35A0CC33BFDCE /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		535D78BF2EDA34ECD2C62543 /* TaskActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskActivityAttributes.swift; sourceTree = "<group>"; };
+		55DA6538B412739CB4EEC8F4 /* AppIcon.icon */ = {isa = PBXFileReference; path = AppIcon.icon; sourceTree = "<group>"; };
+		6230F93B47A29CB3A9F05787 /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
+		6616107B385CC44980D6A40C /* MarkdownBubbles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBubbles.swift; sourceTree = "<group>"; };
+		67F9E7533EC24EB3E13D1F94 /* CommaWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CommaWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6AD76F748A0FF05289B1EBBF /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
+		6E0C66105BF3F0AC1FA5FE34 /* CommaLogoAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaLogoAnimation.swift; sourceTree = "<group>"; };
+		755425FD840182AABFC957E8 /* TaskNotificationScreenshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskNotificationScreenshotTests.swift; sourceTree = "<group>"; };
+		77E8D0A913DFA2C8BE5DCB32 /* PhoneAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAppDelegate.swift; sourceTree = "<group>"; };
+		79F4C1DAEA1AC4059D6EAFD4 /* CommonViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonViews.swift; sourceTree = "<group>"; };
+		7AB9B0BCCD4ABB787B8B3F05 /* CommaStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaStoreTests.swift; sourceTree = "<group>"; };
+		7EE3B24A9379E2A8E2A64686 /* RoutinesModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutinesModel.swift; sourceTree = "<group>"; };
+		7FA06CACD181E2C07294F447 /* Comma.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Comma.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		82915ED22DA69DE834678AAF /* PhonePairingBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhonePairingBridge.swift; sourceTree = "<group>"; };
+		82AB0A4C1B136F4F96868445 /* ChatComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComponents.swift; sourceTree = "<group>"; };
+		86119434A6F0C8F7EBE4B25E /* CommaTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaTheme.swift; sourceTree = "<group>"; };
+		89290E2DEBFB54DDD2647232 /* TaskLabelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskLabelsView.swift; sourceTree = "<group>"; };
+		A3DECBCD7CF15575B2826728 /* AppleCredentialMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCredentialMonitor.swift; sourceTree = "<group>"; };
+		AE4DB56750AB1858D8EC2455 /* ChatTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscriptView.swift; sourceTree = "<group>"; };
+		B4308AE92579A672A8D1DE4B /* TaskActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskActions.swift; sourceTree = "<group>"; };
+		B4326F993F90AE7A48E47397 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BCFE3B7BF8412DF2B5F48845 /* ConversationPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPane.swift; sourceTree = "<group>"; };
+		BEFC6426415D1FCCD79D6809 /* PhoneConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneConversationView.swift; sourceTree = "<group>"; };
+		CEAE5DCB86F6D83B2F48525E /* PhoneNotificationSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneNotificationSystem.swift; sourceTree = "<group>"; };
+		D464B921897EE31760C054FC /* apple-core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "apple-core"; path = "../../packages/apple-core"; sourceTree = SOURCE_ROOT; };
+		D5A9D47A7EF8E4F1250D58DA /* TaskDetailsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskDetailsPanel.swift; sourceTree = "<group>"; };
+		D69295E3257A8EBC09977B5A /* CommaTaskLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaTaskLiveActivity.swift; sourceTree = "<group>"; };
+		D98A3E50CA6209A1DA52CD58 /* OutgoingBubbleFlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutgoingBubbleFlight.swift; sourceTree = "<group>"; };
+		E76C34F58C96F0FB5051DAD3 /* CommaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommaApp.swift; sourceTree = "<group>"; };
+		EA1B9869D51BD019BCC463A8 /* TaskActivityCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskActivityCoordinator.swift; sourceTree = "<group>"; };
+		F1F511EF868CC5C568C7528C /* TaskDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskDock.swift; sourceTree = "<group>"; };
+		F67F8AA2C44B0A691A970D46 /* WatchPairingBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPairingBridge.swift; sourceTree = "<group>"; };
+		FC6692FF337A6233CEFC96BA /* PhoneLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLoginView.swift; sourceTree = "<group>"; };
+		FD5FC06C3B1F7F7FBCA49D3A /* RoutineCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutineCards.swift; sourceTree = "<group>"; };
+		FEC83315A3250E3CCB8E9750 /* HomeShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeShellView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0BF8C7BD2B77D40A4DB76999 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9D320602F179EE4CAFDBC72E /* CommaCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6F68BFD5F026A261D2DA7501 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				049627DDF26B8C81AC0FE616 /* CommaCore in Frameworks */,
+				56E860A2F2871C65704019C7 /* Markdown in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B53980FE05DB2A5698150505 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FA8613D8AA4EB343C4941DB3 /* CommaCore in Frameworks */,
+				CEFA951D887DA2894919EBE2 /* Markdown in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5B04FCD9B1B2C9AA207CAB24 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				55DA6538B412739CB4EEC8F4 /* AppIcon.icon */,
+				B4326F993F90AE7A48E47397 /* Assets.xcassets */,
+				49443DEDD1E35A0CC33BFDCE /* Localizable.xcstrings */,
+				28A62DC33B5998B1C3DB747A /* PrivacyInfo.xcprivacy */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		B0C57B2A59EFF7B979721224 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				047A699998DEC85199A13BE8 /* ChatTranscriptModelTests.swift */,
+				7AB9B0BCCD4ABB787B8B3F05 /* CommaStoreTests.swift */,
+				2478B3E094ED536BC3856828 /* PhoneNotificationTests.swift */,
+				755425FD840182AABFC957E8 /* TaskNotificationScreenshotTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		BE5AF24395CF59E13315DA1A /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				D464B921897EE31760C054FC /* apple-core */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		C5A3E14C36BDB763276701A4 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				6230F93B47A29CB3A9F05787 /* AccountView.swift */,
+				A3DECBCD7CF15575B2826728 /* AppleCredentialMonitor.swift */,
+				AE4DB56750AB1858D8EC2455 /* ChatTranscriptView.swift */,
+				E76C34F58C96F0FB5051DAD3 /* CommaApp.swift */,
+				FEC83315A3250E3CCB8E9750 /* HomeShellView.swift */,
+				D98A3E50CA6209A1DA52CD58 /* OutgoingBubbleFlight.swift */,
+				77E8D0A913DFA2C8BE5DCB32 /* PhoneAppDelegate.swift */,
+				BEFC6426415D1FCCD79D6809 /* PhoneConversationView.swift */,
+				FC6692FF337A6233CEFC96BA /* PhoneLoginView.swift */,
+				CEAE5DCB86F6D83B2F48525E /* PhoneNotificationSystem.swift */,
+				82915ED22DA69DE834678AAF /* PhonePairingBridge.swift */,
+				6AD76F748A0FF05289B1EBBF /* ProfileView.swift */,
+				FD5FC06C3B1F7F7FBCA49D3A /* RoutineCards.swift */,
+				32B900560B691F3D7FDC3212 /* RoutinesViews.swift */,
+				B4308AE92579A672A8D1DE4B /* TaskActions.swift */,
+				EA1B9869D51BD019BCC463A8 /* TaskActivityCoordinator.swift */,
+				D5A9D47A7EF8E4F1250D58DA /* TaskDetailsPanel.swift */,
+				F1F511EF868CC5C568C7528C /* TaskDock.swift */,
+				89290E2DEBFB54DDD2647232 /* TaskLabelsView.swift */,
+				25FCFDA8B00F98E963A1CA2A /* WorkerHistoryView.swift */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+		CA89A8BEE6D71A1DD7C5E9D5 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				0005C365D62087E68D1986C9 /* AppConfiguration.swift */,
+				82AB0A4C1B136F4F96868445 /* ChatComponents.swift */,
+				6E0C66105BF3F0AC1FA5FE34 /* CommaLogoAnimation.swift */,
+				1C39271F823687E408F205F0 /* CommaStore.swift */,
+				86119434A6F0C8F7EBE4B25E /* CommaTheme.swift */,
+				79F4C1DAEA1AC4059D6EAFD4 /* CommonViews.swift */,
+				BCFE3B7BF8412DF2B5F48845 /* ConversationPane.swift */,
+				6616107B385CC44980D6A40C /* MarkdownBubbles.swift */,
+				7EE3B24A9379E2A8E2A64686 /* RoutinesModel.swift */,
+				535D78BF2EDA34ECD2C62543 /* TaskActivityAttributes.swift */,
+				2CA3DAC51C9A793F80723160 /* WatchPairingEnvelope.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		CCA9FA7242D7B2730CD28800 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				7FA06CACD181E2C07294F447 /* Comma.app */,
+				1657D1937A036B5E36829AD3 /* CommaLiveActivity.appex */,
+				0F67699C8D289AE75DCD4AFB /* CommaTests.xctest */,
+				67F9E7533EC24EB3E13D1F94 /* CommaWatch.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DA6C577AB7CC00DC1800D37B = {
+			isa = PBXGroup;
+			children = (
+				C5A3E14C36BDB763276701A4 /* iOS */,
+				E5DD11B1A624657D62EF148B /* LiveActivity */,
+				BE5AF24395CF59E13315DA1A /* Packages */,
+				5B04FCD9B1B2C9AA207CAB24 /* Resources */,
+				CA89A8BEE6D71A1DD7C5E9D5 /* Shared */,
+				B0C57B2A59EFF7B979721224 /* Tests */,
+				DB85578F21B936BA7B1F8612 /* Watch */,
+				CCA9FA7242D7B2730CD28800 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DB85578F21B936BA7B1F8612 /* Watch */ = {
+			isa = PBXGroup;
+			children = (
+				02AAA9A7645D17BE2D1206AC /* CommaWatchApp.swift */,
+				F67F8AA2C44B0A691A970D46 /* WatchPairingBridge.swift */,
+			);
+			path = Watch;
+			sourceTree = "<group>";
+		};
+		E5DD11B1A624657D62EF148B /* LiveActivity */ = {
+			isa = PBXGroup;
+			children = (
+				D69295E3257A8EBC09977B5A /* CommaTaskLiveActivity.swift */,
+			);
+			path = LiveActivity;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0760E4155DC20A8AE2FCDF82 /* CommaWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 829C1C6A0D29517CAF1A8096 /* Build configuration list for PBXNativeTarget "CommaWatch" */;
+			buildPhases = (
+				55CAEF97BEC819FC745EBCA5 /* Sources */,
+				EF7876D4AC8A196BC3F92079 /* Resources */,
+				B53980FE05DB2A5698150505 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CommaWatch;
+			packageProductDependencies = (
+				100452C6644496408457EB38 /* CommaCore */,
+				6E558909BEA20914625CEE60 /* Markdown */,
+			);
+			productName = CommaWatch;
+			productReference = 67F9E7533EC24EB3E13D1F94 /* CommaWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
+		3319846F01DA8955F32A9A95 /* CommaLiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CADFF86B8F9CC1B2937AA370 /* Build configuration list for PBXNativeTarget "CommaLiveActivity" */;
+			buildPhases = (
+				02F3239C236CE13BA2C2F58B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CommaLiveActivity;
+			packageProductDependencies = (
+			);
+			productName = CommaLiveActivity;
+			productReference = 1657D1937A036B5E36829AD3 /* CommaLiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		AE801EAB05433A4A9CC1688B /* CommaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 60AD699113F791D4E303AAF6 /* Build configuration list for PBXNativeTarget "CommaTests" */;
+			buildPhases = (
+				5E806C1E7CA0DB281225D29D /* Sources */,
+				0BF8C7BD2B77D40A4DB76999 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F1D3670CBBE110AB2F241504 /* PBXTargetDependency */,
+			);
+			name = CommaTests;
+			packageProductDependencies = (
+				8970130E0FF10DCF85EFFCE5 /* CommaCore */,
+			);
+			productName = CommaTests;
+			productReference = 0F67699C8D289AE75DCD4AFB /* CommaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B5126DD464475B7E4B870E25 /* Comma */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 982F1670DF7F0DDF4CFD224F /* Build configuration list for PBXNativeTarget "Comma" */;
+			buildPhases = (
+				052820E6189D7C16D60ABDB2 /* Sources */,
+				ADB6D98488AC2F63AA876C67 /* Resources */,
+				6F68BFD5F026A261D2DA7501 /* Frameworks */,
+				D42D92B724A8FA0B887B530A /* Embed Foundation Extensions */,
+				48BFB40BACAFC76E804E9101 /* Embed Watch Content */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E85BE444A6D5715CB55785EF /* PBXTargetDependency */,
+				F0754E1540A0F388EEED55F9 /* PBXTargetDependency */,
+			);
+			name = Comma;
+			packageProductDependencies = (
+				56CCD65D279D60FAF1526F35 /* CommaCore */,
+				E0D50C9B473FC97FE7061DD2 /* Markdown */,
+			);
+			productName = Comma;
+			productReference = 7FA06CACD181E2C07294F447 /* Comma.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		89B77013DFD75789494E933D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0760E4155DC20A8AE2FCDF82 = {
+						DevelopmentTeam = D9AAN3VJK8;
+						ProvisioningStyle = Automatic;
+					};
+					3319846F01DA8955F32A9A95 = {
+						DevelopmentTeam = D9AAN3VJK8;
+						ProvisioningStyle = Automatic;
+					};
+					AE801EAB05433A4A9CC1688B = {
+						DevelopmentTeam = D9AAN3VJK8;
+						ProvisioningStyle = Automatic;
+					};
+					B5126DD464475B7E4B870E25 = {
+						DevelopmentTeam = D9AAN3VJK8;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 299F3151B6EBC559F1696878 /* Build configuration list for PBXProject "Comma" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+				"zh-Hans",
+			);
+			mainGroup = DA6C577AB7CC00DC1800D37B;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1E72288F963B59EDD535AF74 /* XCRemoteSwiftPackageReference "swift-markdown" */,
+				E09DBA37401E19DC074BCA07 /* XCLocalSwiftPackageReference "../../packages/apple-core" */,
+			);
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B5126DD464475B7E4B870E25 /* Comma */,
+				3319846F01DA8955F32A9A95 /* CommaLiveActivity */,
+				AE801EAB05433A4A9CC1688B /* CommaTests */,
+				0760E4155DC20A8AE2FCDF82 /* CommaWatch */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		ADB6D98488AC2F63AA876C67 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EE049A1F429F8F770FC5C190 /* AppIcon.icon in Resources */,
+				74D79CF4991AD6C0E43E539E /* Assets.xcassets in Resources */,
+				28DBB72FED1641A57E4523ED /* Localizable.xcstrings in Resources */,
+				194FDEA7C957633852F7382A /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EF7876D4AC8A196BC3F92079 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A49C4B826BD01A4DB152C7A1 /* AppIcon.icon in Resources */,
+				946E08F52D1E813505F8783E /* Assets.xcassets in Resources */,
+				A1D1261B2E950EC4EDABCC3C /* Localizable.xcstrings in Resources */,
+				14B63BFFCAE3FAB1616C2621 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		02F3239C236CE13BA2C2F58B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				238CC6E734245580BFA77C73 /* CommaTaskLiveActivity.swift in Sources */,
+				0BAA520FE796BD6A94D0CBB0 /* TaskActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		052820E6189D7C16D60ABDB2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E01CADA80BDC56A2689FD92B /* AccountView.swift in Sources */,
+				C9A15B1779270E20D7E3C978 /* AppConfiguration.swift in Sources */,
+				B34FD957B281608BDC7C0B44 /* AppleCredentialMonitor.swift in Sources */,
+				F231291D0DDDA554DBAEBC17 /* ChatComponents.swift in Sources */,
+				D1C0768CCDB3E73FA249A6A2 /* ChatTranscriptView.swift in Sources */,
+				75FB049F3F85E4BDE13A5196 /* CommaApp.swift in Sources */,
+				669358B8F57D91A14C87E1EA /* CommaLogoAnimation.swift in Sources */,
+				55E7E591D40010AF710363F1 /* CommaStore.swift in Sources */,
+				293B34606E22D95127FF7996 /* CommaTheme.swift in Sources */,
+				304DCE7E3F4594363FB2F6B6 /* CommonViews.swift in Sources */,
+				B2BC5241B4EA6EC71D665E84 /* ConversationPane.swift in Sources */,
+				A5467CE56E94A70457690044 /* HomeShellView.swift in Sources */,
+				D425070CAB866B8FCD0BAE7A /* MarkdownBubbles.swift in Sources */,
+				BC9968F48069FE05294CA7FB /* OutgoingBubbleFlight.swift in Sources */,
+				E6E22EF19EB3DCECD6A49BEA /* PhoneAppDelegate.swift in Sources */,
+				4B0A3964EA81E6017CF11E80 /* PhoneConversationView.swift in Sources */,
+				FA61E14B9314EA1CE5EDDCC1 /* PhoneLoginView.swift in Sources */,
+				17D467F1FFF2807D91E98004 /* PhoneNotificationSystem.swift in Sources */,
+				75635DF6CC0F401C1AE05F33 /* PhonePairingBridge.swift in Sources */,
+				20136AC921E711ECD61F7742 /* ProfileView.swift in Sources */,
+				0766614D8E9B6E9FFD820697 /* RoutineCards.swift in Sources */,
+				7B6C7AFFFA9A84C6467EAF8B /* RoutinesModel.swift in Sources */,
+				2E097D57FEF5E80E0FCBBF7E /* RoutinesViews.swift in Sources */,
+				3E42DEB0BBCFCB1718FC009B /* TaskActions.swift in Sources */,
+				EF5CE5761ADC0E01E19E9429 /* TaskActivityAttributes.swift in Sources */,
+				7BF33BD7AA09986724129F6C /* TaskActivityCoordinator.swift in Sources */,
+				EB1A0864720EAA6C01BD1B57 /* TaskDetailsPanel.swift in Sources */,
+				33BCB4230D178323792B6986 /* TaskDock.swift in Sources */,
+				9A5E9FF2C4CF15C2CD0A9E87 /* TaskLabelsView.swift in Sources */,
+				AEA64C4C5DF98F82EF78942C /* WatchPairingEnvelope.swift in Sources */,
+				B9AB73EF00FFA2B5A5929EDE /* WorkerHistoryView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		55CAEF97BEC819FC745EBCA5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DB8BFC4819FA29A5DFDB6D93 /* AppConfiguration.swift in Sources */,
+				37D923A0E0F8E67B014BEF68 /* ChatComponents.swift in Sources */,
+				7FB0142258A54935C6C2CAB7 /* CommaLogoAnimation.swift in Sources */,
+				0DECC364A1D73AB3B8FE161E /* CommaStore.swift in Sources */,
+				67B5B4759B3FA26C3F14590B /* CommaTheme.swift in Sources */,
+				2E8B631ECD77BE59CF8913CA /* CommaWatchApp.swift in Sources */,
+				CA0E59BD57A946C0A0D3BE1F /* CommonViews.swift in Sources */,
+				F3648A7F25F26826C3F3AF09 /* ConversationPane.swift in Sources */,
+				7A6F7A5D2234B541DEABF0B7 /* MarkdownBubbles.swift in Sources */,
+				E5C9E4E9189BB8D74969985D /* RoutinesModel.swift in Sources */,
+				0CD14B6756F3965A055F6C69 /* WatchPairingBridge.swift in Sources */,
+				944C6BBEAD53BC1E2DC90CF7 /* WatchPairingEnvelope.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5E806C1E7CA0DB281225D29D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				588D302CCAB9814D2BC4B396 /* ChatTranscriptModelTests.swift in Sources */,
+				E8A208FCB9F7BF76AA7AD93D /* CommaStoreTests.swift in Sources */,
+				E0ED644F8C8654D6A78D0835 /* PhoneNotificationTests.swift in Sources */,
+				F6F0A025DCF5A78E4A821232 /* TaskNotificationScreenshotTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E85BE444A6D5715CB55785EF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3319846F01DA8955F32A9A95 /* CommaLiveActivity */;
+			targetProxy = 60CEF18659C68A51C1E10902 /* PBXContainerItemProxy */;
+		};
+		F0754E1540A0F388EEED55F9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0760E4155DC20A8AE2FCDF82 /* CommaWatch */;
+			targetProxy = 06789C17EA38855E7BC77062 /* PBXContainerItemProxy */;
+		};
+		F1D3670CBBE110AB2F241504 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B5126DD464475B7E4B870E25 /* Comma */;
+			targetProxy = 5C79A30C41635D9E26695EA7 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0F2D55AA2263FEA930989482 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID).tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Comma.app/Comma";
+			};
+			name = Debug;
+		};
+		15FEE040578B4B4ECDBC9DE1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COMMA_API_BASE_URL = "https://salix-staging.comma.surf";
+				COMMA_APP_NAME = Comma;
+				COMMA_PHONE_BUNDLE_ID = surf.comma.ios;
+				COMMA_PUSH_ENVIRONMENT = development;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 5;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = D9AAN3VJK8;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Debug;
+		};
+		21AACBFB06D739347D0959AB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				INFOPLIST_FILE = LiveActivity/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID).activity";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		30A6C79567718C8CED9CFE0D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				INFOPLIST_FILE = Watch/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID).watch";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Release;
+		};
+		6531D5DD5E8AF955EA36042A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				INFOPLIST_FILE = Watch/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID).watch";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Debug;
+		};
+		7E4BB0DADFC1A710C38C1FCB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = iOS/Comma.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID)";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		81F2CF498F059F1A6BF95BB8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = iOS/Comma.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID)";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C425FF1377FA271A0CB648F7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				INFOPLIST_FILE = LiveActivity/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID).activity";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C5AFF68665F2D4B3212DCA55 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COMMA_PHONE_BUNDLE_ID).tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Comma.app/Comma";
+			};
+			name = Release;
+		};
+		C9F18669779335A71F5E3A9F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COMMA_API_BASE_URL = "https://salix-staging.comma.surf";
+				COMMA_APP_NAME = Comma;
+				COMMA_PHONE_BUNDLE_ID = surf.comma.ios;
+				COMMA_PUSH_ENVIRONMENT = production;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 5;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = D9AAN3VJK8;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		299F3151B6EBC559F1696878 /* Build configuration list for PBXProject "Comma" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				15FEE040578B4B4ECDBC9DE1 /* Debug */,
+				C9F18669779335A71F5E3A9F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		60AD699113F791D4E303AAF6 /* Build configuration list for PBXNativeTarget "CommaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0F2D55AA2263FEA930989482 /* Debug */,
+				C5AFF68665F2D4B3212DCA55 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		829C1C6A0D29517CAF1A8096 /* Build configuration list for PBXNativeTarget "CommaWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6531D5DD5E8AF955EA36042A /* Debug */,
+				30A6C79567718C8CED9CFE0D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		982F1670DF7F0DDF4CFD224F /* Build configuration list for PBXNativeTarget "Comma" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				81F2CF498F059F1A6BF95BB8 /* Debug */,
+				7E4BB0DADFC1A710C38C1FCB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CADFF86B8F9CC1B2937AA370 /* Build configuration list for PBXNativeTarget "CommaLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C425FF1377FA271A0CB648F7 /* Debug */,
+				21AACBFB06D739347D0959AB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		E09DBA37401E19DC074BCA07 /* XCLocalSwiftPackageReference "../../packages/apple-core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../../packages/apple-core";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1E72288F963B59EDD535AF74 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftlang/swift-markdown";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		100452C6644496408457EB38 /* CommaCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CommaCore;
+		};
+		56CCD65D279D60FAF1526F35 /* CommaCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CommaCore;
+		};
+		6E558909BEA20914625CEE60 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E72288F963B59EDD535AF74 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
+		};
+		8970130E0FF10DCF85EFFCE5 /* CommaCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CommaCore;
+		};
+		E0D50C9B473FC97FE7061DD2 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E72288F963B59EDD535AF74 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 89B77013DFD75789494E933D /* Project object */;
+}

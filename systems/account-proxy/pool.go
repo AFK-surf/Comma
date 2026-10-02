@@ -28,6 +28,18 @@ func accountEmail(metadata map[string]any) string {
 			}
 		}
 	}
+	// Plans whose sign-in names no email (Kimi Code) still need a stable
+	// identity, or each sign-in would add another account instead of
+	// reconnecting this one.
+	for _, key := range []string{"id_token", "access_token"} {
+		token, _ := metadata[key].(string)
+		claims := tokenClaims(token)
+		for _, claim := range []string{"sub", "user_id"} {
+			if id, ok := claims[claim].(string); ok && id != "" && len(id) <= 200 {
+				return "id:" + id
+			}
+		}
+	}
 	return ""
 }
 
@@ -49,8 +61,9 @@ func tokenClaims(token string) map[string]any {
 }
 
 func cleanCredentials(provider string, raw map[string]any) (map[string]any, error) {
-	if provider != "codex" && provider != "claude" {
-		return nil, errors.New("provider must be codex or claude")
+	extra, ok := credentialKeys[provider]
+	if !ok {
+		return nil, errors.New("unsupported provider")
 	}
 	if tokens, ok := raw["tokens"].(map[string]any); ok {
 		raw = tokens
@@ -61,8 +74,8 @@ func cleanCredentials(provider string, raw map[string]any) (map[string]any, erro
 			raw["expired"] = time.UnixMilli(int64(ms)).UTC().Format(time.RFC3339)
 		}
 	}
-	out := map[string]any{"type": provider}
-	for _, k := range []string{"access_token", "refresh_token", "id_token", "account_id", "email", "expired", "last_refresh", "account_uuid", "organization_uuid", "organization_name", "claude_device_ids"} {
+	out := map[string]any{"type": executorIDs[provider]}
+	for _, k := range append([]string{"access_token", "refresh_token", "id_token", "email", "expired", "last_refresh"}, extra...) {
 		if v, ok := raw[k]; ok {
 			out[k] = v
 		}

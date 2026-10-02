@@ -157,6 +157,14 @@ defmodule BridgeForTeams.Salix.Client do
   @optional_callbacks list_group_meetings_bounded: 2, replay_meeting_summary: 3
   @callback list_group_im_connects(group_id :: String.t(), provider :: String.t() | nil) ::
               result()
+  # The same read with `opts`: `:timeout` (ms) lets a page that reads many
+  # groups fail fast. Optional: a client without it gets the 2-arity call.
+  @callback list_group_im_connects(
+              group_id :: String.t(),
+              provider :: String.t() | nil,
+              opts :: keyword()
+            ) :: result()
+  @optional_callbacks list_group_im_connects: 3
   # Returns a Slack App Manifest map
   # (`%{redirect_url, events_url, interactions_url, manifest}`)
   # built from the deployment's public base URL; not wrapped in an `:ok` tuple.
@@ -219,16 +227,6 @@ defmodule BridgeForTeams.Salix.Client do
   @callback meeting_calendar_status(params :: attrs()) :: result()
   @callback meeting_preparation(params :: attrs()) :: result()
   @optional_callbacks meeting_preparation: 1
-  # First-message smoke. Identity-only (`"connect_id"`), with secrets and router
-  # resolved inside Salix. Delivers one synthetic @Bridge message to the
-  # canonical group router session and polls for an assistant reply. Billing and
-  # live side effects make this an explicit admin action, never auto-fired by Run
-  # checks. Returns
-  # `{:ok, redacted_evidence}` or `{:error, reason_class}` where reason_class is
-  # `:connect_not_found | :connect_inactive | :secrets_not_configured |
-  # :router_not_configured | :no_assistant_reply | :callback_unreachable |
-  # :token_mismatch | :decrypt_signature | :timeout`.
-  @callback feishu_first_message(params :: attrs()) :: result()
   @callback disable_im_connect(
               tenant_id :: String.t(),
               group_id :: String.t(),
@@ -677,37 +675,11 @@ defmodule BridgeForTeams.Salix.Client do
   # never hang the page. `{:error, :unavailable}` stays distinct from an empty
   # page all the way to the UI.
 
-  # One bounded page of durable buckets. `limit` is capped at 25 by the read
-  # model; the cursor is `"v1." <> base64url(raw_key)`. Returns
-  # `{:ok, %{buckets: [..], invalid_count: n, next_cursor: .., scan_complete: ..}}`
-  # where `invalid_count` is the honest-scan count of objects the page refused
-  # to emit.
-  @callback triage_list_buckets(
-              namespace :: String.t(),
-              cursor :: String.t() | nil,
-              limit :: pos_integer()
-            ) :: result()
-  # One durable bucket by its exact raw S3 key (never normalized — a trailing
-  # space addresses a different object). `{:error, :not_found}` when the key is
-  # unstored or outside the namespace.
-  @callback triage_get_bucket(namespace :: String.t(), bucket_key :: String.t()) :: result()
-  # One bounded global page of typed Slack Triage receipts, passing the
-  # `ProviderReceipts` legacy/invalid/unavailable counts through unchanged.
-  @callback triage_list_receipts(cursor :: String.t() | nil) :: result()
   # A bounded scan for receipts created at or after `since_ms`, newest first.
   # The receipt keyspace is key-ordered, not time-ordered, so `truncated: true`
   # means the page budget ran out and the window may be missing rows — the UI
   # renders that, never an unqualified "N events". Options: `:page_budget`.
   @callback triage_recent_window(
-              namespace :: String.t(),
-              since_ms :: non_neg_integer(),
-              opts :: keyword()
-            ) :: result()
-  # A bounded, content-free processing projection for recent typed receipts.
-  # The read model proves each state from exact bucket/fence/ledger evidence;
-  # it never infers evaluation from a receipt. Options: `:page_budget`,
-  # `:limit` (max 20).
-  @callback triage_recent_processing(
               namespace :: String.t(),
               since_ms :: non_neg_integer(),
               opts :: keyword()
@@ -727,7 +699,6 @@ defmodule BridgeForTeams.Salix.Client do
               group_id :: String.t(),
               agent_id :: String.t()
             ) :: result()
-  # Explicit, administrator-authorized and audited read of retained model evidence.
   @callback ensure_triage_worker(String.t(), String.t()) :: result()
   @callback triage_worker_binding(String.t()) :: result()
   @callback triage_worker_configuration(String.t(), keyword()) :: result()
@@ -739,8 +710,6 @@ defmodule BridgeForTeams.Salix.Client do
               map()
             ) :: result()
 
-  @callback triage_model_debug(String.t(), String.t(), String.t(), String.t(), String.t()) ::
-              result()
   @callback triage_processing_detail(group_id :: String.t(), receipt_ref :: String.t()) ::
               {:ok, map()} | {:error, term()}
 

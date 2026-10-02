@@ -14,10 +14,18 @@ if (!root) {
 
 async function start(element: HTMLElement) {
   // Mock mode is a dev-only switch; the dynamic import keeps it out of real builds.
-  const api =
-    import.meta.env.VITE_BFT_MOCK === "1"
-      ? createBftApi({ fetch: (await import("./mockApi")).mockFetch })
-      : createBftApi();
+  let api = createBftApi();
+  if (import.meta.env.VITE_BFT_MOCK === "1") {
+    const mock = await import("./mockApi");
+    // Phoenix injects the CSRF token into the served page; the mock page has none.
+    if (!document.querySelector('meta[name="csrf-token"]')) {
+      const meta = document.createElement("meta");
+      meta.name = "csrf-token";
+      meta.content = mock.mockCsrfToken;
+      document.head.appendChild(meta);
+    }
+    api = createBftApi({ fetch: mock.mockFetch });
+  }
 
   createRoot(element).render(
     <StrictMode>

@@ -10,6 +10,7 @@ defmodule SalixAgent.RoundRuntimeTest do
   alias SalixAgent.{
     AsyncToolResults,
     InternalAgentRuntime,
+    InternalSession,
     InternalSessionStore,
     Round,
     SessionWorkIndex,
@@ -295,7 +296,10 @@ defmodule SalixAgent.RoundRuntimeTest do
     @impl true
     def before_llm_call(fact) do
       send(Application.fetch_env!(:salix_agent, :metering_test_pid), {:meter_denied, fact})
-      {:error, {:billing_unavailable, %{allowed?: false, reason: "test_denied"}}}
+
+      {:error,
+       {:billing_unavailable,
+        struct!(BillingCore.FeeControl.Decision, allowed?: false, reason: "insufficient_credits")}}
     end
 
     @impl true
@@ -509,8 +513,16 @@ defmodule SalixAgent.RoundRuntimeTest do
                  String.contains?(&1[:content], "MINISKILL_RUNTIME_INSTRUCTION"))
            )
 
+    :ok = SalixAgent.TestSupport.join_session_owner(context.agent_id, context.session_id)
     assert {:ok, stored} = InternalSessionStore.read(context.agent_id, context.session_id)
-    assert [%{"outcome" => "selected"}] = InternalSession.get(stored, :miniskills)["inputs"]
+
+    assert [
+             %{
+               "outcome" => "selected",
+               "source_message_id" => "miniskill-source",
+               "skills" => [%{"skill_id" => "miniskill-runtime"}]
+             }
+           ] = InternalSession.get(stored, :miniskills)["inputs"]
 
     refute Enum.any?(
              messages,
@@ -2955,43 +2967,40 @@ defmodule SalixAgent.RoundRuntimeTest do
              )
   end
 
-  test "non-throwing LLM gate failure clears active status without acking pending input", %{
-    agent: agent,
-    context: _context
+  test "financial refusal ends the input durably and does not retry after actor restart", %{
+    agent: agent
   } do
+    session_id = "ses1_0000000000000000902"
     Application.put_env(:salix_agent, :llm_metering_mod, DenyMetering)
-    FunLLM.script([fn _messages, _tools -> {:final, "should not be called"} end])
+    FunLLM.script([fn _messages, _tools -> flunk("a refused input reached the provider") end])
 
-    assert :ok = SalixAgent.InternalSessionFleet.wake(agent, "ses1_0000000000000000902")
+    assert :ok = SalixAgent.InternalSessionFleet.wake(agent, session_id)
     assert_receive {:meter_denied, %{entrypoint: "agent_round"}}, 2_000
-    refute_receive {:meter_after, _}, 50
 
     assert eventually(fn ->
-             session = read_session!(agent, "ses1_0000000000000000902")
+             session = read_session!(agent, session_id)
 
-             case SessionWorkIndex.list(agent) do
-               {:ok,
-                [
-                  %{
-                    "runtime_kind" => "internal",
-                    "session_id" => "ses1_0000000000000000902",
-                    "reasons" => ["stable_input_pending"]
-                  }
-                ]} ->
-                 SalixAgent.InternalSession.get(session, :status) == :idle and
-                   SalixAgent.InternalSession.get(session, :last_ack_message_id) in [nil, 0] and
-                   Enum.any?(
-                     SalixAgent.InternalSession.get(session, :messages),
-                     &(&1[:content] == "do the long task")
-                   ) and
-                   SalixAgent.InternalSession.get(session, :work_index_reasons) == [
-                     "stable_input_pending"
-                   ]
-
-               _other ->
-                 false
-             end
+             InternalSession.activity_status(session) == :failed and
+               InternalSession.activity_issue(session) == "insufficient_credits" and
+               not InternalSession.has_unprocessed_stable_work?(session)
            end)
+
+    session = read_session!(agent, session_id)
+
+    assert Enum.any?(
+             InternalSession.get(session, :messages),
+             &(&1[:content] == "do the long task")
+           )
+
+    refute_receive {:meter_after, _}, 20
+    refute_receive {:meter_denied, _}, 100
+
+    SalixAgent.TestSupport.stop_all_agents()
+    assert :ok = SalixAgent.InternalSessionFleet.wake(agent, session_id)
+    refute_receive {:meter_denied, _}, 200
+
+    assert InternalSession.activity_issue(read_session!(agent, session_id)) ==
+             "insufficient_credits"
   end
 
   test "no fresh session input keeps the response", %{agent: agent, context: context} do

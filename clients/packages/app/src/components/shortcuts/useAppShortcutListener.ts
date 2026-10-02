@@ -4,6 +4,7 @@ import {
   toggleCollapsedHomeRail,
 } from "../home/homeRailCollapse";
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
+import { useIsGuestSession } from "../auth-context";
 import { formatAppKeybinding } from "@comma/ui";
 import {
   APP_KEYBINDING_SEQUENCE_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useChatSidebar } from "../chat-sidebar/ChatSidebarContext";
 import { useCommandPalette } from "../search/CommandPaletteContext";
 import { driveSynchronicityAvailable } from "../drive/driveSynchronicityBackend";
+import { isOnboardingOpen } from "../onboarding/onboardingPresence";
 import { useCommaSettingsOverlay } from "../settingsOverlay";
 import { useCommaSidebar } from "../sidebar/SidebarContext";
 import type { AppShortcutId } from "./appShortcutRegistry";
@@ -73,8 +75,22 @@ const productShortcutIds = [
 // Drive has no page to open where its synchronicity node does not run.
 const webProductShortcutIds = productShortcutIds.filter((id) => id !== "go-drive");
 
-function availableProductShortcutIds(): readonly AppShortcutId[] {
-  return driveSynchronicityAvailable() ? productShortcutIds : webProductShortcutIds;
+// A guest Session has no Chat Sidebar and no Task search.
+const guestUnavailableShortcutIds: ReadonlySet<AppShortcutId> = new Set([
+  "go-search",
+  "toggle-right-sidebar",
+]);
+const guestProductShortcutIds = productShortcutIds.filter(
+  (id) => !guestUnavailableShortcutIds.has(id)
+);
+const guestWebProductShortcutIds = webProductShortcutIds.filter(
+  (id) => !guestUnavailableShortcutIds.has(id)
+);
+
+function availableProductShortcutIds(guest: boolean): readonly AppShortcutId[] {
+  if (driveSynchronicityAvailable())
+    return guest ? guestProductShortcutIds : productShortcutIds;
+  return guest ? guestWebProductShortcutIds : webProductShortcutIds;
 }
 
 const navigationShortcutIdSet: ReadonlySet<AppShortcutId> = new Set(
@@ -128,6 +144,8 @@ function useScopedAppShortcutListener(
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
+      // The first-launch onboarding covers the shell these shortcuts drive.
+      if (isOnboardingOpen()) return;
       const shortcutControl =
         event.target instanceof HTMLElement
           ? event.target.closest(
@@ -289,6 +307,7 @@ export function useAppProductShortcutListener() {
   );
 
   const { bindings } = useCommaAppShortcuts();
+  const guest = useIsGuestSession();
   const navigate = useNavigate();
   const sidebar = useCommaSidebar();
   const rightSidebar = useChatSidebar();
@@ -316,6 +335,7 @@ export function useAppProductShortcutListener() {
       return {
         id,
         enabled:
+          !(guest && guestUnavailableShortcutIds.has(id)) &&
           (id !== "history-back" || history.canGoBack) &&
           (id !== "history-forward" || history.canGoForward),
         run: () => runShortcut(id),
@@ -350,7 +370,7 @@ export function useAppProductShortcutListener() {
       },
     },
   ]);
-  useScopedAppShortcutListener(availableProductShortcutIds(), runShortcut);
+  useScopedAppShortcutListener(availableProductShortcutIds(guest), runShortcut);
 }
 
 export function AppProductShortcutListener() {

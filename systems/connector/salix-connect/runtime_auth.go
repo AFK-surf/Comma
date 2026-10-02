@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -1110,42 +1111,7 @@ func (i *codexRuntimeImplementation) ensureTargetRuntime(
 	if target.provider != "codex" || target.identityMaterial == "" {
 		return nil, errors.New("invalid codex runtime target")
 	}
-	bridgeURL, err := i.connector.ensureRuntimeBridge()
-	if err != nil {
-		return nil, err
-	}
-	i.mu.Lock()
-	if i.closed {
-		i.mu.Unlock()
-		return nil, errCodexAppServerUnavailable
-	}
-	existing := i.runtimes[target.identityMaterial]
-	if existing != nil && existing.isRunning() {
-		if i.authQuarantined[existing.generation] {
-			i.mu.Unlock()
-			return nil, errCodexAuthGenerationQuarantined
-		}
-		i.mu.Unlock()
-		return existing, nil
-	}
-	runtime, err := i.startRuntime(externalRuntimeInput{command: target.identityMaterial}, bridgeURL)
-	if err != nil {
-		i.mu.Unlock()
-		return nil, err
-	}
-	i.runtimes[target.identityMaterial] = runtime
-	runtime.start()
-	err = runtime.connect(ctx)
-	i.mu.Unlock()
-	if err != nil {
-		// Auth callers already hold the per-target lock. Waiting for done here
-		// would deadlock with finish -> runtimeClosed, which takes that same
-		// lock before closing done. Fence this exact unusable generation and let
-		// its ordinary process callback recover any bound sessions asynchronously.
-		i.retireUnusableRuntimeGeneration(runtime)
-		return nil, err
-	}
-	return runtime, nil
+	return i.ensureCodexRuntime(ctx, target.identityMaterial)
 }
 
 func (i *codexRuntimeImplementation) currentRuntime(runtime *codexRuntime) bool {
@@ -1364,7 +1330,7 @@ func (i *codexRuntimeImplementation) readRuntimeAuthSnapshot(
 ) (*codexRuntime, map[string]any, error) {
 	runtime, err := i.ensureTargetRuntime(ctx, target)
 	if err != nil {
-		return nil, nil, err
+		return runtime, nil, err
 	}
 	snapshot, err := i.readRuntimeAuthSnapshotFromRuntime(ctx, runtime)
 	return runtime, snapshot, err
@@ -1398,7 +1364,11 @@ func (i *codexRuntimeImplementation) probeRuntimeTarget(target runtimeProbeTarge
 	}
 	checkedAt := time.Now()
 	config := detectCodexExecutionConfig()
-	version, versionDetected, versionErr := codexVersion(target.identityMaterial)
+	managed := strings.TrimSpace(os.Getenv("SALIX_MANAGED_RUNTIME_ROOT")) != ""
+	version, versionDetected, versionErr := "unknown", false, ""
+	if !managed {
+		version, versionDetected, versionErr = codexVersion(target.identityMaterial)
+	}
 	auth := codexAuthIssueSnapshot("auth_probe_failed", checkedAt.UnixMilli())
 	authReady := false
 	nativeServerStartable := false
@@ -1407,13 +1377,20 @@ func (i *codexRuntimeImplementation) probeRuntimeTarget(target runtimeProbeTarge
 	var observedRuntime *codexRuntime
 	var observedAuthEpoch uint64
 
-	if versionDetected {
+	if managed || versionDetected {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		runtime, err := i.ensureTargetRuntime(ctx, target)
+		observedRuntime = runtime
+		if runtime != nil {
+			i.mu.Lock()
+			if i.runtimes[target.identityMaterial] == runtime && !i.authQuarantined[runtime.generation] {
+				observedAuthEpoch = runtime.authEpoch
+			}
+			i.mu.Unlock()
+		}
 		if err != nil {
 			probeErr = "app-server start failed"
 		} else {
-			observedRuntime = runtime
 			i.mu.Lock()
 			if i.runtimes[target.identityMaterial] == runtime &&
 				!i.authQuarantined[runtime.generation] {
@@ -1423,6 +1400,9 @@ func (i *codexRuntimeImplementation) probeRuntimeTarget(target runtimeProbeTarge
 			if err := runtime.ensureInitialized(ctx); err != nil {
 				probeErr = "app-server protocol initialization failed"
 			} else {
+				if managed {
+					version, versionDetected, versionErr = runtime.readinessVersion(ctx)
+				}
 				nativeServerStartable = true
 				account, accountErr := runtime.rpc(
 					ctx,

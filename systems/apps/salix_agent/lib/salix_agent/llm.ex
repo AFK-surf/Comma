@@ -298,6 +298,11 @@ defmodule SalixAgent.LLM do
     mod = impl()
     started = System.monotonic_time()
     first_delta = :atomics.new(1, signed: true)
+    # Any output delivered to the caller: text, a tool-call fragment (the
+    # Router streams its visible reply this way) or reasoning. Once set, a
+    # catalog dispatch must not hand the request to another Profile. Kept
+    # apart from `first_delta`, which times the first TEXT delta only.
+    output = :atomics.new(1, [])
 
     # Archive accumulation. Streamed text and reasoning exist ONLY as they fly
     # past these callbacks: `:private_reasoning` deltas never appear in the
@@ -307,9 +312,15 @@ defmodule SalixAgent.LLM do
 
     measured_delta = fn delta ->
       _ = :atomics.compare_exchange(first_delta, 1, 0, System.monotonic_time())
+      :atomics.put(output, 1, 1)
       SalixAgent.EventArchive.Accumulator.text(accumulator, delta)
       on_delta.(delta)
     end
+
+    llm_opts =
+      llm_opts
+      |> mark_output(:on_tool_delta, output)
+      |> mark_output(:on_reasoning_delta, output)
 
     llm_opts = SalixAgent.EventArchive.Accumulator.wrap_reasoning(accumulator, llm_opts)
     has_opts = has_opts?(llm_opts)
@@ -330,7 +341,7 @@ defmodule SalixAgent.LLM do
       end
     end
 
-    metered_call(:complete_stream, llm_opts, call, {started, first_delta}, %{
+    metered_call(:complete_stream, llm_opts, call, {started, first_delta, output}, %{
       messages: messages,
       tools: tools,
       accumulator: accumulator,
@@ -390,10 +401,16 @@ defmodule SalixAgent.LLM do
     llm_opts = put_prompt_cache_key(llm_opts, identity)
     mod = impl()
 
+    # A catalog route binds its Profile only at dispatch, and each candidate
+    # speaks its own protocol with its own request id. Nothing before dispatch
+    # may encode for one of them: the request stays provider-neutral, and the
+    # chosen candidate's provider encodes it.
     {protocol, cfg} =
-      if exported?(mod, :request_config, 1),
-        do: mod.request_config(llm_opts),
-        else: {:neutral, nil}
+      cond do
+        SalixAgent.AccountPool.catalog_route?(llm_opts) -> {:neutral, nil}
+        exported?(mod, :request_config, 1) -> mod.request_config(llm_opts)
+        true -> {:neutral, nil}
+      end
 
     {protocol, cfg, opt(llm_opts, :supports_images) == true}
   end
@@ -520,7 +537,7 @@ defmodule SalixAgent.LLM do
   defp do_metered_call(llm_opts, call, identity, stream_timing) do
     started? = fn ->
       case stream_timing do
-        {_, first_delta} -> :atomics.get(first_delta, 1) != 0
+        {_, _, output} -> :atomics.get(output, 1) != 0
         _ -> false
       end
     end
@@ -624,10 +641,10 @@ defmodule SalixAgent.LLM do
 
   defp emit_usage(_usage, _metadata), do: :ok
 
-  defp stream_started({started, _first_delta}), do: started
+  defp stream_started({started, _first_delta, _output}), do: started
   defp stream_started(nil), do: System.monotonic_time()
 
-  defp ttft_duration({_started, first_delta}, started) do
+  defp ttft_duration({_started, first_delta, _output}, started) do
     case :atomics.get(first_delta, 1) do
       0 -> nil
       first -> max(first - started, 0)
@@ -727,6 +744,33 @@ defmodule SalixAgent.LLM do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # Wrap a streaming callback so that a delivered delta marks output.
+  defp mark_output(llm_opts, key, output) when is_map(llm_opts) or is_list(llm_opts) do
+    callback =
+      cond do
+        is_map(llm_opts) -> Map.get(llm_opts, key) || Map.get(llm_opts, to_string(key))
+        Keyword.keyword?(llm_opts) -> Keyword.get(llm_opts, key)
+        true -> nil
+      end
+
+    if is_function(callback, 1) do
+      wrapped = fn delta ->
+        :atomics.put(output, 1, 1)
+        callback.(delta)
+      end
+
+      cond do
+        is_list(llm_opts) -> Keyword.put(llm_opts, key, wrapped)
+        Map.has_key?(llm_opts, key) -> Map.put(llm_opts, key, wrapped)
+        true -> Map.put(llm_opts, to_string(key), wrapped)
+      end
+    else
+      llm_opts
+    end
+  end
+
+  defp mark_output(llm_opts, _key, _output), do: llm_opts
 
   defp metering_disabled?(llm_opts), do: opt(llm_opts, :metering_disabled) == true
 

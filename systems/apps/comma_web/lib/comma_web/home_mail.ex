@@ -5,7 +5,7 @@ defmodule CommaWeb.HomeMail do
 
   # The Router's view of the owner's reminders, watches and message budget.
   def status(user, session, group) do
-    with {:ok, _workspace, ctx, home} <- authorize(user, session, group),
+    with {:ok, workspace, ctx, home} <- authorize(user, session, group),
          {:ok, conversation} <- Conversations.get_group_conversation_record(group, home),
          {:ok, monitors} <- CommaWeb.ProactiveWatch.status(ctx) do
       entries =
@@ -30,7 +30,13 @@ defmodule CommaWeb.HomeMail do
            Enum.map(monitors, fn row ->
              %{"loop_id" => row["id"], "status" => row["status"], "error" => row["failure"]}
            end),
-         "sources" => entries
+         "sources" => entries,
+         # Whether the owner used the desktop App in the last ten minutes.
+         "app_active" => Comma.Accounts.present?(user["id"]),
+         # Where a notify also reaches the owner while the App is not in use.
+         "personal_targets" => CommaWeb.ProactiveDelivery.personal_targets(workspace, user["id"]),
+         # The owner's notebook in their Drive, when it exists.
+         "notebook" => CommaWeb.ProactiveNotebook.locate(ctx)
        }}
     end
   end
@@ -45,16 +51,24 @@ defmodule CommaWeb.HomeMail do
           source_action(ctx, home, args)
 
         "draft" ->
-          draft_action(user, session, ctx, home, args)
+          draft_action(user, session, ctx, home, args) |> changed(group, user)
 
         action when action in ~w(snooze handled resume link_task notify quiet) ->
-          mutate(ctx, home, args)
+          mutate(ctx, home, args) |> changed(group, user)
 
         _ ->
           {:error, :invalid_mail_action}
       end
     end
   end
+
+  # A changed matter changes the owner's notebook.
+  defp changed({:ok, _} = result, group, user) do
+    CommaWeb.ProactiveNotebook.enqueue(group, user["id"])
+    result
+  end
+
+  defp changed(result, _group, _user), do: result
 
   @doc false
   def retire_completed_task(command, ctx, home) do
@@ -492,12 +506,8 @@ defmodule CommaWeb.HomeMail do
         error -> error
       end
 
-    with {:ok, workspace, owner} <- ProactiveMail.scope(ctx) do
-      locale =
-        case Comma.Recommendations.get_runtime_profile(workspace["id"], owner) do
-          {:ok, profile} -> profile.locale
-          _ -> nil
-        end
+    with {:ok, _workspace, owner} <- ProactiveMail.scope(ctx) do
+      locale = Comma.Accounts.locale(owner)
 
       # The owner asked for this reminder. A resolved or stopped matter ends it.
       # Every other recheck reaches the Router, which delivers the reminder.
@@ -537,6 +547,7 @@ defmodule CommaWeb.HomeMail do
              command
            ) do
         {:ok, _} ->
+          CommaWeb.ProactiveNotebook.enqueue(ctx.group_id, value["owner_id"])
           {:ok, :fired}
 
         {:error, reason} when reason in [:mail_source_changed, :mail_source_handled] ->
@@ -551,6 +562,8 @@ defmodule CommaWeb.HomeMail do
   defp due_text(value, locale, checked) do
     subject = value["subject"] || ""
 
+    # The owner or the Router may have chosen this recheck, so the text does
+    # not claim who asked for it.
     text =
       case {locale, checked} do
         {"zh-CN", true} ->
@@ -560,10 +573,10 @@ defmodule CommaWeb.HomeMail do
           "提醒你一下：#{subject}。我没能确认它现在的状态，可以先看看原文。需要我帮忙就直接告诉我。"
 
         {_, true} ->
-          "A reminder you asked for: #{subject}. Tell me if you want help with it, or tell me it is handled."
+          "A reminder: #{subject}. Tell me if you want help with it, or tell me it is handled."
 
         {_, false} ->
-          "A reminder you asked for: #{subject}. I could not check its latest state, so take a look at the source. Tell me if you want help with it."
+          "A reminder: #{subject}. I could not check its latest state, so take a look at the source. Tell me if you want help with it."
       end
 
     CommaWeb.Proactive.message(text, subject, value["source_url"])

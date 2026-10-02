@@ -1,3 +1,4 @@
+@import "./components/compute-disk/ComputeDiskUsage.css";
 @import "tailwindcss";
 @import "markstream-react/index.css";
 @import "katex/dist/katex.min.css";
@@ -38,6 +39,11 @@
 @source not inline("container");
 
 :root {
+  /* Window breakpoints query this ancestor, including body-mounted portals.
+     Keep them out of @media: Chromium 148 rebuilds layered/font-face sheets
+     when a media query flips and invalidates every text layout in the document. */
+  container-name: comma-window;
+  container-type: inline-size;
   scrollbar-color: var(--color-scrollbar-bg) transparent;
 }
 
@@ -2197,7 +2203,7 @@
    box drops `right` — so the stack's right offset, and with it the step around a
    native surface (`toastObstruction`), never reached the narrow layout at all.
    Restating the width in terms of both insets is what carries it across. */
-@media (max-width: 600px) {
+@container comma-window (width <= 600px) {
   [data-sonner-toaster].comma-sonner-toaster[data-x-position="right"]
     [data-sonner-toast].comma-sonner-toast {
     width: calc(100% - var(--mobile-offset-left) - var(--mobile-offset-right));

@@ -334,4 +334,71 @@ macro_rules
            | skip)
       | dsimp only at $h:ident)
 
+set_option backward.split false in
+/-- The Session operations of `runtimeAppend`, in order. The other binds only read the Session
+or the event. A frame proof composes these four steps. This is much cheaper than a walk over
+every branch of `runtimeAppend`. -/
+theorem runtimeAppend_ops {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
+    ∃ message dedupe wait hwm appended updated bumped : Term, ∃ j₁ j₂ j₃ j₄ r₁ r₂ r₃ : List Term,
+      appendFields s e message j₁ = .ok (appended, r₁) ∧
+      write appended [("input_dedupe", dedupe), ("wait", wait)] j₂ = .ok (updated, r₂) ∧
+      bumpHwm updated hwm j₃ = .ok (bumped, r₃) ∧
+      resetFresh bumped message j₄ = .ok (t, r) := by
+  unfold runtimeAppend at h
+  repeat' first
+    | exact (fail_ok h).elim
+    | (head_is h [resetFresh]
+       exact ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appendedCall, writtenCall, bumpedCall, h⟩)
+    | (head_is h [Bind.bind]
+       have bound := bind_ok h
+       clear h
+       obtain ⟨value, _, prior, h⟩ := bound
+       first
+         | exact (fail_ok prior).elim
+         | (head_is prior [Pure.pure]; have same := pure_ok prior; subst value)
+         | (head_is prior [appendFields]; have appendedCall := prior)
+         | (head_is prior [write]; have writtenCall := prior)
+         | (head_is prior [bumpHwm]; have bumpedCall := prior)
+         | skip)
+    | dsimp only at h
+    | split at h
+
+set_option backward.split false in
+/-- The Session operations of `transcriptDelivery`, in order. A delivery that is not from the
+queue returns the Session unchanged. The other binds only read the Session or the event. A frame
+proof composes these steps. This is much cheaper than a walk over every branch of
+`transcriptDelivery`. -/
+theorem transcriptDelivery_ops {s e t : Term} {j r : List Term}
+    (h : transcriptDelivery s e j = .ok (t, r)) :
+    t = s ∨ ∃ message billing dedupe wait repair raw hwm appended updated obligated bumped : Term,
+      ∃ j₁ j₂ j₃ j₄ j₅ r₁ r₂ r₃ r₄ : List Term,
+      appendFields s e message j₁ = .ok (appended, r₁) ∧
+      write appended [("billing_context", billing), ("input_dedupe", dedupe), ("wait", wait),
+        ("visible_reply_repair", repair)] j₂ = .ok (updated, r₂) ∧
+      addObligation updated raw j₃ = .ok (obligated, r₃) ∧
+      bumpHwm obligated hwm j₄ = .ok (bumped, r₄) ∧
+      resetFresh bumped message j₅ = .ok (t, r) := by
+  unfold transcriptDelivery at h
+  repeat' first
+    | exact (fail_ok h).elim
+    | (head_is h [Pure.pure]; exact Or.inl (pure_ok h))
+    | (head_is h [resetFresh]
+       exact Or.inr ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+         appendedCall, writtenCall, obligatedCall, bumpedCall, h⟩)
+    | (head_is h [Bind.bind]
+       have bound := bind_ok h
+       clear h
+       obtain ⟨value, _, prior, h⟩ := bound
+       first
+         | exact (fail_ok prior).elim
+         | (head_is prior [Pure.pure]; have same := pure_ok prior; subst value)
+         | (head_is prior [appendFields]; have appendedCall := prior)
+         | (head_is prior [write]; have writtenCall := prior)
+         | (head_is prior [addObligation]; have obligatedCall := prior)
+         | (head_is prior [bumpHwm]; have bumpedCall := prior)
+         | skip)
+    | dsimp only at h
+    | split at h
+    | (generalize Term.get _ _ = discriminant at h; split at h)
+
 end VerifiedKernel.Session

@@ -271,6 +271,33 @@ func TestComputerUseHelperOpenArgsCarryRuntimePathsAndToken(t *testing.T) {
 	}
 }
 
+func TestComputerUseLaunchesPreparedApplication(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("computer_use application installation is macOS-only")
+	}
+	c := newComputerUseTestConnector(t, filepath.Join(t.TempDir(), "daemon.sock"))
+	executable := filepath.Join(c.cfg.computerUseHelperApp, "Contents", "MacOS", "CommaComputerUseDaemon")
+	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n[ \"$1\" = --prepare-app ] || exit 1\nprintf '%s\\n' \"$0.standalone.app\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command, err := c.computerUseHelperCommand(context.Background(), "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := command.Args[len(command.Args)-1]; got != executable+".standalone.app" {
+		t.Fatalf("launched %q instead of the installed app", got)
+	}
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\necho 'installation busy' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.computerUseHelperCommand(context.Background(), "test-token"); err == nil || !strings.Contains(err.Error(), "installation busy") {
+		t.Fatalf("installation failure must stop launch with an actionable error: %v", err)
+	}
+}
+
 func TestComputerUseSocketPathFollowsRuntimeRoot(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("computer_use socket default is macOS-only")
@@ -283,9 +310,14 @@ func TestComputerUseSocketPathFollowsRuntimeRoot(t *testing.T) {
 	if first == second {
 		t.Fatalf("same-basename runtime roots share socket path %q", first)
 	}
-	if !strings.Contains(filepath.Base(first), "comma-staging-") {
-		t.Fatalf("runtime socket path lacks bounded release label: %q", first)
+	if err := os.MkdirAll(filepath.Dir(first), 0o700); err != nil {
+		t.Fatal(err)
 	}
+	listener, err := net.Listen("unix", first)
+	if err != nil {
+		t.Fatalf("runtime socket path cannot bind: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
 	if got := computerUseSocketPathForRuntime("../unsafe namespace", firstRoot); strings.Contains(filepath.Base(got), "..") {
 		t.Fatalf("unsafe runtime namespace was not contained: %q", got)
 	}

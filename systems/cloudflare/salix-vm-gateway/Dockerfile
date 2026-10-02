@@ -1,3 +1,9 @@
+ARG NODE_IMAGE
+ARG UV_IMAGE
+FROM ${NODE_IMAGE} AS node-runtime
+
+FROM ${UV_IMAGE} AS uv-runtime
+
 FROM docker.io/cloudflare/sandbox:0.7.0 AS python-build
 
 USER root
@@ -28,19 +34,31 @@ RUN apt-get update \
     libncursesw6 \
     libreadline8 \
     libsqlite3-0 \
+    libpcre2-8-0 \
     procps \
     zlib1g \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-build /opt/python3.13 /opt/python3.13
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=uv-runtime /uv /uvx /usr/local/bin/
 RUN ln -s /opt/python3.13/bin/python3.13 /usr/local/bin/python3 \
   && python3 -V \
   && python3 -m pip --version
+
+COPY .build/runtime-dependencies.lock.json .build/install-harnesses.mjs /tmp/salix-harness-build/
+RUN node /tmp/salix-harness-build/install-harnesses.mjs /tmp/salix-harness-build/runtime-dependencies.lock.json \
+  && rm -rf /tmp/salix-harness-build
+ENV DISABLE_AUTOUPDATER=1
+ENV PATH="${PATH}:/opt/salix/default-harness/bin"
 
 COPY entrypoint.sh /usr/local/bin/salix-vm-entrypoint
 COPY .build/salix-runtime-agent /usr/local/bin/salix-runtime-agent
 RUN chmod +x /usr/local/bin/salix-vm-entrypoint
 RUN chmod +x /usr/local/bin/salix-runtime-agent
+
+# Consumed once by Connector; archives never copy this local admission fact.
+RUN mkdir -p /workspace/.salix && touch /workspace/.salix/cloud-runtime-fresh
 
 WORKDIR /workspace
 EXPOSE 3000

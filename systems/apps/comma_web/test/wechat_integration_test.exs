@@ -347,6 +347,14 @@ defmodule CommaWeb.WeChatIntegrationTest do
 
     refute_receive {:wechat_reply, _, _}
 
+    # WeChat can only reply: the target is ready once the owner wrote.
+    assert [%{"provider" => "wechat", "ready" => false} = target] =
+             CommaWeb.ProactiveDelivery.personal_targets(c.workspace, c.user["id"])
+
+    assert target["tool"] == "im_api.wechat.reply_text"
+    assert target["connect_id"] == connect["connect_id"]
+    refute Map.has_key?(target, "context_token")
+
     assert {:ok, _} =
              ProviderHTTP.handle_wechat_update(connect, %{
                "message_id" => "reminder-context",
@@ -366,6 +374,9 @@ defmodule CommaWeb.WeChatIntegrationTest do
     assert_receive {:wechat_reply, _, reply}
     assert reply["msg"]["context_token"] == "ctx-reminder"
     assert inspect(reply) =~ "Router reviewed the invoice"
+
+    assert [%{"provider" => "wechat", "ready" => true}] =
+             CommaWeb.ProactiveDelivery.personal_targets(c.workspace, c.user["id"])
   end
 
   test "QR pairing authorizes one sender, routes official item text and disconnects", c do

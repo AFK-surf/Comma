@@ -16,6 +16,7 @@ import (
 
 // The receipt belongs to the target archive import and survives response loss.
 type cloudProviderMigration struct {
+	Scope        string              `json:"scope,omitempty"`
 	Diagnostics  *archiveDiagnostics `json:"diagnostics,omitempty"`
 	Operation    string              `json:"operation"`
 	Format       string              `json:"format,omitempty"`
@@ -77,7 +78,7 @@ func saveFailedImportDiagnostics(path, operation string, diagnostics archiveDiag
 }
 
 func providerMigrationResult(receipt cloudProviderMigration) map[string]any {
-	return map[string]any{"operation": receipt.Operation, "phase": receipt.Phase, "bytes": receipt.Bytes, "runtime_paths": receipt.RuntimePaths, "sessions": receipt.Sessions, "diagnostics": receipt.Diagnostics}
+	return map[string]any{"scope": receipt.Scope, "operation": receipt.Operation, "phase": receipt.Phase, "bytes": receipt.Bytes, "runtime_paths": receipt.RuntimePaths, "sessions": receipt.Sessions, "diagnostics": receipt.Diagnostics}
 }
 
 // Import is available only on the authenticated provider HTTP carrier before
@@ -148,7 +149,7 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 			offset = status.Bytes
 		}
 		missing, missingCount := c.missingProviderMigrationNative()
-		writeJSONResponse(w, 200, map[string]any{"diagnostics": status.Diagnostics, "phase": status.Phase, "next_offset": offset, "runtime_paths": status.RuntimePaths, "sessions": status.Sessions, "missing_native_sessions": missing, "missing_native_count": missingCount})
+		writeJSONResponse(w, 200, map[string]any{"operation": status.Operation, "scope": status.Scope, "diagnostics": status.Diagnostics, "phase": status.Phase, "next_offset": offset, "runtime_paths": status.RuntimePaths, "sessions": status.Sessions, "missing_native_sessions": missing, "missing_native_count": missingCount})
 		return
 	}
 	if status.Phase == "restored" {
@@ -231,6 +232,12 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 			http.Error(w, "restored Session count differs", 409)
 			return
 		}
+		projection, err := c.readArchiveProjection()
+		if err != nil {
+			http.Error(w, "restored archive scope unavailable", 500)
+			return
+		}
+		status.Scope = projection.Scope
 		status.Diagnostics.Outcome = "restored"
 		status.Diagnostics.TotalMS = time.Since(startedAt).Milliseconds()
 		status.Diagnostics.GetMSSum = reader.fetchNS.Load() / 1_000_000
@@ -361,6 +368,12 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 			http.Error(w, "restored Session count differs", 409)
 			return
 		}
+		projection, err := c.readArchiveProjection()
+		if err != nil {
+			http.Error(w, "restored archive scope unavailable", 500)
+			return
+		}
+		status.Scope = projection.Scope
 		status.Diagnostics.Outcome = "restored"
 		status.Diagnostics.ExtractMS = time.Since(startedAt).Milliseconds()
 		status.Diagnostics.TotalMS = status.Diagnostics.DownloadMS + status.Diagnostics.ExtractMS

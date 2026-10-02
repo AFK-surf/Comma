@@ -4237,6 +4237,14 @@ func TestHelperKimiServer(t *testing.T) {
 		defer wsWriteMu.Unlock()
 		_ = ws.WriteJSON(event)
 	}
+	pingPayload := map[string]any{"id": "fake-ping"}
+	if os.Getenv("SALIX_TEST_FAKE_KIMI_LARGE_HANDSHAKE") == "1" {
+		pingPayload["padding"] = strings.Repeat("x", 4<<20)
+	}
+	ping, err := json.Marshal(map[string]any{"type": "ping", "payload": pingPayload})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer fake-kimi-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -4268,7 +4276,10 @@ func TestHelperKimiServer(t *testing.T) {
 				return
 			}
 			appendFakeProcessLog(logPath, "client_hello")
-			if ws.WriteJSON(map[string]any{"type": "ping", "payload": map[string]any{"id": "fake-ping"}}) != nil {
+			wsWriteMu.Lock()
+			err = ws.WriteMessage(websocket.TextMessage, ping)
+			wsWriteMu.Unlock()
+			if err != nil {
 				return
 			}
 			var pong map[string]any
@@ -4650,7 +4661,11 @@ func TestHelperCodexAppServer(t *testing.T) {
 					if claimFakeCodexInitializeResponseDrop() {
 						continue
 					}
-					_ = write(map[string]any{"id": id, "result": map[string]any{"ok": true}})
+					result := map[string]any{"ok": true}
+					if userAgent := os.Getenv("SALIX_TEST_FAKE_CODEX_USER_AGENT"); userAgent != "" {
+						result["userAgent"] = userAgent
+					}
+					_ = write(map[string]any{"id": id, "result": result})
 				case "config/read":
 					_ = write(map[string]any{"id": id, "result": map[string]any{"config": map[string]any{"cli_auth_credentials_store": "file"}}})
 				case "account/read":
@@ -5566,6 +5581,15 @@ func TestManagedArchivePreservesExecutableLinksAndNativeFiles(t *testing.T) {
 	}
 	if err := writeTarGz(io.Discard, root); err == nil {
 		t.Fatal("archive must fail instead of omitting an external link")
+	}
+	if err := os.Remove(filepath.Join(root, "external")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "absent"), filepath.Join(root, "external")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTarGz(io.Discard, root); err == nil {
+		t.Fatal("archive must reject an absent external link target")
 	}
 }
 

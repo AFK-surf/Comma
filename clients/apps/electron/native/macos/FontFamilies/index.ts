@@ -6,9 +6,6 @@ export const fontFamiliesAddonFileName = "comma-font-families.node";
 
 type NativeFontFamiliesAddon = {
   familyNames(): Promise<string[]>;
-  // A binary built before the menu-bar measurement lacks this; a bare
-  // `electron-forge start` keeps such a binary until it is removed.
-  menuTextWidth?(text: string): number | null;
 };
 
 export type FontFamiliesAddon = {
@@ -17,8 +14,6 @@ export type FontFamiliesAddon = {
   readonly loadError?: Error;
   /** Installed family names, or null where this addon cannot answer. */
   familyNames(): Promise<string[] | null>;
-  /** Points `text` takes in the macOS menu-item font, or null where this addon cannot answer. */
-  menuTextWidth(text: string): number | null;
 };
 
 type LoadFontFamiliesAddonOptions = {
@@ -90,7 +85,6 @@ function makeUnavailableAddon(error: Error): FontFamiliesAddon {
     loaded: false,
     loadError: error,
     familyNames: () => Promise.resolve(null),
-    menuTextWidth: () => null,
   };
 }
 
@@ -125,7 +119,6 @@ export function loadFontFamiliesAddon(
         loaded: true,
         binaryPath,
         familyNames: () => nativeAddon.familyNames(),
-        menuTextWidth: (text) => nativeAddon.menuTextWidth?.(text) ?? null,
       };
     } catch (error) {
       lastError = asError(error);

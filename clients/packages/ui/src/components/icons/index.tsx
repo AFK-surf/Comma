@@ -1,3 +1,9 @@
+import { IconZai as CentralZaiBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconZai";
+import { IconNvidia as CentralNvidiaBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconNvidia";
+import { IconOllama as CentralOllamaBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconOllama";
+import { IconOpencode as CentralOpencodeBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconOpencode";
+import { IconVercel as CentralVercelBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconVercel";
+import { IconCopilot as CentralCopilotBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconCopilot";
 import { IconQwen as CentralQwenBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconQwen";
 import { IconGrok as CentralGrokBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconGrok";
 import { IconMetaAi as CentralMetaAiBrandIcon } from "@central-icons-react/round-filled-radius-2-stroke-2/IconMetaAi";
@@ -23,6 +29,8 @@ import { IconBook as CentralBookIcon } from "@central-icons-react/round-outlined
 import { IconBug as CentralBugIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconBug";
 import { IconBarsThree2 as CentralBarsThreeIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconBarsThree2";
 import { IconBubbleAlert as CentralBubbleAlertIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconBubbleAlert";
+import { IconChatBubble7 as CentralChatBubbleIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconChatBubble7";
+import { IconDiscord as CentralDiscordBrandIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconDiscord";
 import { IconCalendarDays as CentralCalendarIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconCalendarDays";
 import { IconAudio as CentralAudioIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconAudio";
 import { IconVoiceRecord as CentralVoiceRecordIcon } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconVoiceRecord";
@@ -189,6 +197,8 @@ export const GlobeIcon = createCentralIcon(CentralGlobeIcon);
 export const TagLabelIcon = createCentralIcon(CentralTagLabelIcon);
 export const TelegramBrandIcon = createCentralIcon(CentralTelegramBrandIcon);
 export const WechatBrandIcon = createCentralIcon(CentralWechatBrandIcon);
+export const DiscordBrandIcon = createCentralIcon(CentralDiscordBrandIcon);
+export const ChatBubbleIcon = createCentralIcon(CentralChatBubbleIcon);
 export const MinusIcon = createCentralIcon(CentralMinusIcon);
 export const CircleMinusIcon = createCentralIcon(CentralCircleMinusIcon);
 export const CirclePlusIcon = createCentralIcon(CentralCirclePlusIcon);
@@ -339,3 +349,9 @@ export const MetaAiBrandIcon = createCentralIcon(CentralMetaAiBrandIcon);
 export const GrokBrandIcon = createCentralIcon(CentralGrokBrandIcon);
 
 export const QwenBrandIcon = createCentralIcon(CentralQwenBrandIcon);
+export const ZaiBrandIcon = createCentralIcon(CentralZaiBrandIcon);
+export const NvidiaBrandIcon = createCentralIcon(CentralNvidiaBrandIcon);
+export const OllamaBrandIcon = createCentralIcon(CentralOllamaBrandIcon);
+export const OpencodeBrandIcon = createCentralIcon(CentralOpencodeBrandIcon);
+export const VercelBrandIcon = createCentralIcon(CentralVercelBrandIcon);
+export const CopilotBrandIcon = createCentralIcon(CentralCopilotBrandIcon);

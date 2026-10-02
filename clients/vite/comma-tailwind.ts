@@ -43,18 +43,46 @@ function localGroupSubject(selector: Selector): Selector | undefined {
   ];
 }
 
-/** Apply the same selector output to production, Storybook and browser fixtures. */
-export default function localGroupSelectors() {
+/** Apply the same CSS to production, Storybook and browser fixtures. */
+export default function commaTailwind() {
   return {
     name: "comma:local-group-selectors",
     enforce: "pre" as const,
     transform(code: string, id: string) {
-      if (!id.split("?")[0]?.endsWith(".css") || !code.includes(":where(.group")) {
+      if (
+        !id.split("?")[0]?.endsWith(".css") ||
+        (!code.includes(":where(.group") && !code.includes(".markstream-react"))
+      ) {
         return undefined;
       }
-      // Only rewrite selectors. Recompiling declarations can change custom
-      // property registration and animation behavior.
+      // Preserve declarations: recompiling them can change custom property
+      // registration and animation behavior.
       const root = parse(code, { from: id });
+      // Markstream ships two viewport rules. Query Comma's window container
+      // without moving the rules or changing their cascade layer/specificity.
+      // A width @media in the same sheet as @layer/@font-face triggers global
+      // font invalidation on Chromium 148, even when no selector matches.
+      root.walkAtRules("media", (rule) => {
+        const condition = rule.params.replace(/\s/g, "");
+        const selector = rule.nodes?.[0];
+        if (selector?.type !== "rule") return;
+        let width: string | undefined;
+        if (
+          condition === "(max-width:640px)" &&
+          selector.selector === ".html-preview-frame"
+        ) {
+          width = "width <= 640px";
+        } else if (
+          condition === "notalland(min-width:1024px)" &&
+          selector.selector.startsWith(".markstream-react .max-lg")
+        ) {
+          width = "width < 1024px";
+        }
+        if (width) {
+          rule.name = "container";
+          rule.params = `comma-window (${width})`;
+        }
+      });
       root.walkRules((rule) => {
         if (!rule.selector.includes(":is(:where(.group")) return;
         const result = transform({

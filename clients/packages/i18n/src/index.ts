@@ -20,7 +20,9 @@ export {
 } from "./locale";
 export { initializeCommaI18n } from "./runtime";
 export {
+  normalizeTaskStatus,
   taskActivityLabel,
+  taskStatusBucket,
   taskStatusBucketLabel,
   taskStatusBuckets,
   visibleTaskStatusBuckets,

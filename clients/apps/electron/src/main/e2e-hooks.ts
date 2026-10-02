@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,6 +7,7 @@ import type {
   CommaOperatingSystem,
   SystemNotificationsStatus,
 } from "@comma/native-bridge";
+import type { SleepGuardAddon } from "../../native/macos/SleepGuard";
 import type { LaunchAtLoginStatus } from "./launch-at-login";
 import type { AppPreferencesRuntime } from "./modules/electron-main.module";
 import type { SecureSessionInput } from "./secure-store";
@@ -48,6 +49,12 @@ export interface ElectronE2eHooks {
   secureSessionFilePath?: string;
   session?: SecureSessionInput;
   sideChatHostPath?: string;
+  /**
+   * Stands in for the sleep guard daemon and Login Items: `registered` and
+   * `approved` files model macOS's registration state, and the fake writes
+   * `held` while Comma holds the lid-closed flag.
+   */
+  sleepGuardDirectory?: string;
   /** Receives the rows of every menu-bar menu Main installs, as JSON. */
   statusTrayMenuFilePath?: string;
   /** A menu-bar row id that Main clicks once, the first time it installs it. */
@@ -96,6 +103,7 @@ interface ElectronE2eHookEnv {
   COMMA_ELECTRON_E2E_OPERATING_SYSTEM?: string | undefined;
   COMMA_ELECTRON_E2E_MENU_BAR_HIDDEN_MARKER_FILE_PATH?: string | undefined;
   COMMA_ELECTRON_E2E_SIDE_CHAT_HOST_PATH?: string | undefined;
+  COMMA_ELECTRON_E2E_SLEEP_GUARD_DIRECTORY?: string | undefined;
   COMMA_ELECTRON_E2E_STATUS_TRAY_OPEN_MAIN_BLOCKED_MARKER_FILE_PATH?:
     | string
     | undefined;
@@ -274,6 +282,11 @@ export function resolveElectronE2eHooks({
     hooks.launchAtLoginStatus = launchAtLoginStatus;
   }
 
+  const sleepGuardDirectory = env.COMMA_ELECTRON_E2E_SLEEP_GUARD_DIRECTORY?.trim();
+  if (sleepGuardDirectory) {
+    hooks.sleepGuardDirectory = sleepGuardDirectory;
+  }
+
   if (systemNotificationsStatus) {
     hooks.systemNotificationsStatus = systemNotificationsStatus;
   }
@@ -428,7 +441,10 @@ export function decorateElectronE2eAppPreferencesProvider(
       return snapshot;
     },
     initializeClientSettings: (input) => provider.initializeClientSettings(input),
+    openLoginItemsSettings: (input) => provider.openLoginItemsSettings(input),
     openNotificationSettings: (input) => provider.openNotificationSettings(input),
+    requestNotificationAuthorization: (input) =>
+      provider.requestNotificationAuthorization(input),
     async update(input) {
       const gateThisAcknowledgement = gateNextUpdateAcknowledgement;
       gateNextUpdateAcknowledgement = false;
@@ -441,6 +457,32 @@ export function decorateElectronE2eAppPreferencesProvider(
         });
       }
       return snapshot;
+    },
+  };
+}
+
+export function createElectronE2eSleepGuardAddon(directory: string): SleepGuardAddon {
+  const file = (name: string) => join(directory, name);
+  const status = () =>
+    existsSync(file("approved"))
+      ? ("enabled" as const)
+      : existsSync(file("registered"))
+        ? ("requiresApproval" as const)
+        : ("notRegistered" as const);
+  return {
+    status,
+    register: () => {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(file("registered"), "registered\n");
+      return { status: status() };
+    },
+    openLoginItemsSettings: () => {
+      writeFileSync(file("login-items-opened"), "opened\n");
+    },
+    setSleepDisabled: async (_serviceName, disabled) => {
+      if (disabled) writeFileSync(file("held"), "held\n");
+      else rmSync(file("held"), { force: true });
+      return { ok: true };
     },
   };
 }
@@ -481,23 +523,25 @@ export function activateElectronE2eStatusTraySettings(
 
 let statusTrayMenuItemActivated = false;
 
-/** The OS menu is out of Playwright's reach: record it, and click a row. */
+/** The OS menu is out of Playwright's reach: record it and what draws it, and click a row. */
 export function recordElectronE2eStatusTrayMenu(
   hooks: ElectronE2eHooks,
+  host: "electron" | "side-chat-helper",
   template: readonly StatusTrayMenuItem[]
 ) {
   if (hooks.statusTrayMenuFilePath) {
     mkdirSync(dirname(hooks.statusTrayMenuFilePath), { recursive: true });
     writeFileSync(
       hooks.statusTrayMenuFilePath,
-      `${JSON.stringify(
-        template.map(({ accelerator, id, label, type }) => ({
+      `${JSON.stringify({
+        host,
+        rows: template.map(({ accelerator, id, label, type }) => ({
           accelerator,
           id,
           label,
           type,
-        }))
-      )}\n`
+        })),
+      })}\n`
     );
   }
   const row = template.find(({ id }) => id === hooks.activateStatusTrayMenuItem);
@@ -541,6 +585,7 @@ function hasAnyHook(hooks: ElectronE2eHooks) {
     hooks.launchAtLoginDisabledMarkerFilePath ||
     hooks.launchAtLoginRegisteredMarkerFilePath ||
     hooks.launchAtLoginStatus ||
+    hooks.sleepGuardDirectory ||
     hooks.mainReadyBlockedMarkerFilePath ||
     hooks.mainReadyReleaseFilePath ||
     hooks.openSideChat ||
@@ -627,7 +672,12 @@ function resolveLaunchAtLoginStatus(value: string | undefined) {
 function resolveSystemNotificationsStatus(
   value: string | undefined
 ): SystemNotificationsStatus | undefined {
-  if (value === "available" || value === "denied" || value === "unsupported") {
+  if (
+    value === "available" ||
+    value === "undetermined" ||
+    value === "denied" ||
+    value === "unsupported"
+  ) {
     return value;
   }
   return undefined;

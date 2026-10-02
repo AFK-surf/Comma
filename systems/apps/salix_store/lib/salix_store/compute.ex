@@ -519,7 +519,7 @@ defmodule SalixStore.Compute do
   @group_device_fields ~w(env_id device_id connector_id alias name workspace_dir)
   @group_archive_fields ~w(archive_diagnostics wake_requested_at archive_started_at archive archive_ref connector_archive archive_operation_id archive_reason archive_progress archive_cancel_requested archive_last_operation archived_at wake_operation_id last_wake_at archive_gc_operations archive_previous connector_archive_previous)
   @group_activity_fields ~w(active_operations last_operation_at last_operation_result last_vm_operation_agent_id last_agent_settled_after_vm_at)
-  @group_runtime_fields ~w(runtime_targets runtime_connector runtime_activity runtime_idle runtime_idle_token runtime_selection_until runtime_wake_at runtime_wake_claim)
+  @group_runtime_fields ~w(runtime_targets runtime_connector runtime_activity runtime_idle runtime_idle_token runtime_selection_until runtime_wake_at runtime_wake_claim cloudflare_control)
   @group_provider_fields ~w(provider_resource_id provider_resource_name provider_spec current_worker_version_id desired_worker_version_id worker_release_id worker_release_kind rollout_state cloudflare_worker operation_drain_summary)
   @group_lifecycle_fields ~w(provider_migration node_id attempt_at ready_at error last_error billing_decision last_metered_at created_by_agent_id)
 
@@ -938,12 +938,234 @@ defmodule SalixStore.Compute do
     )
   end
 
+  @doc "Project one fixed owner permit for the current Cloudflare transition."
+  def prepare_cloudflare_control(group_id, target_resource, action)
+      when action in [:open, :seal, :resume] do
+    Repo.transaction(fn ->
+      lock_cloudflare_gateway_release!()
+
+      {environment, workload, allocation, binding} =
+        case group_workload_rows(group_id, true) do
+          {:ok, e, w, a, b} -> {e, w, a, b}
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      record = group_workload_projection(environment, workload, allocation, binding)
+
+      if binding.provider != "cloudflare" or cloudflare_location_key(record) != target_resource,
+        do: Repo.rollback(:gateway_target_changed)
+
+      if action == :resume and
+           (record["status"] != "archiving" or record["archive_reason"] != "idle"),
+         do: Repo.rollback(:archive_commit_recovery_required)
+
+      case cloudflare_gateway_maintenance() do
+        :open ->
+          :ok
+
+        {:held, %{"reason" => "sandbox_image_release", "phase" => "prepared"}}
+        when action in [:seal, :resume] ->
+          :ok
+
+        {:held, held} ->
+          Repo.rollback({:vm_service_upgrading, held})
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+
+      previous = get_in(workload.spec, ["runtime", "cloudflare_control"])
+
+      operation =
+        record["archive_operation_id"] || record["wake_operation_id"] ||
+          (previous && previous["operation_id"]) || "provision-" <> workload.id
+
+      sealed = action == :seal
+
+      rebuild =
+        action == :open and record["status"] == "waking" and
+          record["archive_reason"] == "recovery_rebuild" and is_map(previous) and
+          previous["sealed"] == true and is_map(record["archive"])
+
+      reopen_ready =
+        action == :open and record["status"] == "ready" and
+          is_map(previous) and previous["sealed"] == true and
+          is_nil(record["archive_operation_id"])
+
+      same =
+        action != :resume and not rebuild and not reopen_ready and is_map(previous) and
+          previous["operation_id"] == operation and
+          previous["generation"] == workload.generation
+
+      if action == :open and same and previous["sealed"] == true,
+        do: Repo.rollback(:cloudflare_control_sealed)
+
+      next =
+        if same,
+          do: Map.put(previous, "sealed", sealed),
+          else: %{
+            "owner_id" => workload.id,
+            "operation_id" => operation,
+            "generation" => workload.generation,
+            "revision" => workload.revision + 1,
+            "sealed" => sealed
+          }
+
+      if next != previous do
+        runtime = Map.put(workload.spec["runtime"] || %{}, "cloudflare_control", next)
+        spec = Map.put(workload.spec, "runtime", runtime)
+
+        spec =
+          if rebuild do
+            archive = spec["archive"] || %{}
+
+            Map.put(
+              spec,
+              "archive",
+              archive
+              |> Map.put("archive_reason", "recovery_restoring")
+              |> Map.put("last_wake_at", System.system_time(:millisecond))
+            )
+          else
+            spec
+          end
+
+        workload
+        |> Ecto.Changeset.change(
+          spec: spec,
+          revision: workload.revision + 1,
+          updated_at: DateTime.utc_now()
+        )
+        |> Repo.update!()
+      end
+
+      next
+    end)
+  end
+
+  def cloudflare_control(group_id) do
+    with {:ok, record} <- group_workload(group_id),
+         control when is_map(control) <- record["cloudflare_control"] do
+      {:ok, control}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :cloudflare_control_unbound}
+    end
+  end
+
+  @doc "Settle one qualified claim from its exact carrier terminal observation."
+  def settle_cloudflare_terminal(group_id, target_resource, observation) do
+    Repo.transaction(fn ->
+      with {:ok, environment, workload, allocation, binding} <-
+             group_workload_rows(group_id, true) do
+        record = group_workload_projection(environment, workload, allocation, binding)
+        expected = record["cloudflare_control"]
+        observed = observation["control"]
+        terminal = is_map(observed) && observed["last_terminal"]
+        keys = ~w(owner_id operation_id generation revision)
+
+        if cloudflare_location_key(record) != target_resource,
+          do: Repo.rollback(:gateway_target_changed)
+
+        if not is_map(expected) or not is_map(observed) or
+             Map.take(expected, keys) != Map.take(observed, keys) do
+          :ok
+        else
+          operations = get_in(workload.spec, ["activity", "active_operations"]) || %{}
+          claim = is_map(terminal) && terminal["claim_id"]
+          operation = operations[claim]
+
+          if is_map(operation) and is_map(terminal) and
+               terminal["outcome"] in ["completed", "not_issued"] and
+               terminal["owner_id"] == workload.id and
+               terminal["generation"] == workload.generation and
+               operation["kind"] == "cloudflare_gateway_attempt" and
+               operation["target_resource"] == target_resource and
+               operation["action"] == terminal["action"] and
+               operation["owner_operation"] == terminal["operation_id"] and
+               operation["generation"] == terminal["generation"] and
+               operation["control_revision"] == terminal["revision"] do
+            workload
+            |> Ecto.Changeset.change(
+              spec:
+                put_in(
+                  workload.spec,
+                  ["activity", "active_operations"],
+                  Map.delete(operations, claim)
+                ),
+              revision: workload.revision + 1,
+              updated_at: DateTime.utc_now()
+            )
+            |> Repo.update!()
+          end
+
+          :ok
+        end
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      error -> error
+    end
+  end
+
+  @doc "Settle only managed commands covered by the exact sealed carrier observation."
+  def settle_cloudflare_control(group_id, target_resource, observation) do
+    Repo.transaction(fn ->
+      case group_workload_rows(group_id, true) do
+        {:ok, _environment, workload, _allocation, _binding} ->
+          expected = get_in(workload.spec, ["runtime", "cloudflare_control"])
+          observed = observation["control"]
+          keys = ~w(owner_id operation_id generation revision)
+
+          if not is_map(expected) or not is_map(observed) or expected["sealed"] != true or
+               observed["sealed"] != true or observed["pending"] != nil or
+               observation["managed_commands_settled"] != true or
+               Map.take(expected, keys) != Map.take(observed, keys),
+             do: Repo.rollback(:cloudflare_control_unsettled)
+
+          operations = get_in(workload.spec, ["activity", "active_operations"]) || %{}
+
+          next =
+            Map.reject(operations, fn {_id, op} ->
+              op["kind"] == "cloudflare_gateway_attempt" and
+                op["target_resource"] == target_resource and
+                is_integer(op["control_revision"]) and
+                op["control_revision"] <= expected["revision"] and
+                op["generation"] == expected["generation"]
+            end)
+
+          if next != operations do
+            workload
+            |> Ecto.Changeset.change(
+              spec: put_in(workload.spec, ["activity", "active_operations"], next),
+              revision: workload.revision + 1,
+              updated_at: DateTime.utc_now()
+            )
+            |> Repo.update!()
+          end
+
+          :ok
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      error -> error
+    end
+  end
+
   @doc "Claim one start-capable Gateway attempt before its network call."
   def begin_cloudflare_gateway_attempt(
         group_id,
         operation_id,
         purpose \\ :normal,
-        target_resource \\ nil
+        target_resource \\ nil,
+        metadata \\ %{}
       )
       when is_binary(group_id) and is_binary(operation_id) and
              purpose in [:normal, :archive] do
@@ -962,6 +1184,19 @@ defmodule SalixStore.Compute do
               if purpose == :archive and record["provider"] == "cloudflare" and
                    ((record["status"] == "archiving" and is_binary(target_resource) and
                        cloudflare_location_key(record) == target_resource) or
+                      (record["status"] == "ready" and is_binary(target_resource) and
+                         cloudflare_location_key(record) == target_resource and
+                         metadata["action"] in ["observe", "seal", "connector_control"]) or
+                      (record["status"] == "waking" and is_binary(target_resource) and
+                         cloudflare_location_key(record) == target_resource and
+                         metadata["action"] in [
+                           "observe",
+                           "seal",
+                           "connector_control",
+                           "export",
+                           "connect_repair",
+                           "destroy"
+                         ]) or
                       archived_release_cleanup?(record, target_resource)) do
                 :ok
               else
@@ -977,6 +1212,22 @@ defmodule SalixStore.Compute do
 
           activity = workload.spec["activity"] || %{}
           operations = activity["active_operations"] || %{}
+          control = get_in(workload.spec, ["runtime", "cloudflare_control"])
+
+          if is_map(control) and is_binary(metadata["action"]) and
+               cloudflare_location_key(record) != target_resource,
+             do: Repo.rollback(:gateway_target_changed)
+
+          metadata =
+            if is_map(control) and is_binary(metadata["action"]) and
+                 cloudflare_location_key(record) == target_resource,
+               do: %{
+                 "action" => metadata["action"],
+                 "owner_operation" => control["operation_id"],
+                 "generation" => control["generation"],
+                 "control_revision" => control["revision"]
+               },
+               else: %{}
 
           cond do
             Map.has_key?(operations, operation_id) ->
@@ -986,13 +1237,17 @@ defmodule SalixStore.Compute do
               Repo.rollback(:cloudflare_gateway_attempt_limit)
 
             true ->
-              operation = %{
-                "operation_id" => operation_id,
-                "kind" => "cloudflare_gateway_attempt",
-                "target_resource" => target_resource,
-                "started_at" => System.system_time(:millisecond),
-                "state" => "active"
-              }
+              operation =
+                Map.merge(
+                  Map.take(metadata, ~w(action owner_operation generation control_revision)),
+                  %{
+                    "operation_id" => operation_id,
+                    "kind" => "cloudflare_gateway_attempt",
+                    "target_resource" => target_resource,
+                    "started_at" => System.system_time(:millisecond),
+                    "state" => "active"
+                  }
+                )
 
               updated =
                 workload.spec
@@ -1045,7 +1300,8 @@ defmodule SalixStore.Compute do
             Enum.any?(operations, fn {id, operation} ->
               id != operation_id and operation["kind"] == "cloudflare_gateway_attempt" and
                 operation["state"] == "pending_start" and
-                operation["target_resource"] == target_resource
+                operation["target_resource"] == target_resource and
+                operation["control_revision"] == operations[operation_id]["control_revision"]
             end)
 
           next =
@@ -1117,7 +1373,7 @@ defmodule SalixStore.Compute do
   end
 
   @doc "A ready Gateway response settles prior accepted starts for the exact Sandbox."
-  def finish_cloudflare_gateway_starting(group_id, target_resource)
+  def finish_cloudflare_gateway_starting(group_id, target_resource, control_revision \\ nil)
       when is_binary(group_id) and is_binary(target_resource) do
     Repo.transaction(fn ->
       case group_workload_rows(group_id, true) do
@@ -1129,7 +1385,8 @@ defmodule SalixStore.Compute do
             Map.reject(operations, fn {_id, operation} ->
               operation["kind"] == "cloudflare_gateway_attempt" and
                 operation["state"] == "pending_start" and
-                operation["target_resource"] == target_resource
+                operation["target_resource"] == target_resource and
+                (is_nil(control_revision) or operation["control_revision"] == control_revision)
             end)
 
           if next != operations do
@@ -1259,6 +1516,7 @@ defmodule SalixStore.Compute do
                 |> Map.merge(%{
                   "maintenance_id" => maintenance_id,
                   "superseded_maintenance_id" => previous_id,
+                  "started_at" => System.system_time(:millisecond),
                   "phase" => phase
                 })
 
@@ -1805,7 +2063,12 @@ defmodule SalixStore.Compute do
                desired_state: w.desired_state,
                observed_state: w.observed_state,
                created_at: w.created_at,
-               spec: fragment("? #- '{archive,archive}'", w.spec)
+               spec:
+                 fragment(
+                   "jsonb_set(?, '{archive,archive}', COALESCE(? #> '{archive,archive}', '{}'::jsonb) - 'data', false)",
+                   w.spec,
+                   w.spec
+                 )
              }, a, b}
         )
 
@@ -2396,7 +2659,8 @@ defmodule SalixStore.Compute do
             on: a.id == w.allocation_id,
             where:
               w.environment_id == ^environment_id and a.provider_binding_id == ^binding.id and
-                w.desired_state == "ready" and w.observed_state in ["pending", "ready"] and
+                w.kind == "shell" and w.desired_state == "ready" and
+                w.observed_state in ["pending", "ready", "failed"] and
                 a.status in ["pending", "allocating", "ready"] and
                 w.generation == ^environment.generation and
                 a.generation == ^environment.generation,
@@ -5407,6 +5671,19 @@ defmodule SalixStore.Compute do
         )
       )
 
+    binding_ids = Enum.map(allocations, & &1.provider_binding_id)
+    bindings = Repo.all(from(b in ProviderBinding, where: b.id in ^binding_ids))
+
+    claims =
+      Repo.all(
+        from(c in ReconcilerClaim,
+          join: w in Workload,
+          on: w.id == c.workload_id and w.generation == c.generation,
+          where: w.id in ^workload_ids,
+          select: c
+        )
+      )
+
     grants =
       Repo.all(
         from(g in Grant,
@@ -5423,6 +5700,8 @@ defmodule SalixStore.Compute do
        allocations: allocations,
        runtimes: runtimes,
        grants: grants,
+       bindings: bindings,
+       claims: claims,
        next_workload_cursor: workload_cursor
      }}
   rescue

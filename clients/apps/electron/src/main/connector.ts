@@ -247,10 +247,14 @@ export class ConnectorService {
         this.options.runCommand ??
         ((command: string, args: string[]) =>
           runCommand(command, args, { timeout: 15_000 }));
+      const prepared = await execute(executable, ["--prepare-app"]);
+      if (prepared.code !== 0) throw commandError("ComputerUse installation", prepared);
+      const standaloneApp = prepared.stdout.trim();
+      if (!standaloneApp) throw new Error("ComputerUse returned no application path.");
       if (action === "open-permission-flow") {
         const opened = await execute("open", [
           "-n",
-          helperApp,
+          standaloneApp,
           "--args",
           "--permissions-ui",
         ]);
@@ -270,7 +274,7 @@ export class ConnectorService {
           outputPath,
           "--stderr",
           join(directory, "stderr"),
-          helperApp,
+          standaloneApp,
           "--args",
           "--permissions-status",
         ]);

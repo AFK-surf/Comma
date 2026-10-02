@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -138,7 +139,7 @@ type rewriteTransport struct {
 }
 
 func (rt *rewriteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Host != "chatgpt.com" && r.URL.Host != "api.anthropic.com" && r.URL.Host != "auth.openai.com" {
+	if !slices.Contains([]string{"chatgpt.com", "api.anthropic.com", "auth.openai.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "cli-chat-proxy.grok.com", "api.kimi.com", "api.individual.githubcopilot.com"}, r.URL.Host) {
 		return nil, fmt.Errorf("unexpected upstream %s", r.URL.Host)
 	}
 	clone := r.Clone(r.Context())

@@ -171,9 +171,26 @@ defmodule SalixAgent.ModelDiscoveryTest do
     assert length(Agent.get(state, & &1.calls)) == 1
   end
 
-  test "requires a fresh key and a plain endpoint", %{input: input, state: state} do
+  test "a keyless endpoint lists its models with no auth header", %{input: input, state: state} do
+    for keyless <- [Map.delete(input, "api_key"), Map.put(input, "api_key", "")],
+        protocol <- ["chat_completions", "anthropic"] do
+      Agent.update(state, &%{&1 | mode: :normal, calls: []})
+
+      assert {:ok, %{"data" => [_ | _]}} =
+               ModelDiscovery.discover(Map.put(keyless, "protocol", protocol))
+
+      assert [{"/v1/models", _, headers}] = Agent.get(state, & &1.calls)
+      refute List.keymember?(headers, "authorization", 0)
+      refute List.keymember?(headers, "x-api-key", 0)
+    end
+  end
+
+  test "requires a usable key when one is given, and a plain endpoint", %{
+    input: input,
+    state: state
+  } do
     for changes <- [
-          %{"api_key" => ""},
+          %{"api_key" => "   "},
           %{"base_url" => "https://user:secret@example.com"},
           %{"base_url" => "https://example.com?key=secret"},
           %{"protocol" => "unsupported"},

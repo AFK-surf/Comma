@@ -24,7 +24,7 @@ defmodule SalixAgent.Tools.Proactive do
     [
       tool(
         "state",
-        "Read the owner's canonical reminder states, bounded watches, automatic handoff budget and notification budget. Reuse exact keys/generations and linked Task creation receipts. Read source facts through existing Composio or conversation tools; no provider read or write occurs here.",
+        "Read the owner's canonical reminder states, bounded watches, automatic handoff budget, notification budget, whether the owner can see Home replies in the desktop App now (app_active), the owner's bound personal chats (personal_targets: the exact reply tool and arguments for a reminder you decided on while app_active is false) and the Drive path of their proactive notebook when it exists. Reuse exact keys/generations and linked Task creation receipts. Read source facts through existing Composio or conversation tools; no provider read or write occurs here.",
         %{},
         [],
         :state,

@@ -154,6 +154,101 @@ defmodule SalixIM.IFCAdminTest do
     end
   end
 
+  describe "bounds" do
+    test "each list returns at most the dashboard rows and flags a longer one", %{
+      tenant: tenant,
+      group: group
+    } do
+      {:ok, _} =
+        SalixStore.CasRecord.create(Keys.ctl_im_connect(group, @connect), %{
+          "tenant_id" => tenant,
+          "group_id" => group,
+          "connect_id" => @connect,
+          "provider" => "slack",
+          "name" => "Acme"
+        })
+
+      rows = Store.dashboard_rows()
+      for n <- 1..rows, do: Store.observe_placement(tenant, group, @connect, "U#{n}", "internal")
+
+      assert {:ok, %{"connects" => [%{"truncated" => false, "principals" => principals}]}} =
+               Admin.overview(tenant, group)
+
+      assert length(principals) == rows
+      Store.observe_placement(tenant, group, @connect, "U#{rows + 1}", "internal")
+
+      assert {:ok, %{"connects" => [%{"truncated" => true, "principals" => principals}]}} =
+               Admin.overview(tenant, group)
+
+      assert length(principals) == rows
+    end
+  end
+
+  describe "the conversation window" do
+    test "shows only complete rows when facts and labels both run past the bound", %{
+      tenant: tenant,
+      group: group
+    } do
+      connect_record(tenant, group)
+      id = &("C" <> String.pad_leading(to_string(&1), 4, "0"))
+      observed = MapSet.new(1..210, id)
+
+      for scope <- observed,
+          do: Store.observe_scope(tenant, group, @connect, scope, %{kind: "room"})
+
+      # Classified and seen inside the window, classified but never seen inside
+      # it, seen past the facts' cut, and enough never-seen labels after all of
+      # them that the labels' own cut lies further still.
+      labelled = ["C0150", "C0050X", "C0205"] ++ Enum.map(1..210, &"Z#{&1 + 100}")
+      for scope <- labelled, do: label(tenant, group, scope)
+
+      scopes = complete_scopes(tenant, group, observed, labelled)
+      assert length(scopes) == Store.dashboard_rows()
+      assert Enum.map(scopes, & &1["scope_id"]) == Enum.sort(Enum.map(scopes, & &1["scope_id"]))
+      assert %{"classified" => true, "tags" => ["counsel"]} = scope(scopes, "C0150")
+      assert %{"classified" => true, "observed_at" => nil} = scope(scopes, "C0050X")
+      assert %{"classified" => false} = scope(scopes, "C0001")
+      refute scope(scopes, "C0205")
+
+      # Labels that sort first move the labels' cut before every fact.
+      before = Enum.map(1..210, &"B#{&1 + 100}")
+      for scope <- before, do: label(tenant, group, scope)
+      scopes = complete_scopes(tenant, group, observed, labelled ++ before)
+      assert length(scopes) == Store.dashboard_rows()
+      assert Enum.all?(scopes, &String.starts_with?(&1["scope_id"], "B"))
+    end
+  end
+
+  defp connect_record(tenant, group) do
+    {:ok, _} =
+      SalixStore.CasRecord.create(Keys.ctl_im_connect(group, @connect), %{
+        "tenant_id" => tenant,
+        "group_id" => group,
+        "connect_id" => @connect,
+        "provider" => "slack",
+        "name" => "Acme"
+      })
+  end
+
+  defp label(tenant, group, scope),
+    do: :ok = Admin.put_scope_label(tenant, group, @connect, scope, %{"tags" => ["counsel"]})
+
+  defp scope(scopes, id), do: Enum.find(scopes, &(&1["scope_id"] == id))
+
+  # Every shown row tells the truth about both halves: classified exactly when
+  # labelled, and observed exactly when seen.
+  defp complete_scopes(tenant, group, observed, labelled) do
+    assert {:ok, %{"connects" => [%{"truncated" => true, "scopes" => scopes}]}} =
+             Admin.overview(tenant, group)
+
+    for row <- scopes do
+      assert row["classified"] == row["scope_id"] in labelled, row["scope_id"]
+      assert not is_nil(row["observed_at"]) == MapSet.member?(observed, row["scope_id"])
+    end
+
+    scopes
+  end
+
   describe "clearances" do
     test "are stored against the provider principal, and can be withdrawn", %{
       tenant: tenant,

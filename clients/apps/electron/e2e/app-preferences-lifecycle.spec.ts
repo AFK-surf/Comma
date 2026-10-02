@@ -9,6 +9,7 @@ import {
   findElectronWindowByNativeId,
   findElectronWindowByNativeRole,
 } from "../src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startSessionProjectionStub } from "../../../e2e/helpers/session-fixture";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
@@ -201,6 +202,68 @@ test.describe("app preferences lifecycle", () => {
       await expect(
         mainWindow.getByRole("slider", { name: "Notch width" })
       ).toHaveAttribute("aria-valuenow", "240");
+    } finally {
+      await restarted.close();
+    }
+  });
+
+  // Main owns the General Side Chat switch: turned off, the Window menu hides
+  // Open Side Chat and the shortcut row takes no chord, and the choice survives
+  // a restart, where Main applies it before the helper starts.
+  test("turns Side Chat off from General and keeps it off after a restart", async () => {
+    const userDataPath = join(testDirectory, "side-chat-user-data");
+    const preferencesFilePath = join(userDataPath, "app-preferences.json");
+    const envOverrides = { COMMA_ELECTRON_E2E_OPERATING_SYSTEM: "macos" };
+    const app = await electron.launch({
+      args: electronLaunchArgs(userDataPath),
+      cwd: electronAppDir,
+      env: signedInElectronEnv(userDataPath, envOverrides),
+    });
+
+    try {
+      const mainWindow = await openAppSettings(app);
+      const sideChat = mainWindow.getByRole("switch", {
+        name: "Side Chat",
+        exact: true,
+      });
+      await expect(sideChat).toBeChecked();
+      await expect.poll(() => sideChatMenuItemVisible(app)).toBe(true);
+
+      await activateSwitch(sideChat);
+      await expect(sideChat).not.toBeChecked();
+      await expect
+        .poll(() => readRendererPreferences(mainWindow))
+        .toMatchObject({ sideChatEnabled: false });
+      await expect.poll(() => sideChatMenuItemVisible(app)).toBe(false);
+      expect(JSON.parse(await readFile(preferencesFilePath, "utf8"))).toMatchObject({
+        sideChatEnabled: false,
+      });
+
+      await mainWindow.getByRole("button", { name: "Keyboard shortcuts" }).click();
+      await expect(
+        mainWindow.getByRole("button", { name: /^Open Side Chat:/ })
+      ).toBeDisabled();
+    } finally {
+      await app.close();
+    }
+
+    const restarted = await electron.launch({
+      args: electronLaunchArgs(userDataPath),
+      cwd: electronAppDir,
+      env: persistedSessionElectronEnv(userDataPath, envOverrides),
+    });
+    try {
+      const mainWindow = await openAppSettings(restarted);
+      const sideChat = mainWindow.getByRole("switch", {
+        name: "Side Chat",
+        exact: true,
+      });
+      await expect(sideChat).not.toBeChecked();
+      await expect.poll(() => sideChatMenuItemVisible(restarted)).toBe(false);
+
+      await activateSwitch(sideChat);
+      await expect(sideChat).toBeChecked();
+      await expect.poll(() => sideChatMenuItemVisible(restarted)).toBe(true);
     } finally {
       await restarted.close();
     }
@@ -683,6 +746,85 @@ test.describe("app preferences lifecycle", () => {
     }
   });
 
+  test("waits for Login Items approval before keeping the Mac awake with the lid closed", async () => {
+    const userDataPath = join(testDirectory, "keep-awake-user-data");
+    const sleepGuardDirectory = join(testDirectory, "sleep-guard");
+    await mkdir(sleepGuardDirectory, { recursive: true });
+    const envOverrides = {
+      COMMA_ELECTRON_E2E_OPERATING_SYSTEM: "macos",
+      COMMA_ELECTRON_E2E_SLEEP_GUARD_DIRECTORY: sleepGuardDirectory,
+    };
+    const held = () => fileExists(join(sleepGuardDirectory, "held"));
+
+    const app = await electron.launch({
+      args: electronLaunchArgs(userDataPath),
+      cwd: electronAppDir,
+      env: signedInElectronEnv(userDataPath, envOverrides),
+    });
+    try {
+      const mainWindow = await openAppSettings(app);
+      const keepAwake = mainWindow.getByRole("switch", {
+        name: "Keep awake with lid closed",
+      });
+      await expect(keepAwake).toBeEnabled();
+      await expect(keepAwake).not.toBeChecked();
+
+      // Turning it on registers the daemon; macOS then waits for the user.
+      await activateSwitch(keepAwake);
+      const dialog = mainWindow.getByRole("dialog", {
+        name: "Allow Comma in Login Items",
+      });
+      await expect(dialog).toBeVisible();
+      expect(await fileExists(join(sleepGuardDirectory, "registered"))).toBe(true);
+      await dialog.getByRole("button", { name: "Open System Settings" }).click();
+      await expect
+        .poll(() => fileExists(join(sleepGuardDirectory, "login-items-opened")))
+        .toBe(true);
+      await expect(keepAwake).not.toBeChecked();
+      await expect(
+        mainWindow.getByText("Waiting for your approval.", { exact: false })
+      ).toBeVisible();
+      expect(await held()).toBe(false);
+
+      // Model approval in Login Items, then the user returning to Comma.
+      await writeFile(join(sleepGuardDirectory, "approved"), "approved\n", "utf8");
+      await mainWindow.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(keepAwake).toBeChecked();
+      await expect.poll(held).toBe(true);
+      await expect
+        .poll(() => readRendererPreferences(mainWindow))
+        .toMatchObject({
+          keepAwakeWhenLidClosed: true,
+          keepAwakeWhenLidClosedStatus: "available",
+        });
+    } finally {
+      await app.close();
+    }
+
+    // The fake stands in for the daemon, so model the hold ending with Comma.
+    await rm(join(sleepGuardDirectory, "held"), { force: true });
+    const restarted = await electron.launch({
+      args: electronLaunchArgs(userDataPath),
+      cwd: electronAppDir,
+      env: persistedSessionElectronEnv(userDataPath, envOverrides),
+    });
+    try {
+      const mainWindow = await openAppSettings(restarted);
+      const keepAwake = mainWindow.getByRole("switch", {
+        name: "Keep awake with lid closed",
+      });
+      // An approved choice resumes at launch.
+      await expect(keepAwake).toBeChecked();
+      await expect.poll(held).toBe(true);
+
+      await activateSwitch(keepAwake);
+      await expect(keepAwake).not.toBeChecked();
+      await expect.poll(held).toBe(false);
+    } finally {
+      await restarted.close();
+    }
+  });
+
   // Each Main window owns an independent renderer hook, while Main owns one
   // serialized preference transaction stream. Concurrent patches must merge
   // against the latest commit, publish to both windows, and survive restart.
@@ -949,6 +1091,7 @@ function signedInElectronEnv(
   userDataPath: string,
   overrides: Record<string, string> = {}
 ) {
+  recordElectronOnboardingCompleted(userDataPath, [sessionStub.userId]);
   return electronEnv(userDataPath, {
     COMMA_ELECTRON_STARTUP_SESSION_TOKEN: PREFERENCES_E2E_TOKEN,
     ...overrides,
@@ -1142,6 +1285,16 @@ function readReplaySnapshots(page: Awaited<ReturnType<typeof openAppSettings>>) 
       revision,
       showInMenuBar,
     }))
+  );
+}
+
+/** Whether Window > Open Side Chat is shown in the application menu. */
+function sideChatMenuItemVisible(
+  app: Parameters<typeof findElectronWindowByNativeRole>[0]
+) {
+  return app.evaluate(
+    ({ Menu }) =>
+      Menu.getApplicationMenu()?.getMenuItemById("open-side-chat")?.visible ?? null
   );
 }
 

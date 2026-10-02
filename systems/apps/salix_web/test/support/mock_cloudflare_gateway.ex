@@ -11,6 +11,14 @@ defmodule SalixWeb.MockCloudflareGateway do
   def set_connect_delay(pid, delay_ms), do: GenServer.call(pid, {:set_connect_delay, delay_ms})
   def set_profiles(pid, enabled?), do: GenServer.call(pid, {:set_profiles, enabled?})
 
+  def set_terminal(pid, sandbox, control, terminal),
+    do: GenServer.call(pid, {:set_terminal, sandbox, control, terminal})
+
+  def lose_next_control_open_response(pid),
+    do: GenServer.call(pid, :lose_next_control_open_response)
+
+  def lose_next_ensure_response(pid), do: GenServer.call(pid, :lose_next_ensure_response)
+
   def lose_next_import_finish_response(pid),
     do: GenServer.call(pid, :lose_next_import_finish_response)
 
@@ -36,9 +44,14 @@ defmodule SalixWeb.MockCloudflareGateway do
        port: port,
        calls: [],
        imports: %{},
+       controls: %{},
        lose_import_finish_response: false,
+       lose_ensure_response: false,
+       lose_control_open_response: false,
        exports: %{},
        export_formats: %{},
+       export_scopes: %{},
+       never_admitted: Keyword.get(opts, :never_admitted, false),
        runtime_url: Keyword.get(opts, :runtime_url),
        managed_runtime: Keyword.get(opts, :managed_runtime, false),
        connect_delay_ms: 0,
@@ -53,6 +66,7 @@ defmodule SalixWeb.MockCloudflareGateway do
 
   def handle_call(:runtime_url, _from, state), do: {:reply, state.runtime_url, state}
   def handle_call(:managed_runtime?, _from, state), do: {:reply, state.managed_runtime, state}
+  def handle_call(:never_admitted?, _from, state), do: {:reply, state.never_admitted, state}
   def handle_call(:connect_delay_ms, _from, state), do: {:reply, state.connect_delay_ms, state}
 
   def handle_call(:profiles?, _from, state), do: {:reply, state.profiles, state}
@@ -64,6 +78,40 @@ defmodule SalixWeb.MockCloudflareGateway do
     do: {:reply, :ok, %{state | connect_delay_ms: delay_ms}}
 
   def handle_call(:calls, _from, state), do: {:reply, Enum.reverse(state.calls), state}
+
+  def handle_call({:control, sandbox, nil}, _from, state) do
+    control = state.controls[sandbox]
+    settled = is_map(control) and control["sealed"] == true and is_nil(control["pending"])
+    {:reply, %{"control" => control, "managed_commands_settled" => settled}, state}
+  end
+
+  def handle_call({:set_terminal, sandbox, control, terminal}, _from, state) do
+    value = control |> Map.put("last_terminal", terminal) |> Map.put("pending", nil)
+    {:reply, :ok, %{state | controls: Map.put(state.controls, sandbox, value)}}
+  end
+
+  def handle_call({:control, sandbox, body}, _from, state) do
+    control =
+      body["control"]
+      |> Map.delete("claim_id")
+      |> Map.put("sealed", body["action"] == "seal")
+      |> Map.put("pending", nil)
+
+    {:reply, %{"control" => control, "managed_commands_settled" => control["sealed"]},
+     %{state | controls: Map.put(state.controls, sandbox, control)}}
+  end
+
+  def handle_call(:lose_next_control_open_response, _from, state),
+    do: {:reply, :ok, %{state | lose_control_open_response: true}}
+
+  def handle_call(:consume_control_open_response, _from, state),
+    do: {:reply, state.lose_control_open_response, %{state | lose_control_open_response: false}}
+
+  def handle_call(:lose_next_ensure_response, _from, state),
+    do: {:reply, :ok, %{state | lose_ensure_response: true}}
+
+  def handle_call(:consume_ensure_response, _from, state),
+    do: {:reply, state.lose_ensure_response, %{state | lose_ensure_response: false}}
 
   def handle_call(:lose_next_import_finish_response, _from, state),
     do: {:reply, :ok, %{state | lose_import_finish_response: true}}
@@ -87,6 +135,11 @@ defmodule SalixWeb.MockCloudflareGateway do
       {:reply, :ok,
        %{state | export_formats: Map.put(state.export_formats, {sandbox, operation}, format)}}
 
+  def handle_call({:set_export_scope, sandbox, operation, scope}, _from, state),
+    do:
+      {:reply, :ok,
+       %{state | export_scopes: Map.put(state.export_scopes, {sandbox, operation}, scope)}}
+
   def handle_call({:export, sandbox, operation, offset}, _from, state) do
     case state.exports[{sandbox, operation}] do
       :cancelled ->
@@ -98,6 +151,7 @@ defmodule SalixWeb.MockCloudflareGateway do
           "phase" => "exported",
           "bytes" => byte_size(data),
           "sessions" => sessions,
+          "scope" => Map.get(state.export_scopes, {sandbox, operation}, "full"),
           "format" => Map.get(state.export_formats, {sandbox, operation}, "tar_gz")
         }
 
@@ -216,6 +270,72 @@ defmodule SalixWeb.MockCloudflareGateway do
       end
     end
 
+    def call(
+          %{method: method, path_info: ["internal", "v1", "sandboxes", sandbox, "control"]} = conn,
+          pid
+        )
+        when method in ["GET", "POST"] do
+      {:ok, raw, conn} = read_body(conn)
+      body = if raw == "", do: nil, else: Jason.decode!(raw)
+
+      if is_map(body) and body["action"] == "open" and
+           GenServer.call(pid, :consume_control_open_response) do
+        send_resp(conn, 503, "response lost before carrier open")
+      else
+        json(conn, GenServer.call(pid, {:control, sandbox, body}))
+      end
+    end
+
+    def call(
+          %{
+            method: "GET",
+            path_info: ["internal", "v1", "sandboxes", sandbox, "status"]
+          } = conn,
+          pid
+        ) do
+      record(pid, :status, sandbox)
+      json(conn, %{"status" => "ready"})
+    end
+
+    def call(
+          %{
+            method: "GET",
+            path_info: ["internal", "v1", "sandboxes", sandbox, "receipt"]
+          } = conn,
+          pid
+        ) do
+      conn = fetch_query_params(conn)
+
+      json(
+        conn,
+        GenServer.call(
+          pid,
+          {:import, sandbox,
+           %{"action" => "status", "operation" => conn.query_params["operation"]}}
+        )
+      )
+    end
+
+    def call(
+          %{
+            method: "POST",
+            path_info: ["internal", "v1", "sandboxes", _sandbox, "proxy", "control"]
+          } = conn,
+          pid
+        ) do
+      {:ok, raw, conn} = read_body(conn)
+      body = Jason.decode!(raw)
+
+      if not GenServer.call(pid, :managed_runtime?),
+        do: send_resp(conn, 404, "Connector control unsupported"),
+        else:
+          json(conn, %{
+            "control" => Map.put(body["control"], "sealed", body["action"] == "seal"),
+            "quiet" => body["action"] == "seal",
+            "never_admitted" => GenServer.call(pid, :never_admitted?)
+          })
+    end
+
     def call(%{method: "GET", path_info: ["healthz"]} = conn, pid) do
       record(pid, :healthz, "gateway")
 
@@ -231,7 +351,7 @@ defmodule SalixWeb.MockCloudflareGateway do
       sandbox_id = Jason.decode!(raw)["sandbox_id"]
       record(pid, :ensure, sandbox_id, headers(conn))
 
-      if fail?(pid, :ensure) do
+      if fail?(pid, :ensure) or GenServer.call(pid, :consume_ensure_response) do
         send_resp(conn, 500, "ensure failed")
       else
         json(
@@ -267,12 +387,26 @@ defmodule SalixWeb.MockCloudflareGateway do
         "signed" => signed
       })
 
+      if method == "POST",
+        do:
+          GenServer.call(
+            pid,
+            {:set_export_scope, sandbox_id, operation, conn.query_params["scope"] || "full"}
+          )
+
       conn =
         if method == "POST" and conn.query_params["format"] == "tar_zst" do
           {:ok, raw, conn} = read_body(conn)
           %{"transfers" => transfers} = Jason.decode!(raw)
           true = length(transfers) == 1024
           :ok = GenServer.call(pid, {:set_export_format, sandbox_id, operation, "tar_zst"})
+
+          :ok =
+            GenServer.call(
+              pid,
+              {:set_export_scope, sandbox_id, operation, conn.query_params["scope"] || "full"}
+            )
+
           conn
         else
           conn

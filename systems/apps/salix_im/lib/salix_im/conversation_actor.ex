@@ -755,6 +755,28 @@ defmodule SalixIM.ConversationActor do
     {:reply, reply, state}
   end
 
+  def handle_call(
+        {:append_platform_message, presentation, idempotency_key, reply_source},
+        _from,
+        state
+      ) do
+    attrs = %{
+      "actor_type" => "system",
+      "kind" => "app_event",
+      "content" => [],
+      "metadata" => %{"event_type" => "provider.message"},
+      "idempotency_key" => idempotency_key,
+      "delivery_filter" => %{"participant_ids" => []},
+      :default_reply_to_message_id => platform_reply_target(state, presentation, reply_source),
+      :platform_message => presentation
+    }
+
+    reply = do_append_group_conversation_message(state, attrs, :system, [])
+    state = notify_message_created(state, reply, "")
+    {reply, state} = finish_owned_append(reply, state)
+    {:reply, reply, state}
+  end
+
   def handle_call({:ensure_group_conversation_provider_participant, attrs}, _from, state) do
     {reply, state} = ensure_provider_participant(state, attrs)
     {:reply, reply, state}
@@ -1907,15 +1929,19 @@ defmodule SalixIM.ConversationActor do
               "Use proactive.act with track only to update source state, never to send. " <>
               "Do not treat this reminder as permission for unrelated actions.\n" <>
               Jason.encode!(evidence),
-          trusted_origin: %{
-            "provider" => "internal",
-            "conversation_id" => state.conversation_id,
-            "agent_group_id" => state.group_id,
-            "source_actor_type" => "system",
-            # The product already authorized this owner and source. Preserve
-            # that principal without claiming that the owner wrote this event.
-            "principal_ref" => %{"subject_id" => value["owner_id"]}
-          }
+          # A Loop's wake keeps the Loop's own origin and label. Other
+          # handoffs are internal: the product already authorized this owner
+          # and source, so preserve that principal without claiming that the
+          # owner wrote this event.
+          trusted_origin:
+            command["trusted_origin"] ||
+              %{
+                "provider" => "internal",
+                "conversation_id" => state.conversation_id,
+                "agent_group_id" => state.group_id,
+                "source_actor_type" => "system",
+                "principal_ref" => %{"subject_id" => value["owner_id"]}
+              }
         }
 
         {:ok, {participant_id, payload}}
@@ -5095,6 +5121,41 @@ defmodule SalixIM.ConversationActor do
         other
     end
   end
+
+  defp platform_reply_target(
+         state,
+         %{"provider" => "wechat"},
+         %{"source_message_id" => source, "session_id" => session, "connect_id" => connect}
+       )
+       when is_binary(source) and source != "" and is_binary(session) and session != "" and
+              is_binary(connect) and connect != "" do
+    identity = "idempotency:provider-input:" <> source <> ":" <> session
+
+    case ConversationStore.message_by_request_identity(state.store_pid, identity) do
+      {:ok,
+       %{
+         "actor_type" => "system",
+         "source_message_id" => ^source,
+         "message_id" => message_id,
+         "agent_input" => %{
+           "trusted_origin" => %{
+             "provider" => "wechat",
+             "source_actor_type" => "provider_user",
+             "source_message_id" => ^source,
+             "agent_group_id" => group,
+             "provider_context" => %{"connect_id" => ^connect}
+           }
+         }
+       }}
+      when group == state.group_id ->
+        message_id
+
+      _ ->
+        nil
+    end
+  end
+
+  defp platform_reply_target(_state, _presentation, _source), do: nil
 
   defp assign_reply_thread(_store_pid, rec, :committed_retry), do: {:ok, rec}
 

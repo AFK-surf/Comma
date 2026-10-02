@@ -24,10 +24,10 @@ defmodule BridgeForTeams.ProviderScopesTest do
   end
 
   test "read-only grants request read-only scopes" do
-    assert ProviderScopes.scopes("google", %{"informed.newsletter_digest" => true}) ==
-             [@gmail_read]
+    assert ProviderScopes.scopes("google", %{"meetings.meeting_briefing" => true}) ==
+             [@calendar_read]
 
-    assert ProviderScopes.scopes("google", %{"informed.morning_briefing" => true}) ==
+    assert ProviderScopes.scopes("google", %{"inbox.assist_scheduling" => true}) ==
              Enum.sort([@gmail_read, @calendar_read])
   end
 
@@ -44,7 +44,7 @@ defmodule BridgeForTeams.ProviderScopesTest do
       ProviderScopes.scopes("google", %{
         "inbox.label_new_mail" => true,
         "inbox.draft_replies" => true,
-        "informed.newsletter_digest" => true
+        "inbox.decline_cold_outreach" => true
       })
 
     assert scopes == [@gmail_modify]
@@ -63,8 +63,8 @@ defmodule BridgeForTeams.ProviderScopesTest do
   test "the everything-granted set stays minimal and send-free" do
     all =
       ~w(inbox.label_new_mail inbox.archive_unimportant inbox.draft_replies
-         inbox.decline_cold_outreach inbox.assist_scheduling informed.morning_briefing
-         informed.newsletter_digest meetings.meeting_briefing meetings.contact_dossier
+         inbox.decline_cold_outreach inbox.assist_scheduling
+         meetings.meeting_briefing meetings.contact_dossier
          calendar.schedule_optimizer)
       |> Map.new(&{&1, true})
 

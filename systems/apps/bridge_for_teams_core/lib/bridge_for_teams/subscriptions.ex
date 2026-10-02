@@ -1,7 +1,10 @@
 defmodule BridgeForTeams.Subscriptions do
   @moduledoc "Organization-authorized access to Salix subscription accounts and templates."
-  alias BridgeForTeams.{Memberships, Orgs, Projects}
+  import Ecto.Query
+
+  alias BridgeForTeams.{Memberships, Orgs, Repo}
   alias BridgeForTeams.Salix.Client
+  alias BridgeForTeams.Schema.Project
 
   def authorize({org_id, user_id}) do
     with {:ok, org} <- Orgs.get_org(org_id),
@@ -14,7 +17,13 @@ defmodule BridgeForTeams.Subscriptions do
 
   def list(scope, cursor), do: account(scope, :list, [cursor])
 
-  def list_bindings({org_id, user_id} = scope, account_id, cursor \\ 0) do
+  @doc """
+  One page of the workloads bound to an account. Only owners and admins get
+  here, and they administer every Agent Swarm of the organization, so a binding
+  is visible when its project belongs to the organization; the rest are
+  counted in `hidden_count`. The projects of a page load in one query.
+  """
+  def list_bindings({org_id, _user_id} = scope, account_id, cursor \\ 0) do
     with {:ok, org} <- authorize(scope),
          {:ok, page} <-
            Client.impl().subscription_operation(
@@ -22,18 +31,15 @@ defmodule BridgeForTeams.Subscriptions do
              :list_bindings,
              [account_id, cursor]
            ) do
-      {visible, hidden_count} =
-        Enum.reduce(page["bindings"], {[], 0}, fn binding, {visible, hidden_count} ->
-          case visible_binding(org_id, user_id, binding) do
-            {:ok, projected} -> {[projected | visible], hidden_count}
-            :hidden -> {visible, hidden_count + 1}
-          end
-        end)
+      projects = org_projects(org_id, page["bindings"])
+
+      {visible, hidden} =
+        Enum.split_with(page["bindings"], &Map.has_key?(projects, &1["project_id"]))
 
       {:ok,
        %{
-         "bindings" => Enum.reverse(visible),
-         "hidden_count" => hidden_count,
+         "bindings" => Enum.map(visible, &public_binding(&1, projects[&1["project_id"]])),
+         "hidden_count" => length(hidden),
          "next" => page["next"]
        }}
     end
@@ -80,25 +86,23 @@ defmodule BridgeForTeams.Subscriptions do
     end
   end
 
-  defp visible_binding(org_id, user_id, %{"project_id" => project_id} = binding)
-       when is_binary(project_id) do
-    with {:ok, project} <- Projects.get_project(project_id),
-         true <- project.org_id == org_id,
-         :ok <- Memberships.authorize(user_id, :read, %{project_id: project_id}) do
-      {:ok,
-       binding
-       |> Map.drop(["project_id", "group_id", "device_id", "device_runtime_id"])
-       |> Map.put("project", %{
-         "id" => project.id,
-         "name" => project.name,
-         "slug" => project.slug
-       })}
-    else
-      _ -> :hidden
-    end
+  defp org_projects(org_id, bindings) do
+    ids =
+      for %{"project_id" => id} <- bindings,
+          match?({:ok, _}, Ecto.UUID.cast(id)),
+          uniq: true,
+          do: id
+
+    from(p in Project, where: p.org_id == ^org_id and p.id in ^ids)
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
   end
 
-  defp visible_binding(_org_id, _user_id, _binding), do: :hidden
+  defp public_binding(binding, project) do
+    binding
+    |> Map.drop(["project_id", "group_id", "device_id", "device_runtime_id"])
+    |> Map.put("project", %{"id" => project.id, "name" => project.name, "slug" => project.slug})
+  end
 
   def templates(scope) do
     with {:ok, org} <- authorize(scope) do

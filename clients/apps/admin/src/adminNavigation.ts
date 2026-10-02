@@ -4,6 +4,7 @@ export type AdminSection =
   | "compute"
   | "billing"
   | "models"
+  | "guest"
   | "audit";
 
 const defaultAdminSection: AdminSection = "users";
@@ -17,6 +18,7 @@ export function adminSectionFromSearch(search: string): AdminSection {
     section === "compute" ||
     section === "billing" ||
     section === "models" ||
+    section === "guest" ||
     section === "audit"
     ? section
     : defaultAdminSection;

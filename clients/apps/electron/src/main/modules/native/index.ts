@@ -1,3 +1,7 @@
+import type {
+  LocalComputeOverview,
+  LocalComputeDisposalResult,
+} from "@comma/native-bridge";
 import type { TokenDanceAuthorizationService } from "../../tokendance-authorization";
 import type { SubscriptionAuthorizationService } from "../../subscription-authorization";
 import type { ConnectorService } from "../../connector";
@@ -7,6 +11,10 @@ import {
   unavailableSitePermissionMenu,
   type SitePermissionMenuProvider,
 } from "../../site-permission-menu-window";
+import {
+  unavailableOnboardingWindow,
+  type OnboardingWindowProvider,
+} from "../../onboarding-window";
 import type { SessionHistoryRuntime } from "@comma/session-history-runtime";
 import type {
   ChatBeginSendIntentReceipt,
@@ -65,6 +73,7 @@ import {
   type SideChatOpenTestWindowInput,
   type SideChatShortcutBinding,
   type SurfaceList,
+  type SystemNotificationsStatus,
   type WindowFullScreen,
   type WindowCreateInput,
   type WindowTargetInput,
@@ -125,6 +134,13 @@ export interface AppPreferencesProvider {
     input: CommaClientSettings
   ): Promise<AppPreferences> | AppPreferences;
   openNotificationSettings(input: void): Promise<{ opened: boolean }>;
+  /** macOS: opens Login Items, where the user allows the sleep guard daemon. */
+  openLoginItemsSettings(input: void): Promise<{ opened: boolean }>;
+  /**
+   * Asks the OS to let Comma notify (macOS prompts while it has not asked the
+   * user yet) and resolves with the status the answer leaves behind.
+   */
+  requestNotificationAuthorization(input: void): Promise<SystemNotificationsStatus>;
   state(input: void): Promise<AppPreferences> | AppPreferences;
   update(input: AppPreferencesPatch): Promise<AppPreferences> | AppPreferences;
 }
@@ -216,6 +232,33 @@ export interface TransportStatusProvider {
 }
 
 export interface ComputeNodeProvider {
+  hostMaintenanceState(
+    input: void
+  ): Promise<import("@comma/native-bridge").HostMaintenanceState>;
+  maintainHost(
+    input: import("@comma/native-bridge").HostMaintenanceInput
+  ): Promise<import("@comma/native-bridge").HostMaintenanceState>;
+  resumeHostMaintenance(input: {
+    requestId: string;
+  }): Promise<import("@comma/native-bridge").HostMaintenanceState>;
+  recoveryCandidates(input: {
+    workspaceId: string;
+    cursor?: string;
+  }): Promise<import("@comma/native-bridge").ComputeRecoveryCandidates>;
+  recover(input: { key: string; confirmationId: string }): Promise<ComputeNodeState>;
+  localWorkloads(input: {
+    key: string;
+    cursor?: string;
+  }): Promise<import("@comma/native-bridge").LocalComputeWorkloads>;
+  localOverview(input: {
+    cursor?: string;
+    workspaceId?: string;
+  }): Promise<LocalComputeOverview>;
+  disposeLocal(input: { key: string }): Promise<LocalComputeDisposalResult>;
+  resumeLocalDisposal(input: {
+    requestId: string;
+  }): Promise<LocalComputeDisposalResult>;
+
   refresh(input: void): Promise<ComputeNodeState>;
   state(input: void): Promise<ComputeNodeState> | ComputeNodeState;
   configure(input: ComputeNodeConfigureInput): Promise<ComputeNodeState>;
@@ -223,6 +266,7 @@ export interface ComputeNodeProvider {
   drain(input?: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
   remove(input?: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
   rebuild(input: void): Promise<ComputeNodeState>;
+  abandon(expected: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
 }
 
 export interface ProductInboxProvider {
@@ -751,6 +795,7 @@ export function registerNativeBridgeHandlers({
   browserSidebar,
   meetingPresence,
   sitePermissionMenu = unavailableSitePermissionMenu,
+  onboardingWindow = unavailableOnboardingWindow,
   meetingRecorder,
   chat,
   clipboard,
@@ -789,6 +834,7 @@ export function registerNativeBridgeHandlers({
   browserSidebar: BrowserSidebarProvider;
   meetingPresence: MeetingPresenceProvider;
   sitePermissionMenu?: SitePermissionMenuProvider;
+  onboardingWindow?: OnboardingWindowProvider;
   meetingRecorder: MeetingRecorderProvider;
   chat: NativeChatProvider;
   clipboard: ClipboardProvider;
@@ -828,6 +874,7 @@ export function registerNativeBridgeHandlers({
       browserSidebar,
       meetingPresence,
       sitePermissionMenu,
+      onboardingWindow,
       meetingRecorder,
       chat,
       clipboard,

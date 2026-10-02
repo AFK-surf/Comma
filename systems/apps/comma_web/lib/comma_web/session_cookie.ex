@@ -66,6 +66,36 @@ defmodule CommaWeb.SessionCookie do
 
   def put_panel_session(conn, _session), do: conn
 
+  @guest_claim_cookie_name "comma_guest_claim"
+  @guest_claim_path "/v1/comma"
+
+  @doc "One-time guest import claim, readable only by the Comma API."
+  @spec put_guest_claim(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def put_guest_claim(conn, %{"claim" => claim, "expires_at" => expires_at})
+      when is_binary(claim) and is_integer(expires_at) do
+    put_resp_cookie(conn, @guest_claim_cookie_name, claim,
+      http_only: true,
+      secure: secure?(),
+      same_site: "Lax",
+      path: @guest_claim_path,
+      max_age: max(expires_at - System.system_time(:second), 0)
+    )
+  end
+
+  @spec fetch_guest_claim(Plug.Conn.t()) :: String.t() | nil
+  def fetch_guest_claim(conn),
+    do: conn |> fetch_cookies() |> Map.get(:req_cookies) |> Map.get(@guest_claim_cookie_name) |> normalize_token()
+
+  @spec clear_guest_claim(Plug.Conn.t()) :: Plug.Conn.t()
+  def clear_guest_claim(conn) do
+    delete_resp_cookie(conn, @guest_claim_cookie_name,
+      http_only: true,
+      secure: secure?(),
+      same_site: "Lax",
+      path: @guest_claim_path
+    )
+  end
+
   @spec clear_user(Plug.Conn.t()) :: Plug.Conn.t()
   def clear_user(conn) do
     delete_resp_cookie(conn, @cookie_name,

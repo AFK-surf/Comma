@@ -1,4 +1,3 @@
-import { SubscriptionOAuth } from "../../../salix_web/assets/js/subscription_oauth";
 // BridgeForTeams dashboard LiveSocket entry. esbuild bundles phoenix +
 // phoenix_live_view from deps (NODE_PATH) and topbar from ./vendor.
 import "phoenix_html";
@@ -6,20 +5,12 @@ import { Socket } from "phoenix";
 import { LiveSocket } from "phoenix_live_view";
 import topbar from "../vendor/topbar";
 import { PluginRefsEditor } from "./plugin_refs_editor";
-import { ManagedRuntimeAuth, RuntimeAuth } from "./runtime_auth.mjs";
-import { BrowserLocalTime } from "./browser_local_time.mjs";
 
 const csrfToken = document
   .querySelector("meta[name='csrf-token']")
   ?.getAttribute("content");
 
 const Hooks = {};
-Hooks.SubscriptionOAuth = SubscriptionOAuth;
-
-Hooks.RuntimeAuth = RuntimeAuth;
-Hooks.ManagedRuntimeAuth = ManagedRuntimeAuth;
-
-Hooks.BrowserLocalTime = BrowserLocalTime;
 
 // The dashboard shell exposes a small, navigation-only command surface. It is
 // deliberately client-side: destinations are already authorized and rendered
@@ -249,10 +240,6 @@ Hooks.PersistDisclosure = {
 
   applyStoredState() {
     if (!this.storageKey) return;
-    if (this.el.dataset.forceOpen === "true") {
-      this.el.open = true;
-      return;
-    }
     try {
       const stored = localStorage.getItem(this.storageKey);
       this.el.open =
@@ -428,61 +415,6 @@ Hooks.Flash = {
 
   destroyed() {
     clearTimeout(this.timer);
-  },
-};
-
-Hooks.OrgIconUpload = {
-  mounted() {
-    this.fileInput = this.el.querySelector('input[type="file"]');
-    this.valueInput = this.el.querySelector("[data-org-icon-value]");
-    this.preview = this.el.querySelector("[data-org-icon-preview]");
-    this.fallback = this.el.querySelector("[data-org-icon-fallback]");
-    this.clearButton = this.el.querySelector("[data-org-icon-clear]");
-
-    this.fileInput?.addEventListener("change", (event) => {
-      event.stopPropagation();
-      this.readSelectedFile();
-    });
-    this.clearButton?.addEventListener("click", () => this.clearIcon());
-    this.syncPreview();
-  },
-
-  readSelectedFile() {
-    const file = this.fileInput?.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      this.fileInput.value = "";
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result !== "string") return;
-
-      this.valueInput.value = reader.result;
-      this.syncPreview();
-    });
-    reader.readAsDataURL(file);
-  },
-
-  clearIcon() {
-    if (this.fileInput) this.fileInput.value = "";
-    this.valueInput.value = "";
-    this.syncPreview();
-  },
-
-  syncPreview() {
-    const value = this.valueInput?.value;
-    const hasIcon = typeof value === "string" && value.length > 0;
-
-    if (this.preview) {
-      this.preview.src = hasIcon ? value : "";
-      this.preview.classList.toggle("hidden", !hasIcon);
-    }
-
-    this.fallback?.classList.toggle("hidden", hasIcon);
-    this.clearButton?.classList.toggle("hidden", !hasIcon);
   },
 };
 

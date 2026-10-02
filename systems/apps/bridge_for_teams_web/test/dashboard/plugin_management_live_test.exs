@@ -355,72 +355,6 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginManagementLiveTest do
     %{conn: conn, user: user, org: org, project: project}
   end
 
-  test "organization page separates owned definitions from the read-only system catalog", %{
-    conn: conn,
-    org: org
-  } do
-    {:ok, view, html} = live(conn, ~p"/orgs/#{org.slug}/plugins")
-
-    assert html =~ "Knowledge Pack"
-    refute html =~ "Core Search"
-    refute html =~ "Release Helper"
-    refute has_element?(view, "[role='switch']")
-    assert has_element?(view, "button[aria-label='Edit Knowledge Pack']")
-
-    html =
-      view
-      |> element("button[phx-value-catalog='system']")
-      |> render_click()
-
-    assert html =~ "Core Search"
-    refute html =~ "MCP Management"
-    refute html =~ "Knowledge Pack"
-    refute has_element?(view, "button[aria-label='Edit Core Search']")
-  end
-
-  test "organization editor is contextual and submits object refs without a caller plugin id", %{
-    conn: conn,
-    org: org
-  } do
-    {:ok, view, _html} = live(conn, ~p"/orgs/#{org.slug}/plugins")
-
-    refute has_element?(view, "#org-plugin-editor")
-    view |> element("button", "New organization plugin") |> render_click()
-
-    assert has_element?(view, "#org-plugin-editor")
-    assert has_element?(view, "#org-plugin-editor [phx-hook='PluginRefsEditor']")
-    assert has_element?(view, "#org-plugin-editor input[name='refs_json']")
-    refute has_element?(view, "#org-plugin-editor input[name='plugin_id']")
-
-    render_submit(view, "create_tenant_plugin", %{
-      "name" => "Docs Assistant",
-      "description" => "Searches project documentation",
-      "setup_destination" => "org_oauth",
-      "refs_json" => "[]"
-    })
-
-    assert has_element?(view, "#org-plugin-editor [role='alert']", "Refs JSON must be an object.")
-    assert has_element?(view, "#org-plugin-editor input[name='name'][value='Docs Assistant']")
-
-    refs = %{
-      "tool_refs" => ["docs.search"],
-      "oauth_requirements" => [%{"provider" => "notion", "scopes" => ["read"]}]
-    }
-
-    render_submit(view, "create_tenant_plugin", %{
-      "name" => "Docs Assistant",
-      "description" => "Searches project documentation",
-      "setup_destination" => "org_oauth",
-      "refs_json" => Jason.encode!(refs)
-    })
-
-    assert_receive {:create_tenant_plugin, attrs}
-    assert attrs["owner_scope"] == "tenant"
-    assert attrs["refs"] == refs
-    refute Map.has_key?(attrs, "plugin_id")
-    refute has_element?(view, "#org-plugin-editor")
-  end
-
   test "project page shows one plugin inventory and limits editing to project definitions", %{
     conn: conn,
     org: org,
@@ -517,8 +451,8 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginManagementLiveTest do
     render_click(view, "enable_plugin", %{"id" => "android-control"})
     refute_receive {:enable_plugin, "android-control"}
 
-    {:ok, _devices, html} = live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/devices")
-    assert html =~ "Android setup is unavailable"
+    # The Devices page says why Android setup is unavailable.
+    assert %{"android" => %{"status" => "ok", "entitled" => false}} = devices(conn, org, project)
   end
 
   test "entitled admin can enable Android and see connector setup status", %{
@@ -548,10 +482,14 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginManagementLiveTest do
 
     assert_receive {:enable_plugin, "android-control"}
 
-    {:ok, _devices, html} = live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/devices")
-    assert html =~ "Android setup"
-    assert html =~ "Allowed profiles: api30-phone"
-    assert html =~ "Ask your platform administrator to register an Android connector"
+    assert %{
+             "android" => %{
+               "entitled" => true,
+               "profiles" => ["api30-phone"],
+               "registered" => false
+             }
+           } =
+             devices(conn, org, project)
   end
 
   test "Android enablement rechecks tenant admission when submitted", %{
@@ -806,19 +744,13 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginManagementLiveTest do
     assert_receive {:start_linear_oauth, %{"alias" => "linear", "scopes" => ["read"]}}
   end
 
-  test "new plugin surfaces are fully translated for Simplified Chinese", %{
+  test "Agent Swarm plugin surfaces are translated for Simplified Chinese", %{
     conn: conn,
     user: user,
     org: org,
     project: project
   } do
     {:ok, _user} = Accounts.update_locale(user, "zh_Hans")
-
-    {:ok, _view, org_html} = live(conn, ~p"/orgs/#{org.slug}/plugins")
-    assert org_html =~ "组织插件"
-    assert org_html =~ "系统目录"
-    assert org_html =~ "管理启停"
-    assert org_html =~ "新建组织插件"
 
     {:ok, _view, project_html} =
       live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/plugins")
@@ -848,4 +780,11 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginManagementLiveTest do
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp devices(conn, org, project) do
+    conn
+    |> get("/dashboard/api/v1/orgs/#{org.slug}/projects/#{project.id}/devices")
+    |> json_response(200)
+    |> Map.fetch!("data")
+  end
 end

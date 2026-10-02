@@ -179,7 +179,16 @@ round_rule transcriptSeed (state event)
 round_rule queueAppend (state event)
 round_rule queueAck (state event)
 round_rule queueConsume (state event)
-round_rule sessionEvent (state event)
+/-- `sessionEvent` writes only `sessionEventWrittenKeys`. This frame is much cheaper than a
+walk over every branch of `sessionEvent`. -/
+theorem sessionEvent_round_kept {state event next : Term} {journal rest : List Term}
+    (call : sessionEvent state event journal = .ok (next, rest)) : RoundKept state next :=
+  (sessionEvent_fields call).2 "input_round_streak" rfl
+
+theorem sessionEvent_round_kept_step {state event next : Term} {journal rest : List Term} :
+    sessionEvent state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = sessionEvent state event journal ∧ RoundKept state next :=
+  step_iff sessionEvent_round_kept
 
 theorem mergePredicate_round_kept {s kind through replacement extra t : Term} {j r : List Term}
     (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : RoundKept s t := by
@@ -302,10 +311,13 @@ macro_rules
            | skip)
       | dsimp only at $h:ident)
 
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). This is much
+cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_round {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     RoundReset s t := by
-  unfold runtimeAppend at h
-  reset_walk h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
+  exact reset_of_kept (appendFields_round_kept appended) (reset_of_kept (write_field_frame written rfl)
+    (reset_of_kept (bumpHwm_round_kept bumped) (resetFresh_round reset)))
 
 theorem transcriptRuntime_round {s e t : Term} {j r : List Term} (h : transcriptRuntime s e j = .ok (t, r)) :
     RoundReset s t := by
@@ -324,10 +336,15 @@ theorem transcriptRuntime_round {s e t : Term} {j r : List Term} (h : transcript
       simp only [argumentError, fail_ok_iff] at err
     · exact runtimeAppend_round h
 
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). This is
+much cheaper than a walk over every branch of `transcriptDelivery`. -/
 theorem transcriptDelivery_round {s e t : Term} {j r : List Term} (h : transcriptDelivery s e j = .ok (t, r)) :
     RoundReset s t := by
-  unfold transcriptDelivery at h
-  reset_walk h
+  rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
+  · exact Or.inl (round_kept_refl _)
+  · exact reset_of_kept (appendFields_round_kept appended) (reset_of_kept (write_field_frame written rfl)
+      (reset_of_kept (addObligation_round_kept obligated) (reset_of_kept (bumpHwm_round_kept bumped)
+        (resetFresh_round reset))))
 
 set_option backward.split false in
 /-- An ACK keeps the round budget, or it clears it and carries no

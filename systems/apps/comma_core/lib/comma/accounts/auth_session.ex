@@ -18,9 +18,11 @@ defmodule Comma.Accounts.AuthSession do
     field(:auth_method, :string)
     belongs_to(:login_identity, Comma.Accounts.Identity, type: Ecto.UUID)
     field(:session_source, :string, default: "user_login")
+    belongs_to(:parent_session, __MODULE__, type: Ecto.UUID)
     field(:authenticated_at, :utc_datetime_usec)
     field(:expires_at, :utc_datetime_usec)
     field(:last_seen_at, :utc_datetime_usec)
+    field(:active_at, :utc_datetime_usec)
     field(:revoked_at, :utc_datetime_usec)
     field(:revoke_reason, :string)
     field(:client_kind, :string)
@@ -52,6 +54,7 @@ defmodule Comma.Accounts.AuthSession do
       :auth_method,
       :login_identity_id,
       :session_source,
+      :parent_session_id,
       :authenticated_at,
       :expires_at,
       :last_seen_at,
@@ -88,14 +91,26 @@ defmodule Comma.Accounts.AuthSession do
     end)
     |> validate_inclusion(
       :auth_method,
-      ["email_otp", "google", "ssh_public_key", "telegram_miniapp"],
+      [
+        "email_otp",
+        "google",
+        "apple",
+        "watch_pairing",
+        "ssh_public_key",
+        "telegram_miniapp",
+        "guest"
+      ],
       allow_nil: true
     )
     |> validate_inclusion(:session_source, ["user_login", "ops_api", "channel_task_panel"])
-    |> validate_inclusion(:client_kind, ["web", "electron", "api", "ssh"], allow_nil: true)
+    |> validate_inclusion(
+      :client_kind,
+      ["web", "electron", "android", "ios", "watch", "api", "ssh"],
+      allow_nil: true
+    )
     |> validate_inclusion(
       :client_platform,
-      ["android", "ios", "windows", "macos", "linux", "unknown"],
+      ["android", "ios", "watchos", "windows", "macos", "linux", "unknown"],
       allow_nil: true
     )
     |> validate_number(:user_auth_epoch, greater_than_or_equal_to: 0)
@@ -106,7 +121,12 @@ defmodule Comma.Accounts.AuthSession do
     |> validate_length(:channel_connect_id, max: 200)
     |> validate_restricted_input(attrs)
     |> validate_capability_shape()
+    |> validate_watch_parent()
+    |> validate_apple_identity()
     |> foreign_key_constraint(:user_id)
+    |> foreign_key_constraint(:parent_session_id)
+    |> check_constraint(:parent_session_id, name: :comma_auth_sessions_watch_parent_valid)
+    |> check_constraint(:login_identity_id, name: :comma_auth_sessions_apple_identity_required)
     |> unique_constraint(:token_hash, name: :comma_auth_sessions_token_hash_unique)
     |> check_constraint(:token_hash, name: :comma_auth_sessions_token_hash_length)
     |> check_constraint(:session_source, name: :comma_auth_sessions_source_method_valid)
@@ -114,6 +134,23 @@ defmodule Comma.Accounts.AuthSession do
       name: :comma_auth_sessions_budget_valid
     )
     |> check_constraint(:restricted, name: :comma_auth_sessions_scope_valid)
+  end
+
+  defp validate_apple_identity(changeset) do
+    if get_field(changeset, :auth_method) == "apple",
+      do: validate_required(changeset, [:login_identity_id]),
+      else: changeset
+  end
+
+  defp validate_watch_parent(changeset) do
+    method = get_field(changeset, :auth_method)
+    parent = get_field(changeset, :parent_session_id)
+
+    if (method == "watch_pairing" and is_binary(parent) and
+          get_field(changeset, :restricted) == false) or
+         (method != "watch_pairing" and is_nil(parent)),
+       do: changeset,
+       else: add_error(changeset, :parent_session_id, "requires an ordinary paired Watch session")
   end
 
   defp validate_restricted_input(changeset, attrs) when is_map(attrs) do

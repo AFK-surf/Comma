@@ -117,6 +117,89 @@ test("Models saves a platform template allowlist and an empty selected list", as
   await expect(panel.getByText("0 selected.", { exact: false })).toBeVisible();
 });
 
+test("Guest mode creates a guest tenant, then enables and persists the policy", async ({
+  page,
+}) => {
+  const writes: AdminWrite[] = [];
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Guest mode", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Guest mode", level: 1 })
+  ).toBeVisible();
+  const tenant = page.getByRole("region", { name: "Guest tenant" });
+  const policy = page.getByRole("region", { name: "Guest mode policy" });
+  await expect(tenant).toContainText("None. Create a guest tenant");
+  await expect(tenant).toContainText("7 of 100");
+
+  await tenant.getByRole("textbox", { name: /^Reason/ }).fill("Start guest trials");
+  await tenant.getByRole("button", { name: "Create new guest tenant" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Create new guest tenant?" })
+  ).toContainText("Existing guest workspaces stay in their current tenant.");
+  await confirmCommand(page, "Create new guest tenant?", "create-guest-tenant:comma");
+  await expect(tenant.getByText("tenant_guest_e2e_1")).toBeVisible();
+  expect(writes.at(-1)).toMatchObject({
+    method: "POST",
+    path: "/v1/comma/admin/guest-mode/tenant",
+    body: {
+      revision: 0,
+      reason: "Start guest trials",
+      confirmation: "create-guest-tenant:comma",
+    },
+  });
+
+  await policy.getByRole("switch", { name: /Guest mode enabled/ }).press("Space");
+  await policy
+    .getByRole("spinbutton", { name: "Tenant concurrency per node" })
+    .fill("12");
+  await policy
+    .getByRole("spinbutton", { name: "Guest session lifetime (days)" })
+    .fill("3");
+  await policy
+    .getByRole("spinbutton", { name: "Proof-of-work difficulty (bits)" })
+    .fill("16");
+  await policy.getByRole("textbox", { name: /^Reason/ }).fill("Open guest trials");
+  await policy.getByRole("button", { name: "Save guest mode" }).click();
+  await confirmCommand(page, "Save guest mode?", "update-guest-policy:comma");
+  await expect(
+    page.getByText("Saved. New guest sessions use these settings.")
+  ).toBeVisible();
+  expect(writes.at(-1)).toMatchObject({
+    method: "PUT",
+    path: "/v1/comma/admin/guest-mode",
+    body: {
+      enabled: true,
+      daily_creation_limit: 100,
+      tenant_concurrency: 12,
+      session_ttl_seconds: 259_200,
+      pow_difficulty: 16,
+      revision: 1,
+      reason: "Open guest trials",
+      confirmation: "update-guest-policy:comma",
+    },
+  });
+
+  await page.reload();
+  await expect(
+    policy.getByRole("switch", { name: /Guest mode enabled/ })
+  ).toBeChecked();
+  await expect(
+    policy.getByRole("spinbutton", { name: "Tenant concurrency per node" })
+  ).toHaveValue("12");
+  await expect(
+    policy.getByRole("spinbutton", { name: "Proof-of-work difficulty (bits)" })
+  ).toHaveValue("16");
+  await policy.getByRole("button", { name: "Open Free Router models" }).click();
+  await expect(
+    page.getByRole("region", { name: "Free Router models", exact: true })
+  ).toBeVisible();
+});
+
 test("Models scrolls as one page when the policy form is taller than the viewport", async ({
   page,
 }) => {
@@ -421,6 +504,8 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   await expect(drawer.getByText(/Reported Web · Email OTP/)).toBeVisible();
   await expect(drawer.getByText("Comma SSH", { exact: true })).toBeVisible();
   await expect(drawer.getByText(/Reported SSH · SSH public key/)).toBeVisible();
+  await expect(drawer.getByText("Comma Android app", { exact: true })).toBeVisible();
+  await expect(drawer.getByText(/Reported Android · Google/)).toBeVisible();
 
   await drawer
     .getByRole("textbox", { name: "Reason" })
@@ -441,7 +526,7 @@ test("the standalone dashboard runs audited User and Billing operations", async 
     "Revoke all Sessions?",
     "revoke-all-sessions:usr_person_e2e"
   );
-  await expect(drawer).toContainText("Revoked 2 active Sessions.");
+  await expect(drawer).toContainText("Revoked 3 active Sessions.");
   await drawer.getByRole("button", { name: "Back" }).click();
 
   await openTask(drawer, "Support session");
@@ -1169,7 +1254,7 @@ interface OauthClientRecord {
 interface SessionRecord {
   authenticated_at: number | null;
   auth_method: "email_otp" | "google" | "ssh_public_key" | null;
-  client_kind: "api" | "electron" | "web" | "ssh" | null;
+  client_kind: "android" | "api" | "electron" | "web" | "ssh" | null;
   device_label: string | null;
   expires_at: number;
   id: string;
@@ -1386,6 +1471,18 @@ async function installSignedInAdmin(
           revoked_at: null,
           session_source: "user_login",
         },
+        {
+          authenticated_at: 1_784_881_000,
+          auth_method: "google",
+          client_kind: "android",
+          device_label: null,
+          expires_at: 4_102_444_800,
+          id: "sess_android_e2e",
+          last_seen_at: 1_784_881_150,
+          restricted: false,
+          revoked_at: null,
+          session_source: "user_login",
+        },
       ],
     ],
   ]);
@@ -1417,6 +1514,26 @@ async function installSignedInAdmin(
     allowed_template_ids: string[];
     revision: number;
   } = { mode: "all", allowed_template_ids: [], revision: 0 };
+  let guestTenantCount = 0;
+  let guestPolicy: {
+    enabled: boolean;
+    salix_tenant_id: string | null;
+    daily_creation_limit: number;
+    tenant_concurrency: number;
+    session_ttl_seconds: number;
+    pow_difficulty: number;
+    revision: number;
+    created_today: number;
+  } = {
+    enabled: false,
+    salix_tenant_id: null,
+    daily_creation_limit: 100,
+    tenant_concurrency: 4,
+    session_ttl_seconds: 86_400,
+    pow_difficulty: 14,
+    revision: 0,
+    created_today: 7,
+  };
 
   await page.route(`${apiBaseUrl}/v1/**`, async (route) => {
     const request = route.request();
@@ -2009,6 +2126,47 @@ async function installSignedInAdmin(
         freeRouterPolicy = { models: body.models, revision: body.revision + 1 };
       }
       await fulfillJson(route, freeRouterPolicy, 200, headers);
+      return;
+    }
+
+    if (`${method} ${url.pathname}` === "POST /v1/comma/admin/guest-mode/tenant") {
+      const body = request.postDataJSON() as { revision: number };
+      if (body.revision !== guestPolicy.revision) {
+        await fulfillJson(route, { error: "guest_policy_conflict" }, 409, headers);
+        return;
+      }
+      guestTenantCount += 1;
+      guestPolicy = {
+        ...guestPolicy,
+        salix_tenant_id: `tenant_guest_e2e_${guestTenantCount}`,
+        revision: body.revision + 1,
+      };
+      await fulfillJson(route, guestPolicy, 200, headers);
+      return;
+    }
+
+    if (url.pathname === "/v1/comma/admin/guest-mode") {
+      if (method === "PUT") {
+        const body = request.postDataJSON() as typeof guestPolicy;
+        if (body.revision !== guestPolicy.revision) {
+          await fulfillJson(route, { error: "guest_policy_conflict" }, 409, headers);
+          return;
+        }
+        if (body.enabled && !guestPolicy.salix_tenant_id) {
+          await fulfillJson(route, { error: "guest_tenant_required" }, 422, headers);
+          return;
+        }
+        guestPolicy = {
+          ...guestPolicy,
+          enabled: body.enabled,
+          daily_creation_limit: body.daily_creation_limit,
+          tenant_concurrency: body.tenant_concurrency,
+          session_ttl_seconds: body.session_ttl_seconds,
+          pow_difficulty: body.pow_difficulty,
+          revision: body.revision + 1,
+        };
+      }
+      await fulfillJson(route, guestPolicy, 200, headers);
       return;
     }
 

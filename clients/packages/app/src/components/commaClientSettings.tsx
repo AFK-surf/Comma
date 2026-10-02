@@ -235,6 +235,11 @@ export function useCommaClientSettings() {
   return value;
 }
 
+/** The settings where an owner provides them; undefined in an isolated render. */
+export function useOptionalCommaClientSettings() {
+  return useContext(CommaClientSettingsContext)?.settings;
+}
+
 export function useCommaClientSettingsPending() {
   return useContext(CommaClientSettingsPendingContext);
 }

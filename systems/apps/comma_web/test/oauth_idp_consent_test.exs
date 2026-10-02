@@ -449,7 +449,21 @@ defmodule CommaWeb.OauthIdpConsentTest do
       {:ok, ops_unrestricted} =
         Comma.Accounts.create_session(user["id"], session_source: "ops_api", ttl_seconds: 600)
 
-      for bad_token <- [restricted["token"], ops_unrestricted["token"]] do
+      # A guest's placeholder email is not an identity to assert.
+      guest =
+        %Comma.Accounts.User{}
+        |> Comma.Accounts.User.changeset(%{
+          id: Comma.Accounts.User.new_id(),
+          email: "g-#{System.unique_integer([:positive])}@guest.comma.invalid",
+          status: "active"
+        })
+        |> Ecto.Changeset.put_change(:kind, "guest")
+        |> Comma.Repo.insert!()
+
+      {:ok, guest_session} =
+        Comma.Accounts.create_session(guest.id, auth_method: "guest", ttl_seconds: 600)
+
+      for bad_token <- [restricted["token"], ops_unrestricted["token"], guest_session["token"]] do
         response = get_consent(bad_token, client, challenge)
         assert response.status == 403
         assert response.resp_body =~ "restricted_session"

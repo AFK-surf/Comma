@@ -1,3 +1,4 @@
+import { LocalComputeLoginEntry } from "./LocalComputeLoginEntry";
 import { PluginInstallProvider } from "./plugins/PluginInstallProvider";
 import { useCommaMessages } from "@comma/i18n/react";
 import {
@@ -28,10 +29,12 @@ import {
 } from "react";
 import { scrubLegacyRendererAuthMetadata } from "../api/config";
 import { AutomaticUpdates } from "./AutomaticUpdates";
+import { DesktopAppPromptHost } from "./DesktopAppPrompt";
 import { AppSettingsRoute } from "./AppSettingsRoute";
 import { CommaAuthGate, useCommaAuth } from "./AuthGate";
 import { WindowBar } from "./WindowBar";
 import { ChatConsumerBoundary, ChatSessionProvider } from "./chat/ChatProvider";
+import { RouterIdentityProvider } from "./router-identity/RouterIdentityProvider";
 import { HomeConversationTargetBootstrap } from "./chat/HomeConversationTargetBootstrap";
 import { HomeRoute } from "./RouteScreens";
 import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation-mock/RecommendationMockDebugSettingsRoute";
@@ -75,6 +78,8 @@ import { NotchTaskSync } from "./tasks/NotchTaskSync";
 import { MessageNotificationSync } from "./notifications/MessageNotificationSync";
 import { AirDropToasts } from "./airdrop/AirDropToasts";
 import { CommaConnectorRuntimeOwner } from "./useCommaConnectorScope";
+import { OnboardingPluginHandoff } from "./onboarding/OnboardingPluginHandoff";
+import { OnboardingHost } from "./onboarding/OnboardingHost";
 
 declare const COMMA_DEFINED_BUILD_FLAVOR: string | undefined;
 
@@ -133,6 +138,7 @@ export function CommaRootLayout() {
           child of it, so `position: fixed` resolves against the viewport and no
           `overflow: hidden` ancestor can clip the card or its shadow. */}
       <Toaster />
+      <DesktopAppPromptHost />
       {CommaNavTraceRoot ? (
         <Suspense fallback={null}>
           <CommaNavTraceRoot />
@@ -154,14 +160,14 @@ export function CommaRootLayout() {
 // "Do anything" starter).
 export function CommaAuthenticatedLayout() {
   return (
-    <CommaAuthGate>
+    <CommaAuthGate localManagementEntry={<LocalComputeLoginEntry />}>
       <CommaAuthenticatedSession />
     </CommaAuthGate>
   );
 }
 
 function CommaAuthenticatedSession() {
-  const { api, productLease, sessionSignal } = useCommaAuth();
+  const { api, isGuest = false, productLease, sessionSignal } = useCommaAuth();
 
   return (
     <ChatSessionProvider
@@ -169,21 +175,26 @@ function CommaAuthenticatedSession() {
       productLease={productLease}
       sessionSignal={sessionSignal}
     >
-      <PluginInstallProvider api={api} sessionSignal={sessionSignal}>
-        <CommandPaletteProvider>
-          <CommaConnectorRuntimeOwner api={api} />
-          <CommaCenterStatusProvider>
-            <ChatConsumerBoundary>
-              <NotchTaskSync />
-              <MessageNotificationSync />
-              <AirDropToasts />
-              <HomeConversationTargetBootstrap />
-              <CommaCenterStatusOwner />
-            </ChatConsumerBoundary>
-            <Outlet />
-          </CommaCenterStatusProvider>
-        </CommandPaletteProvider>
-      </PluginInstallProvider>
+      <RouterIdentityProvider>
+        <PluginInstallProvider api={api} sessionSignal={sessionSignal}>
+          <OnboardingPluginHandoff />
+          <CommandPaletteProvider>
+            {/* A guest Session has only its Router chat: no Connector, Tasks,
+                or AirDrop owners. */}
+            {isGuest ? null : <CommaConnectorRuntimeOwner api={api} />}
+            <CommaCenterStatusProvider>
+              <ChatConsumerBoundary>
+                {isGuest ? null : <NotchTaskSync />}
+                <MessageNotificationSync />
+                {isGuest ? null : <AirDropToasts />}
+                <HomeConversationTargetBootstrap />
+                <CommaCenterStatusOwner />
+              </ChatConsumerBoundary>
+              <Outlet />
+            </CommaCenterStatusProvider>
+          </CommandPaletteProvider>
+        </PluginInstallProvider>
+      </RouterIdentityProvider>
     </ChatSessionProvider>
   );
 }
@@ -212,12 +223,17 @@ export function CommaProductLayout() {
     () => productPortalHost,
     [productPortalHost]
   );
+  const { isGuest = false, userId } = useCommaAuth();
 
   return (
     <OverlayPortalProvider getContainer={getProductPortalHost}>
       <div className="h-screen min-h-0 w-full">
         <div data-comma-product-portal-host="" ref={setProductPortalHost} />
         {productSessionLayout}
+        {/* First-launch onboarding: route-independent, beside the shell and
+            outside its content containment, one per signed-in account. A
+            guest Session has only its Router chat, so it has none. */}
+        {userId && !isGuest ? <OnboardingHost key={userId} userId={userId} /> : null}
       </div>
     </OverlayPortalProvider>
   );
@@ -376,7 +392,13 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
   const accountKey = useProductAccountKey();
   const homeVisible = isHomePath(pathname);
   const { open: settingsOpen } = useCommaSettingsOverlay();
-  const showProductRoute = showsProductRouteOutlet(pathname);
+  const { isGuest = false } = useCommaAuth();
+  // A guest Session has only Home's Router chat; other product routes return there.
+  const guestRouteBlocked = isGuest && showsProductRouteOutlet(pathname);
+  const showProductRoute = showsProductRouteOutlet(pathname) && !guestRouteBlocked;
+  useEffect(() => {
+    if (guestRouteBlocked) void navigate({ replace: true, to: "/" });
+  }, [guestRouteBlocked, navigate]);
   // Home is retained once mounted — for the account that mounted it. A
   // signed-in session change drops the previous account's surface, so the
   // next account mounts Home only when it visits it.
@@ -476,7 +498,7 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
         </div>
         {/* Native browser views paint above DOM. Keep client controls in the route
           area; Main still owns capture across projection remounts. */}
-        <MeetingRecorderHost containment={recorderArea} />
+        {isGuest ? null : <MeetingRecorderHost containment={recorderArea} />}
         <ChatConsumerBoundary>
           <ChatSidebarSlot
             appSidebarFloor={collapsed ? 0 : commaSidebarRailWidth}

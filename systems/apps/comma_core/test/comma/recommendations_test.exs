@@ -334,6 +334,112 @@ defmodule Comma.RecommendationsTest do
     assert envelope["lastError"] == nil
   end
 
+  test "a source only the member can repair is marked until a read succeeds" do
+    {profile, workspace} = profile_fixture!()
+    user = %{"id" => profile.user_id}
+
+    assert {:ok, _} =
+             Recommendations.reconcile_discovered_sources(profile.id, [
+               source("reconnect-slack", "slack"),
+               source("healthy-linear", "linear")
+             ])
+
+    state =
+      Repo.insert!(%Comma.Data.MemberSourceState{
+        profile_id: profile.id,
+        source_id: "reconnect-slack",
+        toolkit: "slack",
+        failure: %{"appId" => "slack", "class" => "reconnect", "message" => "missing_scope"},
+        attempted_at: DateTime.utc_now()
+      })
+
+    reconnect = fn ->
+      {:ok, envelope} = Recommendations.get(user, %{}, workspace.id)
+      Map.new(envelope["settings"]["sources"], &{&1["connectionId"], &1["needsReconnect"]})
+    end
+
+    assert reconnect.() == %{"reconnect-slack" => true, "healthy-linear" => false}
+
+    # A read failure the member cannot fix is not a reconnect prompt.
+    state = state |> Ecto.Changeset.change(failure: %{"class" => "read"}) |> Repo.update!()
+    assert reconnect.()["reconnect-slack"] == false
+
+    state |> Ecto.Changeset.change(failure: nil) |> Repo.update!()
+    assert reconnect.()["reconnect-slack"] == false
+  end
+
+  test "an app language change regenerates each Routine once" do
+    {profile, workspace} = profile_fixture!()
+    user = %{"id" => profile.user_id}
+
+    assert {:ok, _} =
+             Recommendations.reconcile_discovered_sources(profile.id, [
+               source("lang-github", "github")
+             ])
+
+    {:ok, _envelope} = Recommendations.get(user, %{}, workspace.id)
+    runs_before = Repo.aggregate(RecommendationRun, :count)
+    Repo.delete_all(Oban.Job)
+
+    assert {:ok, %{"locale" => "zh-CN"}} =
+             Comma.ProfileAvatar.update(profile.user_id, %{"locale" => "zh-CN"})
+
+    # The save only enqueues the refresh; the request does no generation work.
+    assert Repo.aggregate(RecommendationRun, :count) == runs_before
+
+    assert_enqueued(
+      worker: Comma.Workers.RecommendationLanguageRefresh,
+      args: %{"user_id" => profile.user_id}
+    )
+
+    assert :ok =
+             perform_job(Comma.Workers.RecommendationLanguageRefresh, %{
+               "user_id" => profile.user_id
+             })
+
+    assert [%RecommendationRun{trigger: "agent_tool", status: "running"}] =
+             Repo.all(
+               from(run in RecommendationRun,
+                 where:
+                   run.profile_id == ^profile.id and like(run.source_message_id, "locale:zh-CN:%")
+               )
+             )
+
+    # Saving the same language again is not a change.
+    Repo.delete_all(Oban.Job)
+    assert {:ok, _} = Comma.ProfileAvatar.update(profile.user_id, %{"locale" => "zh-CN"})
+    refute_enqueued(worker: Comma.Workers.RecommendationLanguageRefresh)
+  end
+
+  test "a client language fills an account without one, once" do
+    {profile, _workspace} = profile_fixture!()
+
+    assert Comma.Accounts.adopt_locale(profile.user_id, "zh-CN") == :adopted
+    assert Comma.Accounts.locale(profile.user_id) == "zh-CN"
+
+    # An account language is never replaced by a read.
+    assert Comma.Accounts.adopt_locale(profile.user_id, "en") == :unchanged
+    assert Comma.Accounts.adopt_locale(profile.user_id, "system") == :unchanged
+    assert Comma.Accounts.locale(profile.user_id) == "zh-CN"
+  end
+
+  test "a profile created without a device timezone takes the first reported one" do
+    {profile, workspace} = profile_fixture!()
+    user = %{"id" => profile.user_id}
+    Repo.delete!(profile)
+
+    # A read without a timezone, such as the composer's routine list, creates the profile.
+    assert {:ok, envelope} = Recommendations.get(user, %{}, workspace.id)
+    assert get_in(envelope, ["settings", "schedule", "timezone"]) == "Etc/UTC"
+
+    assert {:ok, envelope} = Recommendations.get(user, %{}, workspace.id, "Asia/Singapore")
+    assert get_in(envelope, ["settings", "schedule", "timezone"]) == "Asia/Singapore"
+
+    # Once set, a read from another device does not move the daily run.
+    assert {:ok, envelope} = Recommendations.get(user, %{}, workspace.id, "America/New_York")
+    assert get_in(envelope, ["settings", "schedule", "timezone"]) == "Asia/Singapore"
+  end
+
   test "the envelope names the failure class of a failed generation" do
     {profile, workspace} = profile_fixture!()
     user = %{"id" => profile.user_id}
@@ -1082,7 +1188,7 @@ defmodule Comma.RecommendationsTest do
 
     # Nothing is published yet: a read of an empty rail is not an exposure.
     assert {:ok, %{"state" => "empty"}} =
-             Recommendations.get(user, %{}, workspace.id, "UTC", nil, exposure: true)
+             Recommendations.get(user, %{}, workspace.id, "UTC", exposure: true)
 
     refute_received {:exposure, _}
 
@@ -1104,7 +1210,7 @@ defmodule Comma.RecommendationsTest do
     log =
       ExUnit.CaptureLog.capture_log(fn ->
         assert {:ok, %{"state" => "fresh"}} =
-                 Recommendations.get(user, %{}, workspace.id, "UTC", nil, exposure: true)
+                 Recommendations.get(user, %{}, workspace.id, "UTC", exposure: true)
       end)
 
     assert_received {:exposure, %{variant: "generic"}}

@@ -47,6 +47,7 @@ type piRuntimeSlot struct {
 }
 
 type piRuntimeSession struct {
+	diagnostics    *harnessDiagnosticBuffer
 	implementation *piRuntimeImplementation
 	connector      *connector
 	sessionID      string
@@ -58,15 +59,17 @@ type piRuntimeSession struct {
 	done           chan struct{}
 	authGeneration *piAuthGeneration
 
-	writeMu     sync.Mutex
-	mu          sync.Mutex
-	nextID      int
-	pending     map[string]chan map[string]any
-	normal      bool
-	abandoned   bool
-	dispatchID  string
-	executionID string
-	workState   string
+	writeMu        sync.Mutex
+	mu             sync.Mutex
+	nextID         int
+	pending        map[string]chan map[string]any
+	normal         bool
+	abandoned      bool
+	dispatchID     string
+	executionID    string
+	workState      string
+	startupPending bool
+	startupRefused bool
 }
 
 func newPiRuntimeImplementation(c *connector) *piRuntimeImplementation {
@@ -176,6 +179,10 @@ func (i *piRuntimeImplementation) Send(ctx context.Context, input externalRuntim
 		return nil, "", err
 	}
 
+	session.mu.Lock()
+	session.abandoned = false
+	session.startupPending = false
+	session.mu.Unlock()
 	if err := session.prompt(ctx, input.text()); err != nil {
 		return nil, "", err
 	}
@@ -238,6 +245,10 @@ func (i *piRuntimeImplementation) Check(ctx context.Context, sessionID string) e
 		return err
 	}
 	slot.session = session
+	session.mu.Lock()
+	session.abandoned = false
+	session.startupPending = false
+	session.mu.Unlock()
 	if err := session.prompt(ctx, externalRuntimeRecoveryMessage); err != nil {
 		slot.session = nil
 		session.stop()
@@ -265,6 +276,23 @@ func (i *piRuntimeImplementation) sessionSlot(sessionID string) *piRuntimeSlot {
 }
 
 func (i *piRuntimeImplementation) startSession(ctx context.Context, input externalRuntimeInput) (*piRuntimeSession, error) {
+	var err error
+	for _, launchCommand := range harnessLaunchCommands("pi", input.command) {
+		attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
+		session, startErr := i.startSessionCommand(attempt, input, launchCommand)
+		cancel()
+		if startErr == nil {
+			return session, nil
+		}
+		err = startErr
+		if !canRetryHarnessStartup(ctx, err) {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
+func (i *piRuntimeImplementation) startSessionCommand(ctx context.Context, input externalRuntimeInput, launchCommand string) (*piRuntimeSession, error) {
 	command := input.command
 	if command == "" {
 		return nil, errors.New("agent_runtime_input requires discovered pi command")
@@ -362,10 +390,11 @@ func (i *piRuntimeImplementation) startSession(ctx context.Context, input extern
 	}
 	args = append(args, "--append-system-prompt", promptPath)
 
-	cmd := exec.Command(command, args...)
+	cmd := exec.Command(launchCommand, args...)
+	configureProcessGroup(cmd)
 	cmd.Dir = input.workspace
 	environment := map[string]any{
-		"PATH":                  runtimeCommandPath(command, cliDir),
+		"PATH":                  runtimeCommandPath(launchCommand, cliDir),
 		"SALIX_CONNECT_URL":     bridgeURL,
 		"SALIX_CLI":             filepath.Join(cliDir, "salix"),
 		"SALIX_ENV_ROOT":        i.connector.root,
@@ -390,6 +419,9 @@ func (i *piRuntimeImplementation) startSession(ctx context.Context, input extern
 		stdin:          stdin,
 		done:           make(chan struct{}),
 		nextID:         1,
+		abandoned:      true,
+		startupPending: true,
+		diagnostics:    &harnessDiagnosticBuffer{},
 		pending:        map[string]chan map[string]any{},
 		dispatchID:     input.dispatchID,
 		executionID:    input.executionID,
@@ -400,7 +432,7 @@ func (i *piRuntimeImplementation) startSession(ctx context.Context, input extern
 	// Cmd owns the copy: Wait drains output before classifying exit. WaitDelay
 	// bounds inherited pipes after process exit, not a running tool's duration.
 	cmd.Stdout = &piRuntimeOutput{session: session}
-	cmd.Stderr = io.Discard
+	cmd.Stderr = session.diagnostics
 	cmd.WaitDelay = externalRuntimeProbeTimeout
 	i.mu.Lock()
 	authGeneration := i.authGeneration
@@ -412,7 +444,7 @@ func (i *piRuntimeImplementation) startSession(ctx context.Context, input extern
 	i.mu.Unlock()
 	if err := cmd.Start(); err != nil {
 		authGeneration.wait.Done()
-		return nil, err
+		return nil, &harnessStartupError{err}
 	}
 	session.authGeneration = authGeneration
 	promptOwnedByProcess = true
@@ -430,21 +462,20 @@ func (i *piRuntimeImplementation) startSession(ctx context.Context, input extern
 
 	state, err := session.rpc(ctx, map[string]any{"type": "get_state"})
 	if err != nil {
-		session.stop()
-		return nil, err
+		return nil, session.startupFailure(ctx, err, true)
+	}
+	if state["success"] != true {
+		return nil, session.startupFailure(ctx, errors.New("pi rejected get_state"), false)
 	}
 	nativeID := stringParam(mapParam(state, "data"), "sessionId")
 	if nativeID == "" {
-		session.stop()
-		return nil, errors.New("pi get_state returned no session id")
+		return nil, session.startupFailure(ctx, errors.New("pi get_state returned no session id"), true)
 	}
 	if resumeID != "" && nativeID != resumeID {
-		session.stop()
-		return nil, fmt.Errorf("pi resumed session %q, want %q", nativeID, resumeID)
+		return nil, session.startupFailure(ctx, fmt.Errorf("pi resumed session %q, want %q", nativeID, resumeID), false)
 	}
 	if result, err := session.rpc(ctx, map[string]any{"type": "set_auto_retry", "enabled": false}); err != nil || result["success"] != true {
-		session.stop()
-		return nil, defaultError(err, errors.New("pi rejected set_auto_retry"))
+		return nil, session.startupFailure(ctx, defaultError(err, errors.New("pi rejected set_auto_retry")), err != nil)
 	}
 	session.nativeID = nativeID
 	i.connector.registerRuntimeRoute(runtimeContext, session.token)
@@ -554,6 +585,19 @@ func (s *piRuntimeSession) handleEvent(event map[string]any) {
 		s.mu.Unlock()
 		if ch != nil {
 			ch <- event
+		}
+		return
+	}
+	s.mu.Lock()
+	startup := s.startupPending
+	if startup && stringParam(event, "type") == "error" {
+		s.startupRefused = true
+	}
+	refused := s.startupRefused
+	s.mu.Unlock()
+	if startup {
+		if refused {
+			s.stop()
 		}
 		return
 	}
@@ -886,4 +930,17 @@ func piStandardEvents(native map[string]any) []map[string]any {
 	default:
 		return nil
 	}
+}
+
+func (s *piRuntimeSession) startupFailure(ctx context.Context, err error, retryable bool) error {
+	if cleanupErr := stopHarnessStartup(context.WithoutCancel(ctx), func() { killHarnessStartupGroup(s.cmd); s.stop() }, s.done); cleanupErr != nil {
+		return cleanupErr
+	}
+	s.mu.Lock()
+	refused := s.startupRefused
+	s.mu.Unlock()
+	if !retryable || refused || !s.diagnostics.permitsStartupRetry() {
+		return err
+	}
+	return &harnessStartupError{err}
 }

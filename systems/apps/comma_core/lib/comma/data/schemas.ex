@@ -51,6 +51,8 @@ defmodule Comma.Data.Workspace do
     field(:group_generation, :string)
     field(:salix_router_agent_id, :string)
     field(:salix_worker_agent_id, :string)
+    # "guest" Workspaces have only a Router agent and share the guest Tenant.
+    field(:kind, :string, default: "standard")
     field(:billing_owner_id, :string)
     field(:name, :string)
     field(:vm, :map)
@@ -76,6 +78,7 @@ defmodule Comma.Data.Workspace do
       :group_generation,
       :salix_router_agent_id,
       :salix_worker_agent_id,
+      :kind,
       :billing_owner_id,
       :name,
       :vm,
@@ -92,10 +95,11 @@ defmodule Comma.Data.Workspace do
       :salix_group_id,
       :group_generation,
       :salix_router_agent_id,
-      :salix_worker_agent_id,
       :billing_owner_id,
       :status
     ])
+    |> validate_inclusion(:kind, ["standard", "guest"])
+    |> validate_worker_for_kind()
     |> foreign_key_constraint(:owner_user_id)
     |> unique_constraint(:id, name: :comma_workspaces_pkey)
     |> unique_constraint(:salix_tenant_id)
@@ -105,6 +109,16 @@ defmodule Comma.Data.Workspace do
       name: :comma_workspaces_vm_recreate_generation_check
     )
     |> check_constraint(:status, name: :comma_workspaces_status_check)
+    |> check_constraint(:kind, name: :comma_workspaces_kind_valid)
+  end
+
+  defp validate_worker_for_kind(changeset) do
+    case {get_field(changeset, :kind), get_field(changeset, :salix_worker_agent_id)} do
+      {"guest", nil} -> changeset
+      {"guest", _worker} -> add_error(changeset, :salix_worker_agent_id, "must be empty")
+      {_standard, nil} -> add_error(changeset, :salix_worker_agent_id, "can't be blank")
+      _valid -> changeset
+    end
   end
 end
 

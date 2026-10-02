@@ -52,6 +52,35 @@ defmodule Comma.Workspaces do
     end
   end
 
+  @doc """
+  Create a guest Workspace: one Router agent without a Cloud VM in the shared,
+  router-only guest Salix Tenant. It has no Worker agent.
+  """
+  def create_guest_for_user(user_id, tenant_id) when is_binary(tenant_id) do
+    id = new_id("wsp")
+    group_id = Ids.new_group_id(tenant_id)
+
+    workspace = %{
+      "id" => id,
+      "kind" => "guest",
+      "name" => "Guest workspace",
+      "owner_user_id" => user_id,
+      "billing_account_id" => billing_account_prefix() <> id,
+      "salix_tenant_id" => tenant_id,
+      "members" => [%{"user_id" => user_id, "role" => "owner"}],
+      "default_group_id" => group_id,
+      "router_agent_id" => Ids.new_agent_id(group_id),
+      "default_worker_agent_id" => nil,
+      "vm" => %{"enabled" => false},
+      "created_at" => unix_time(DateTime.utc_now()),
+      "updated_at" => unix_time(DateTime.utc_now())
+    }
+
+    with {:ok, stored, _operation_id} <- insert_workspace_with_owner(workspace) do
+      get(stored.id)
+    end
+  end
+
   def list_for_user(user_id, session \\ %{}) do
     with {:ok, scoped_workspace_id} <- scoped_workspace_id(session) do
       query =
@@ -367,6 +396,9 @@ defmodule Comma.Workspaces do
           not active_owner?(workspace, user["id"]) ->
             {:error, :forbidden}
 
+          workspace.kind == "guest" and not is_nil(command_vm) ->
+            {:error, :forbidden}
+
           true ->
             {:ok, workspace}
         end
@@ -458,6 +490,7 @@ defmodule Comma.Workspaces do
       "default_group_id" => workspace.salix_group_id,
       "router_agent_id" => workspace.salix_router_agent_id,
       "default_worker_agent_id" => workspace.salix_worker_agent_id,
+      "kind" => workspace.kind,
       "status" => workspace.status,
       "created_at" => unix_time(workspace.inserted_at),
       "updated_at" => unix_time(workspace.updated_at)
@@ -474,6 +507,7 @@ defmodule Comma.Workspaces do
       group_generation: group_binding_revision(workspace),
       salix_router_agent_id: workspace["router_agent_id"],
       salix_worker_agent_id: workspace["default_worker_agent_id"],
+      kind: workspace["kind"] || "standard",
       billing_owner_id: workspace["billing_account_id"],
       name: workspace["name"],
       vm: workspace["vm"],

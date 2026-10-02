@@ -5,6 +5,7 @@ defmodule Comma.GoogleAuthTest do
   @serializable_statement "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
   @desktop_code_verifier String.duplicate("v", 43)
   @desktop_redirect_uri "http://127.0.0.1:43123/oauth2/callback"
+  @android_client_id "comma-android-test.apps.googleusercontent.com"
 
   alias Comma.Accounts.{AuthSession, Identity, Repository, User}
   alias Comma.Auth.GoogleClaims
@@ -324,6 +325,74 @@ defmodule Comma.GoogleAuthTest do
       assert {:error, :invalid_google_credential} =
                GoogleAuth.complete(complete_attrs(nonce_attempt, "bad-nonce"))
     end
+  end
+
+  test "Android ID tokens use the web audience and require an authorized Android party" do
+    assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "android"})
+    assert attempt["platform"] == "android"
+    assert "gla_android_" <> _ = attempt["attempt_id"]
+    assert attempt["client_id"] == "comma-web-test.apps.googleusercontent.com"
+
+    android_claims = fn subject, email, attempt ->
+      subject
+      |> claims(email, true, nil, attempt)
+      |> Map.put("azp", @android_client_id)
+    end
+
+    put_credentials(%{
+      "android-unauthorized-party" =>
+        android_claims.("android-subject", "android@gmail.com", attempt)
+        |> Map.put("azp", "comma-web-test.apps.googleusercontent.com")
+    })
+
+    assert {:error, :invalid_google_credential} =
+             GoogleAuth.complete(complete_attrs(attempt, "android-unauthorized-party"))
+
+    assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "android"})
+
+    put_credentials(%{
+      "android-missing-party" =>
+        android_claims.("android-subject", "android@gmail.com", attempt) |> Map.delete("azp")
+    })
+
+    assert {:error, :invalid_google_credential} =
+             GoogleAuth.complete(complete_attrs(attempt, "android-missing-party"))
+
+    assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "android"})
+
+    put_credentials(%{
+      "android-credential" => android_claims.("android-subject", "android@gmail.com", attempt)
+    })
+
+    assert {:ok, session} =
+             GoogleAuth.complete(
+               attempt
+               |> complete_attrs("android-credential")
+               |> Map.merge(%{"client_kind" => "android", "client_platform" => "android"})
+             )
+
+    assert session["user"]["email"] == "android@gmail.com"
+    stored_session = Repo.get!(AuthSession, session["session_id"])
+    assert stored_session.auth_method == "google"
+    assert stored_session.client_kind == "android"
+    assert stored_session.client_platform == "android"
+    assert stored_session.device_label == "Comma Android app"
+  end
+
+  test "Android Google login is unavailable until an Android client is configured" do
+    previous = Application.get_env(:comma_core, :google_auth)
+    on_exit(fn -> Application.put_env(:comma_core, :google_auth, previous) end)
+
+    Application.put_env(
+      :comma_core,
+      :google_auth,
+      Keyword.put(previous, :android_client_ids, [])
+    )
+
+    assert {:error, :google_not_configured} =
+             GoogleAuth.start_attempt(%{"platform" => "android"})
+
+    assert {:ok, _attempt} = GoogleAuth.start_attempt(%{"platform" => "web"})
   end
 
   test "Electron completion rejects a web credential without consuming its attempt" do

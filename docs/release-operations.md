@@ -2,30 +2,19 @@
 
 ## Authority and artifacts
 
-The normal entry point is `comma-release reconcile`.
-Use only approved artifacts built from merged mainline commits.
-Staging uses the published mainline image and chart. Production uses the existing staging-proven promotion flow.
-Merge authorization does not authorize deployment.
-Do not deploy a PR image or override its tag to bypass mainline publication.
-A historical branch snapshot restored during failed-transaction recovery does not become a valid later candidate.
-Verify the actual deployed revision before claiming a fix is live.
+Use approved mainline artifacts with `comma-release reconcile`: published image/chart on staging, staging-proven promotion on production.
+Merge approval does not authorize deployment. Never deploy PR artifacts or use tag overrides to bypass mainline publication.
+Recovery may restore a historical branch snapshot, but that snapshot is not a later release candidate. Read back the deployed revision before claiming a fix is live.
 
-The coordinator reads the durable fence, validates migration manifest V2, executes exact attempts,
-advances known Helm revisions, verifies the app, and persists core `succeeded` before provider convergence.
-Only a positive, currently `deployed` Helm release named `comma` can enter the normal coordinator path.
-Fresh installation or pre-Helm adoption is a separate operation.
-Helm server-side apply owns stable desired state. Do not add manual topology or adoption shortcuts.
+The coordinator fences manifest V2 attempts, applies Helm, verifies the app, then records core success before provider convergence.
+Normal prepare requires positive `deployed` Helm revision `comma`. Installation and adoption are separate. Helm owns desired state. No manual topology shortcuts.
 
 ## Marketing website
 
-`website/` has separate build and smoke jobs in client CI.
-Website edits skip client E2E and Electron builds. Shared build inputs select both.
-The build installs Chromium and its Linux dependencies to capture the hero window's first frame.
-Cloudflare Workers Builds cannot install these dependencies in its build environment.
-After a push to `main`, the deployment job downloads the same run's website artifact and runs Wrangler.
-Pull requests build the website but do not deploy it.
-The deployment job uses `COMMA_WEBSITE_CLOUDFLARE_API_TOKEN` from the GitHub `prod` environment.
-The token must permit Worker deployment and custom-domain configuration for the account and zone below.
+Website CI builds and smoke-tests `website/`. Website-only edits skip client E2E and Electron builds; shared build inputs select both.
+The build installs Chromium and Linux dependencies for the hero capture. Workers Builds cannot install them.
+Main deployment downloads that run's artifact and uses Wrangler. PR builds do not deploy.
+The `prod` environment's `COMMA_WEBSITE_CLOUDFLARE_API_TOKEN` needs Worker and custom-domain permissions for this account and zone.
 
 ```text
 Worker: comma-website-static
@@ -37,16 +26,12 @@ Build command (from repository root): pnpm build:website:cloudflare
 Deploy command (from repository root): pnpm deploy:website
 ```
 
-After the workflow change merges, disconnect the Worker's Git repository in Cloudflare Settings > Builds.
-This stops duplicate Cloudflare builds. Keep the Worker and its domain configuration.
-Do not publish a branch build to the custom domain.
-Check existing DNS records and Worker routes before connecting `comma.surf`.
-The Wrangler configuration binds this domain and serves unknown paths with a 404 response.
-Verify localized pages, documentation paths, downloads, and cache headers after deployment.
+After merge, disconnect Worker Git in Settings > Builds. Keep Worker and domain. No branch deployment.
+Check DNS/routes before domain connection. Wrangler returns 404 for unknown paths. Verify localized pages, docs, downloads, and cache headers.
 
 ## Rollout policy and human shutdown approval
 
-This section owns the cluster rollout availability policy. Other deployment documents link here.
+This section owns cluster rollout policy.
 Graceful rolling updates are the default, including when some services or features become temporarily unavailable.
 Requests, connections, or logic can fail while old and new processes overlap.
 The release must preserve durable product facts and restore all services within the budgets below.
@@ -163,6 +148,19 @@ Before the cutover fence, recovery can restore the approved captured serving sna
 After the fence, keep old writers stopped and use forward repair at the safe maintenance/candidate revision.
 Budget expiry never authorizes database `down`, PITR, or an incompatible old writer restart.
 
+### Pre-cutover runtime repair
+
+For a broken online snapshot, dispatch Comma Deployment with the recorded `repair_release_id` and approved mainline artifacts.
+CLI: `comma-release repair --replace-release OLD_ID`. Set a new `COMMA_RELEASE_ID`.
+Repair requires `recovering`, no cutover, and no lifecycle hard cut. New plans must remain online.
+It settles attempts, saves the full previous state in an immutable ConfigMap, then CAS-transfers execution.
+The archive retains `recovering` as evidence without execution authority.
+New ledger plans may add steps but cannot repeat completed migrations. Normal manifest drift checks remain unchanged.
+Repair keeps the snapshot, replicas, and PVCs. With partition 0, it manually deletes only owned, unready older-revision Pods.
+Kubernetes still rolls Ready Pods normally.
+UID/resourceVersion preconditions protect successors. A deadline bounds replacement.
+Full verification and provider, Agent, and Runtime convergence remain required.
+
 ### Forward repair
 
 Ordinary `prepare`, workflow reruns, and `reconcile` do not resume `forward_only`.
@@ -187,7 +185,7 @@ For Staging `applying`, dispatch `Comma Forward Repair` from `main` with the rec
 ## Hard budgets
 
 These budgets cover the Comma release coordinator. The separate Gateway Container
-image release can spend up to 75 minutes draining Group disks; see the
+image release uses one 75-minute Group drain budget for both profiles; see the
 [Gateway release procedure](../systems/cloudflare/salix-vm-gateway/RELEASE.md).
 
 | Operation                          | Staging    | Production | Approval/response                                       |
@@ -209,9 +207,9 @@ Core success is independent of provider convergence.
 While providers are pending or failed, serve existing configuration and reject provider-changing admin operations as temporarily unavailable.
 Do not roll back the application or database after core success for this condition.
 
-The coordinator polls one exact provider Job every five seconds.
+The coordinator polls its provider Job every five seconds.
 One high-level wake can dispatch at most three deterministic attempts within the environment budget.
-It persists completion before command exit.
+It records completion before exit.
 Exhaustion projects `provider_degraded` and pages provider on-call while core stays `succeeded`.
 A later reconcile resumes durable facts within a fresh bounded window.
 There is no hidden unbounded observer or 24-hour worker.
@@ -243,8 +241,7 @@ Do not install `latest` or copy a new pin into docs without its required validat
 
 Record exact candidate and deployed revisions, final core/provider state, fence status,
 data verification, required re-enrollment, and the elapsed convergence budget.
-A green workflow, successful migration, or healthy Pod alone is not full release convergence.
-Do not claim an old incident report proves today's live state.
+Workflow, migration, or Pod health alone does not prove convergence. Historical reports do not prove current state.
 
 ## Workload image update
 

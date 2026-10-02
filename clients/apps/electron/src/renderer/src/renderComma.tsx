@@ -4,6 +4,7 @@ import {
   CommaApp,
   CommaAppearanceProvider,
   MeetingRecorderWindowApp,
+  OnboardingWindowApp,
   SitePermissionMenuApp,
   BrowserInspectionComposer,
   CommaClientSettingsI18nProvider,
@@ -58,18 +59,28 @@ if (isSideChatWindow || isSideChatTestWindow) {
   document.documentElement.dataset.commaWindowRole = commaWindowRole;
   document.body.dataset.commaWindowRole = commaWindowRole;
 }
+const isOnboardingWindow = rendererRole === "onboarding-window";
+if (isOnboardingWindow) {
+  // The onboarding window covers the whole display: its page stays transparent
+  // from the first paint, and the experience draws the veil over the desktop.
+  document.documentElement.dataset.commaWindowRole = "onboarding";
+  document.body.dataset.commaWindowRole = "onboarding";
+}
 const RendererApp = isBrowserInspectionComposer
   ? BrowserInspectionComposer
   : isSideChatTestWindow
     ? SideChatTestWindow
     : isSideChatWindow
       ? SideChatApp
-      : CommaApp;
-// Only CommaApp mounts a <Toaster />, so only CommaApp has a toast surface. Say so
-// explicitly rather than leaving it to whether a stack happens to be mounted:
-// sonner's store is module-global and its dismiss timers live in <Toaster />, so
-// a toast raised from a shared chat component here would be retained forever in
-// these long-lived accessory windows.
+      : isOnboardingWindow
+        ? OnboardingWindowApp
+        : CommaApp;
+// Only CommaApp and OnboardingWindowApp mount a <Toaster />, so only they have a
+// toast surface; the onboarding window needs one for plugin authorization
+// failures. Say so explicitly rather than leaving it to whether a stack happens
+// to be mounted: sonner's store is module-global and its dismiss timers live in
+// <Toaster />, so a toast raised from a shared chat component here would be
+// retained forever in these long-lived accessory windows.
 setToastsEnabled(
   !isSitePermissionMenu &&
     !isMeetingRecorderWindow &&

@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
-import { baseLocale, formatNumber, messages, type CommaLocale } from "@comma/i18n";
+import { baseLocale, formatNumber, messages } from "@comma/i18n";
 import type {
   AirDropFileKind,
   AirDropPreview,
@@ -12,6 +12,7 @@ import type {
   NotchHostScenePayload,
 } from "@comma/native-bridge";
 import type { AirDropTransferProgress } from ".";
+import { readMainLocale, type MainLocaleSource } from "../../main-locale";
 
 export type AirDropAction =
   | "accept"
@@ -89,7 +90,7 @@ const NOTCH_RESULT_MS = 4_000;
  */
 export class AirDropReception implements AirDropReceptionProvider {
   readonly #entries = new Map<string, Entry>();
-  readonly #locale: CommaLocale;
+  readonly #locale: MainLocaleSource;
   readonly #log: { warn(message: string): void } | undefined;
   readonly #notch: AirDropNotch;
   readonly #platform: AirDropPresentationPlatform;
@@ -100,7 +101,7 @@ export class AirDropReception implements AirDropReceptionProvider {
   #revision = 0;
 
   constructor(options: {
-    locale?: CommaLocale | undefined;
+    locale?: MainLocaleSource | undefined;
     log?: { warn(message: string): void } | undefined;
     notch: AirDropNotch;
     platform: AirDropPresentationPlatform;
@@ -400,12 +401,13 @@ export class AirDropReception implements AirDropReceptionProvider {
 
   #notchTransfer(entry: Entry): NotchAirDropTransfer {
     const { transfer } = entry;
-    const locale = { locale: this.#locale };
+    const current = readMainLocale(this.#locale);
+    const locale = { locale: current };
     const sender = transfer.senderName ?? messages.airdrop_unknown_sender({}, locale);
     const chat = transfer.chatTitle ?? "";
     const counted = (count: number) => ({
       count,
-      formattedCount: formatNumber(count, this.#locale),
+      formattedCount: formatNumber(count, current),
     });
     // The Notch speaks with the toast's status copy. It has no room for the
     // toast's strip of files, so several files are a count in the title.

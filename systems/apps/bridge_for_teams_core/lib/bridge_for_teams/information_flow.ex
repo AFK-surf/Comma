@@ -39,21 +39,6 @@ defmodule BridgeForTeams.InformationFlow do
   @spec languages() :: [String.t()]
   def languages, do: @languages
 
-  @doc "The org's projects that map to a Salix group, newest name order."
-  @spec projects(Organization.t() | String.t()) :: {:ok, [map()]} | {:error, term()}
-  def projects(org) do
-    with {:ok, %Organization{} = org} <- fetch_org(org) do
-      projects =
-        org.id
-        |> Projects.list_projects()
-        |> Enum.filter(&present?(&1.salix_group_id))
-        |> Enum.map(&%{id: &1.id, name: &1.name, group_id: &1.salix_group_id})
-        |> Enum.sort_by(& &1.name)
-
-      {:ok, projects}
-    end
-  end
-
   @doc """
   Every information-flow setting for one project, by connect.
 
@@ -199,12 +184,13 @@ defmodule BridgeForTeams.InformationFlow do
   end
 
   defp project(org, project_id) do
-    org.id
-    |> Projects.list_projects()
-    |> Enum.find(&(&1.id == project_id and present?(&1.salix_group_id)))
-    |> case do
-      nil -> {:error, :project_not_found}
-      project -> {:ok, project}
+    with {:ok, _uuid} <- Ecto.UUID.cast(project_id),
+         {:ok, project} <- Projects.get_project(project_id),
+         true <- project.org_id == org.id and is_nil(project.archived_at),
+         true <- present?(project.salix_group_id) do
+      {:ok, project}
+    else
+      _ -> {:error, :project_not_found}
     end
   end
 

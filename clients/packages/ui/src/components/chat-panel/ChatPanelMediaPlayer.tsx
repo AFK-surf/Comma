@@ -1,22 +1,19 @@
 import {
   type ChangeEvent,
   type CSSProperties,
-  type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactEventHandler,
-  type ReactNode,
   type RefCallback,
   useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import { Button as AriaButton, Focusable } from "react-aria-components";
+import { Button as AriaButton } from "react-aria-components";
 import {
   isReducedMotionEnabled,
   motionDuration,
@@ -30,22 +27,23 @@ import {
   MediaExpandIcon,
   PauseIcon,
   PlayIcon,
-  VolumeFullIcon,
-  VolumeHalfIcon,
-  VolumeOffIcon,
 } from "../icons";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "../menu";
 import {
   detectAppKeybindingPlatform,
   type AppKeybindingPlatform,
 } from "../settings-shortcut/appKeybinding";
-import { Tooltip } from "../tooltip";
 import { cx } from "../utils";
 import {
   type ChatPanelMediaDownloadController,
   ChatPanelMediaDownloadControl,
 } from "./ChatPanelMediaDownloadControl";
-import { useHoverOnlyTooltip } from "./useHoverOnlyTooltip";
+import { MediaControlTooltip, mediaControlShortcuts } from "./MediaControlTooltip";
+import {
+  isMediaMuteShortcut,
+  mediaVolumeLevel,
+  MediaVolumeControl,
+} from "./MediaVolumeControl";
 import { useKeyboardFocusMotion } from "./useKeyboardFocusMotion";
 import { usePointerPressFeedback } from "./usePointerPressFeedback";
 
@@ -124,11 +122,7 @@ export const formatMediaTime = (seconds: number) => {
 
 const formatPlaybackRate = (rate: number) => `${rate}x`;
 
-export const mediaControlShortcuts = {
-  play: "Space",
-  mute: "M",
-  playbackSpeed: ["<", ">"] as const,
-} as const;
+export { MediaControlTooltip, mediaControlShortcuts };
 
 export const resolveMediaFullWindowShortcut = (
   platform: AppKeybindingPlatform = detectAppKeybindingPlatform()
@@ -149,40 +143,6 @@ const stepPlaybackRateValue = (current: number, direction: -1 | 1) => {
             : closestIndex;
         }, 0);
   return playbackRates[clamp(index + direction, 0, playbackRates.length - 1)]!;
-};
-
-export const MediaControlTooltip = ({
-  children,
-  composite = false,
-  content,
-  placement = "top",
-  shortcut,
-}: {
-  children: ReactNode;
-  composite?: boolean;
-  content: string;
-  placement?: "bottom" | "top";
-  shortcut?: string | readonly string[];
-}) => {
-  const { isOpen, onOpenChange } = useHoverOnlyTooltip();
-
-  return (
-    <Tooltip
-      content={content}
-      isOpen={isOpen}
-      onOpenChange={onOpenChange}
-      placement={placement}
-      {...(shortcut === undefined ? {} : { shortcut })}
-    >
-      {composite ? (
-        children
-      ) : (
-        <Focusable>
-          {children as ComponentProps<typeof Focusable>["children"]}
-        </Focusable>
-      )}
-    </Tooltip>
-  );
 };
 
 export const useMediaPlaybackController = ({
@@ -644,7 +604,7 @@ export const useMediaPlaybackController = ({
     toggleMuted,
     togglePlaying,
     volume,
-    volumeLevel: volume === 0 ? 0 : volume <= 0.33 ? 1 : volume <= 0.66 ? 2 : 3,
+    volumeLevel: mediaVolumeLevel(volume),
   };
 };
 
@@ -690,41 +650,6 @@ const PlayPauseIcon = ({ isPlaying }: { isPlaying: boolean }) => (
     </span>
   </span>
 );
-
-const VolumeStateIcon = ({ level }: { level: number }) => {
-  const state = level === 0 ? "off" : level === 3 ? "loud" : "half";
-
-  return (
-    <span
-      aria-hidden="true"
-      className="chat-panel-media-volume-icon size-2xl"
-      data-level={level}
-      data-state={state}
-    >
-      <VolumeFullIcon className="chat-panel-media-volume-base size-2xl" mode="raw" />
-      <span className="chat-panel-media-volume-states">
-        <span className="chat-panel-media-volume-state" data-volume-state="loud">
-          <VolumeFullIcon
-            className="chat-panel-media-volume-state-glyph size-2xl"
-            mode="raw"
-          />
-        </span>
-        <span className="chat-panel-media-volume-state" data-volume-state="half">
-          <VolumeHalfIcon
-            className="chat-panel-media-volume-state-glyph size-2xl"
-            mode="raw"
-          />
-        </span>
-        <span className="chat-panel-media-volume-state" data-volume-state="off">
-          <VolumeOffIcon
-            className="chat-panel-media-volume-state-glyph size-2xl"
-            mode="raw"
-          />
-        </span>
-      </span>
-    </span>
-  );
-};
 
 const PlaybackRateValue = ({ animate, rate }: { animate: boolean; rate: number }) => {
   const label = formatPlaybackRate(rate);
@@ -828,7 +753,6 @@ export const ChatPanelMediaPlayer = ({
   const [ratePopoverPresent, setRatePopoverPresent] = useState(false);
   const [rateMenuInstantMotion, setRateMenuInstantMotion] = useState(false);
   const [volumePopoverOpen, setVolumePopoverOpen] = useState(false);
-  const [volumePopoverInstantMotion, setVolumePopoverInstantMotion] = useState(false);
   const progressElementRef = useRef<HTMLInputElement | null>(null);
   const progressRootElementRef = useRef<HTMLSpanElement | null>(null);
   const progressVisualElementRef = useRef<HTMLSpanElement | null>(null);
@@ -837,10 +761,6 @@ export const ChatPanelMediaPlayer = ({
   const rateInputWasKeyboardRef = useRef(false);
   const rateMenuOpenPendingRef = useRef(false);
   const ratePointerPressActiveRef = useRef(false);
-  const volumeInputWasKeyboardRef = useRef(false);
-  const volumeAnchorRef = useRef<HTMLSpanElement | null>(null);
-  const volumeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const volumePopoverId = useId();
   const controlsPinned = rateMenuOpen || ratePopoverPresent || volumePopoverOpen;
   const progress =
     controller.duration > 0
@@ -849,11 +769,8 @@ export const ChatPanelMediaPlayer = ({
   const progressStyle = {
     "--chat-panel-media-progress": `${progress}%`,
   } as CSSProperties;
-  const volumePercent = Math.round(controller.volume * 100);
   const fullWindowShortcut = resolveMediaFullWindowShortcut();
-  const volumeStyle = {
-    "--chat-panel-media-volume": `${volumePercent}%`,
-  } as CSSProperties;
+  const mediaLabel = kind === "audio" ? "Audio" : "Video";
   const progressLabel = `${formatMediaTime(
     controller.currentTime
   )} of ${formatMediaTime(controller.duration)}`;
@@ -870,40 +787,6 @@ export const ChatPanelMediaPlayer = ({
     },
     [endScrubbing]
   );
-
-  useEffect(() => {
-    if (!volumePopoverOpen) return;
-    const anchor = volumeAnchorRef.current;
-    const button = volumeButtonRef.current;
-    if (!anchor || !button) return;
-    const ownerDocument = anchor.ownerDocument;
-
-    const closeFromPointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && anchor.contains(event.target)) return;
-      setVolumePopoverOpen(false);
-    };
-    const closeFromFocus = (event: FocusEvent) => {
-      if (event.target instanceof Node && anchor.contains(event.target)) return;
-      setVolumePopoverOpen(false);
-    };
-    const closeFromKeyboard = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setVolumePopoverInstantMotion(true);
-      setVolumePopoverOpen(false);
-      button.focus();
-    };
-
-    ownerDocument.addEventListener("pointerdown", closeFromPointer, true);
-    ownerDocument.addEventListener("focusin", closeFromFocus, true);
-    ownerDocument.addEventListener("keydown", closeFromKeyboard, true);
-    return () => {
-      ownerDocument.removeEventListener("pointerdown", closeFromPointer, true);
-      ownerDocument.removeEventListener("focusin", closeFromFocus, true);
-      ownerDocument.removeEventListener("keydown", closeFromKeyboard, true);
-    };
-  }, [volumePopoverOpen]);
 
   const handleProgressChange = (event: ChangeEvent<HTMLInputElement>) => {
     controller.setCurrentTime(Number(event.currentTarget.value));
@@ -932,7 +815,7 @@ export const ChatPanelMediaPlayer = ({
     const target = event.target;
     const targetElement = target instanceof HTMLElement ? target : null;
 
-    if (key === "m" || key === "M") {
+    if (isMediaMuteShortcut(event)) {
       event.preventDefault();
       run(true, controller.toggleMuted);
       return;
@@ -1073,7 +956,7 @@ export const ChatPanelMediaPlayer = ({
   return (
     // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Shortcut keys bubble from focusable controls inside this playback group.
     <fieldset
-      aria-label={`${kind === "audio" ? "Audio" : "Video"} playback controls`}
+      aria-label={`${mediaLabel} playback controls`}
       className="chat-panel-media-player @container"
       data-controls-pinned={controlsPinned ? "true" : "false"}
       data-instant-motion={instant ? "true" : "false"}
@@ -1102,88 +985,24 @@ export const ChatPanelMediaPlayer = ({
             <PlayPauseIcon isPlaying={controller.isPlaying} />
           </button>
         </MediaControlTooltip>
-        <span className="chat-panel-media-volume-anchor" ref={volumeAnchorRef}>
-          <MediaControlTooltip
-            content={volumePercent === 0 ? "Unmute" : "Mute"}
-            shortcut={mediaControlShortcuts.mute}
-          >
-            <button
-              aria-controls={volumePopoverId}
-              aria-expanded={volumePopoverOpen}
-              aria-haspopup="dialog"
-              aria-keyshortcuts="M"
-              aria-label={
-                volumePercent === 0
-                  ? "Muted. Change volume"
-                  : `Volume ${volumePercent}%`
-              }
-              className={mediaControlClassName}
-              {...buttonPressFeedback}
-              onClick={(event) => {
-                const withoutMotion = event.detail === 0;
-                setVolumePopoverInstantMotion(withoutMotion);
-                if (!volumePopoverOpen) {
-                  setVolumePopoverOpen(true);
-                  return;
-                }
-                run(withoutMotion, controller.toggleMuted);
-              }}
-              ref={volumeButtonRef}
-              type="button"
-            >
-              <VolumeStateIcon level={controller.volumeLevel} />
-            </button>
-          </MediaControlTooltip>
-          <dialog
-            aria-hidden={!volumePopoverOpen}
-            aria-label={`${kind === "audio" ? "Audio" : "Video"} volume controls`}
-            className={cx(
-              "chat-panel-media-volume-popover",
-              volumePopoverInstantMotion && "is-instant"
-            )}
-            data-open={volumePopoverOpen ? "true" : "false"}
-            data-tone={tone}
-            id={volumePopoverId}
-            open
-          >
-            <div className="chat-panel-media-volume-dialog">
-              <input
-                aria-label={`${kind === "audio" ? "Audio" : "Video"} volume`}
-                aria-orientation="vertical"
-                aria-valuetext={`${volumePercent}%`}
-                className="chat-panel-media-volume-slider"
-                data-no-press-feedback
-                max={1}
-                min={0}
-                onBlur={() => {
-                  volumeInputWasKeyboardRef.current = false;
-                }}
-                onChange={(event) => {
-                  const withoutMotion = volumeInputWasKeyboardRef.current;
-                  run(withoutMotion, () =>
-                    controller.setVolume(Number(event.currentTarget.value))
-                  );
-                }}
-                onKeyDown={(event) => {
-                  volumeInputWasKeyboardRef.current = true;
-                  if (event.key === "Escape") setVolumePopoverInstantMotion(true);
-                }}
-                onKeyUp={() => {
-                  volumeInputWasKeyboardRef.current = false;
-                }}
-                onPointerDown={() => {
-                  volumeInputWasKeyboardRef.current = false;
-                  setVolumePopoverInstantMotion(false);
-                }}
-                step={0.01}
-                style={volumeStyle}
-                tabIndex={volumePopoverOpen ? 0 : -1}
-                type="range"
-                value={controller.volume}
-              />
-            </div>
-          </dialog>
-        </span>
+        <MediaVolumeControl
+          buttonClassName={mediaControlClassName}
+          labels={{
+            muted: "Muted. Change volume",
+            mute: "Mute",
+            popover: `${mediaLabel} volume controls`,
+            slider: `${mediaLabel} volume`,
+            unmute: "Unmute",
+            volume: (percent) => `Volume ${percent}%`,
+          }}
+          onOpenChange={setVolumePopoverOpen}
+          onToggleMuted={controller.toggleMuted}
+          onVolumeChange={controller.setVolume}
+          open={volumePopoverOpen}
+          runInteraction={run}
+          tone={tone}
+          volume={controller.volume}
+        />
         <time className="chat-panel-media-time">
           {formatMediaTime(controller.currentTime)}
         </time>
@@ -1204,7 +1023,7 @@ export const ChatPanelMediaPlayer = ({
             <span className="chat-panel-media-progress-thumb" />
           </span>
           <input
-            aria-label={`${kind === "audio" ? "Audio" : "Video"} playback position`}
+            aria-label={`${mediaLabel} playback position`}
             aria-valuetext={progressLabel}
             className="chat-panel-media-progress"
             data-no-press-feedback

@@ -1,165 +1,44 @@
-diff --git a/sdk/cliproxy/subscription_executor.go b/sdk/cliproxy/subscription_executor.go
-new file mode 100644
-index 0000000..5163b16
---- /dev/null
-+++ b/sdk/cliproxy/subscription_executor.go
-@@ -0,0 +1,23 @@
-+package cliproxy
+diff --git a/internal/auth/kimi/kimi.go b/internal/auth/kimi/kimi.go
+index 973c1b52..14fb4df4 100644
+--- a/internal/auth/kimi/kimi.go
++++ b/internal/auth/kimi/kimi.go
+@@ -666,3 +666,15 @@ func (c *DeviceFlowClient) refreshTokenSingleFlight(ctx context.Context, refresh
+ 		Scope:        tokenResp.Scope,
+ 	}, nil
+ }
 +
-+import (
-+	"fmt"
-+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-+	_ "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
-+)
++// DeviceID returns the device identifier sent with this flow's requests.
++// Kimi requires the same identifier for authorization, polling, and refresh.
++func (c *DeviceFlowClient) DeviceID() string { return c.deviceID }
 +
-+// NewSubscriptionExecutor executes a host-selected credential without a Manager.
-+// The host owns persistence, refresh coordination, and account selection.
-+func NewSubscriptionExecutor(provider string) (auth.ProviderExecutor, error) {
-+	cfg := &config.Config{DisableClaudeCloakMode: true}
-+	switch provider {
-+	case "codex":
-+		return executor.NewCodexExecutor(cfg), nil
-+	case "claude":
-+		return executor.NewClaudeExecutor(cfg), nil
-+	default:
-+		return nil, fmt.Errorf("unsupported provider")
-+	}
++// PollDeviceCodeOnce performs one device-token request for an embedded host.
++// The host owns the polling interval and attempt expiry. A nil token with a nil
++// error means authorization is pending.
++func (c *DeviceFlowClient) PollDeviceCodeOnce(ctx context.Context, deviceCode string) (*KimiTokenData, error) {
++	token, err, _ := c.exchangeDeviceCode(ctx, deviceCode)
++	return token, err
 +}
-diff --git a/sdk/oauth/subscription.go b/sdk/oauth/subscription.go
-new file mode 100644
-index 0000000..2cd7f95
---- /dev/null
-+++ b/sdk/oauth/subscription.go
-@@ -0,0 +1,82 @@
-+// Package oauth exposes split-phase subscription enrollment without a callback listener.
-+package oauth
+diff --git a/internal/auth/xai/xai.go b/internal/auth/xai/xai.go
+index 39009d57..5d25f835 100644
+--- a/internal/auth/xai/xai.go
++++ b/internal/auth/xai/xai.go
+@@ -493,3 +493,14 @@ func firstNonEmpty(values ...string) string {
+ 	}
+ 	return ""
+ }
 +
-+import (
-+	"context"
-+	"encoding/json"
-+	"fmt"
-+
-+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
-+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
-+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-+)
-+
-+// Attempt contains secrets. Persist it only in the host's credential store.
-+type Attempt struct {
-+	Provider  string `json:"provider"`
-+	State     string `json:"state"`
-+	Verifier  string `json:"verifier"`
-+	Challenge string `json:"challenge"`
-+	URL       string `json:"url"`
-+}
-+
-+func Begin(cfg *config.Config, provider, state string) (*Attempt, error) {
-+	a := &Attempt{Provider: provider, State: state}
-+	switch provider {
-+	case "codex":
-+		p, err := codex.GeneratePKCECodes()
-+		if err != nil {
-+			return nil, err
-+		}
-+		a.Verifier, a.Challenge = p.CodeVerifier, p.CodeChallenge
-+		a.URL, err = codex.NewCodexAuth(cfg).GenerateAuthURL(state, p)
-+		return a, err
-+	case "claude":
-+		p, err := claude.GeneratePKCECodes()
-+		if err != nil {
-+			return nil, err
-+		}
-+		a.Verifier, a.Challenge = p.CodeVerifier, p.CodeChallenge
-+		a.URL, _, err = claude.NewClaudeAuth(cfg).GenerateAuthURL(state, p)
-+		return a, err
-+	default:
-+		return nil, fmt.Errorf("unsupported provider")
++// PollDeviceCodeOnce performs one device-token request for an embedded host.
++// The host owns the polling interval and attempt expiry. A nil token with a nil
++// error means authorization is pending; slowDown asks the host to wait longer.
++func (a *XAIAuth) PollDeviceCodeOnce(ctx context.Context, tokenEndpoint, deviceCode string) (token *TokenData, slowDown bool, err error) {
++	token, err, next, pending := a.exchangeDeviceCode(ctx, tokenEndpoint, deviceCode, 0)
++	if token != nil || !pending {
++		return token, false, err
 +	}
-+}
-+
-+// Exchange uses the original provider redirect and the attempt's PKCE verifier.
-+// The host verifies tenant ownership, expiry, state, and single use before calling it.
-+func Exchange(ctx context.Context, cfg *config.Config, a Attempt, code string) (map[string]any, error) {
-+	var token any
-+	var last string
-+	var devices []string
-+	switch a.Provider {
-+	case "codex":
-+		b, err := codex.NewCodexAuth(cfg).ExchangeCodeForTokens(ctx, code, &codex.PKCECodes{CodeVerifier: a.Verifier, CodeChallenge: a.Challenge})
-+		if err != nil {
-+			return nil, err
-+		}
-+		token, last = b.TokenData, b.LastRefresh
-+	case "claude":
-+		b, err := claude.NewClaudeAuth(cfg).ExchangeCodeForTokens(ctx, code, a.State, &claude.PKCECodes{CodeVerifier: a.Verifier, CodeChallenge: a.Challenge})
-+		if err != nil {
-+			return nil, err
-+		}
-+		token, last, devices = b.TokenData, b.LastRefresh, b.DeviceIDs
-+	default:
-+		return nil, fmt.Errorf("unsupported provider")
-+	}
-+	data, err := json.Marshal(token)
-+	if err != nil {
-+		return nil, err
-+	}
-+	var metadata map[string]any
-+	if err = json.Unmarshal(data, &metadata); err != nil {
-+		return nil, err
-+	}
-+	metadata["type"], metadata["last_refresh"] = a.Provider, last
-+	if len(devices) > 0 {
-+		metadata["claude_device_ids"] = devices
-+	}
-+	return metadata, nil
-+}
-diff --git a/sdk/oauth/subscription_test.go b/sdk/oauth/subscription_test.go
-new file mode 100644
-index 0000000..aa3ef63
---- /dev/null
-+++ b/sdk/oauth/subscription_test.go
-@@ -0,0 +1,37 @@
-+package oauth_test
-+
-+import (
-+	"crypto/sha256"
-+	"encoding/base64"
-+	"net/url"
-+	"testing"
-+
-+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/oauth"
-+)
-+
-+func TestSubscriptionEnrollmentKeepsPKCEAndProviderRedirect(t *testing.T) {
-+	for provider, redirect := range map[string]string{"codex": "http://localhost:1455/auth/callback", "claude": "http://localhost:54545/callback"} {
-+		t.Run(provider, func(t *testing.T) {
-+			attempt, err := oauth.Begin(&config.Config{}, provider, "host-owned-state")
-+			if err != nil {
-+				t.Fatal(err)
-+			}
-+			u, err := url.Parse(attempt.URL)
-+			if err != nil {
-+				t.Fatal(err)
-+			}
-+			q := u.Query()
-+			if q.Get("state") != attempt.State || q.Get("redirect_uri") != redirect {
-+				t.Fatal("authorization context changed")
-+			}
-+			hash := sha256.Sum256([]byte(attempt.Verifier))
-+			if q.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(hash[:]) {
-+				t.Fatal("PKCE mismatch")
-+			}
-+			if q.Get("code_verifier") != "" {
-+				t.Fatal("verifier leaked into browser URL")
-+			}
-+		})
-+	}
++	return nil, next > 0, nil
 +}
 diff --git a/internal/runtime/executor/helps/proxy_helpers.go b/internal/runtime/executor/helps/proxy_helpers.go
-index 0c5f6c9..d086463 100644
+index 0c5f6c95..d0864639 100644
 --- a/internal/runtime/executor/helps/proxy_helpers.go
 +++ b/internal/runtime/executor/helps/proxy_helpers.go
 @@ -30,6 +30,7 @@ import (
@@ -186,7 +65,7 @@ index 0c5f6c9..d086463 100644
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
-index 4857bac..0561621 100644
+index 4857bac7..0561621e 100644
 --- a/internal/runtime/executor/helps/utls_client.go
 +++ b/internal/runtime/executor/helps/utls_client.go
 @@ -397,5 +397,6 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
@@ -197,7 +76,7 @@ index 4857bac..0561621 100644
  	return client
  }
 diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
-index cc2febb..7489b15 100644
+index cc2febbb..7489b159 100644
 --- a/sdk/auth/codex_device.go
 +++ b/sdk/auth/codex_device.go
 @@ -170,60 +170,60 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
@@ -357,9 +236,146 @@ index cc2febb..7489b15 100644
 +	metadata["type"], metadata["last_refresh"] = "codex", bundle.LastRefresh
 +	return metadata, false, nil
 +}
+diff --git a/sdk/auth/subscription_device.go b/sdk/auth/subscription_device.go
+new file mode 100644
+index 00000000..c4afa858
+--- /dev/null
++++ b/sdk/auth/subscription_device.go
+@@ -0,0 +1,131 @@
++package auth
++
++import (
++	"context"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
++	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++// DeviceAuthorization is the private split-phase device-login context.
++// It contains the device code. Persist it only in the host's credential store.
++type DeviceAuthorization struct {
++	DeviceCode      string `json:"device_code"`
++	UserCode        string `json:"user_code"`
++	VerificationURL string `json:"verification_url"`
++	Interval        int    `json:"interval"`
++	TokenEndpoint   string `json:"token_endpoint,omitempty"`
++	DeviceID        string `json:"device_id,omitempty"`
++}
++
++// DeviceStatus is the result of one provider check.
++type DeviceStatus string
++
++const (
++	DevicePending  DeviceStatus = "pending"
++	DeviceSlowDown DeviceStatus = "slow_down"
++	DeviceComplete DeviceStatus = "complete"
++)
++
++// BeginXAIDeviceAuthorization starts a split-phase xAI device login for an embedded host.
++func BeginXAIDeviceAuthorization(ctx context.Context, cfg *config.Config) (*DeviceAuthorization, error) {
++	code, err := xaiauth.NewXAIAuth(cfg).StartDeviceFlow(ctx)
++	if err != nil {
++		return nil, err
++	}
++	url := strings.TrimSpace(code.VerificationURIComplete)
++	if url == "" {
++		url = strings.TrimSpace(code.VerificationURI)
++	}
++	return &DeviceAuthorization{DeviceCode: code.DeviceCode, UserCode: code.UserCode, VerificationURL: url, Interval: code.Interval, TokenEndpoint: code.TokenEndpoint}, nil
++}
++
++// PollXAIDeviceAuthorization checks once. The host owns the interval and expiry.
++func PollXAIDeviceAuthorization(ctx context.Context, cfg *config.Config, d DeviceAuthorization) (map[string]any, DeviceStatus, error) {
++	endpoint, err := xaiauth.ValidateOAuthEndpoint(d.TokenEndpoint, "token_endpoint")
++	if err != nil {
++		return nil, "", err
++	}
++	svc := xaiauth.NewXAIAuth(cfg)
++	token, slowDown, err := svc.PollDeviceCodeOnce(ctx, endpoint, d.DeviceCode)
++	if err != nil {
++		return nil, "", err
++	}
++	if token == nil {
++		if slowDown {
++			return nil, DeviceSlowDown, nil
++		}
++		return nil, DevicePending, nil
++	}
++	s := svc.CreateTokenStorage(&xaiauth.AuthBundle{TokenData: *token, LastRefresh: time.Now().UTC().Format(time.RFC3339), BaseURL: xaiauth.DefaultAPIBaseURL, TokenEndpoint: endpoint})
++	metadata := map[string]any{
++		"type":           "xai",
++		"access_token":   s.AccessToken,
++		"refresh_token":  s.RefreshToken,
++		"id_token":       s.IDToken,
++		"token_type":     s.TokenType,
++		"expires_in":     s.ExpiresIn,
++		"expired":        s.Expire,
++		"last_refresh":   s.LastRefresh,
++		"base_url":       s.BaseURL,
++		"token_endpoint": s.TokenEndpoint,
++		"auth_kind":      "oauth",
++	}
++	if s.Email != "" {
++		metadata["email"] = s.Email
++	}
++	if s.Subject != "" {
++		metadata["sub"] = s.Subject
++	}
++	return metadata, DeviceComplete, nil
++}
++
++// BeginKimiDeviceAuthorization starts a split-phase Kimi Code device login.
++// The returned device ID must accompany every later poll for this attempt.
++func BeginKimiDeviceAuthorization(ctx context.Context, cfg *config.Config) (*DeviceAuthorization, error) {
++	client := kimi.NewDeviceFlowClientWithDomain(cfg, kimi.KimiDefaultDomain)
++	code, err := client.RequestDeviceCode(ctx)
++	if err != nil {
++		return nil, err
++	}
++	url := strings.TrimSpace(code.VerificationURIComplete)
++	if url == "" {
++		url = strings.TrimSpace(code.VerificationURI)
++	}
++	if strings.TrimSpace(code.DeviceCode) == "" || strings.TrimSpace(code.UserCode) == "" || url == "" {
++		return nil, fmt.Errorf("missing device authorization fields")
++	}
++	return &DeviceAuthorization{DeviceCode: code.DeviceCode, UserCode: code.UserCode, VerificationURL: url, Interval: code.Interval, DeviceID: client.DeviceID()}, nil
++}
++
++// PollKimiDeviceAuthorization checks once. The host owns the interval and expiry.
++func PollKimiDeviceAuthorization(ctx context.Context, cfg *config.Config, d DeviceAuthorization) (map[string]any, DeviceStatus, error) {
++	if strings.TrimSpace(d.DeviceID) == "" {
++		return nil, "", fmt.Errorf("missing device ID")
++	}
++	client := kimi.NewDeviceFlowClientWithDomainDeviceIDAndProxyURL(cfg, kimi.KimiDefaultDomain, d.DeviceID, "")
++	token, err := client.PollDeviceCodeOnce(ctx, d.DeviceCode)
++	if err != nil {
++		return nil, "", err
++	}
++	if token == nil {
++		return nil, DevicePending, nil
++	}
++	metadata := map[string]any{
++		"type":          "kimi",
++		"access_token":  token.AccessToken,
++		"refresh_token": token.RefreshToken,
++		"token_type":    token.TokenType,
++		"scope":         token.Scope,
++		"device_id":     client.DeviceID(),
++		"last_refresh":  time.Now().UTC().Format(time.RFC3339),
++	}
++	if token.ExpiresAt > 0 {
++		metadata["expired"] = time.Unix(token.ExpiresAt, 0).UTC().Format(time.RFC3339)
++	}
++	return metadata, DeviceComplete, nil
++}
 diff --git a/sdk/cliproxy/auth/subscription_model.go b/sdk/cliproxy/auth/subscription_model.go
 new file mode 100644
-index 0000000..3dd2f4d
+index 00000000..3dd2f4da
 --- /dev/null
 +++ b/sdk/cliproxy/auth/subscription_model.go
 @@ -0,0 +1,13 @@
@@ -375,4 +391,187 @@ index 0000000..3dd2f4d
 +// Keep the normal translation pipeline. The provider validates the requested effort.
 +func SubscriptionModelRequest(req executor.Request) executor.Request {
 +	return attachResolvedHomeModelInfo(req, nil, req.Model, &registry.ModelInfo{ID: req.Model, UserDefined: true}, nil)
++}
+diff --git a/sdk/cliproxy/subscription_executor.go b/sdk/cliproxy/subscription_executor.go
+new file mode 100644
+index 00000000..748775b2
+--- /dev/null
++++ b/sdk/cliproxy/subscription_executor.go
+@@ -0,0 +1,33 @@
++package cliproxy
++
++import (
++	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
++)
++
++// NewSubscriptionExecutor executes a host-selected credential without a Manager.
++// The host owns persistence, refresh coordination, and account selection.
++func NewSubscriptionExecutor(provider string) (auth.ProviderExecutor, error) {
++	cfg := &config.Config{DisableClaudeCloakMode: true}
++	switch provider {
++	case "codex":
++		return executor.NewCodexExecutor(cfg), nil
++	case "claude":
++		return executor.NewClaudeExecutor(cfg), nil
++	case "antigravity":
++		return executor.NewAntigravityExecutor(cfg), nil
++	case "xai":
++		return executor.NewXAIExecutor(cfg), nil
++	case "kimi":
++		return executor.NewKimiExecutor(cfg), nil
++	case "github-copilot":
++		// Copilot exposes an OpenAI-compatible API. The host supplies its
++		// short-lived token, base URL, and client headers as auth attributes.
++		return executor.NewOpenAICompatExecutor("github-copilot", cfg), nil
++	default:
++		return nil, fmt.Errorf("unsupported provider")
++	}
++}
+diff --git a/sdk/oauth/subscription.go b/sdk/oauth/subscription.go
+new file mode 100644
+index 00000000..fa9c3514
+--- /dev/null
++++ b/sdk/oauth/subscription.go
+@@ -0,0 +1,95 @@
++// Package oauth exposes split-phase subscription enrollment without a callback listener.
++package oauth
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
++	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Attempt contains secrets. Persist it only in the host's credential store.
++type Attempt struct {
++	Provider  string `json:"provider"`
++	State     string `json:"state"`
++	Verifier  string `json:"verifier"`
++	Challenge string `json:"challenge"`
++	URL       string `json:"url"`
++}
++
++func Begin(cfg *config.Config, provider, state string) (*Attempt, error) {
++	a := &Attempt{Provider: provider, State: state}
++	switch provider {
++	case "codex":
++		p, err := codex.GeneratePKCECodes()
++		if err != nil {
++			return nil, err
++		}
++		a.Verifier, a.Challenge = p.CodeVerifier, p.CodeChallenge
++		a.URL, err = codex.NewCodexAuth(cfg).GenerateAuthURL(state, p)
++		return a, err
++	case "claude":
++		p, err := claude.GeneratePKCECodes()
++		if err != nil {
++			return nil, err
++		}
++		a.Verifier, a.Challenge = p.CodeVerifier, p.CodeChallenge
++		a.URL, _, err = claude.NewClaudeAuth(cfg).GenerateAuthURL(state, p)
++		return a, err
++	case "antigravity":
++		// Google's installed-app client uses its client secret, not PKCE.
++		a.URL = sdkauth.BuildAntigravityAuthURL(state, sdkauth.AntigravityDefaultCallbackURI())
++		return a, nil
++	default:
++		return nil, fmt.Errorf("unsupported provider")
++	}
++}
++
++// Exchange uses the original provider redirect and the attempt's PKCE verifier.
++// The host verifies tenant ownership, expiry, state, and single use before calling it.
++func Exchange(ctx context.Context, cfg *config.Config, a Attempt, code string) (map[string]any, error) {
++	var token any
++	var last string
++	var devices []string
++	switch a.Provider {
++	case "codex":
++		b, err := codex.NewCodexAuth(cfg).ExchangeCodeForTokens(ctx, code, &codex.PKCECodes{CodeVerifier: a.Verifier, CodeChallenge: a.Challenge})
++		if err != nil {
++			return nil, err
++		}
++		token, last = b.TokenData, b.LastRefresh
++	case "claude":
++		b, err := claude.NewClaudeAuth(cfg).ExchangeCodeForTokens(ctx, code, a.State, &claude.PKCECodes{CodeVerifier: a.Verifier, CodeChallenge: a.Challenge})
++		if err != nil {
++			return nil, err
++		}
++		token, last, devices = b.TokenData, b.LastRefresh, b.DeviceIDs
++	case "antigravity":
++		// Completion also resolves the account email and Cloud Code project.
++		r, err := sdkauth.CompleteAntigravityOAuth(ctx, code, sdkauth.AntigravityDefaultCallbackURI(), nil)
++		if err != nil {
++			return nil, err
++		}
++		token, last = r.Metadata, time.Now().UTC().Format(time.RFC3339)
++	default:
++		return nil, fmt.Errorf("unsupported provider")
++	}
++	data, err := json.Marshal(token)
++	if err != nil {
++		return nil, err
++	}
++	var metadata map[string]any
++	if err = json.Unmarshal(data, &metadata); err != nil {
++		return nil, err
++	}
++	metadata["type"], metadata["last_refresh"] = a.Provider, last
++	if len(devices) > 0 {
++		metadata["claude_device_ids"] = devices
++	}
++	return metadata, nil
++}
+diff --git a/sdk/oauth/subscription_test.go b/sdk/oauth/subscription_test.go
+new file mode 100644
+index 00000000..aa3ef639
+--- /dev/null
++++ b/sdk/oauth/subscription_test.go
+@@ -0,0 +1,37 @@
++package oauth_test
++
++import (
++	"crypto/sha256"
++	"encoding/base64"
++	"net/url"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/oauth"
++)
++
++func TestSubscriptionEnrollmentKeepsPKCEAndProviderRedirect(t *testing.T) {
++	for provider, redirect := range map[string]string{"codex": "http://localhost:1455/auth/callback", "claude": "http://localhost:54545/callback"} {
++		t.Run(provider, func(t *testing.T) {
++			attempt, err := oauth.Begin(&config.Config{}, provider, "host-owned-state")
++			if err != nil {
++				t.Fatal(err)
++			}
++			u, err := url.Parse(attempt.URL)
++			if err != nil {
++				t.Fatal(err)
++			}
++			q := u.Query()
++			if q.Get("state") != attempt.State || q.Get("redirect_uri") != redirect {
++				t.Fatal("authorization context changed")
++			}
++			hash := sha256.Sum256([]byte(attempt.Verifier))
++			if q.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(hash[:]) {
++				t.Fatal("PKCE mismatch")
++			}
++			if q.Get("code_verifier") != "" {
++				t.Fatal("verifier leaked into browser URL")
++			}
++		})
++	}
 +}

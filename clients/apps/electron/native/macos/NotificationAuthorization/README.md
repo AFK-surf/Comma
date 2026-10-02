@@ -53,8 +53,12 @@ letting Electron refuse it silently.
 "Badge application icon" switch in System Settings. The addon reads that switch
 first and clears the badge when the switch is off.
 
-Settings treats only `denied` as "turned off in System Settings"; an undecided
-status is still enableable, and the prompt comes with the first banner.
+Main reads `notDetermined` back as `undetermined`. Settings treats only `denied`
+as "turned off in System Settings", so an undetermined status is still
+enableable, and the prompt comes with the first banner. The first-launch
+onboarding can show the prompt earlier through
+`appPreferences.requestNotificationAuthorization`. Main asks through this addon,
+reads the status back, and publishes it with the preferences.
 
 ## Building
 

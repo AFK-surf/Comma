@@ -40,6 +40,7 @@ defmodule CommaCore.MixProject do
       {:redix, "~> 1.5"},
       {:hammer_backend_redis, "~> 7.1"},
       {:oidcc, "~> 3.7"},
+      {:jose, "~> 1.11"},
       {:boruta, "~> 2.3.8"},
       {:goth, "~> 1.4"},
       {:google_api_storage, "~> 0.46.1"},

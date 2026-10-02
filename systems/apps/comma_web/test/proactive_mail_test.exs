@@ -1250,7 +1250,7 @@ defmodule CommaWeb.ProactiveMailTest do
 
     assert home_messages(f) == []
     assert [%{"agent_input" => %{"content" => reminder}}] = router_inputs(f)
-    assert reminder =~ "A reminder you asked for"
+    assert reminder =~ "A reminder: "
     assert {:error, :not_found} = SalixCluster.Schedules.get(id)
     assert {:ok, %{fired: []}} = SalixCluster.Schedules.run_once(now: scheduled["run_at"] + 1)
   end
@@ -2295,5 +2295,169 @@ defmodule CommaWeb.ProactiveMailTest do
 
     assert {:error, :not_found} =
              SalixAgent.InternalSessionStore.read(f.ctx.agent_id, f.ctx.session_id)
+  end
+
+  test "a watch wake becomes the owner's matter on the one Router handoff path", f do
+    binding =
+      Comma.MemberSourceConsents.binding(f.workspace.id, f.user["id"], "gmail")
+      |> Map.merge(%{
+        "user_id" => f.user["id"],
+        "workspace_id" => f.workspace.id,
+        "toolkit" => "gmail"
+      })
+
+    source = %{
+      "tool" => "composio.execute",
+      "arguments" => %{
+        "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
+        "connected_account_id" => "ca_owner",
+        "arguments" => %{"user_id" => "me", "thread_id" => "t-watch"}
+      }
+    }
+
+    bound =
+      Map.put(f.row, "config", %{
+        "comma_proactive" => binding,
+        "source" => source,
+        "source_ref" => "t-watch",
+        "intent" => "Tell me when Ana replies"
+      })
+
+    {:ok, _} = Loops.update(bound["id"], fn _ -> {:ok, bound} end)
+    before = length(router_inputs(f))
+
+    assert {:ok, %{"status" => "queued"}} =
+             SalixAgent.Loops.Capabilities.deliver_notification(bound, "Ana replied", "e2")
+
+    # A redelivered wake with the same dedup key adds nothing.
+    assert {:ok, _} =
+             SalixAgent.Loops.Capabilities.deliver_notification(bound, "Ana replied", "e2")
+
+    assert [%{"agent_input" => input}] = Enum.drop(router_inputs(f), before)
+    assert input["content"] =~ "Ana replied"
+    assert input["trusted_origin"]["provider"] == "loop"
+
+    key = SalixIM.MailInteraction.key("ca_owner", "t-watch")
+    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    value = Enum.find(status["sources"], &(&1["key"] == key))
+    assert %{"automatic" => false, "subject" => "Tell me when Ana replies"} = value
+
+    # The owner asked for the watch: notifying about it spends no budget.
+    assert {:ok, %{"decision" => %{"decision" => "notify"}}} =
+             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
+               "key" => key,
+               "action" => "notify",
+               "generation" => value["generation"],
+               "request_id" => "watch-notify"
+             })
+
+    {:ok, after_notify} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    assert after_notify["notification_budget"]["remaining"] == 5
+
+    # Long evidence is kept bounded in Home and says it was cut.
+    long = String.duplicate("evidence ", 900)
+
+    assert {:ok, %{"status" => "queued"}} =
+             SalixAgent.Loops.Capabilities.deliver_notification(bound, long, "e3")
+
+    assert %{"agent_input" => %{"content" => last}} = List.last(router_inputs(f))
+    assert last =~ "[evidence truncated]"
+    refute last =~ long
+
+    # JSON evidence keeps its locator and instructions first; only the large
+    # evidence fields are cut.
+    evidence =
+      Jason.encode!(%{
+        "event" => String.duplicate("payload ", 700),
+        "instructions" => "Use the proactive skill.",
+        "source_ref" => "t-watch"
+      })
+
+    assert {:ok, _} = SalixAgent.Loops.Capabilities.deliver_notification(bound, evidence, "e6")
+    assert %{"agent_input" => %{"content" => cut}} = List.last(router_inputs(f))
+    assert cut =~ "Use the proactive skill."
+    assert cut =~ "[evidence truncated]"
+
+    # A notice about the watch itself (paused, exited, failed) is not a matter
+    # wake: it reaches the Router's Session directly, not Home.
+    inputs = length(router_inputs(f))
+
+    SalixAgent.Loops.Capabilities.deliver_notification(
+      bound,
+      "Background loop paused: notification budget exhausted.",
+      "lifecycle:budget",
+      lifecycle: true
+    )
+
+    assert length(router_inputs(f)) == inputs
+
+    # Out-of-order redelivery (A, B, then A again) is a duplicate: it neither
+    # changes the matter nor wakes the Router.
+    assert {:ok, _} = SalixAgent.Loops.Capabilities.deliver_notification(bound, "B", "e4")
+    inputs = length(router_inputs(f))
+    {:ok, before_retry} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+
+    assert {:ok, %{"status" => "duplicate"}} =
+             SalixAgent.Loops.Capabilities.deliver_notification(bound, "Ana replied", "e2")
+
+    assert length(router_inputs(f)) == inputs
+    {:ok, after_retry} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    assert after_retry["sources"] == before_retry["sources"]
+  end
+
+  test "a watch wake keeps the followed matter's subject and link and retires a stopped Task",
+       f do
+    value = present!(f)
+    task = linked_task!(f)
+
+    assert {:ok, _} =
+             SalixIM.Provider.call_api(
+               f.ctx.agent_id,
+               "internal",
+               "internal.update_conversation",
+               %{
+                 "connect_id" => "internal",
+                 "params" => %{"conversation_id" => task, "status" => "completed"}
+               }
+             )
+
+    {:ok, %{"sources" => sources}} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    current = Enum.find(sources, &(&1["thread_id"] == value["thread_id"]))
+
+    binding =
+      Comma.MemberSourceConsents.binding(f.workspace.id, f.user["id"], "gmail")
+      |> Map.merge(%{
+        "user_id" => f.user["id"],
+        "workspace_id" => f.workspace.id,
+        "toolkit" => "gmail"
+      })
+
+    bound =
+      Map.put(f.row, "config", %{
+        "comma_proactive" => binding,
+        "source" => %{
+          "tool" => "composio.execute",
+          "arguments" => %{
+            "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
+            "connected_account_id" => current["account_id"],
+            "arguments" => %{"user_id" => "me", "thread_id" => current["thread_id"]}
+          }
+        },
+        "source_ref" => current["thread_id"],
+        "intent" => "Watch the contract thread"
+      })
+
+    {:ok, _} = Loops.update(bound["id"], fn _ -> {:ok, bound} end)
+
+    assert {:ok, %{"status" => "queued"}} =
+             SalixAgent.Loops.Capabilities.deliver_notification(bound, "New reply", "e5")
+
+    {:ok, %{"sources" => sources}} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
+    after_wake = Enum.find(sources, &(&1["key"] == current["key"]))
+    assert after_wake["key"] == current["key"]
+    assert after_wake["subject"] == value["subject"]
+    assert after_wake["source_url"] == value["source_url"]
+    assert after_wake["message_id"] == "loop:e5"
+    assert after_wake["task_id"] == nil
   end
 end

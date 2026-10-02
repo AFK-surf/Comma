@@ -2960,6 +2960,27 @@ defmodule SalixIM.ProviderTest do
     )
   end
 
+  defp platform_messages!(group_id, attempts \\ 200)
+  defp platform_messages!(_, 0), do: flunk("Platform history did not commit")
+
+  defp platform_messages!(group_id, attempts) do
+    {:ok, conversation} = SalixIM.RouterConversationInput.ensure(group_id)
+
+    {:ok, messages} =
+      Conversations.list_group_conversation_messages(group_id, conversation["conversation_id"])
+
+    case Enum.flat_map(messages, fn message ->
+           if message["platform_message"], do: [message["platform_message"]], else: []
+         end) do
+      [] ->
+        Process.sleep(25)
+        platform_messages!(group_id, attempts - 1)
+
+      messages ->
+        messages
+    end
+  end
+
   defp configure_slack_tool_retry(opts) do
     Application.put_env(
       :salix_im,
@@ -15648,6 +15669,7 @@ defmodule SalixIM.ProviderTest do
 
     test "send_message forwards optional Telegram topic and reply ids", %{
       agent_id: agent_id,
+      group_id: group_id,
       telegram_connect_id: connect_id
     } do
       assert {:ok, %{"message_id" => 78}} =
@@ -15666,6 +15688,14 @@ defmodule SalixIM.ProviderTest do
       assert req.params["parse_mode"] == "HTML"
       assert req.params["message_thread_id"] == 123
       assert req.params["reply_parameters"] == %{"message_id" => 456}
+
+      assert platform_messages!(group_id) == [
+               %{
+                 "provider" => "telegram",
+                 "role" => "assistant",
+                 "content" => [%{"type" => "text", "text" => "reply in topic"}]
+               }
+             ]
     end
 
     test "does not read arbitrary host paths", %{
@@ -22747,6 +22777,14 @@ defmodule SalixIM.ProviderTest do
                  "text_item" => %{
                    "text" => "## Report\n\n**Ready** 中文"
                  }
+               }
+             ]
+
+      assert platform_messages!(group_id) == [
+               %{
+                 "provider" => "wechat",
+                 "role" => "assistant",
+                 "content" => [%{"type" => "text", "text" => "## Report\n\n**Ready** 中文"}]
                }
              ]
 
@@ -30392,6 +30430,14 @@ defmodule SalixIM.ProviderTest do
     assert message.trusted_origin["source_actor_type"] == "provider_user"
     assert get_in(message.trusted_origin, ["provider_context", "from_is_bot"]) == false
 
+    assert platform_messages!(group_id) == [
+             %{
+               "provider" => "telegram",
+               "role" => "user",
+               "content" => [%{"type" => "text", "text" => "hello from telegram"}]
+             }
+           ]
+
     assert message.trusted_origin["principal_ref"] == %{
              "namespace" => "telegram_user",
              "tenant_id" => tenant,
@@ -30558,6 +30604,14 @@ defmodule SalixIM.ProviderTest do
     assert stored_message.trusted_origin["provider"] == "wechat"
     assert stored_message.trusted_origin["source_message_id"] == source_id
     assert stored_message.trusted_origin["source_text"] == "hello from wechat"
+
+    assert platform_messages!(group_id) == [
+             %{
+               "provider" => "wechat",
+               "role" => "user",
+               "content" => [%{"type" => "text", "text" => "hello from wechat"}]
+             }
+           ]
 
     source_context = router_source_context!(group_id, agent_id, "provider=wechat")
     assert recipient_im_identity_from_context!(source_context) == recipient_identity

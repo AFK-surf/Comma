@@ -51,7 +51,7 @@ const legacySessionTokenStorageKey = "comma.sessionToken";
 const legacyUserAdminStorageKey = "comma.userAdmin";
 const legacyUserEmailStorageKey = "comma.userEmail";
 
-let commaTestSession: true | undefined;
+let commaTestSession: true | "guest" | undefined;
 let nextSessionHostId = 0;
 const sessionHostControllers: SessionHostController[] = [];
 
@@ -664,6 +664,30 @@ describe("CommaApp", () => {
     expect(await screen.findByRole("dialog", { name: "Search Comma" })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Search Comma" })).toHaveFocus();
     expect(window.location.hash).not.toBe("#/search");
+  });
+
+  it("keeps the command palette closed for a guest Session", async () => {
+    commaTestSession = "guest";
+    renderCommaApp();
+
+    expect(await screen.findByTestId("comma-guest-banner")).toBeVisible();
+    dispatchCommandPaletteShortcut();
+
+    // A guest has no Tasks to search; the palette never opens.
+    await expect(
+      screen.findByRole("dialog", { name: "Search Comma" }, { timeout: 200 })
+    ).rejects.toThrow();
+  });
+
+  it("ignores the Chat Sidebar shortcut in a guest Session", async () => {
+    commaTestSession = "guest";
+    renderCommaApp();
+
+    expect(await screen.findByTestId("comma-guest-banner")).toBeVisible();
+    const chatSidebar = screen.getByTestId("chat-sidebar");
+    dispatchPrimaryChord("KeyB", { altKey: true });
+
+    expect(chatSidebar).toHaveAttribute("data-open", "false");
   });
 
   it("shows the current Search shortcut in the command palette footer", async () => {
@@ -1369,7 +1393,7 @@ describe("CommaApp", () => {
       "true"
     );
     expect(screen.getByRole("button", { name: /Select language/ })).toHaveTextContent(
-      "Auto detect"
+      "English"
     );
     // The shell stays mounted around it: no full-window Settings layout and no
     // way "back to the app".
@@ -1939,6 +1963,10 @@ function seedCommaSession() {
 }
 
 function dispatchCommandPaletteShortcut() {
+  dispatchPrimaryChord("KeyK");
+}
+
+function dispatchPrimaryChord(code: string, { altKey = false } = {}) {
   const platform = `${
     (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
       ?.platform ?? ""
@@ -1948,7 +1976,8 @@ function dispatchCommandPaletteShortcut() {
     platform.includes("iphone") ||
     platform.includes("ipad");
   fireEvent.keyDown(window, {
-    code: "KeyK",
+    altKey,
+    code,
     ctrlKey: !usesCommandAsPrimary,
     metaKey: usesCommandAsPrimary,
   });
@@ -2002,6 +2031,7 @@ function productInboxResult(
 }
 
 function renderWithSessionHost(element: ReactElement) {
+  recordOnboardingCompleted();
   const controller = createWebSessionHostController({
     apiBaseUrl: "http://127.0.0.1:4200",
     ports: createTestWebSessionHostPorts(),
@@ -2013,6 +2043,22 @@ function renderWithSessionHost(element: ReactElement) {
         {element}
       </CommaSessionHostProvider>
     </CommaWebClientSettingsProvider>
+  );
+}
+
+// The test accounts have finished first-launch onboarding on this device, so
+// the shell renders without its overlay. Merged into any settings a test seeds.
+function recordOnboardingCompleted() {
+  const stored = localStorage.getItem(commaClientSettingsStorageKey);
+  const settings = stored
+    ? JSON.parse(stored)
+    : structuredClone(defaultCommaClientSettings);
+  localStorage.setItem(
+    commaClientSettingsStorageKey,
+    JSON.stringify({
+      ...settings,
+      onboardingCompletedUserIds: ["usr_1", "usr_google", "usr_linked"],
+    })
   );
 }
 
@@ -2091,11 +2137,14 @@ function installCommaFetchStub(
       return jsonResponse({
         expires_at: 4_102_444_800,
         session_id: "11111111-1111-4111-8111-111111111111",
-        user: {
-          id: "usr_1",
-          email: "person@example.com",
-          name: "Person Example",
-        },
+        user:
+          commaTestSession === "guest"
+            ? { id: "usr_guest", email: "g-1@guest.comma.invalid", kind: "guest" }
+            : {
+                id: "usr_1",
+                email: "person@example.com",
+                name: "Person Example",
+              },
       });
     }
 

@@ -84,6 +84,14 @@ export type LoginEmailProps = LoginCommonProps & {
   googleErrorMessage?: string;
   onContinueWithGoogle?: () => void;
   onContinueWithApple?: () => void;
+  /** A quieter action under the email form, such as trying the product first. */
+  secondaryAction?: LoginSecondaryAction;
+};
+
+export type LoginSecondaryAction = {
+  label: string;
+  onPress: () => void;
+  pending?: boolean;
 };
 
 export type LoginVerificationProps = LoginCommonProps & {
@@ -193,6 +201,7 @@ const EmailLogin = ({
   googleErrorMessage,
   onContinueWithGoogle,
   onContinueWithApple,
+  secondaryAction,
 }: LoginEmailProps) => {
   const [uncontrolledEmail, setUncontrolledEmail] = useState(defaultEmail);
   const [hasValidationError, setHasValidationError] = useState(false);
@@ -307,6 +316,19 @@ const EmailLogin = ({
           {copy.email.continueAction}
         </Button>
       </form>
+
+      {secondaryAction && (
+        <Button
+          hierarchy="link-gray"
+          size="sm"
+          className="self-center font-regular text-tertiary"
+          disabled={disabled}
+          isPending={secondaryAction.pending ?? false}
+          onPress={secondaryAction.onPress}
+        >
+          {secondaryAction.label}
+        </Button>
+      )}
     </div>
   );
 };

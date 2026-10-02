@@ -1,6 +1,6 @@
 export type JsonObject = Record<string, unknown>;
 
-export async function readJsonObject(request: Request): Promise<JsonObject> {
+export async function readJsonObject(request: Pick<Request, "method" | "text">): Promise<JsonObject> {
   if (request.method === "GET" || request.method === "HEAD") return {};
   const text = await request.text();
   if (text.trim() === "") return {};

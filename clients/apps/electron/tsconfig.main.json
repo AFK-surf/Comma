@@ -41,6 +41,7 @@
     "native/macos/NotificationAuthorization/index.ts",
     "native/macos/FileApplications/index.ts",
     "native/macos/FontFamilies/index.ts",
+    "native/macos/SleepGuard/index.ts",
     "../../packages/config/src/**/*.ts",
     "../../packages/ui/src/components/login/BrandMarks.tsx",
     "../../packages/ui/src/tokens/typography.ts",

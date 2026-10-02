@@ -1,7 +1,0 @@
-{
-  "name": "comma-dashboard-assets",
-  "private": true,
-  "dependencies": {
-    "@hpke/core": "1.9.0"
-  }
-}

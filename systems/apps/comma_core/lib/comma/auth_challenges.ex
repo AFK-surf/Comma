@@ -145,6 +145,48 @@ defmodule Comma.AuthChallenges do
 
   def verify_google_link_challenge(_attrs), do: {:error, :invalid_verification_code}
 
+  def request_apple_link_verification(state) when is_map(state) do
+    with {:ok, email} <- Email.normalize_recipient(state["email"]),
+         true <- nonempty?(state["user_id"]),
+         {:ok, response} <-
+           request_challenge(
+             email,
+             "apple_link",
+             Map.take(state, [
+               "user_id",
+               "issuer",
+               "subject",
+               "email_verified",
+               "client_kind",
+               "client_platform"
+             ]),
+             state
+           ) do
+      {:ok, response |> Map.put("status", "otp_required") |> Map.put("email", email)}
+    else
+      false -> {:error, :invalid_apple_identity}
+      error -> error
+    end
+  end
+
+  def verify_apple_link_challenge(attrs) when is_map(attrs) do
+    id = trim(attrs["challenge_id"])
+    code = trim(attrs["code"])
+
+    with true <- id != "" and code =~ ~r/^\d{6}$/,
+         {:ok, hashed} <- code_hash(id, "apple_link", code),
+         {:ok, challenge} <- store_verify(id, hashed),
+         :ok <- require_purpose(challenge, "apple_link") do
+      {:ok, challenge}
+    else
+      {:error, :rate_limited, _} = error -> error
+      {:error, :auth_unavailable} = error -> error
+      _ -> {:error, :invalid_verification_code}
+    end
+  end
+
+  def verify_apple_link_challenge(_), do: {:error, :invalid_verification_code}
+
   defp request_challenge(email, purpose, extra, attrs) do
     with {:ok, code} <- verification_code(),
          id <- random_challenge_id(),

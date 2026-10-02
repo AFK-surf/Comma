@@ -47,6 +47,7 @@ export function continuesTurnRole(
     last &&
     first &&
     !next.timestamp &&
+    last.message?.platformSource === first.message?.platformSource &&
     conversationEntryRole(last) === conversationEntryRole(first)
   );
 }
@@ -120,16 +121,48 @@ export function buildConversationLayout(
   const layout = {
     turns,
     tailTurnIndex: tailTurn ? turns.indexOf(tailTurn) : -1,
+    userTurnIndexes: new Map(
+      turns.flatMap((turn, turnIndex) =>
+        turn.entries.flatMap((entry) =>
+          entry.message?.role === "user"
+            ? [[entry.message.messageId, turnIndex] as const]
+            : []
+        )
+      )
+    ),
   };
   return assistantDraft
-    ? appendAssistantDraft(layout, assistantDraft, responseSlotId)
+    ? {
+        ...layout,
+        ...appendAssistantDraft(
+          layout,
+          assistantDraft,
+          responseSlotId,
+          assistantDraftTurnIndex(layout, assistantDraft)
+        ),
+      }
     : layout;
+}
+
+export function assistantDraftTurnIndex(
+  layout: {
+    tailTurnIndex: number;
+    userTurnIndexes: ReadonlyMap<string, number>;
+  },
+  draft: ChatAssistantDraft
+) {
+  for (let index = draft.sourceMessageIds.length - 1; index >= 0; index -= 1) {
+    const owner = layout.userTurnIndexes.get(draft.sourceMessageIds[index]!);
+    if (owner !== undefined) return owner;
+  }
+  return layout.tailTurnIndex;
 }
 
 export function appendAssistantDraft(
   layout: { turns: ConversationTurn[]; tailTurnIndex: number },
   draft: ChatAssistantDraft,
-  responseSlotId: string
+  responseSlotId: string,
+  ownerTurnIndex = layout.tailTurnIndex
 ) {
   const entry: ConversationEntry = {
     draft,
@@ -140,9 +173,9 @@ export function appendAssistantDraft(
     kind: "assistant-response",
   };
   const turns = [...layout.turns];
-  const owner = turns[layout.tailTurnIndex];
+  const owner = turns[ownerTurnIndex];
   if (owner) {
-    turns[layout.tailTurnIndex] = { ...owner, entries: [...owner.entries, entry] };
+    turns[ownerTurnIndex] = { ...owner, entries: [...owner.entries, entry] };
   } else {
     turns.push({ entries: [entry], key: `non-user:${responseSlotId}` });
   }

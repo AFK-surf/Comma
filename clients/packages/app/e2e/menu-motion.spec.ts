@@ -284,6 +284,41 @@ test("a closing selection cannot capture input while the next selection opens", 
   await expect(page.getByRole("button", { name: /Two Selection/ })).toBeVisible();
 });
 
+test("a closing menu takes no pointer input while its pixels fade", async ({
+  page,
+  menuBaseURL,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.route("**/menu-motion-fixture", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
+    })
+  );
+  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  // Hold the exit open so the assertion cannot miss the 80ms window.
+  await page.addStyleTag({ content: ":root { --motion-duration-menu-exit: 1s; }" });
+  await page.getByRole("button", { name: "Left menu", exact: true }).click();
+  const arrangeBox = await page
+    .getByRole("menuitem", { name: "Arrange", exact: true })
+    .boundingBox();
+  expect(arrangeBox).not.toBeNull();
+  await page.getByRole("menuitem", { name: "Copy", exact: true }).click();
+  const closing = page.locator('[data-slot="menu-popover"][data-exiting]');
+  await expect(closing).toHaveCount(1);
+  // A closing submenu item under the pointer could open its submenu, which
+  // then took the next click only to close itself.
+  expect(
+    await closing.evaluate(
+      (element, box) =>
+        element.contains(
+          document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+        ),
+      arrangeBox!
+    )
+  ).toBe(false);
+});
+
 test("select restores its trigger focus inside a modal after choosing an option", async ({
   page,
   menuBaseURL,

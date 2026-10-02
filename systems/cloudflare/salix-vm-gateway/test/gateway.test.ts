@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 import { createGateway, type GatewayEnv, type SandboxHandle } from "../src/app";
 import { signRequest, stripControlPlaneHeaders } from "../src/auth";
 import { parseSandboxId, sandboxIdFromPath } from "../src/ids";
-import type { Sandbox } from "@cloudflare/sandbox";
+import type { ManagedSandbox } from "../src/managed_sandbox";
+import type { ControlPermit } from "../src/control";
 
 describe("id parsing", () => {
   test("accepts path-safe sandbox ids", () => {
@@ -34,6 +35,32 @@ describe("auth", () => {
 });
 
 describe("gateway routes", () => {
+  test("owner permits are signed and legacy mutable requests cannot reach the DO", async () => {
+    const calls: string[] = [];
+    const app = createGateway<TestEnv>({ getSandbox: () => fakeSandbox(calls) });
+    const testEnv = env();
+    const target = "https://gateway/internal/v1/sandboxes/sb-1/ensure";
+    const missing = await app.fetch(await signedRequest(target, { method: "POST", body: {}, control: false }), testEnv);
+    expect(missing.status).toBe(409);
+    expect(calls).toEqual([]);
+    const signed = await signedRequest(target, { method: "POST", body: {} });
+    const changed = new URL(signed.url);
+    changed.searchParams.set("salix_control", JSON.stringify({ owner_id: "another-workload" }));
+    expect((await app.fetch(new Request(changed, signed), testEnv)).status).toBe(401);
+    expect(calls).toEqual([]);
+  });
+
+  test("control observation does not use Container transport and repair connect retains its mode", async () => {
+    const requests: Request[] = [];
+    const app = createGateway<TestEnv>({ getSandbox: () => fakeSandbox([], "sb-1", undefined, requests) });
+    const testEnv = env();
+    const observed = await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes/sb-1/control", { control: false }), testEnv);
+    expect(await observed.json()).toMatchObject({ running: false, control: null });
+    expect(requests).toEqual([]);
+    await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes/sb-1/connect?archive_repair=true", { headers: { upgrade: "websocket" } }), testEnv);
+    expect(new URL(requests[0].url).searchParams.get("archive_repair")).toBe("true");
+  });
+
   test("healthz includes worker and connector version metadata", async () => {
     const app = createGateway<TestEnv>({ getSandbox: () => fakeSandbox() });
     const response = await app.fetch(
@@ -64,7 +91,7 @@ describe("gateway routes", () => {
   test("routes signed profiles to separate bindings and rejects path changes", async () => {
     const profiles: string[] = [];
     const app = createGateway<TestEnv>({
-      getSandbox: (_env, _id, _opts, profile) => {
+      getSandbox: (_env, _id, profile) => {
         profiles.push(profile || "cf-standard-2");
         return fakeSandbox();
       },
@@ -83,10 +110,10 @@ describe("gateway routes", () => {
     expect(profiles).toHaveLength(2);
   });
 
-  test("ensure/status/destroy/checkpoint/restore use sandbox contract", async () => {
+  test("managed commands use owner permits and reject SDK backup fallback", async () => {
     const calls: string[] = [];
     const app = createGateway<TestEnv>({
-      getSandbox: (_env, id, opts) => fakeSandbox(calls, id, opts?.keepAlive),
+      getSandbox: (_env, id) => fakeSandbox(calls, id),
     });
     const testEnv = env();
 
@@ -124,10 +151,8 @@ describe("gateway routes", () => {
       ),
       testEnv,
     );
-    expect(await checkpoint.json()).toMatchObject({
-      ok: true,
-      archive: { dir: "/workspace" },
-    });
+    expect(checkpoint.status).toBe(409);
+    expect(await checkpoint.json()).toMatchObject({ error: { code: "provider_archive_required" } });
 
     const restore = await app.fetch(
       await signedRequest(
@@ -139,10 +164,7 @@ describe("gateway routes", () => {
       ),
       testEnv,
     );
-    expect(await restore.json()).toMatchObject({
-      ok: true,
-      restore: { restored: true },
-    });
+    expect(restore.status).toBe(409);
 
     const destroy = await app.fetch(
       await signedRequest(
@@ -154,7 +176,7 @@ describe("gateway routes", () => {
       testEnv,
     );
     expect(destroy.status).toBe(200);
-    expect(calls).toContain("get:sb-1:true");
+    expect(calls).toContain("ensure:sb-1:true");
     expect(calls).toContain("destroy:sb-1");
   });
 
@@ -199,7 +221,7 @@ describe("gateway routes", () => {
     const containerError = createGateway<TestEnv>({
       getSandbox: () => ({
         ...fakeSandbox(),
-        containerFetch: async () => new Response("unavailable", { status: 503 }),
+        salixForward: async () => new Response("unavailable", { status: 503 }),
       }),
     });
     const request = await signedRequest(
@@ -319,8 +341,8 @@ function env(): TestEnv {
     },
     GATEWAY_BUILD_ID: "build-1",
     CONNECTOR_IMAGE_VERSION: "connector-1",
-    Sandbox: {} as DurableObjectNamespace<Sandbox>,
-    SandboxStandard1: {} as DurableObjectNamespace<Sandbox>,
+    Sandbox: {} as DurableObjectNamespace<ManagedSandbox>,
+    SandboxStandard1: {} as DurableObjectNamespace<ManagedSandbox>,
   };
 }
 
@@ -331,9 +353,14 @@ async function signedRequest(
     body?: unknown;
     headers?: HeadersInit;
     rawBody?: boolean;
+    control?: false | ControlPermit;
   } = {},
 ): Promise<Request> {
   const method = opts.method || "GET";
+  const target = new URL(url);
+  if (opts.control !== false) target.searchParams.set("salix_control", JSON.stringify(opts.control ?? {
+    owner_id: "workload-1", operation_id: "wake-1", generation: 1, revision: 1, claim_id: crypto.randomUUID(),
+  }));
   const headers = new Headers(opts.headers);
   const body =
     opts.body === undefined
@@ -353,13 +380,13 @@ async function signedRequest(
     await signRequest(
       "test-secret",
       method,
-      `${new URL(url).pathname}${new URL(url).search}`,
+      `${target.pathname}${target.search}`,
       timestamp,
       nonce,
       new TextEncoder().encode(body || "").buffer,
     ),
   );
-  return new Request(url, { method, headers, body });
+  return new Request(target, { method, headers, body });
 }
 
 function fakeSandbox(
@@ -370,24 +397,30 @@ function fakeSandbox(
 ): SandboxHandle {
   calls.push(`get:${id}:${keepAlive}`);
   return {
-    async containerFetch(request: Request) {
+    async salixForward(_permit: ControlPermit, request: Request) {
       requests.push(request);
       return Response.json({ ok: true, path: new URL(request.url).pathname });
     },
-    async destroy() {
+    async salixDestroy() {
       calls.push(`destroy:${id}`);
+      return { running: false, control: null, managed_commands_settled: false };
     },
-    async setKeepAlive(value: boolean) {
+    async salixKeepAlive(_permit: ControlPermit, value: boolean) {
       calls.push(`keepalive:${id}:${value}`);
     },
-    async createBackup(options: { dir: string }) {
-      return { dir: options.dir };
+    async salixEnsure(_permit: ControlPermit, value: boolean) {
+      calls.push(`ensure:${id}:${value}`);
+      return Response.json({ ok: true });
     },
-    async restoreBackup(_backup: unknown) {
-      return { restored: true };
-    },
-    async wsConnect(request: Request) {
-      requests.push(request);
+    async salixStatus() { return Response.json({ ok: true }); },
+    async salixReceipt() { return Response.json({ phase: "restored" }); },
+    async salixObserve() { return { running: false, control: null, managed_commands_settled: false }; },
+    async salixOpen() { return { running: false, control: null, managed_commands_settled: false }; },
+    async salixSeal() { return { running: false, control: null, managed_commands_settled: false }; },
+    async fetch(request: Request) {
+      const url = new URL(request.url);
+      url.searchParams.delete("salix_control");
+      requests.push(new Request(url, request));
       return Response.json({ ok: true, upgraded: true });
     },
   };

@@ -1,6 +1,8 @@
-import type { CommaLocale } from "@comma/i18n";
+import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
+import { sessionExpectation } from "@comma/session-contract";
 import type { CommaApiSessionTransport } from "../../api";
-import type { SessionHostController } from "../controller";
+import type { SessionGuestController, SessionHostController } from "../controller";
+import { sessionOperationDisplayError } from "../operation-error-message";
 import type { WebSessionHostPorts } from "./coordination-ports";
 import {
   WebCookieSessionAdapter,
@@ -38,9 +40,48 @@ export function createWebSessionHostControllerFromAdapter(
       }
     | undefined;
 
+  const guestLocale = locale ?? baseLocale;
+  const guestError = (code: string) =>
+    sessionOperationDisplayError(
+      code,
+      messages.auth_guest_unavailable({}, { locale: guestLocale }),
+      guestLocale
+    );
+  const guest: SessionGuestController = {
+    availability: () => lifecycle.guestAvailability(),
+    async beginSignUp() {
+      const snapshot = lifecycle.getSnapshotSync();
+      if (snapshot.phase !== "signed_in") {
+        throw new Error(messages.auth_attempt_stale({}, { locale: guestLocale }));
+      }
+      const result = await lifecycle.beginGuestSignUp({
+        expected: sessionExpectation(snapshot),
+      });
+      if (!result.ok) throw guestError(result.error.code);
+    },
+    async start() {
+      const snapshot = lifecycle.getSnapshotSync();
+      if (snapshot.phase !== "signed_out" && snapshot.phase !== "authenticating") {
+        throw new Error(messages.auth_attempt_stale({}, { locale: guestLocale }));
+      }
+      // Google button preparation already starts an attempt. The adapter
+      // replaces it under the Cookie lock and rejects its late credentials.
+      const result = await lifecycle.startGuestSession({
+        expected: {
+          authorityInstanceId: snapshot.authority.authorityInstanceId,
+          expectedSessionId: null,
+          generation: snapshot.generation,
+        },
+      });
+      if (!result.ok) throw guestError(result.error.code);
+    },
+    subscribeImported: (listener) => lifecycle.subscribeGuestImported(listener),
+  };
+
   return {
     apiBaseUrl: lifecycle.baseUrl,
     authenticator,
+    guest,
     lifecycle,
     exchangeTelegramLaunch: (launch) => lifecycle.exchangeTelegramLaunch(launch),
     dispose() {

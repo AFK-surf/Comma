@@ -21,7 +21,6 @@ defmodule Comma.MixProject do
   defp aliases do
     [
       "assets.setup": [
-        "do --app bridge_for_teams_web cmd npm ci --ignore-scripts --prefix assets",
         "tailwind.install --if-missing",
         "esbuild.install --if-missing"
       ],

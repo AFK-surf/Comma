@@ -34,6 +34,7 @@ describe("SideChatTestWindow", () => {
     window.location.hash = "";
     document.body.removeAttribute("data-comma-window-role");
     localStorage.clear();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -249,6 +250,74 @@ describe("SideChatTestWindow", () => {
           workspaceId: "wsp_1",
         },
       })
+    );
+  });
+
+  it("labels Router replies with the name of the Task's own workspace", async () => {
+    window.location.hash +=
+      "&workspaceId=wsp_1&groupId=grp_1&conversationId=cnv_parent";
+    // Main last activated another workspace; the Task still belongs to wsp_1.
+    localStorage.setItem("comma.activeWorkspaceId", "wsp_other");
+    const browserFetch = globalThis.fetch;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), "https://api.example").pathname;
+      if (!path.endsWith("/agent-models")) return browserFetch(input, init);
+      const router = {
+        agent_id: "agent_router",
+        model: "model-a",
+        name: path.includes("/wsp_1/") ? "Atlas" : "Juno",
+        provider: "comma",
+        role: "router",
+        source: "platform_default",
+        template_id: "tpl_default",
+        template_name: "Default",
+      };
+      return Promise.resolve(
+        Response.json({
+          agents: { router, worker: { ...router, name: "Worker", role: "worker" } },
+          available_models: [],
+          platform_defaults: { router: null, worker: null },
+          worker_default_template_id: null,
+          workers: { items: [], next_cursor: null },
+          workspace_id: "wsp_1",
+        })
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const session = nestedTaskChatState.sessions[0]!;
+    installTestWindowBridge({
+      chatState: {
+        ...nestedTaskChatState,
+        sessions: [
+          {
+            ...session,
+            state: {
+              ...session.state,
+              messages: session.state.messages.map((message) => ({
+                ...message,
+                actorRole: "router" as const,
+              })),
+            },
+          },
+        ],
+      },
+    });
+
+    renderWithClientSettings(
+      <CommaSessionHostProvider
+        controller={createTestSessionHostController({
+          initial: signedInSessionSnapshot,
+        })}
+      >
+        <SideChatTestWindow />
+      </CommaSessionHostProvider>
+    );
+
+    expect(await screen.findByText("Atlas")).toHaveClass(
+      "comma-chat-assistant-source-label"
+    );
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(
+      expect.not.arrayContaining([expect.stringContaining("wsp_other")])
     );
   });
 

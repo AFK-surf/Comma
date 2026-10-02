@@ -40,7 +40,6 @@ views '01 · 产品与领域' {
     include bft_organization_product
     include bft_swarm_product
     include comma_chat_product
-    include bft_chat_product
   }
 
   view product_recommendation {
@@ -115,20 +114,6 @@ views '02 · Single Session' {
     reassignment_existing_conversation -> reassignment_current_session '消息 append 后投递到控制面当前 Router'
   }
 
-  dynamic view bft_group_router_reassignment_flow {
-    title '04E · BFT：控制面显式重新指定 Group Router'
-    description '同一低频控制面操作在 BFT 中采用替代策略：保留 UserAssistantChat binding 行，创建替代 Conversation，并更新 binding.conversation_id。它同样不是普通请求之间的自动 Router 切换。'
-
-    bft_chat_product -> reassignment_existing_conversation '操作前：binding.conversation_id 指向既有 Conversation'
-    reassignment_existing_conversation -> reassignment_previous_router 'required Router Participant 指向重新指定前的 Router'
-    reassignment_previous_router -> reassignment_previous_session '该 Router 独有 canonical Session'
-    product_agent_scope -> reassignment_current_router '人工或控制面显式改写 Group.router_agent_id'
-    reassignment_current_router -> reassignment_current_session '控制面当前 Router 使用自己的 canonical Session'
-    reassignment_existing_conversation -> reassignment_existing_conversation 'AssistantChats 校验 required Router Participant 不匹配：标记 stale'
-    bft_chat_product -> reassignment_replacement_conversation '同一 binding 行更新 conversation_id，指向替代 Conversation'
-    reassignment_replacement_conversation -> reassignment_current_router '替代 Conversation 创建控制面当前 Router Participant'
-  }
-
   view session_terms {
     title '05 · “Session”同名概念消歧'
     description '登录 Session、Agent Runtime Session、work_session Conversation 和 Provider native thread 不是同一概念；single-session 只指 Agent Runtime Session。'
@@ -148,7 +133,7 @@ views '02 · Single Session' {
 views '03 · 概念到实现' {
   view product_scope_implementation {
     title '06 · 产品概念 → 持久化与权威 Owner'
-    description '概念稳定后再落到代码：产品 User/Scope 属于产品控制面；Comma Chat 直接解析 Group 固定 Conversation，BFT 保留产品 binding；Conversation 是 Salix 权威事实。'
+    description '概念稳定后再落到代码：产品 User/Scope 属于产品控制面；Comma Chat 直接解析 Group 固定 Conversation；Conversation 是 Salix 权威事实。'
     autoLayout LeftRight
 
     include product_user
@@ -156,7 +141,6 @@ views '03 · 概念到实现' {
     include bft_organization_product
     include bft_swarm_product
     include comma_chat_product
-    include bft_chat_product
     include product_conversation
     include impl_product_users
     include impl_comma_workspace

@@ -21,7 +21,7 @@ type Story = StoryObj<typeof meta>;
 
 export const Overview: Story = {
   render: () => (
-    <div className="grid w-full max-w-[960px] gap-6 p-4 sm:p-8">
+    <div className="grid w-full max-w-[960px] gap-6 p-4 @min-[640px]/comma-window:p-8">
       {paletteRows.map(([name, colors]) => (
         <section key={name} className="grid gap-3">
           <h2 className="text-md font-semibold text-primary">{name}</h2>
@@ -44,7 +44,7 @@ export const Overview: Story = {
 
 export const TailwindUtilities: Story = {
   render: () => (
-    <div className="grid w-full max-w-[520px] gap-4 p-4 text-sm text-secondary sm:p-8">
+    <div className="grid w-full max-w-[520px] gap-4 p-4 text-sm text-secondary @min-[640px]/comma-window:p-8">
       <p>
         <code className="rounded bg-secondary px-1.5 py-0.5 text-primary">
           bg-brand-600

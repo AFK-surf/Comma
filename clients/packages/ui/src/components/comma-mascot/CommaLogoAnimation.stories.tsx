@@ -5,6 +5,7 @@ const meta = {
   title: "Brand/Comma Logo Animation",
   component: CommaLogoAnimation,
   args: {
+    cutout: false,
     easing: "easeInOut",
     intervalSeconds: 1.4,
     nestedDelayPercent: 1,
@@ -14,6 +15,9 @@ const meta = {
     zoomSeconds: 2,
   },
   argTypes: {
+    cutout: {
+      control: "boolean",
+    },
     easing: {
       control: "select",
       options: ["easeInOut", "easeOut", "linear"],
@@ -61,4 +65,19 @@ export const FrameInspector: Story = {
   args: {
     paused: true,
   },
+};
+
+/**
+ * On a coloured surface the aperture is cut out of the mark, so the next
+ * comma opens onto the surface instead of a disc of the page's colour.
+ */
+export const CutoutOnColor: Story = {
+  args: { cutout: true, size: 96, style: { color: "inherit" } },
+  decorators: [
+    (Story) => (
+      <div className="rounded-2xl bg-brand-solid p-4xl text-white">
+        <Story />
+      </div>
+    ),
+  ],
 };

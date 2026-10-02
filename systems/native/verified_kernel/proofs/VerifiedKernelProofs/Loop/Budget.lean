@@ -481,10 +481,10 @@ theorem expire_out {state m busy : Term} : Sat (ExpireOut state m busy) (expireN
   sat_walk
   all_goals first
     | (intro _; left; loop_unfold
-       exact ⟨rfl, _, ⟨_, _, ‹field state "wait" _ = _›⟩, ‹(_ != _) = true›⟩)
+       exact ⟨rfl, _, ⟨_, _, (hyp% field state "wait" _ = _)⟩, (hyp% (_ != _) = true)⟩)
     | (intro _; right; loop_unfold
-       refine ⟨_, _, _, _, ⟨_, _, ‹field state "wait" _ = _›⟩,
-         ‹VerifiedKernel.AgentLoop.WaitExtension.decide _ _ _ _ = _›, ?_, waitSetEvent_wait ‹_›⟩
+       refine ⟨_, _, _, _, ⟨_, _, (hyp% field state "wait" _ = _)⟩,
+         (hyp% VerifiedKernel.AgentLoop.WaitExtension.decide _ _ _ _ = _), ?_, waitSetEvent_wait ‹_›⟩
        simp [extendEffects, nil, atom_beq_self]; done)
     | (unfold ExpireOut; loop_unfold; simp [Internal])
 
@@ -596,7 +596,7 @@ theorem phase_of_beq {m : Term} {p : String}
 macro "rank_leaf " m:term:max lem:term:max ph:str : tactic => `(tactic| (
   refine Sat.mono $lem (fun out po internal => Or.inl ?_)
   obtain ⟨p, mem, outPhase⟩ := po internal
-  have inPhase : mkey $m "phase" = b $ph := phase_of_beq ‹(_ == b $ph) = true›
+  have inPhase : mkey $m "phase" = b $ph := phase_of_beq (hyp% (_ == b $ph) = true)
   rw [inRank_of outPhase, inRank_of inPhase]
   simp only [List.mem_cons, List.mem_nil_iff, or_false] at mem
   all_goals (rcases mem with h | h | h <;> subst_vars <;> simp (config := {decide := true}) [phaseRank, binary_key_beq])))
@@ -649,7 +649,7 @@ theorem step_continue_rank {ask : Loop.Ask} {state m : Term} :
   sat_walk
   · rank_leaf m classify_out "classify"
   · -- activation
-    have inPhase : mkey m "phase" = b "activation" := phase_of_beq ‹(_ == b "activation") = true›
+    have inPhase : mkey m "phase" = b "activation" := phase_of_beq (hyp% (_ == b "activation") = true)
     refine Sat.mono activation_out (fun out act internal => ?_)
     rcases act internal with ⟨outPhase, answered⟩ | outPhase | yield
     · by_cases none : (mkey m "router" == nil) = true
@@ -664,7 +664,7 @@ theorem step_continue_rank {ask : Loop.Ask} {state m : Term} :
       split <;> omega
     · exact Or.inr (Or.inl yield)
   · -- timeout
-    have inPhase : mkey m "phase" = b "timeout" := phase_of_beq ‹(_ == b "timeout") = true›
+    have inPhase : mkey m "phase" = b "timeout" := phase_of_beq (hyp% (_ == b "timeout") = true)
     refine Sat.mono timeoutEntry_out (fun out entry internal => Or.inl ?_)
     rw [inRank_of (entry internal), inRank_of inPhase]
     simp [phaseRank, binary_key_beq]
@@ -675,7 +675,7 @@ theorem step_continue_rank {ask : Loop.Ask} {state m : Term} :
   · rank_leaf m noticeCleanup_out "notice_cleanup"
   · unfold RankStep; loop_unfold; simp [Internal]
   · -- notice_committed without async: the `finalStop` outcome
-    have inPhase : mkey m "phase" = b "notice_committed" := phase_of_beq ‹(_ == b "notice_committed") = true›
+    have inPhase : mkey m "phase" = b "notice_committed" := phase_of_beq (hyp% (_ == b "notice_committed") = true)
     generalize hfs : (native_decl% "VerifiedKernel.Session.Loop.finalStop" : Term → Term × List Term) m = fs
     obtain ⟨stopped, effs⟩ := fs
     rcases finalStop_cases hfs with ⟨outPhase, rfl⟩ | rfl
@@ -701,7 +701,7 @@ theorem step_fact_rank {ask : Loop.Ask} {state m v : Term} :
   simp only [a]
   sat_walk
   · -- router
-    have inPhase : mkey m "phase" = b "router" := phase_of_beq ‹(_ == b "router") = true›
+    have inPhase : mkey m "phase" = b "router" := phase_of_beq (hyp% (_ == b "router") = true)
     refine Sat.mono activation_out (fun out act internal => ?_)
     rw [mkey_put_same] at act
     rcases act internal with ⟨outPhase, answered⟩ | outPhase | yield
@@ -713,7 +713,7 @@ theorem step_fact_rank {ask : Loop.Ask} {state m v : Term} :
       simp (config := {decide := true}) [phaseRank]
     · exact Or.inr (Or.inl yield)
   · -- busy
-    have inPhase : mkey m "phase" = b "busy" := phase_of_beq ‹(_ == b "busy") = true›
+    have inPhase : mkey m "phase" = b "busy" := phase_of_beq (hyp% (_ == b "busy") = true)
     refine Sat.mono expire_out (fun out exp internal => ?_)
     rcases exp internal with ⟨only, changed⟩ | ⟨w, now, next, event, read, decided, effects, carried⟩
     · exact Or.inr (Or.inr (Or.inr (Or.inl ⟨⟨v, rfl⟩, inPhase, only, changed⟩)))

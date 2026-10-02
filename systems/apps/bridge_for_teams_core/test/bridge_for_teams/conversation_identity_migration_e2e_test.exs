@@ -3,8 +3,6 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
 
   alias BridgeForTeams.{Accounts, Orgs, Projects, Repo}
 
-  alias BridgeForTeams.Schema.{UserAssistantChat, WorkspaceItem}
-
   alias SalixStore.{ConversationIdMigration, Ids}
 
   setup do
@@ -37,35 +35,48 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
     legacy_conversation_id = "legacy-bft-only"
     legacy_messages = ~w(message-last message-catchup message-pending message-reconciled)
 
-    chat =
-      %UserAssistantChat{}
-      |> UserAssistantChat.changeset(%{
-        user_id: user.id,
-        org_id: org.id,
-        project_id: project.id,
-        conversation_id: legacy_conversation_id
-      })
-      |> Repo.insert!()
+    # The product code for these tables is retired; the rows are seeded with
+    # SQL because the identity migration still rewrites any stored data.
+    chat_id = Ecto.UUID.generate()
+    item_id = Ecto.UUID.generate()
 
-    item =
-      %WorkspaceItem{}
-      |> WorkspaceItem.changeset(%{
-        user_id: user.id,
-        org_id: org.id,
-        project_id: project.id,
-        title: "Projected task",
-        category: "tasks",
-        kind: "agent_task",
-        platform: "comma",
-        status: "in_progress",
-        source: "projection",
-        salix_conversation_id: legacy_conversation_id,
-        source_refs: %{
+    Repo.query!(
+      """
+      INSERT INTO user_assistant_chats (
+        id, user_id, org_id, project_id, conversation_id, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      """,
+      [
+        Ecto.UUID.dump!(chat_id),
+        Ecto.UUID.dump!(user.id),
+        Ecto.UUID.dump!(org.id),
+        Ecto.UUID.dump!(project.id),
+        legacy_conversation_id
+      ]
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO workspace_items (
+        id, user_id, org_id, project_id, title, category, kind, status, source,
+        salix_conversation_id, source_refs, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, 'Projected task', 'tasks', 'agent_task',
+              'in_progress', 'projection', $5, $6, NOW(), NOW())
+      """,
+      [
+        Ecto.UUID.dump!(item_id),
+        Ecto.UUID.dump!(user.id),
+        Ecto.UUID.dump!(org.id),
+        Ecto.UUID.dump!(project.id),
+        legacy_conversation_id,
+        %{
           "conversation_id" => legacy_conversation_id,
           "message_id" => "provider-message-reference"
         }
-      })
-      |> Repo.insert!()
+      ]
+    )
 
     cursor_id = Ecto.UUID.generate()
 
@@ -118,8 +129,8 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
 
     assert {:ok, _summary} = BridgeForTeams.Migrations.ConversationIdentity.run(maps)
 
-    migrated_chat = Repo.get!(UserAssistantChat, chat.id)
-    migrated_item = Repo.get!(WorkspaceItem, item.id)
+    migrated_chat_conversation_id = chat_conversation_id(chat_id)
+    {migrated_item_conversation_id, migrated_item_refs} = workspace_item(item_id)
 
     migrated_cursor =
       Repo.query!(
@@ -134,10 +145,10 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
       ).rows
       |> List.first()
 
-    assert migrated_chat.conversation_id == target_conversation_id
-    assert migrated_item.salix_conversation_id == target_conversation_id
-    assert migrated_item.source_refs["conversation_id"] == target_conversation_id
-    assert migrated_item.source_refs["message_id"] == "provider-message-reference"
+    assert migrated_chat_conversation_id == target_conversation_id
+    assert migrated_item_conversation_id == target_conversation_id
+    assert migrated_item_refs["conversation_id"] == target_conversation_id
+    assert migrated_item_refs["message_id"] == "provider-message-reference"
 
     assert [
              ^target_conversation_id,
@@ -156,6 +167,25 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
            ]
 
     assert {:ok, _summary} = BridgeForTeams.Migrations.ConversationIdentity.run(maps)
-    assert Repo.get!(WorkspaceItem, item.id).salix_conversation_id == target_conversation_id
+    assert {^target_conversation_id, _refs} = workspace_item(item_id)
+  end
+
+  defp chat_conversation_id(chat_id) do
+    [[conversation_id]] =
+      Repo.query!("SELECT conversation_id FROM user_assistant_chats WHERE id = $1", [
+        Ecto.UUID.dump!(chat_id)
+      ]).rows
+
+    conversation_id
+  end
+
+  defp workspace_item(item_id) do
+    [[conversation_id, source_refs]] =
+      Repo.query!(
+        "SELECT salix_conversation_id, source_refs FROM workspace_items WHERE id = $1",
+        [Ecto.UUID.dump!(item_id)]
+      ).rows
+
+    {conversation_id, source_refs}
   end
 end

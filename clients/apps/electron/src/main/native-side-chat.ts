@@ -18,6 +18,7 @@ import {
   type SideChatInteractiveProgressInput,
   type SideChatPresentation,
   type SideChatShortcutRegistrationInput,
+  type StatusMenuRow,
 } from "@comma/chat-contract";
 import {
   defaultSideChatShortcut,
@@ -92,6 +93,7 @@ interface NativeSideChatServiceOptions {
   activateOpenWindow?: boolean;
   onCloseTestWindow?: () => Promise<void> | void;
   onDebugSettingsChanged?: (settings: SideChatDebugSettings) => void;
+  onEnabledChanged?: (enabled: boolean) => void;
   onOpenSettings?: () => Promise<void> | void;
   onOpenTestWindow?: (input: SideChatOpenTestWindowInput) => Promise<void> | void;
   onPresentationChanged?: (presentation: SideChatPresentation) => void;
@@ -191,6 +193,7 @@ const CARBON_COMMAND_KEY = 1 << 8;
 // positions recorded by the renderer, independent of the active key layout.
 const MAC_KEY_CODES: Record<SideChatShortcut["key"], number> = {
   space: 49,
+  comma: 43,
   a: 0,
   b: 11,
   c: 8,
@@ -240,6 +243,7 @@ export class NativeSideChatService {
   readonly #onDebugSettingsChanged:
     | ((settings: SideChatDebugSettings) => void)
     | undefined;
+  readonly #onEnabledChanged: ((enabled: boolean) => void) | undefined;
   readonly #onOpenSettings: (() => Promise<void> | void) | undefined;
   readonly #onOpenTestWindow:
     | ((input: SideChatOpenTestWindowInput) => Promise<void> | void)
@@ -260,6 +264,7 @@ export class NativeSideChatService {
   #desiredOpen = false;
   #debugSettings: SideChatDebugSettings = { ...defaultSideChatDebugSettings };
   #disposed = false;
+  #enabled = true;
   #geometryKey = "";
   #failCloseRecovery = INITIAL_FAIL_CLOSE_RECOVERY_STATE;
   #host: ChildProcessWithoutNullStreams | undefined;
@@ -274,6 +279,9 @@ export class NativeSideChatService {
   #restartTimer: ReturnType<typeof setTimeout> | undefined;
   #shortcut: SideChatShortcutBinding = structuredClone(defaultSideChatShortcut);
   #started = false;
+  #statusMenu:
+    | { menu: StatusMenu; onLost: () => void; onSelect: (id: string) => void }
+    | undefined;
   #windowGeneration = 0;
   #windowReady = false;
 
@@ -281,6 +289,7 @@ export class NativeSideChatService {
     activateOpenWindow = true,
     onCloseTestWindow,
     onDebugSettingsChanged,
+    onEnabledChanged,
     onOpenSettings,
     onOpenTestWindow,
     onPresentationChanged,
@@ -290,6 +299,7 @@ export class NativeSideChatService {
     this.#activateOpenWindow = activateOpenWindow;
     this.#onCloseTestWindow = onCloseTestWindow;
     this.#onDebugSettingsChanged = onDebugSettingsChanged;
+    this.#onEnabledChanged = onEnabledChanged;
     this.#onOpenSettings = onOpenSettings;
     this.#onOpenTestWindow = onOpenTestWindow;
     this.#onPresentationChanged = onPresentationChanged;
@@ -450,9 +460,35 @@ export class NativeSideChatService {
     return this.#receipt();
   }
 
+  /**
+   * The General setting. Off closes Side Chat, makes every open request a
+   * no-op, and tells the helper to drop the edge gesture and the global
+   * shortcut; the saved shortcut is kept for when it is turned on again.
+   */
+  setEnabled(enabled: boolean) {
+    if (enabled === this.#enabled) return;
+    this.#enabled = enabled;
+    const host = this.#host;
+    const hostRunning = Boolean(host && !host.killed);
+    if (!enabled) {
+      // Without a running helper nothing is shown. Closing would launch one
+      // before start() supplies the saved binding, and on Windows and Linux
+      // there is no helper to launch.
+      if (hostRunning) this.close();
+      else this.#desiredOpen = false;
+    }
+    if (host && hostRunning) this.#writeHostFrame(host, enabledFrame(enabled));
+    this.#onEnabledChanged?.(enabled);
+  }
+
+  enabled() {
+    return this.#enabled;
+  }
+
   setInteractiveProgress({
     progress,
   }: SideChatInteractiveProgressInput): ChatCommandReceipt {
+    if (!this.#enabled) return this.#receipt();
     if (this.#failCloseRecovery.barrier) {
       if (progress > 0.002) {
         this.#transitionFailCloseRecovery({ type: "queue-reopen" });
@@ -467,9 +503,10 @@ export class NativeSideChatService {
     return this.#receipt();
   }
 
-  finishInteractiveProgress({
-    shouldOpen,
-  }: SideChatInteractiveCompletionInput): ChatCommandReceipt {
+  finishInteractiveProgress(
+    input: SideChatInteractiveCompletionInput
+  ): ChatCommandReceipt {
+    const shouldOpen = this.#enabled && input.shouldOpen;
     if (!shouldOpen) {
       this.#transitionFailCloseRecovery({ type: "cancel-reopen" });
       this.#desiredOpen = false;
@@ -484,7 +521,7 @@ export class NativeSideChatService {
   }
 
   open() {
-    if (!this.#prepareBackdropForOpen()) return this.#receipt();
+    if (!this.#enabled || !this.#prepareBackdropForOpen()) return this.#receipt();
     this.#desiredOpen = true;
     if (!this.#sendControl("side-chat.open")) this.#applyFallbackVisibility(true);
     return this.#receipt();
@@ -499,6 +536,7 @@ export class NativeSideChatService {
   }
 
   toggle() {
+    if (!this.#enabled) return this.close();
     const shouldOpen = !this.#desiredOpen;
     if (!shouldOpen) this.#transitionFailCloseRecovery({ type: "cancel-reopen" });
     if (shouldOpen && !this.#prepareBackdropForOpen()) return this.#receipt();
@@ -549,6 +587,38 @@ export class NativeSideChatService {
     this.#backdropUnavailable = false;
     this.#refreshBackdropHealthMonitor();
     return true;
+  }
+
+  /** Whether this Mac has the helper, which also draws the menu-bar item. */
+  hostAvailable() {
+    return existsSync(this.#resolveExecutablePath());
+  }
+
+  /**
+   * Shows the macOS menu-bar item through the helper, so hovering its menu
+   * never waits on Main's thread. Main keeps the latest menu and sends it to
+   * every helper it starts; `onSelect` receives the id of the chosen row. When
+   * the running helper is lost, the menu is dropped and `onLost` runs, so Main
+   * can draw the menu itself instead of waiting on a helper that keeps failing.
+   */
+  showStatusMenu(menu: StatusMenu, onSelect: (id: string) => void, onLost: () => void) {
+    this.#statusMenu = { menu: structuredClone(menu), onLost, onSelect };
+    const host = this.#host;
+    // A helper that is not running yet receives the menu when it starts.
+    if (host && !host.killed) this.#writeHostFrame(host, statusMenuShowFrame(menu));
+  }
+
+  hideStatusMenu() {
+    if (!this.#statusMenu) return;
+    this.#statusMenu = undefined;
+    const host = this.#host;
+    if (host && !host.killed) {
+      this.#writeHostFrame(host, {
+        kind: "status-menu.hide",
+        protocolVersion: chatProtocolVersion,
+        requestId: randomUUID(),
+      });
+    }
   }
 
   dispose() {
@@ -616,6 +686,7 @@ export class NativeSideChatService {
       this.#clearActiveShortcutRegistration(registrationError, lostGeneration);
       this.#rejectQueuedShortcutUpdate(registrationError);
       this.#releaseFailCloseBarrierAfterHostLoss(lostGeneration);
+      this.#loseStatusMenu();
     }
     if (this.#restartTimer) {
       clearTimeout(this.#restartTimer);
@@ -661,6 +732,7 @@ export class NativeSideChatService {
       this.#rejectQueuedShortcutUpdate(registrationError);
       if (code) log.warn(`CommaSideChatHost exited with code ${code}.`);
       this.#releaseFailCloseBarrierAfterHostLoss(generation);
+      this.#loseStatusMenu();
       if (this.#presentation.progress > 0.002) {
         const desiredOpen = this.#desiredOpen;
         this.#applyFallbackVisibility(false);
@@ -670,7 +742,13 @@ export class NativeSideChatService {
     });
 
     this.#sendLayout(host);
+    // Before the shortcut, so a helper started while Side Chat is off never
+    // registers the chord.
+    if (!this.#enabled) this.#writeHostFrame(host, enabledFrame(false));
     this.#replayShortcut(host);
+    if (this.#statusMenu) {
+      this.#writeHostFrame(host, statusMenuShowFrame(this.#statusMenu.menu));
+    }
     if (this.#desiredOpen) this.#writeHostFrame(host, surfaceControl("side-chat.open"));
     return host;
   }
@@ -869,6 +947,11 @@ export class NativeSideChatService {
 
     if (frame.kind === "side-chat.protocol-error") {
       log.warn(`CommaSideChatHost protocol error: ${frame.error}`);
+      return;
+    }
+
+    if (frame.kind === "status-menu.select") {
+      this.#statusMenu?.onSelect(frame.id);
       return;
     }
 
@@ -1252,6 +1335,7 @@ export class NativeSideChatService {
     this.#rejectQueuedShortcutUpdate(registrationError);
     log.warn(`CommaSideChatHost stream failed: ${errorMessage(error)}`);
     this.#releaseFailCloseBarrierAfterHostLoss(helperGeneration);
+    this.#loseStatusMenu();
     if (this.#presentation.progress > 0.002) {
       const desiredOpen = this.#desiredOpen;
       this.#applyFallbackVisibility(false);
@@ -1259,6 +1343,12 @@ export class NativeSideChatService {
     }
     if (!host.killed) host.kill();
     this.#scheduleHostRestart();
+  }
+
+  #loseStatusMenu() {
+    const statusMenu = this.#statusMenu;
+    this.#statusMenu = undefined;
+    statusMenu?.onLost();
   }
 
   #scheduleHostRestart() {
@@ -1442,6 +1532,23 @@ function validBackdropGeometry(geometry: SideChatBackdropGeometry) {
   );
 }
 
+/** The menu-bar menu the helper draws: rows, icon, tooltip and width in points. */
+export interface StatusMenu {
+  iconPath: string;
+  rows: StatusMenuRow[];
+  toolTip: string;
+  width: number;
+}
+
+function statusMenuShowFrame(menu: StatusMenu): SideChatHostFrame {
+  return {
+    ...menu,
+    kind: "status-menu.show",
+    protocolVersion: chatProtocolVersion,
+    requestId: randomUUID(),
+  };
+}
+
 function surfaceControl(
   kind: "side-chat.open" | "side-chat.close" | "side-chat.toggle" | "side-chat.stop",
   requestId = randomUUID()
@@ -1450,6 +1557,15 @@ function surfaceControl(
     kind,
     protocolVersion: chatProtocolVersion,
     requestId,
+  };
+}
+
+function enabledFrame(enabled: boolean): SideChatHostFrame {
+  return {
+    enabled,
+    kind: "side-chat.enabled",
+    protocolVersion: chatProtocolVersion,
+    requestId: randomUUID(),
   };
 }
 

@@ -1,0 +1,2291 @@
+/* First-launch onboarding: the light field, the intro (the screen dims, then
+   the Comma mark welcomes the user and moves up to head the conversation), a
+   conversation with Comma (its greeting, then one exchange per setup item,
+   each with a card under Comma's question), in the macOS app the Open Comma
+   shortcut drawn as keys to press, the light that sweeps it away, and the
+   welcome page that closes it.
+
+   Two presentations share everything below. `overlay` covers the product in
+   its own window: the light field blurs the app and tints it blue. `window`
+   fills a transparent Electron window over the desktop, below the menu bar
+   and over the Dock: nothing can blur the desktop, so the field dims it and
+   lets the wallpaper show through the blue, and covers the Dock's band.
+
+   Motion: durations, easings, distances, scales and blurs are `--motion-*`
+   tokens (tokens/motion.ts). Interactive states are interruptible CSS
+   transitions; the intro, the thread's moves, the cards, the light sweep and
+   the welcome page are Web Animations played by onboardingMotion.ts; every
+   bubble plays the chat's own send motion. The global reduced-motion rules
+   zero every CSS transition, so each state then simply appears, except the
+   light's fades (the dim, each step deeper), which stay slow cross-fades; the
+   drifting light is paused outright. Unitless values (opacities, colour-mix
+   weights, gradient stops, scales, ratios of the viewport) are ratios, not
+   dimensions. */
+
+.comma-onboarding {
+  /* Light field. Over the product the veil multiplies the blurred app into
+     the blue, so a light shell turns into exactly these colours; a dark shell
+     screens instead (below). Deeper at the top, brighter towards the light. */
+  --onboarding-veil-top: var(--color-brand-700);
+  --onboarding-veil-upper: var(--color-brand-600);
+  --onboarding-veil-lower: var(--color-brand-500);
+  --onboarding-veil-bottom: var(--color-brand-400);
+  --onboarding-veil-blend: multiply;
+  --onboarding-night: color-mix(in oklab, var(--color-brand-900) 70%, transparent);
+  --onboarding-horizon-core: color-mix(
+    in oklab,
+    var(--color-brand-25) 95%,
+    transparent
+  );
+  --onboarding-horizon-middle: color-mix(
+    in oklab,
+    var(--color-brand-100) 75%,
+    transparent
+  );
+  --onboarding-horizon-edge: color-mix(
+    in oklab,
+    var(--color-brand-300) 40%,
+    transparent
+  );
+  --onboarding-bloom: color-mix(in oklab, var(--color-brand-200) 55%, transparent);
+  /* Each finished item fades a deeper, richer blue in over the veil. */
+  --onboarding-deep-top: var(--color-brand-900);
+  --onboarding-deep-middle: var(--color-brand-800);
+  --onboarding-deep-bottom: var(--color-brand-700);
+  /* Over the desktop, the light where the Dock sits, and its deeper step. */
+  --onboarding-floor: var(--color-brand-50);
+  --onboarding-floor-deep: var(--color-brand-200);
+
+  /* The column: the chat's width, with the chat's avatar gutter on its left. */
+  --onboarding-gutter: calc(var(--spacing-3xl) + var(--spacing-md));
+  --onboarding-side: var(--spacing-xl);
+  --onboarding-width: min(
+    var(--container-sm),
+    100vw - 2 * var(--onboarding-side) - var(--onboarding-gutter)
+  );
+  /* The invisible composer: one line of the chat's text, in its padding. */
+  --onboarding-composer-block: calc(
+    2 * var(--spacing-md) + var(--text-sm--line-height)
+  );
+
+  /* Ink straight on the light field. */
+  --onboarding-on-field: var(--color-alpha-white-90);
+  --onboarding-on-field-quiet: var(--color-alpha-white-70);
+
+  /* Close sits in the top-right corner, one comfortable margin in; over
+     the product, below the strip that moves the window. */
+  --onboarding-drag-strip: var(--spacing-6xl);
+  --onboarding-corner-inset: var(--spacing-3xl);
+  --onboarding-corner-top: var(--onboarding-corner-inset);
+  /* The Comma mark: its size in the middle of the intro, and at the head of
+     the conversation (a ratio of it), centred on Close's line. */
+  --onboarding-mark-size: var(--spacing-8xl);
+  --onboarding-mark-header-scale: 0.4;
+
+  position: fixed;
+  z-index: var(--z-index-modal-overlay);
+  inset: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-app-region: no-drag;
+  -webkit-font-smoothing: antialiased;
+}
+
+:is(.dark, [data-theme="Dark mode"]) .comma-onboarding {
+  --onboarding-veil-top: var(--color-brand-800);
+  --onboarding-veil-upper: var(--color-brand-700);
+  --onboarding-veil-lower: var(--color-brand-600);
+  --onboarding-veil-bottom: var(--color-brand-500);
+  --onboarding-veil-blend: screen;
+}
+
+/* Over the desktop the veil only dims, in a deep blue (below), without a
+   blend. */
+.comma-onboarding[data-presentation="window"] {
+  --onboarding-veil-blend: normal;
+  --onboarding-night: color-mix(in oklab, var(--color-brand-900) 55%, transparent);
+}
+
+/* Over the desktop the veil is lighter than it is solid: deep at the top,
+   where Comma's words sit, then thinning on an eased curve (no visible
+   band) so the desktop shows through towards the light. Each finished item
+   deepens it the same way, never to an opaque blue. */
+.comma-onboarding[data-presentation="window"] .comma-onboarding-light-field__veil {
+  background: linear-gradient(
+    to bottom in oklab,
+    color-mix(in oklab, var(--color-brand-800) 78%, transparent) 0%,
+    color-mix(in oklab, var(--color-brand-800) 66.5%, transparent) 19%,
+    color-mix(in oklab, var(--color-brand-800) 57.8%, transparent) 34%,
+    color-mix(in oklab, var(--color-brand-800) 50.8%, transparent) 47%,
+    color-mix(in oklab, var(--color-brand-800) 46.2%, transparent) 56.5%,
+    color-mix(in oklab, var(--color-brand-800) 42.5%, transparent) 65%,
+    color-mix(in oklab, var(--color-brand-800) 39.5%, transparent) 73%,
+    color-mix(in oklab, var(--color-brand-800) 37.3%, transparent) 80.2%,
+    color-mix(in oklab, var(--color-brand-800) 35.8%, transparent) 86.1%,
+    color-mix(in oklab, var(--color-brand-800) 34.9%, transparent) 91%,
+    color-mix(in oklab, var(--color-brand-800) 34.4%, transparent) 95.2%,
+    color-mix(in oklab, var(--color-brand-800) 34.1%, transparent) 98.2%,
+    color-mix(in oklab, var(--color-brand-800) 34%, transparent) 100%
+  );
+}
+
+.comma-onboarding[data-presentation="window"] .comma-onboarding-light-field__deep {
+  background: linear-gradient(
+    to bottom in oklab,
+    color-mix(in oklab, var(--color-brand-900) 70%, transparent) 0%,
+    color-mix(in oklab, var(--color-brand-900) 54.3%, transparent) 19%,
+    color-mix(in oklab, var(--color-brand-900) 42.5%, transparent) 34%,
+    color-mix(in oklab, var(--color-brand-900) 32.9%, transparent) 47%,
+    color-mix(in oklab, var(--color-brand-900) 26.7%, transparent) 56.5%,
+    color-mix(in oklab, var(--color-brand-900) 21.6%, transparent) 65%,
+    color-mix(in oklab, var(--color-brand-900) 17.6%, transparent) 73%,
+    color-mix(in oklab, var(--color-brand-900) 14.5%, transparent) 80.2%,
+    color-mix(in oklab, var(--color-brand-900) 12.5%, transparent) 86.1%,
+    color-mix(in oklab, var(--color-brand-900) 11.3%, transparent) 91%,
+    color-mix(in oklab, var(--color-brand-900) 10.5%, transparent) 95.2%,
+    color-mix(in oklab, var(--color-brand-900) 10.1%, transparent) 98.2%,
+    color-mix(in oklab, var(--color-brand-900) 10%, transparent) 100%
+  );
+}
+
+.comma-onboarding[data-presentation="overlay"] {
+  --onboarding-corner-top: calc(var(--onboarding-drag-strip) + var(--spacing-md));
+}
+
+.comma-onboarding[data-phase="exit"] {
+  pointer-events: none;
+}
+
+/* Closed from the corner: what is on show fades where it stands, then the
+   light lifts as after the welcome page. */
+.comma-onboarding[data-closed] .comma-onboarding__stage {
+  opacity: 0;
+  transition: opacity var(--motion-duration-dialog-exit) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding__modal,
+.comma-onboarding__dialog {
+  position: absolute;
+  inset: 0;
+  outline: none;
+}
+
+/* A size container: the light sweep and what it clears are measured in the
+   onboarding's own height (`cqh`). */
+.comma-onboarding__dialog {
+  overflow: hidden;
+  container-type: size;
+}
+
+/* Over the product only this strip moves the window. The overlay portals
+   after the shell, so its regions override the shell's in Electron's
+   document-order merge. The desktop presentation's window does not move. */
+.comma-onboarding__drag-strip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--onboarding-drag-strip);
+  -webkit-app-region: drag;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Light field                                                              */
+/* ------------------------------------------------------------------------ */
+
+.comma-onboarding-light-field {
+  --onboarding-light-blur: 1;
+  --onboarding-light-veil: 1;
+  --onboarding-light-cover: 0;
+  --onboarding-light-deep: 1;
+  --onboarding-light-night: 0;
+  --onboarding-light-glow: 1;
+  --onboarding-light-rise: 1;
+  --onboarding-light-duration: var(--motion-duration-onboarding-light-shift);
+  --onboarding-light-easing: var(--motion-easing-surface-smooth-out);
+  /* How deep the light is, 0 to 1 (OnboardingLightField.tsx). */
+  --onboarding-light-depth: 0;
+  --onboarding-dock-size: 0px;
+
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The intro is the field's first state: what lies behind the onboarding
+   dims into it slowly and evenly, before anything is shown. */
+.comma-onboarding-light-field[data-intensity="intro"] {
+  --onboarding-light-duration: var(--motion-duration-onboarding-dim);
+  --onboarding-light-easing: var(--motion-easing-calm-in-out);
+}
+
+/* A touch calmer behind the thread, whose cards carry the reading. Each
+   finished item deepens the light in one slow, even step. */
+.comma-onboarding-light-field[data-intensity="thread"] {
+  --onboarding-light-glow: 0.9;
+  --onboarding-light-easing: var(--motion-easing-soft-in-out);
+}
+
+/* The welcome page deepens the top and lets the light climb higher. */
+.comma-onboarding-light-field[data-intensity="finale"] {
+  --onboarding-light-night: 1;
+  --onboarding-light-rise: 1.25;
+}
+
+/* Over the product, once the greeting has blurred and tinted it, the thread
+   and the welcome page stand on an opaque copy of the veil, and the blur and
+   blend under it stand down once it has fully covered them. Both would
+   otherwise be redrawn whenever the app behind or the light above it moved,
+   to show an app that the blue already hides. */
+.comma-onboarding[data-presentation="overlay"]
+  .comma-onboarding-light-field:is(
+    [data-intensity="thread"],
+    [data-intensity="finale"]
+  ) {
+  --onboarding-light-blur: 0;
+  --onboarding-light-veil: 0;
+  --onboarding-light-cover: 1;
+  --onboarding-light-underlay-delay: var(--onboarding-light-duration);
+}
+
+/* The exit lets the page's words leave first, then eases the field away. */
+.comma-onboarding-light-field[data-intensity="exit"] {
+  --onboarding-light-blur: 0;
+  --onboarding-light-veil: 0;
+  --onboarding-light-cover: 0;
+  --onboarding-light-deep: 0;
+  --onboarding-light-night: 0;
+  --onboarding-light-glow: 0;
+  --onboarding-light-duration: var(--motion-duration-onboarding-exit);
+  --onboarding-light-easing: var(--motion-easing-soft-in-out);
+}
+
+.comma-onboarding-light-field__blur,
+.comma-onboarding-light-field__veil,
+.comma-onboarding-light-field__cover,
+.comma-onboarding-light-field__deep,
+.comma-onboarding-light-field__night,
+.comma-onboarding-light-field__glow,
+.comma-onboarding-light-field__floor {
+  position: absolute;
+  inset: 0;
+  transition:
+    opacity var(--onboarding-light-duration) var(--onboarding-light-easing),
+    transform var(--onboarding-light-duration) var(--onboarding-light-easing);
+}
+
+/* The real app, out of focus. The blur itself never animates, only its
+   layer's opacity. */
+.comma-onboarding-light-field__blur {
+  opacity: var(--onboarding-light-blur);
+  -webkit-backdrop-filter: blur(var(--blur-xl)) saturate(1.2);
+  backdrop-filter: blur(var(--blur-xl)) saturate(1.2);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.comma-onboarding-light-field__veil,
+.comma-onboarding-light-field__cover {
+  background: linear-gradient(
+    to bottom in oklab,
+    var(--onboarding-veil-top),
+    var(--onboarding-veil-upper) 40%,
+    var(--onboarding-veil-lower) 75%,
+    var(--onboarding-veil-bottom)
+  );
+}
+
+.comma-onboarding-light-field__veil {
+  mix-blend-mode: var(--onboarding-veil-blend);
+  opacity: var(--onboarding-light-veil);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* Covered, the blur and the blend fade only once the cover has arrived. */
+.comma-onboarding-light-field__blur,
+.comma-onboarding-light-field__veil {
+  transition-delay: var(--onboarding-light-underlay-delay, 0s);
+}
+
+.comma-onboarding-light-field__cover {
+  opacity: var(--onboarding-light-cover);
+}
+
+/* A step deeper with each finished item: a deeper blue rendered once,
+   fading in over the veil. */
+.comma-onboarding-light-field__deep {
+  background: linear-gradient(
+    to bottom in oklab,
+    var(--onboarding-deep-top),
+    var(--onboarding-deep-middle) 50%,
+    var(--onboarding-deep-bottom)
+  );
+  opacity: calc(var(--onboarding-light-deep) * var(--onboarding-light-depth) * 0.7);
+}
+
+/* Deep behind the welcome page's words, thinning towards the light below. */
+.comma-onboarding-light-field__night {
+  background: linear-gradient(
+    to bottom in oklab,
+    var(--onboarding-night) 30%,
+    color-mix(in oklab, var(--onboarding-night) 73.8%, transparent) 41.4%,
+    color-mix(in oklab, var(--onboarding-night) 54.1%, transparent) 50.4%,
+    color-mix(in oklab, var(--onboarding-night) 38.2%, transparent) 58.2%,
+    color-mix(in oklab, var(--onboarding-night) 27.8%, transparent) 63.9%,
+    color-mix(in oklab, var(--onboarding-night) 19.4%, transparent) 69%,
+    color-mix(in oklab, var(--onboarding-night) 12.6%, transparent) 73.8%,
+    color-mix(in oklab, var(--onboarding-night) 7.5%, transparent) 78.1%,
+    color-mix(in oklab, var(--onboarding-night) 4.2%, transparent) 81.7%,
+    color-mix(in oklab, var(--onboarding-night) 2.1%, transparent) 84.6%,
+    color-mix(in oklab, var(--onboarding-night) 0.8%, transparent) 87.1%,
+    color-mix(in oklab, var(--onboarding-night) 0.2%, transparent) 88.9%,
+    transparent 90%
+  );
+  opacity: var(--onboarding-light-night);
+}
+
+/* The light dims a little as the field deepens. */
+.comma-onboarding-light-field__glow {
+  opacity: calc(
+    var(--onboarding-light-glow) * (1 - var(--onboarding-light-depth) * 0.2)
+  );
+  transform: scaleY(var(--onboarding-light-rise));
+  transform-origin: 50% 100%;
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* Each bloom is sized to its own light, which fades out before the bloom's
+   edge, so it can drift without ever showing one. The drift is slight and
+   slow: the light lives, but nothing in it draws the eye.
+
+   The drift moves in steps, ten a second, not on every display refresh. Each
+   step shifts the soft light by well under a device pixel, which reads as
+   continuous, but the field (and in the window presentation, the whole
+   transparent display the window server composites) is redrawn ten times a
+   second instead of 60 to 120. The step counts below give each bloom's loop
+   one step per 100 ms of the default 30 s drift. */
+.comma-onboarding-light-field__bloom {
+  --onboarding-drift-duration: var(--motion-duration-onboarding-light-drift);
+
+  position: absolute;
+  animation: comma-onboarding-drift var(--onboarding-drift-duration) steps(300) infinite
+    alternate;
+  background: radial-gradient(
+    closest-side in oklab,
+    var(--onboarding-bloom),
+    color-mix(in oklab, var(--onboarding-bloom) 73.8%, transparent) 19%,
+    color-mix(in oklab, var(--onboarding-bloom) 54.1%, transparent) 34%,
+    color-mix(in oklab, var(--onboarding-bloom) 38.2%, transparent) 47%,
+    color-mix(in oklab, var(--onboarding-bloom) 27.8%, transparent) 56.5%,
+    color-mix(in oklab, var(--onboarding-bloom) 19.4%, transparent) 65%,
+    color-mix(in oklab, var(--onboarding-bloom) 12.6%, transparent) 73%,
+    color-mix(in oklab, var(--onboarding-bloom) 7.5%, transparent) 80.2%,
+    color-mix(in oklab, var(--onboarding-bloom) 4.2%, transparent) 86.1%,
+    color-mix(in oklab, var(--onboarding-bloom) 2.1%, transparent) 91%,
+    color-mix(in oklab, var(--onboarding-bloom) 0.8%, transparent) 95.2%,
+    color-mix(in oklab, var(--onboarding-bloom) 0.2%, transparent) 98.2%,
+    transparent
+  );
+  will-change: transform;
+}
+
+/* Light welling up along the bottom edge, brightest mid-way. It breathes
+   slowly in place. */
+.comma-onboarding-light-field__bloom[data-bloom="horizon"] {
+  --onboarding-drift-duration: calc(
+    var(--motion-duration-onboarding-light-drift) * 0.4
+  );
+
+  right: -35%;
+  bottom: -54%;
+  left: -35%;
+  height: 100%;
+  animation-name: comma-onboarding-breathe;
+  animation-timing-function: steps(120);
+  /* Each step eases into the next, so the light has no visible rings. */
+  background: radial-gradient(
+    closest-side in oklab,
+    var(--onboarding-horizon-core),
+    color-mix(
+        in oklab,
+        var(--onboarding-horizon-core) 84.4%,
+        var(--onboarding-horizon-middle)
+      )
+      7.5%,
+    color-mix(
+        in oklab,
+        var(--onboarding-horizon-core) 50%,
+        var(--onboarding-horizon-middle)
+      )
+      15%,
+    color-mix(
+        in oklab,
+        var(--onboarding-horizon-core) 15.6%,
+        var(--onboarding-horizon-middle)
+      )
+      22.5%,
+    var(--onboarding-horizon-middle) 30%,
+    color-mix(
+        in oklab,
+        var(--onboarding-horizon-middle) 84.4%,
+        var(--onboarding-horizon-edge)
+      )
+      38%,
+    color-mix(
+        in oklab,
+        var(--onboarding-horizon-middle) 50%,
+        var(--onboarding-horizon-edge)
+      )
+      46%,
+    color-mix(
+        in oklab,
+        var(--onboarding-horizon-middle) 15.6%,
+        var(--onboarding-horizon-edge)
+      )
+      54%,
+    var(--onboarding-horizon-edge) 62%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 73.8%, transparent) 69.2%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 54.1%, transparent) 74.9%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 38.2%, transparent) 79.9%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 27.8%, transparent) 83.5%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 19.4%, transparent) 86.7%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 12.6%, transparent) 89.7%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 7.5%, transparent) 92.5%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 4.2%, transparent) 94.7%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 2.1%, transparent) 96.6%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 0.8%, transparent) 98.2%,
+    color-mix(in oklab, var(--onboarding-horizon-edge) 0.2%, transparent) 99.3%,
+    transparent
+  );
+  transform-origin: 50% 50%;
+}
+
+/* Softer light in the lower corners, drifting against each other. */
+.comma-onboarding-light-field__bloom:is([data-bloom="left"], [data-bloom="right"]) {
+  bottom: -42%;
+  width: 80%;
+  height: 84%;
+}
+
+.comma-onboarding-light-field__bloom[data-bloom="left"] {
+  --onboarding-drift-duration: calc(
+    var(--motion-duration-onboarding-light-drift) * 0.7
+  );
+
+  left: -36%;
+  animation-timing-function: steps(210);
+}
+
+.comma-onboarding-light-field__bloom[data-bloom="right"] {
+  --onboarding-drift-duration: calc(
+    var(--motion-duration-onboarding-light-drift) * 0.9
+  );
+
+  right: -36%;
+  animation-direction: alternate-reverse;
+  animation-timing-function: steps(270);
+}
+
+@keyframes comma-onboarding-breathe {
+  from {
+    transform: scale(1);
+  }
+
+  to {
+    transform: scale(1.03, 1.06);
+  }
+}
+
+@keyframes comma-onboarding-drift {
+  from {
+    transform: translate3d(-2%, 1%, 0);
+  }
+
+  to {
+    transform: translate3d(3%, -1.5%, 0);
+  }
+}
+
+/* Over the desktop the band where the Dock sits is light all the way
+   through, however the glow above it drifts or dims: the Dock stays
+   covered. It deepens with the rest. */
+.comma-onboarding-light-field__floor,
+.comma-onboarding-light-field__floor-deep {
+  --onboarding-floor-span: calc(2 * var(--spacing-11xl));
+}
+
+.comma-onboarding-light-field__floor {
+  /* An eased fade, not a straight one: a linear ramp from an opaque light
+     reads as a band where it starts. */
+  background: linear-gradient(
+    var(--onboarding-floor-direction, to top) in oklab,
+    var(--onboarding-floor) var(--onboarding-dock-size),
+    color-mix(in oklab, var(--onboarding-floor) 73.8%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.19),
+    color-mix(in oklab, var(--onboarding-floor) 54.1%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.34),
+    color-mix(in oklab, var(--onboarding-floor) 38.2%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.47),
+    color-mix(in oklab, var(--onboarding-floor) 27.8%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.565),
+    color-mix(in oklab, var(--onboarding-floor) 19.4%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.65),
+    color-mix(in oklab, var(--onboarding-floor) 12.6%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.73),
+    color-mix(in oklab, var(--onboarding-floor) 7.5%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.802),
+    color-mix(in oklab, var(--onboarding-floor) 4.2%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.861),
+    color-mix(in oklab, var(--onboarding-floor) 2.1%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.91),
+    color-mix(in oklab, var(--onboarding-floor) 0.8%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.952),
+    color-mix(in oklab, var(--onboarding-floor) 0.2%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.982),
+    transparent calc(var(--onboarding-dock-size) + var(--onboarding-floor-span))
+  );
+  opacity: var(--onboarding-light-veil);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.comma-onboarding-light-field__floor-deep {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    var(--onboarding-floor-direction, to top) in oklab,
+    var(--onboarding-floor-deep) var(--onboarding-dock-size),
+    color-mix(in oklab, var(--onboarding-floor-deep) 73.8%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.19),
+    color-mix(in oklab, var(--onboarding-floor-deep) 54.1%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.34),
+    color-mix(in oklab, var(--onboarding-floor-deep) 38.2%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.47),
+    color-mix(in oklab, var(--onboarding-floor-deep) 27.8%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.565),
+    color-mix(in oklab, var(--onboarding-floor-deep) 19.4%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.65),
+    color-mix(in oklab, var(--onboarding-floor-deep) 12.6%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.73),
+    color-mix(in oklab, var(--onboarding-floor-deep) 7.5%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.802),
+    color-mix(in oklab, var(--onboarding-floor-deep) 4.2%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.861),
+    color-mix(in oklab, var(--onboarding-floor-deep) 2.1%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.91),
+    color-mix(in oklab, var(--onboarding-floor-deep) 0.8%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.952),
+    color-mix(in oklab, var(--onboarding-floor-deep) 0.2%, transparent)
+      calc(var(--onboarding-dock-size) + var(--onboarding-floor-span) * 0.982),
+    transparent calc(var(--onboarding-dock-size) + var(--onboarding-floor-span))
+  );
+  opacity: var(--onboarding-light-depth);
+  transition: opacity var(--onboarding-light-duration) var(--onboarding-light-easing);
+}
+
+.comma-onboarding-light-field[data-dock="left"] {
+  --onboarding-floor-direction: to right;
+}
+
+.comma-onboarding-light-field[data-dock="right"] {
+  --onboarding-floor-direction: to left;
+}
+
+.comma-onboarding[data-reduced-motion="true"] .comma-onboarding-light-field__bloom {
+  animation-play-state: paused;
+}
+
+/* While a message flies the drift holds still (OnboardingLightField.tsx): a
+   step of a bloom redraws the whole field, so the flight's frames redraw only
+   the bubble. The drift is too slow for the pause to show. */
+.comma-onboarding-light-field[data-holding] .comma-onboarding-light-field__bloom {
+  animation-play-state: paused;
+}
+
+/* Reduced motion keeps the light's fades, the dim and each step deeper:
+   slow cross-fades, not motion. */
+.comma-onboarding[data-reduced-motion="true"]
+  :is(
+    .comma-onboarding-light-field__blur,
+    .comma-onboarding-light-field__veil,
+    .comma-onboarding-light-field__cover,
+    .comma-onboarding-light-field__deep,
+    .comma-onboarding-light-field__night,
+    .comma-onboarding-light-field__glow,
+    .comma-onboarding-light-field__floor,
+    .comma-onboarding-light-field__floor-deep
+  ) {
+  transition-property: opacity !important;
+  transition-duration: var(--onboarding-light-duration) !important;
+}
+
+/* The column leaves first; the light lifts a reveal step after it. */
+.comma-onboarding-light-field[data-intensity="exit"] > * {
+  transition-delay: var(--motion-duration-reveal-item);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Stage                                                                    */
+/* ------------------------------------------------------------------------ */
+
+/* Everything the light sweeps away: the conversation, the mark heading it and
+   Close. Its bottom edge is the cut the light's core makes as it rises:
+   it reaches a band above the top so it can travel down with the core, while
+   its content is held where it stands (onboardingMotion.ts). At rest it cuts
+   nothing. Only its controls take the pointer. */
+.comma-onboarding__stage {
+  position: absolute;
+  inset: calc(-1 * var(--onboarding-sweep-reach)) 0 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.comma-onboarding__stage-content {
+  position: absolute;
+  inset: var(--onboarding-sweep-reach) 0 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Thread                                                                   */
+/* ------------------------------------------------------------------------ */
+
+/* While Comma talks the whole window is the way on: a click anywhere, or
+   Return or Space, brings what it has left to say at once. */
+.comma-onboarding__hurry {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+  outline: none;
+}
+
+/* The chat's column, centred across the window and as tall as it, so the
+   conversation starts just under the mark. Only its card takes the pointer;
+   a click anywhere else reaches the window behind it. */
+.comma-onboarding__column {
+  --onboarding-bleed: var(--spacing-6xl);
+  /* The thread keeps below Close's corner and the mark beside it, even
+     where a narrow window brings the column under them. */
+  --onboarding-thread-top: calc(
+    var(--onboarding-corner-top) + var(--spacing-5xl) + var(--spacing-4xl)
+  );
+  /* The composer's line sits clear of the window's foot (the Dock's band on
+     the desktop); the thread stands a message gap above it. */
+  --onboarding-composer-foot: var(--spacing-7xl);
+  --onboarding-thread-bottom: calc(
+    var(--onboarding-composer-foot) + var(--onboarding-composer-block) +
+      var(--spacing-2xl)
+  );
+
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  inset-inline-start: max(
+    (100% - var(--onboarding-width)) / 2,
+    var(--onboarding-gutter) + var(--onboarding-side)
+  );
+  width: var(--onboarding-width);
+  pointer-events: none;
+}
+
+/* Stepped back for the Open Comma shortcut: where the step leaves it, however
+   the step was reached (onboardingMotion.ts plays the way there). */
+.comma-onboarding__column[data-receded] {
+  opacity: 0;
+  transform: translateY(calc(-1 * var(--motion-distance-reveal-item)))
+    scale(var(--motion-scale-onboarding-card));
+}
+
+.comma-onboarding[data-reduced-motion="true"] .comma-onboarding__column[data-receded] {
+  transform: none;
+}
+
+/* A short window (a large zoom on a small display) keeps its height for the
+   conversation: the composer comes down to the window's foot. */
+@media (max-height: 560px) {
+  .comma-onboarding__column {
+    --onboarding-composer-foot: var(--spacing-xl);
+  }
+}
+
+/* The thread starts under the mark and grows down toward the invisible
+   composer at the window's foot, which every message flies up from; once it
+   fills the window it keeps to its bottom edge and what no longer fits fades
+   out at the top. It reaches
+   past the column on both sides for the avatars and the card's shadow, and
+   down to the column's foot, so a card rising in is not cut. */
+.comma-onboarding-thread {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-block: var(--onboarding-thread-top) var(--onboarding-thread-bottom);
+  padding-inline: calc(var(--onboarding-gutter) + var(--onboarding-bleed))
+    var(--onboarding-bleed);
+  inset-block: 0;
+  inset-inline: calc(-1 * (var(--onboarding-gutter) + var(--onboarding-bleed)))
+    calc(-1 * var(--onboarding-bleed));
+  /* Gone well under Close's line, where the mark heads the
+     conversation; whole again a little lower. */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent
+      calc(var(--onboarding-corner-top) + var(--spacing-5xl) + var(--spacing-xl)),
+    var(--color-alpha-black-100) var(--onboarding-thread-top),
+    var(--color-alpha-black-100) calc(100% - var(--spacing-4xl)),
+    transparent
+  );
+}
+
+/* The chat's bubble width cap resolves against this box (100cqi). */
+.comma-onboarding-thread__content {
+  display: flex;
+  flex: none;
+  /* Takes the room left under a short thread, so it stays under the mark. */
+  margin-block-end: auto;
+  flex-direction: column;
+  container-type: inline-size;
+  /* The chat's gap between messages of different speakers. */
+  gap: var(--spacing-2xl);
+  /* The thread moves as a whole for every message and card: a layer of its
+     own for the whole conversation, rather than one made and dropped (and
+     the thread drawn again) with each move. */
+  will-change: transform, translate;
+}
+
+.comma-onboarding-thread__group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* The user's messages sit on the other side, as the chat's do. */
+.comma-onboarding-thread__group[data-from="user"] {
+  align-items: flex-end;
+  gap: var(--spacing-sm);
+}
+
+.comma-onboarding-thread__head {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.comma-onboarding-thread__bubbles {
+  position: relative;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  /* The chat's gap between consecutive messages. */
+  gap: var(--spacing-sm);
+}
+
+.comma-onboarding-thread__bubble {
+  display: flex;
+  max-width: 100%;
+}
+
+/* Comma speaks in the chat's assistant bubble: its grey material and ink on
+   the chat's own bubble, which the bubble, its tail and its send motion all
+   read from this property. The user's replies keep the chat's blue. */
+.comma-onboarding-thread__group[data-from="comma"] .comma-chat-user-bubble {
+  --comma-chat-user-bubble-background: var(--color-markdown-bg-message);
+
+  color: var(--color-text-primary);
+}
+
+.comma-onboarding .comma-onboarding-thread__speaker {
+  color: var(--onboarding-on-field-quiet);
+}
+
+/* The chat's Router mark, in its 24px gutter column, at the group's latest
+   bubble. */
+.comma-onboarding-thread__avatar {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: calc(-1 * var(--onboarding-gutter));
+  display: inline-flex;
+}
+
+.comma-onboarding .comma-onboarding-thread__avatar .comma-chat-assistant-router-mark {
+  color: var(--onboarding-on-field);
+}
+
+/* The speaker and the mark arrive with the group's first bubble. */
+.comma-onboarding-thread__speaker,
+.comma-onboarding-thread__avatar {
+  transform-origin: left bottom;
+  transition:
+    opacity var(--motion-duration-dialog-enter) var(--motion-easing-smooth-out),
+    filter var(--motion-duration-dialog-enter) var(--motion-easing-smooth-out),
+    scale var(--motion-duration-dialog-enter) var(--motion-easing-surface-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+    filter: blur(var(--motion-blur-reveal-item));
+    scale: var(--motion-scale-reveal-item);
+  }
+}
+
+/* Just renamed: the label arrives under the name Comma had, which then
+   gives way to the new one, the old name lifting off as the new one settles
+   in its place. */
+.comma-onboarding-thread__speaker[data-renamed] .comma-onboarding-thread__name {
+  position: relative;
+  display: inline-block;
+}
+
+.comma-onboarding-thread__speaker[data-renamed] .comma-onboarding-thread__name::before,
+.comma-onboarding-thread__speaker[data-renamed] .comma-onboarding-thread__name-text {
+  animation-delay: var(--motion-duration-onboarding-reply-beat);
+  animation-duration: calc(2 * var(--motion-duration-dialog-enter));
+  animation-fill-mode: both;
+  animation-timing-function: var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-thread__speaker[data-renamed] .comma-onboarding-thread__name::before {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  animation-name: comma-onboarding-name-leave;
+  content: attr(data-former-name);
+  white-space: nowrap;
+}
+
+.comma-onboarding-thread__speaker[data-renamed] .comma-onboarding-thread__name-text {
+  display: inline-block;
+  animation-name: comma-onboarding-name-arrive;
+}
+
+@keyframes comma-onboarding-name-leave {
+  to {
+    filter: blur(var(--motion-blur-reveal-item));
+    opacity: 0;
+    translate: 0 calc(-1 * var(--motion-distance-reveal-item));
+  }
+}
+
+@keyframes comma-onboarding-name-arrive {
+  from {
+    filter: blur(var(--motion-blur-reveal-item));
+    opacity: 0;
+    translate: 0 var(--motion-distance-reveal-item);
+  }
+}
+
+.comma-onboarding[data-reduced-motion="true"] .comma-onboarding-thread__name::before {
+  display: none;
+}
+
+.comma-onboarding[data-reduced-motion="true"] .comma-onboarding-thread__name-text {
+  animation: none;
+}
+
+/* The invisible composer every message is sent from, as the chat sends from
+   its composer: under the thread, the column's width. Its line holds its
+   place; holding the message about to be sent, as the chat's composer holds
+   the draft, it grows upward from that line. It paints nothing: each
+   bubble's text lifts off the empty line and its material gathers from
+   there. */
+.comma-onboarding-launchpad {
+  position: absolute;
+  bottom: var(--onboarding-composer-foot);
+  block-size: var(--onboarding-composer-block);
+  inset-inline: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.comma-onboarding-launchpad__composer {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline: 0;
+  padding-block: var(--spacing-md);
+  padding-inline: var(--spacing-lg);
+  border-radius: var(--radius-3xl);
+}
+
+.comma-onboarding-launchpad__editor {
+  min-block-size: var(--text-sm--line-height);
+  color: var(--color-text-white);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  outline: none;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* The send motion keeps the composer's ink until the bubble has formed: the
+   draft takes the ink of the bubble it becomes, so Comma's text never shows
+   white before turning dark on its grey bubble. */
+.comma-onboarding-launchpad__editor[data-from="comma"] {
+  color: var(--color-text-primary);
+}
+
+/* The draft is laid out, never painted or read: it sizes the composer. */
+.comma-onboarding-launchpad__editor::before {
+  content: attr(data-draft);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Intro and the mark                                                       */
+/* ------------------------------------------------------------------------ */
+
+/* The welcome over the dimmed screen: the Comma mark in the middle, the
+   welcome and Start under it, centred a little above the middle as the
+   welcome page is. Only Start takes the pointer. */
+.comma-onboarding-intro {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Unseen while the screen dims; each part's arrival then holds it unseen
+   until its turn (onboardingMotion.ts). */
+.comma-onboarding-intro[data-stage="dim"] .comma-onboarding-intro__column {
+  opacity: 0;
+}
+
+.comma-onboarding-intro__column {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-4xl) var(--spacing-xl) calc(var(--spacing-4xl) + 6vh);
+  color: var(--color-text-white);
+  text-align: center;
+}
+
+.comma-onboarding-intro__mark {
+  display: block;
+  width: var(--onboarding-mark-size);
+  height: var(--onboarding-mark-size);
+  flex: none;
+}
+
+/* White on the light, its next comma opening onto the light. */
+.comma-onboarding .comma-onboarding-intro__logo {
+  width: 100%;
+  height: 100%;
+  max-inline-size: none;
+  color: var(--color-text-white);
+}
+
+/* At the head of the conversation: centred on Close's line, at a ratio
+   of its size in the middle, so its move up is one transform. */
+.comma-onboarding-intro[data-stage="header"] .comma-onboarding-intro__mark {
+  position: absolute;
+  top: calc(
+    var(--onboarding-corner-top) + var(--spacing-5xl) / 2 -
+      var(--onboarding-mark-size) / 2
+  );
+  left: calc(50% - var(--onboarding-mark-size) / 2);
+  scale: var(--onboarding-mark-header-scale);
+}
+
+/* The welcome and Start share the welcome page's headline and action; Start
+   is the welcome page's white pill. It shows no countdown. */
+.comma-onboarding-intro__action {
+  pointer-events: auto;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Corner: the sound and Close                                              */
+/* ------------------------------------------------------------------------ */
+
+/* Two 40px discs on one line in the onboarding's top-right corner: the
+   sound's volume, then Close. Over the desktop, the sheet's corner just
+   under the menu bar; over the product, the window's, under its drag strip.
+   They come with the dim and are last in the tab order. Close leaves
+   as the light reaches the welcome page and its place stays, so the volume
+   never moves; the volume leaves only as the onboarding exits. */
+.comma-onboarding__corner {
+  position: absolute;
+  z-index: 1;
+  top: var(--onboarding-corner-top);
+  right: var(--onboarding-corner-inset);
+  display: flex;
+  gap: var(--spacing-md);
+  pointer-events: none;
+  transition: opacity var(--motion-duration-dialog-enter)
+    var(--motion-easing-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.comma-onboarding__corner[data-exiting] {
+  opacity: 0;
+  transition-duration: var(--motion-duration-dialog-exit);
+}
+
+.comma-onboarding__skip {
+  display: flex;
+  width: var(--spacing-5xl);
+  height: var(--spacing-5xl);
+  flex: none;
+  transition: opacity var(--motion-duration-dialog-exit) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding__skip[data-leaving] {
+  opacity: 0;
+}
+
+/* Both discs: white glass on the light field, quiet ink, a press that gives. */
+.comma-onboarding .comma-onboarding-corner-button {
+  display: inline-flex;
+  width: var(--spacing-5xl);
+  height: var(--spacing-5xl);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-alpha-white-10);
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-alpha-white-20);
+  color: var(--onboarding-on-field-quiet);
+  outline: none;
+  pointer-events: auto;
+  transition:
+    background-color var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    color var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    scale var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding__skip[data-leaving] .comma-onboarding-corner-button,
+.comma-onboarding__corner[data-exiting] .comma-onboarding-corner-button {
+  pointer-events: none;
+}
+
+/* Close presses through the product's button rule; the volume control
+   reports its own press. */
+.comma-onboarding .comma-onboarding-corner-button[data-pointer-pressed="true"] {
+  scale: var(--motion-scale-pressed);
+}
+
+.comma-onboarding
+  .comma-onboarding-corner-button:is(:active, [data-pointer-pressed="true"]) {
+  transition-duration:
+    var(--motion-duration-state-change), var(--motion-duration-state-change),
+    var(--motion-duration-feedback-in);
+}
+
+/* Hovered, or with its slider open. */
+.comma-onboarding .comma-onboarding-corner-button[aria-expanded="true"] {
+  background: var(--color-alpha-white-20);
+  color: var(--onboarding-on-field);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-onboarding .comma-onboarding-corner-button:hover {
+    background: var(--color-alpha-white-20);
+    color: var(--onboarding-on-field);
+  }
+}
+
+.comma-onboarding[data-keyboard="true"] .comma-onboarding-corner-button:focus-visible {
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-alpha-white-20),
+    0 0 0 var(--spacing-xs) var(--color-alpha-white-40);
+}
+
+/* Once Close has left, the volume glides into its place. */
+.comma-onboarding-volume {
+  transition: translate var(--motion-duration-dialog-enter)
+    var(--motion-easing-soft-in-out);
+}
+
+.comma-onboarding__corner[data-alone] .comma-onboarding-volume {
+  translate: calc(var(--spacing-5xl) + var(--spacing-md)) 0;
+}
+
+.comma-onboarding[data-reduced-motion="true"] .comma-onboarding-volume {
+  transition: none;
+}
+
+/* The volume's slider hangs under its disc, in the same glass, a little
+   deeper so the slider reads over any part of the light. */
+.comma-onboarding-volume__popover {
+  --chat-panel-media-volume-surface: color-mix(
+    in oklab,
+    var(--color-brand-900) 55%,
+    transparent
+  );
+  --chat-panel-media-volume-ring: var(--color-alpha-white-20);
+  --chat-panel-media-volume-ink: var(--onboarding-on-field);
+  --chat-panel-media-volume-fill: var(--color-alpha-white-100);
+  --chat-panel-media-volume-rest: var(--color-alpha-white-30);
+}
+
+/* Over the even blue of the corner a backdrop blur shows nothing, and its
+   first use stalls the GPU while its shader compiles (a fresh profile, so
+   every first launch). The tinted glass alone reads the same. */
+.comma-onboarding-volume__popover .chat-panel-media-volume-dialog {
+  width: var(--spacing-5xl);
+  height: calc(var(--spacing-9xl) + var(--spacing-xl));
+  border-radius: var(--radius-full);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.comma-onboarding[data-keyboard="false"]
+  .comma-onboarding-volume__popover
+  .chat-panel-media-volume-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Card                                                                     */
+/* ------------------------------------------------------------------------ */
+
+/* Attached under the question: 24px corners, an 8px bezel for its rows, a
+   16px content edge, so the 8px corners of the actions inside sit 16px in,
+   concentric. Layered shadows instead of a border. */
+.comma-onboarding-card {
+  /* A rendered app row's height where the overlay has measured one (it
+     follows the font size), else the default size's. */
+  --onboarding-list-row: var(
+    --onboarding-app-row,
+    calc(var(--spacing-5xl) + var(--spacing-xs) + 2 * var(--spacing-md))
+  );
+  --onboarding-card-ring: var(--color-alpha-black-10);
+  --onboarding-card-highlight: 0 0 transparent;
+  --onboarding-card-drop:
+    0 var(--spacing-xs) var(--spacing-md) calc(-1 * var(--spacing-xs))
+      var(--color-alpha-black-20),
+    0 var(--spacing-3xl) var(--spacing-6xl) calc(-1 * var(--spacing-lg))
+      var(--color-alpha-black-40);
+
+  position: relative;
+  width: 100%;
+  min-inline-size: 0;
+  margin: var(--spacing-md) 0 0;
+  padding: var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-4xl);
+  background: var(--color-bg-popup-primary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--onboarding-card-ring),
+    var(--onboarding-card-highlight),
+    var(--onboarding-card-drop);
+  pointer-events: auto;
+  transform-origin: left top;
+  -webkit-app-region: no-drag;
+}
+
+:is(.dark, [data-theme="Dark mode"]) .comma-onboarding-card {
+  --onboarding-card-ring: var(--color-alpha-white-10);
+  --onboarding-card-highlight: inset 0 var(--border-width-default) 0
+    var(--color-alpha-white-10);
+  --onboarding-card-drop:
+    0 var(--spacing-xs) var(--spacing-md) calc(-1 * var(--spacing-xs))
+      var(--color-alpha-black-40),
+    0 var(--spacing-3xl) var(--spacing-6xl) calc(-1 * var(--spacing-lg))
+      var(--color-alpha-black-60);
+}
+
+/* The card takes the focus itself when it arrives (OnboardingOverlay.tsx);
+   that focus shows no ring. */
+.comma-onboarding-card:focus {
+  outline: none;
+}
+
+.comma-onboarding-card[data-leaving] {
+  pointer-events: none;
+}
+
+.comma-onboarding-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-md) var(--spacing-md);
+}
+
+/* A quieter action beside the primary, arriving with what it applies to. */
+.comma-onboarding-card__secondary {
+  display: flex;
+  flex: none;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.comma-onboarding-card__note {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Swaps and actions                                                        */
+/* ------------------------------------------------------------------------ */
+
+/* States that trade places share one grid cell, so nothing reflows. */
+.comma-onboarding-swap {
+  display: inline-grid;
+  min-width: 0;
+}
+
+.comma-onboarding-swap > * {
+  min-width: 0;
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    filter var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-swap > [data-on="false"] {
+  opacity: 0;
+  filter: blur(var(--motion-blur-menu-enter));
+  pointer-events: none;
+}
+
+/* The item's primary: its labels share one cell; busy, a spinner takes
+   their place and the button keeps its width. It and the card's other
+   footer action are the rows' action size, so the card has one button
+   size. */
+.comma-onboarding-primary {
+  position: relative;
+  flex: none;
+}
+
+.comma-onboarding
+  .comma-onboarding-card__footer
+  :is(.comma-onboarding-primary, .comma-onboarding-name__skip) {
+  height: calc(var(--spacing-3xl) + var(--spacing-xs));
+  padding: 0 var(--spacing-lg);
+  border-radius: var(--radius-md);
+}
+
+.comma-onboarding-primary .comma-onboarding-swap {
+  justify-items: center;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-primary[data-pending] .comma-onboarding-swap {
+  opacity: 0;
+}
+
+.comma-onboarding-primary__spinner {
+  position: absolute;
+  display: grid;
+  inset: 0;
+  opacity: 0;
+  place-items: center;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-primary__spinner > svg,
+.comma-onboarding-spinner {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-onboarding-primary[data-pending] .comma-onboarding-primary__spinner {
+  opacity: 1;
+}
+
+/* A hidden spinner does not spin: it would redraw the window every frame. */
+.comma-onboarding-primary:not([data-pending]) .comma-onboarding-primary__spinner > svg,
+.comma-onboarding-swap > [data-on="false"] .comma-onboarding-action__spinner,
+.comma-onboarding-action__sizer .comma-onboarding-action__spinner {
+  animation: none;
+}
+
+/* A row's action, in the plugin list's own action style, at full contrast
+   in every state. Its hit area reaches 40px (rows are 60px apart). */
+.comma-onboarding-action {
+  display: grid;
+  flex: none;
+  align-items: center;
+  justify-items: end;
+}
+
+.comma-onboarding-action > * {
+  grid-area: 1 / 1;
+}
+
+.comma-onboarding-action__layer {
+  display: flex;
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    filter var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-action__layer[data-on="false"] {
+  opacity: 0;
+  filter: blur(var(--motion-blur-menu-enter));
+  pointer-events: none;
+}
+
+/* An invisible copy of every state holds the cell's width. */
+.comma-onboarding-action__sizer {
+  display: grid;
+  justify-items: end;
+  visibility: hidden;
+}
+
+.comma-onboarding-action__sizer > * {
+  grid-area: 1 / 1;
+}
+
+.comma-onboarding .comma-onboarding-action__button {
+  position: relative;
+  display: inline-flex;
+  height: calc(var(--spacing-3xl) + var(--spacing-xs));
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--spacing-md);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-plugin-bg-button);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+}
+
+/* The copy in the sizer carries the button's own label padding. */
+.comma-onboarding-action__sizer > .comma-onboarding-action__button {
+  padding-inline: calc(var(--spacing-md) + var(--spacing-xxs));
+}
+
+.comma-onboarding-action__button::before {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-sm)) calc(-1 * var(--spacing-xs));
+  content: "";
+}
+
+/* Block-level, so no text line box adds a descender under the spinner: the
+   label's cell is exactly its line, centred in the button. */
+.comma-onboarding-action__button .comma-onboarding-swap {
+  display: grid;
+  justify-items: center;
+}
+
+/* Busy, the button says so beside a small spinner, in a quieter ink. */
+/* Busy, the spinner alone holds the label's line, centred both ways; what it
+   waits for is read out, not drawn. */
+.comma-onboarding-action__pending {
+  display: flex;
+  min-block-size: var(--text-sm--line-height);
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+}
+
+/* Alone in its button, the spinner takes the label's place at an icon's
+   size, centred on the label's line. */
+.comma-onboarding .comma-onboarding-action__spinner {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+}
+
+/* Settled: a check and a label; the check arrives as a contextual icon. */
+.comma-onboarding-action__done {
+  display: inline-flex;
+  height: calc(var(--spacing-3xl) + var(--spacing-xs));
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding-inline-end: var(--spacing-xxs);
+  color: var(--color-text-success-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+}
+
+.comma-onboarding-action__done > svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  transition:
+    opacity var(--motion-duration-icon-swap) var(--motion-easing-contextual-icon),
+    scale var(--motion-duration-icon-swap) var(--motion-easing-contextual-icon),
+    filter var(--motion-duration-icon-swap) var(--motion-easing-contextual-icon);
+}
+
+[data-on="false"] > .comma-onboarding-action__done > svg {
+  opacity: 0;
+  filter: blur(var(--motion-blur-reveal-item));
+  scale: 0.25;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Apps                                                                     */
+/* ------------------------------------------------------------------------ */
+
+/* Until the apps arrive the list holds the height it was given (the rows
+   that fit over the composer, OnboardingOverlay.tsx), so nothing jumps when
+   they do. A list that fits takes its own height; a longer one keeps that
+   height and scrolls. */
+.comma-onboarding-apps,
+.comma-onboarding-apps__placeholder {
+  height: calc(var(--onboarding-list-rows) * var(--onboarding-list-row));
+}
+
+/* The list could not be shown (it failed, or there is nothing to connect):
+   one quiet line in the card's own text size, on the rows' inset. */
+.comma-onboarding-apps__failed {
+  margin: 0;
+  padding: var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  text-wrap: pretty;
+}
+
+.comma-onboarding-apps[data-fits] {
+  height: auto;
+}
+
+.comma-onboarding-apps__list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The plugin list's row: its logo, its name over one line of what it does,
+   and its action, 60px apart. */
+.comma-onboarding-app {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-md);
+}
+
+.comma-onboarding-app__text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-onboarding-app__name {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-onboarding-app__summary {
+  overflow: hidden;
+  color: var(--color-text-quaternary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* While an app's sign-in is open in the browser, a line opens under its row,
+   on its text column, saying where to finish. */
+.comma-onboarding-app__hint {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-app__hint[data-open] {
+  grid-template-rows: 1fr;
+
+  @starting-style {
+    grid-template-rows: 0fr;
+  }
+}
+
+.comma-onboarding-app__hint > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.comma-onboarding-app__hint p {
+  margin: 0;
+  padding: 0 var(--spacing-md) var(--spacing-md)
+    calc(var(--spacing-md) + var(--spacing-5xl) + var(--spacing-xs) + var(--spacing-lg));
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  opacity: 0;
+  text-wrap: pretty;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-app__hint[data-open] p {
+  opacity: 1;
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Name                                                                     */
+/* ------------------------------------------------------------------------ */
+
+.comma-onboarding-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-md) 0;
+}
+
+.comma-onboarding-name__field {
+  width: 100%;
+}
+
+.comma-onboarding-name__suggestions {
+  display: flex;
+  min-inline-size: 0;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* A suggestion in the tag's large look, pressable: 30px tall, a 40px target.
+   Choosing one is never animated; only the press feedback moves. */
+.comma-onboarding .comma-onboarding-chip {
+  position: relative;
+  display: inline-flex;
+  height: calc(var(--spacing-3xl) + var(--spacing-sm));
+  align-items: center;
+  padding: 0 calc(var(--spacing-md) + var(--spacing-xxs));
+  border: var(--border-width-default) solid var(--color-border-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  outline: none;
+  transition: scale var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding .comma-onboarding-chip:active {
+  transition-duration: var(--motion-duration-feedback-in);
+}
+
+.comma-onboarding-chip::before {
+  position: absolute;
+  inset: calc(-1 * var(--spacing-xs) - var(--border-width-default))
+    calc(-1 * var(--spacing-xs));
+  content: "";
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-onboarding .comma-onboarding-chip:hover {
+    background: var(--color-bg-secondary-hover);
+    color: var(--color-text-primary);
+  }
+}
+
+.comma-onboarding .comma-onboarding-chip[aria-pressed="true"] {
+  border-color: var(--color-border-brand);
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-brand);
+  color: var(--color-text-primary);
+}
+
+.comma-onboarding[data-keyboard="true"] .comma-onboarding-chip:focus-visible {
+  box-shadow: var(--shadow-focus-brand);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Permissions                                                              */
+/* ------------------------------------------------------------------------ */
+
+/* What macOS will ask about, on the card's 16px content edge. */
+.comma-onboarding-permissions__helper {
+  margin: 0;
+  padding: var(--spacing-md) var(--spacing-md) var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-wrap: pretty;
+}
+
+.comma-onboarding-permissions {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The plugin row's rhythm, with a small solid tile, rounded like a macOS
+   icon, in the colour of the System Settings pane macOS opens for it. The
+   tile sits centred where an app row has its logo, so the text and the
+   actions line up with the apps card. */
+.comma-onboarding-permission {
+  display: flex;
+  min-height: var(--onboarding-list-row);
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-md);
+}
+
+.comma-onboarding-permission__tile {
+  display: grid;
+  width: calc(var(--spacing-5xl) + var(--spacing-xs));
+  flex: none;
+  place-items: center;
+}
+
+.comma-onboarding-permission__tile > span {
+  display: grid;
+  width: calc(var(--spacing-3xl) + var(--spacing-xs));
+  height: calc(var(--spacing-3xl) + var(--spacing-xs));
+  border-radius: var(--radius-md);
+  background: var(--color-blue-500);
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-alpha-black-10);
+  color: var(--color-fg-white);
+  place-items: center;
+}
+
+/* One hue per grant, so no two read as the same. */
+.comma-onboarding-permission__tile[data-permission="screenRecording"] > span {
+  background: var(--color-violet-500);
+}
+
+.comma-onboarding-permission__tile[data-permission="notifications"] > span {
+  background: var(--color-orange-500);
+}
+
+.comma-onboarding-permission__tile svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-onboarding-permission__text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-onboarding-permission__title {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-onboarding-permission__description {
+  color: var(--color-text-quaternary);
+  /* The assistant's name is the user's: a long unbroken one wraps rather
+     than running under the row's action. */
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.comma-onboarding-permission__description[data-failed] {
+  color: var(--color-text-error-primary);
+}
+
+/* ------------------------------------------------------------------------ */
+/* The light sweep                                                          */
+/* ------------------------------------------------------------------------ */
+
+/* One pre-rendered band of white light that rises up the screen into the
+   welcome page (onboardingMotion.ts moves it): a soft glow leading, the core
+   (a hairline of pure white, brightest across the middle, in its bloom and a
+   wide halo), and a short luminous tail. It brightens what it passes. */
+.comma-onboarding-sweep {
+  --onboarding-sweep-white: var(--color-alpha-white-100);
+  --onboarding-sweep-bloom: color-mix(in oklab, var(--color-brand-25) 40%, transparent);
+  --onboarding-sweep-halo: color-mix(in oklab, var(--color-brand-50) 45%, transparent);
+
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--onboarding-sweep-reach);
+  background:
+    radial-gradient(
+      ellipse 48% var(--spacing-2xl) at 50% var(--onboarding-sweep-core),
+      color-mix(in oklab, var(--onboarding-sweep-white) 90%, transparent),
+      var(--onboarding-sweep-bloom) 45%,
+      transparent
+    ),
+    radial-gradient(
+      ellipse 75% calc(var(--onboarding-sweep-core) * 0.92) at 50%
+        var(--onboarding-sweep-core),
+      var(--onboarding-sweep-halo),
+      transparent
+    );
+  pointer-events: none;
+  transform: translateY(100cqh);
+  will-change: transform;
+}
+
+/* The core's hairline, a layer of its own: a gradient sized down to a
+   strip of the band is drawn as a tiled image, which costs the GPU a pipeline
+   of its own the first time, just as the sweep starts. */
+.comma-onboarding-sweep::before {
+  position: absolute;
+  top: calc(var(--onboarding-sweep-core) - var(--border-width-default));
+  right: 0;
+  left: 0;
+  height: calc(2 * var(--border-width-default));
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--onboarding-sweep-white) 22%,
+    var(--onboarding-sweep-white) 78%,
+    transparent
+  );
+  content: "";
+}
+
+.comma-onboarding-sweep::after {
+  position: absolute;
+  top: var(--onboarding-sweep-core);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklab, var(--color-brand-25) 38%, transparent),
+    color-mix(in oklab, var(--color-brand-50) 14%, transparent) 35%,
+    transparent
+  );
+  content: "";
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--color-alpha-black-100) 18%,
+    var(--color-alpha-black-100) 82%,
+    transparent
+  );
+}
+
+/* Reduced motion: a quick white flash over the whole screen instead. */
+.comma-onboarding-sweep[data-flash] {
+  height: auto;
+  background: color-mix(in oklab, var(--color-brand-25) 35%, transparent);
+  inset: 0;
+  opacity: 0;
+  transform: none;
+  will-change: auto;
+}
+
+.comma-onboarding-sweep[data-flash]::before,
+.comma-onboarding-sweep[data-flash]::after {
+  content: none;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Open Comma shortcut                                                      */
+/* ------------------------------------------------------------------------ */
+
+/* The last step, centred where the welcome page will be, once the
+   conversation has stepped back: what the shortcut does, its keys drawn as a
+   Mac keyboard's, and a note under them. White ink on the blue, as the
+   welcome page. A key only repaints (its colour and shadows); its legend
+   is all that moves. */
+.comma-onboarding-shortcut {
+  /* A key's height, a letter key's width, and a modifier's and the space
+     bar's widths as ratios of it. */
+  --onboarding-key-size: min(var(--spacing-9xl), 18vw);
+  --onboarding-key-wide: 1.5;
+  --onboarding-key-bar: 2.5;
+  --onboarding-key-radius: var(--radius-xl);
+  /* The face sits a hair inside the key: flush at the top, a hairline in at
+     the sides, the key's foot showing under it. */
+  --onboarding-key-rim: var(--spacing-xxs);
+  --onboarding-key-depth: var(--spacing-xs);
+  --onboarding-key-inset: var(--spacing-lg);
+  /* White keys: a white face over a cool grey foot, a hairline ring. */
+  --onboarding-key-face: var(--color-alpha-white-100);
+  --onboarding-key-foot: var(--color-gray-cool-200);
+  --onboarding-key-ring: var(--color-alpha-black-10);
+  --onboarding-key-ink: var(--color-gray-cool-500);
+  /* Pressed, a key turns green over a deeper green foot, its legend white. */
+  --onboarding-key-done: var(--color-success-500);
+  --onboarding-key-done-foot: var(--color-success-600);
+  --onboarding-key-done-ink: var(--color-text-white);
+
+  position: absolute;
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-4xl) var(--spacing-xl) calc(var(--spacing-4xl) + 6vh);
+  margin: 0;
+  border: 0;
+  color: var(--color-text-white);
+  inset: 0;
+  outline: none;
+  text-align: center;
+}
+
+/* Over the desktop, a soft deeper blue gathers behind the step's words and
+   keys as it arrives, so they hold against whatever shows through. */
+.comma-onboarding[data-presentation="window"] .comma-onboarding-shortcut {
+  isolation: isolate;
+}
+
+.comma-onboarding[data-presentation="window"] .comma-onboarding-shortcut::before {
+  position: absolute;
+  z-index: -1;
+  animation: comma-onboarding-shortcut-scrim var(--motion-duration-onboarding-settle)
+    var(--motion-easing-calm-out) both;
+  background: radial-gradient(
+    closest-side in oklab,
+    color-mix(in oklab, var(--onboarding-deep-top) 72%, transparent),
+    color-mix(in oklab, var(--onboarding-deep-top) 50%, transparent) 55%,
+    transparent
+  );
+  content: "";
+  inset: 8% 0 calc(8% + 6vh);
+  pointer-events: none;
+}
+
+@keyframes comma-onboarding-shortcut-scrim {
+  from {
+    opacity: 0;
+  }
+}
+
+.comma-onboarding-shortcut__eyebrow {
+  margin: 0;
+  color: var(--onboarding-on-field-quiet);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-onboarding-shortcut__title {
+  overflow-wrap: anywhere;
+  max-inline-size: var(--container-md);
+  margin: var(--spacing-md) 0 0;
+  font-size: min(var(--text-display-md), 8vw);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--text-display-md--letter-spacing);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.comma-onboarding-shortcut__body {
+  max-inline-size: var(--container-sm);
+  margin: var(--spacing-md) 0 0;
+  color: var(--color-alpha-white-80);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  text-wrap: pretty;
+}
+
+/* Once every key is pressed, the title and its words trade places with the
+   success in place, centred, as one cross-fade. Opacity only: blurring text
+   this large costs the GPU a new blur the first time, as the keys go green. */
+.comma-onboarding-shortcut .comma-onboarding-swap {
+  justify-items: center;
+}
+
+.comma-onboarding-shortcut .comma-onboarding-swap > * {
+  filter: none;
+  transition-property: opacity;
+}
+
+.comma-onboarding-shortcut__keys-part {
+  margin-top: var(--spacing-6xl);
+}
+
+.comma-onboarding-shortcut__keys {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.comma-onboarding-shortcut__plus {
+  color: var(--onboarding-on-field-quiet);
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+}
+
+/* One key, drawn as one rounded block after the Mac keyboard's: a white
+   face, flush at the top and a hairline inside the sides, over the key's
+   cool foot, which shows along its bottom. Held, the face presses flat over
+   the foot and the legend goes down with it; released, it springs back past
+   rest and settles (the press-recoil curve). Pressed once, the key turns
+   green. Only paint changes: the face is the key's background and the foot
+   an inset shadow, so a press moves nothing around it. */
+.comma-onboarding-keycap {
+  position: relative;
+  display: block;
+  flex: none;
+  block-size: var(--onboarding-key-size);
+  inline-size: var(--onboarding-key-size);
+  border-radius: var(--onboarding-key-radius);
+  background-color: var(--onboarding-key-face);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--onboarding-key-ring),
+    inset 0 calc(var(--onboarding-key-rim) - var(--onboarding-key-depth))
+      var(--border-width-default) var(--onboarding-key-rim) var(--onboarding-key-foot),
+    0 var(--border-width-default) var(--spacing-xxs) var(--color-alpha-black-10),
+    0 var(--spacing-md) var(--spacing-2xl) calc(-1 * var(--spacing-sm))
+      var(--color-alpha-black-30);
+  color: var(--onboarding-key-ink);
+  transition:
+    box-shadow var(--motion-duration-press-recoil) var(--motion-easing-press-recoil),
+    background-color var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    color var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+.comma-onboarding-keycap[data-wide] {
+  inline-size: calc(var(--onboarding-key-size) * var(--onboarding-key-wide));
+}
+
+.comma-onboarding-keycap[data-bar] {
+  inline-size: calc(var(--onboarding-key-size) * var(--onboarding-key-bar));
+}
+
+/* Pressed, each shadow keeps its rest blur and only moves, shrinks and
+   fades: a blur radius that changes mid-transition makes the GPU build a
+   new blur for each radius it passes, the first time, and drops frames. */
+.comma-onboarding-keycap[data-pressed] {
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--onboarding-key-ring),
+    inset 0 0 var(--border-width-default) 0 var(--onboarding-key-foot),
+    0 0 var(--spacing-xxs) var(--color-alpha-black-10),
+    0 var(--spacing-xxs) var(--spacing-2xl) calc(-1 * var(--spacing-md))
+      var(--color-alpha-black-20);
+  transition-duration:
+    var(--motion-duration-press-travel), var(--motion-duration-state-change),
+    var(--motion-duration-state-change);
+  transition-timing-function:
+    var(--motion-easing-press-travel), var(--motion-easing-smooth-out),
+    var(--motion-easing-smooth-out);
+}
+
+/* Pressed once in this attempt, and every key once all are: green, nothing
+   more. */
+.comma-onboarding-keycap:is([data-lit], [data-done]) {
+  --onboarding-key-face: var(--onboarding-key-done);
+  --onboarding-key-foot: var(--onboarding-key-done-foot);
+  --onboarding-key-ink: var(--onboarding-key-done-ink);
+}
+
+/* The legend: a modifier's symbol in the bottom-left corner and its name in
+   the bottom-right, a letter in the middle of the face, the space bar's name
+   along its foot. */
+.comma-onboarding-keycap__glyph,
+.comma-onboarding-keycap__name,
+.comma-onboarding-keycap__letter {
+  position: absolute;
+  line-height: 1;
+  transition: translate var(--motion-duration-press-recoil)
+    var(--motion-easing-press-recoil);
+}
+
+.comma-onboarding-keycap[data-pressed]
+  :is(
+    .comma-onboarding-keycap__glyph,
+    .comma-onboarding-keycap__name,
+    .comma-onboarding-keycap__letter
+  ) {
+  transition-duration: var(--motion-duration-press-travel);
+  transition-timing-function: var(--motion-easing-press-travel);
+  translate: 0 calc(var(--onboarding-key-depth) / 2);
+}
+
+.comma-onboarding-keycap__glyph,
+.comma-onboarding-keycap__name {
+  inset-block-end: calc(var(--onboarding-key-inset) + var(--onboarding-key-depth));
+}
+
+.comma-onboarding-keycap__glyph {
+  font-size: var(--text-lg);
+  inset-inline-start: var(--onboarding-key-inset);
+}
+
+.comma-onboarding-keycap__name {
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-medium);
+  inset-inline-end: var(--onboarding-key-inset);
+}
+
+/* The space bar's name, centred along its foot. */
+.comma-onboarding-keycap[data-bar] .comma-onboarding-keycap__name {
+  inset-inline: 0;
+  text-align: center;
+}
+
+.comma-onboarding-keycap__letter {
+  display: grid;
+  font-size: var(--text-display-xs);
+  font-weight: var(--font-weight-medium);
+  inset: 0 0 var(--onboarding-key-depth);
+  place-items: center;
+}
+
+/* Reduced motion: a press flattens the key where it stands. */
+.comma-onboarding[data-reduced-motion="true"]
+  .comma-onboarding-keycap[data-pressed]
+  :is(
+    .comma-onboarding-keycap__glyph,
+    .comma-onboarding-keycap__name,
+    .comma-onboarding-keycap__letter
+  ) {
+  translate: none;
+}
+
+/* Under the keys, a slot that holds its height for the note that a key was
+   wrong. */
+.comma-onboarding-shortcut__note {
+  display: flex;
+  min-block-size: calc(var(--spacing-3xl) + var(--spacing-xs));
+  justify-content: center;
+  margin-top: var(--spacing-3xl);
+}
+
+/* A small solid pill, the onboarding cards' white over the light, with a
+   calm info mark: a wrong key is never an alarm. */
+/* Under the note: Skip, the cards' quiet Skip on the blue. Their size and
+   shape; the field's ink, as the corner's controls have, and the pill's ring
+   for the keyboard. */
+.comma-onboarding-shortcut__actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: var(--spacing-xl);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.comma-onboarding .comma-onboarding-shortcut__action {
+  height: calc(var(--spacing-3xl) + var(--spacing-xs));
+  padding: 0 var(--spacing-lg);
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  color: var(--onboarding-on-field-quiet);
+  transition:
+    background-color var(--motion-duration-state-change) var(--motion-easing-smooth-out),
+    color var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-onboarding .comma-onboarding-shortcut__action:hover {
+    background-color: var(--color-alpha-white-10);
+    color: var(--color-text-white);
+  }
+}
+
+.comma-onboarding[data-keyboard="false"]
+  .comma-onboarding-shortcut__action:focus-visible {
+  box-shadow: none;
+}
+
+.comma-onboarding[data-keyboard="true"]
+  .comma-onboarding-shortcut__action:focus-visible {
+  box-shadow: 0 0 0 var(--spacing-xs) var(--color-alpha-white-40);
+}
+
+.comma-onboarding-shortcut__wrong {
+  display: inline-flex;
+  height: calc(var(--spacing-4xl) + var(--spacing-xs));
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding-inline: var(--spacing-md) var(--spacing-lg);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-alpha-black-10),
+    0 var(--spacing-xs) var(--spacing-md) calc(-1 * var(--spacing-xs))
+      var(--color-alpha-black-20),
+    0 var(--spacing-md) var(--spacing-3xl) calc(-1 * var(--spacing-md))
+      var(--color-alpha-black-40);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  white-space: nowrap;
+}
+
+:is(.dark, [data-theme="Dark mode"]) .comma-onboarding-shortcut__wrong {
+  background: var(--color-gray-dark-mode-800);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-alpha-white-10),
+    0 var(--spacing-md) var(--spacing-3xl) calc(-1 * var(--spacing-md))
+      var(--color-alpha-black-40);
+}
+
+.comma-onboarding-shortcut__wrong > svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+  color: var(--color-fg-warning-primary);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Welcome page                                                             */
+/* ------------------------------------------------------------------------ */
+
+/* Centred on the light field, a little above the middle: the plain Comma
+   mark, the welcome, the assistant ready by its name, and the way into the
+   chat. White ink on the blue. */
+.comma-onboarding-welcome {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-4xl) var(--spacing-xl) calc(var(--spacing-4xl) + 6vh);
+  color: var(--color-text-white);
+  inset: 0;
+  text-align: center;
+  transition:
+    opacity var(--motion-duration-dialog-exit) var(--motion-easing-smooth-out),
+    translate var(--motion-duration-dialog-exit) var(--motion-easing-smooth-out);
+}
+
+/* Start chatting: the page lifts away first, faster than it came. */
+.comma-onboarding-welcome[data-leaving] {
+  opacity: 0;
+  pointer-events: none;
+  translate: 0 calc(-1 * var(--motion-distance-reveal-item));
+}
+
+.comma-onboarding-welcome__mark {
+  display: inline-flex;
+  width: var(--spacing-6xl);
+  height: var(--spacing-6xl);
+  color: var(--color-text-white);
+}
+
+.comma-onboarding-welcome__mark > svg {
+  width: 100%;
+  height: 100%;
+}
+
+.comma-onboarding-intro__title,
+.comma-onboarding-welcome__title {
+  overflow-wrap: anywhere;
+  max-inline-size: var(--container-md);
+  margin: var(--spacing-3xl) 0 0;
+  font-size: min(var(--text-display-lg), 10vw);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--text-display-lg--letter-spacing);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.comma-onboarding-welcome__body {
+  max-inline-size: var(--container-sm);
+  margin: var(--spacing-md) 0 0;
+  color: var(--color-alpha-white-80);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  text-wrap: pretty;
+}
+
+.comma-onboarding-intro__action,
+.comma-onboarding-welcome__action {
+  display: inline-flex;
+  margin-top: var(--spacing-4xl);
+}
+
+/* White on the blue, so it reads on the light field; a pill, the page's one
+   way on (Start in the intro, Start chatting on the welcome page). */
+.comma-onboarding .comma-onboarding-pill {
+  padding-inline: var(--spacing-3xl);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-alpha-white-100);
+  box-shadow:
+    0 var(--spacing-xs) var(--spacing-md) calc(-1 * var(--spacing-xs))
+      var(--color-alpha-black-20),
+    0 var(--spacing-md) var(--spacing-3xl) calc(-1 * var(--spacing-md))
+      var(--color-alpha-black-40);
+  color: var(--color-brand-700);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-onboarding .comma-onboarding-pill:hover {
+    background: var(--color-alpha-white-90);
+    color: var(--color-brand-800);
+  }
+}
+
+.comma-onboarding[data-keyboard="true"] .comma-onboarding-pill:focus-visible {
+  box-shadow:
+    0 var(--spacing-xs) var(--spacing-md) calc(-1 * var(--spacing-xs))
+      var(--color-alpha-black-20),
+    0 0 0 var(--spacing-xs) var(--color-alpha-white-40);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Focus                                                                    */
+/* ------------------------------------------------------------------------ */
+
+/* The onboarding focuses each part's control itself (a card's first
+   control, the welcome page's action). Rings show only once the user moves
+   on with Tab (OnboardingOverlay.tsx): until then, focused controls keep
+   their resting look. */
+.comma-onboarding[data-keyboard="false"] .comma-onboarding-card button:focus-visible {
+  box-shadow: var(--shadow-xs);
+}
+
+.comma-onboarding[data-keyboard="false"]
+  .comma-onboarding-card
+  :is(.comma-onboarding-name__skip, .comma-onboarding-chip):focus-visible {
+  box-shadow: none;
+}
+
+.comma-onboarding[data-keyboard="false"]
+  .comma-onboarding-card
+  .comma-onboarding-chip[aria-pressed="true"]:focus-visible {
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-brand);
+}
+
+.comma-onboarding[data-keyboard="false"] .comma-onboarding-pill:focus-visible {
+  box-shadow:
+    0 var(--spacing-xs) var(--spacing-md) calc(-1 * var(--spacing-xs))
+      var(--color-alpha-black-20),
+    0 var(--spacing-md) var(--spacing-3xl) calc(-1 * var(--spacing-md))
+      var(--color-alpha-black-40);
+}

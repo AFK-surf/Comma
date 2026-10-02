@@ -975,6 +975,13 @@ defmodule SalixAgent.ExternalSessionActor do
          # Coalesce that stale wake without consulting lifecycle status; a new
          # durable input changes the deterministic batch id and remains live.
          true <- queued_batch_id != data.failed_dispatch_id,
+         :ok <-
+           ExternalSessionStore.recover_billing_rejection(
+             data.agent_id,
+             data.session_id,
+             queued_messages,
+             data.records
+           ),
          {:ok, %{"tenant_id" => tenant_id, "runtime_config" => runtime}} <-
            AgentControl.get_record(data.agent_id),
          {:ok, binding, _state, records} <-
@@ -1004,8 +1011,8 @@ defmodule SalixAgent.ExternalSessionActor do
       source_ids = source_message_ids(request.input_messages)
       started_at = System.system_time(:second)
 
-      steer? =
-        case ExternalSessionStore.start_dispatch(
+      with {:ok, steer?, projection} <-
+             ExternalSessionStore.start_dispatch(
                data.agent_id,
                data.session_id,
                request.dispatch_id,
@@ -1014,21 +1021,14 @@ defmodule SalixAgent.ExternalSessionActor do
                data.records.last_id,
                source_ids
              ) do
+        case projection do
           {:ok, status} ->
             schedule_starting_deadline(status)
-            status["status"] == "running"
-
-          {:error, :session_migration_in_progress} ->
-            :migration_frozen
 
           {:error, reason} ->
             Logger.warning("external session starting projection failed: #{inspect(reason)}")
-            false
         end
 
-      if steer? == :migration_frozen do
-        data
-      else
         started = System.monotonic_time(:millisecond)
 
         dependency = fn ->
@@ -1073,6 +1073,10 @@ defmodule SalixAgent.ExternalSessionActor do
           {:error, reason} ->
             record_dispatch_failure(data, pending, reason)
         end
+      else
+        {:error, reason} ->
+          Logger.warning("external session dispatch admission failed: #{inspect(reason)}")
+          data
       end
     else
       false ->
@@ -1080,6 +1084,27 @@ defmodule SalixAgent.ExternalSessionActor do
 
       {:error, :not_found} ->
         data
+
+      {:ok, _state, records} ->
+        send(self(), :process)
+        %{data | records: records}
+
+      {:error, %{"error_class" => "billing_unavailable", "retryable" => false} = error} ->
+        case ExternalSessionStore.reject_billing_input(
+               data.agent_id,
+               data.session_id,
+               queued_messages,
+               error,
+               data.records
+             ) do
+          {:ok, _state, records} ->
+            send(self(), :process)
+            %{data | records: records, failed_dispatch_id: nil}
+
+          {:error, reason} ->
+            Logger.warning("external billing refusal commit failed: #{inspect(reason)}")
+            reload_failed_records(data)
+        end
 
       {:error, {:bad_request, message}}
       when message in [
@@ -1106,7 +1131,14 @@ defmodule SalixAgent.ExternalSessionActor do
           "external session #{data.agent_id}/#{data.session_id} dispatch failed: #{inspect(reason)}"
         )
 
-        data
+        reload_failed_records(data)
+    end
+  end
+
+  defp reload_failed_records(data) do
+    case ExternalSessionStore.load_records(data.agent_id, data.session_id) do
+      {:ok, records} -> %{data | records: records}
+      {:error, reason} -> exit({:external_records_unavailable, reason})
     end
   end
 
@@ -1246,7 +1278,8 @@ defmodule SalixAgent.ExternalSessionActor do
   end
 
   defp record_dispatch_failure(data, pending, reason) do
-    terminal = not pending.steer?
+    # Missing projection cannot establish whether an existing execution is active.
+    terminal = pending.steer? == false
 
     ExternalSessionLifecycleObservation.runtime_failure(reason, %{
       agent_id: data.agent_id,

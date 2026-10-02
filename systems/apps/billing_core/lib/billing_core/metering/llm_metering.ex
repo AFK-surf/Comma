@@ -25,7 +25,7 @@ defmodule BillingCore.LLMMetering do
                estimated_credits:
                  if(free?,
                    do: 0,
-                   else: fact[:estimated_credits] || fact["estimated_credits"] || 0
+                   else: max(fact[:estimated_credits] || fact["estimated_credits"] || 1, 1)
                  ),
                typed_sink: fact[:fee_control_typed_sink] || fact["fee_control_typed_sink"],
                row_context: fee_context(fact),

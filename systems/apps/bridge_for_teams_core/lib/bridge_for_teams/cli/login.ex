@@ -211,10 +211,11 @@ defmodule BridgeForTeams.CLI.Login do
 
   def revoke_cli_session(_token), do: :ok
 
-  @spec list_cli_sessions(map()) :: [AuthSession.t()]
-  def list_cli_sessions(user) do
+  @doc "The user's CLI sessions, newest first. `:limit` caps the number of rows."
+  @spec list_cli_sessions(map(), keyword()) :: [AuthSession.t()]
+  def list_cli_sessions(user, opts \\ []) do
     user
-    |> Sessions.list_for_user(device: @cli_session_device)
+    |> Sessions.list_for_user(device: @cli_session_device, limit: Keyword.get(opts, :limit))
     |> Repo.preload(cli_org_grants: :org)
   end
 

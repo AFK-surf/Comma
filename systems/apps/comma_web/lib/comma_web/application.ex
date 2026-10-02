@@ -32,6 +32,7 @@ defmodule CommaWeb.Application do
       maybe_pubsub_child(pubsub_server()) ++
         CommaWeb.TelegramOIDC.child_specs() ++
         CommaWeb.IMessageRuntime.child_specs() ++
+        CommaWeb.NativePushListener.child_specs() ++
         [
           {Bandit,
            plug: CommaWeb.Router,

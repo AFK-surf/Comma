@@ -1,4 +1,5 @@
 import { expect } from "../../../e2e/helpers/native-expect";
+import { closeElectronTestApp } from "./close-electron-test-app";
 import {
   _electron as electron,
   test,
@@ -352,7 +353,7 @@ test("website permissions ask before media access and can be reset from the addr
     );
     expect(await requestMic()).toBe("NotAllowedError");
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
     if (testInfo.status !== testInfo.expectedStatus) {
       await testInfo.attach("media-capture-diagnostics", {
         body: audioDiagnostics,
@@ -533,7 +534,7 @@ test("in-app Meet starts the recorder only after joining, including with no micr
         .meetings
     ).toEqual([]);
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
   }
 });
 
@@ -591,7 +592,7 @@ for (const dockVisible of [true, false]) {
       await attachRecorderDiagnostics(app);
       throw error;
     } finally {
-      await app.close();
+      await closeElectronTestApp(app);
     }
   });
 }
@@ -641,7 +642,7 @@ test("desktop recorder expands on the first forwarded mouse move without pointer
     await attachRecorderDiagnostics(app);
     throw error;
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
   }
 });
 
@@ -704,7 +705,7 @@ for (const mode of ["reminder", "hidden-auto"] as const) {
         (await app.evaluate(() => globalThis.recorderFixture.counts())).stops
       ).toBe(0);
     } finally {
-      await app.close();
+      await closeElectronTestApp(app);
     }
   });
 }
@@ -725,6 +726,9 @@ for (const [baseline, resizeDuration] of [
       args: [
         join(output, "main.cjs"),
         `--user-data-dir=${join(output, baseline ? "existing" : "new")}`,
+        // Exercise classic scrollbars even when the host prefers overlay bars.
+        // This macOS preference applies only to the fixture process.
+        ...(process.platform === "darwin" ? ["-AppleShowScrollBars", "Always"] : []),
       ],
       env: {
         ...env,
@@ -1067,7 +1071,7 @@ for (const [baseline, resizeDuration] of [
       await attachRecorderDiagnostics(app);
       throw error;
     } finally {
-      await app.close();
+      await closeElectronTestApp(app);
     }
   });
 }
@@ -1115,7 +1119,7 @@ test("a failed desktop window load prevents automatic capture and reports it in 
     await attachRecorderDiagnostics(app);
     throw error;
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
   }
 });
 
@@ -1151,7 +1155,7 @@ for (const action of ["cancel", "stop", "close"] as const) {
         files: [],
       });
     } finally {
-      await app.close();
+      await closeElectronTestApp(app);
     }
   });
 }
@@ -1399,6 +1403,7 @@ test("Comma permission menu stays above the browser and closes on Escape, outsid
     await attachRecorderDiagnostics(app);
     throw error;
   } finally {
+    // This test already closes the application through its last window.
     await app.close();
   }
 });
@@ -1428,7 +1433,7 @@ test("native AAC encoder downmixes a stereo source to mono", async () => {
       )
     ).resolves.toEqual({ channels: 1 });
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
   }
 });
 
@@ -1483,7 +1488,7 @@ for (const sampleRate of [48000, 44100]) {
       expect(result.transcript).toContain("Meeting fixture");
       expect(result.staging).toEqual([]);
     } finally {
-      await app.close();
+      await closeElectronTestApp(app);
     }
   });
 }
@@ -1566,7 +1571,7 @@ for (const submissionFails of [false, true]) {
         await application.evaluate(() => globalThis.recorderFixture.taskEvents())
       ).toContain("retry");
     } finally {
-      await application.close();
+      await closeElectronTestApp(application);
     }
   });
 }
@@ -1608,7 +1613,7 @@ for (const failure of ["entry", "snapshot", "register"] as const) {
         retryStatus: "synced",
       });
     } finally {
-      await app.close();
+      await closeElectronTestApp(app);
     }
   });
 }
@@ -1646,6 +1651,6 @@ test("a meeting offered again after dismissal never resends to its archived Task
       journal: ["task-2"],
     });
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
   }
 });

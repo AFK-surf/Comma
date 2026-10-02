@@ -9,6 +9,7 @@ import { reportCommaGoogleLoginFailure } from "../analytics/client";
 vi.mock("../analytics/client", () => ({ reportCommaGoogleLoginFailure: vi.fn() }));
 import type {
   SessionAuthenticatorController,
+  SessionGuestController,
   SessionLoginChallenge,
 } from "../session/controller";
 
@@ -35,13 +36,23 @@ function createStagedAuthenticator(
 
 function renderLoginScreen(
   authenticator: SessionAuthenticatorController,
-  locale?: "en" | "zh-CN"
+  locale?: "en" | "zh-CN",
+  guest?: SessionGuestController
 ) {
   return render(
     <CommaI18nProvider {...(locale ? { locale } : {})}>
-      <LoginScreen authenticator={authenticator} />
+      <LoginScreen authenticator={authenticator} {...(guest ? { guest } : {})} />
     </CommaI18nProvider>
   );
+}
+
+function createGuestController(enabled: boolean): SessionGuestController {
+  return {
+    availability: vi.fn(async () => enabled),
+    beginSignUp: vi.fn(async () => undefined),
+    start: vi.fn(async () => undefined),
+    subscribeImported: vi.fn(() => () => undefined),
+  };
 }
 
 describe("LoginScreen on hosts with direct Google sign-in (Electron)", () => {
@@ -65,6 +76,27 @@ describe("LoginScreen on hosts with direct Google sign-in (Electron)", () => {
       screen.queryByRole("heading", { name: "Sign in to Comma" })
     ).not.toBeInTheDocument();
   });
+
+  it.each([true, false])(
+    "offers guest mode only when the server enables it (%s)",
+    async (enabled) => {
+      const guest = createGuestController(enabled);
+      const user = userEvent.setup();
+      renderLoginScreen(createStagedAuthenticator(), undefined, guest);
+
+      await waitFor(() => expect(guest.availability).toHaveBeenCalledOnce());
+      if (!enabled) {
+        expect(
+          screen.queryByRole("button", { name: "Try without an account" })
+        ).not.toBeInTheDocument();
+        return;
+      }
+      await user.click(
+        await screen.findByRole("button", { name: "Try without an account" })
+      );
+      expect(guest.start).toHaveBeenCalledOnce();
+    }
+  );
 
   it("blocks malformed emails before requesting a code", async () => {
     const authenticator = createStagedAuthenticator();
@@ -512,6 +544,19 @@ describe("LoginScreen on hosts with direct Google sign-in (Electron)", () => {
 describe("LoginScreen on browser hosts", () => {
   beforeEach(() => {
     initializeCommaI18n(["en"]);
+  });
+
+  it("starts a guest Session from the browser login when enabled", async () => {
+    const authenticator = createStagedAuthenticator();
+    delete authenticator.requestGoogleLogin;
+    const guest = createGuestController(true);
+    const user = userEvent.setup();
+    renderLoginScreen(authenticator, undefined, guest);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Try without an account" })
+    );
+    expect(guest.start).toHaveBeenCalledOnce();
   });
 
   it("keeps the legacy provider-mounted Google flow", () => {

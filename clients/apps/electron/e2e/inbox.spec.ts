@@ -1,3 +1,4 @@
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { electronVideoOptions } from "../../../e2e/helpers/electron-video";
 import { _electron as electron, expect, test } from "@playwright/test";
 import type { ChatRuntimeSnapshot } from "@comma/chat-contract";
@@ -236,6 +237,7 @@ let userDataDir: string;
 
 test.beforeEach(async () => {
   userDataDir = await mkdtemp(join(tmpdir(), "comma-inbox-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [E2E_USER_ID]);
 });
 
 test.afterEach(async () => {
@@ -577,14 +579,21 @@ test("Task review crosses Main and settles through the native chat bridge", asyn
 
 // The macOS status-item menu is out of Playwright's reach, so Main records
 // each menu it installs and clicks the requested Task row once, through the
-// row's own click handler. The Task comes from the ProductInbox projection,
+// row's own click handler. The Tasks come from the ProductInbox projection,
 // and the shortcut comes from a preference change made in the renderer.
-test("the menu-bar menu lists recent Tasks, opens one, and follows customized shortcuts", async ({
+test("the menu-bar menu lists In progress Tasks, opens one, and follows customized shortcuts", async ({
   browserName: _browserName,
 }, testInfo) => {
+  const reviewTask = {
+    id: "cnv_review_smoke",
+    status: "ready_for_review",
+    title: "Waiting for review",
+  };
   const stub = await startChatSmokeStub({
+    extraInlineTasks: [reviewTask],
     includeTaskInInbox: true,
     sessionEmail: E2E_EMAIL,
+    taskStatus: "active",
   });
   const menuFilePath = join(userDataDir, "status-tray-menu.json");
   const taskRowId = `task:${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`;
@@ -598,15 +607,17 @@ test("the menu-bar menu lists recent Tasks, opens one, and follows customized sh
     },
     ...electronVideoOptions(testInfo),
   });
-  const menuRows = async (): Promise<
-    { accelerator?: string; id?: string; label?: string; type?: string }[]
-  > => {
+  const menu = async (): Promise<{
+    host?: string;
+    rows: { accelerator?: string; id?: string; label?: string; type?: string }[];
+  }> => {
     try {
       return JSON.parse(await readFile(menuFilePath, "utf8"));
     } catch {
-      return [];
+      return { rows: [] };
     }
   };
+  const menuRows = async () => (await menu()).rows;
 
   try {
     const appWindow = await findElectronWindowByRole(app, "complementary", {
@@ -617,9 +628,18 @@ test("the menu-bar menu lists recent Tasks, opens one, and follows customized sh
         `#/tasks/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}$`
       )
     );
+    // On macOS the Side Chat helper draws it, so hovering it never waits on
+    // Main; Electron's Tray draws it elsewhere.
+    expect((await menu()).host).toBe(
+      process.platform === "darwin" ? "side-chat-helper" : "electron"
+    );
     const rows = await menuRows();
     expect(rows).toContainEqual(
       expect.objectContaining({ id: taskRowId, label: chatSmokeTaskConversation.title })
+    );
+    // The Task that waits for review is in the same Inbox, but not In progress.
+    expect(rows.map((row) => row.id)).not.toContain(
+      `task:${chatSmokeWorkspace.group_id}/${reviewTask.id}`
     );
     // Open Comma and Open Side Chat are the only commands above the Tasks,
     // which start with their section title.
@@ -627,7 +647,7 @@ test("the menu-bar menu lists recent Tasks, opens one, and follows customized sh
     expect(rows[3]).toMatchObject({ type: "header" });
     // The Settings row shows the chord the renderer publishes for the app menu.
     const settingsAccelerator = async () =>
-      (await menuRows()).find((row) => row.accelerator?.endsWith("+,"))?.accelerator;
+      (await menuRows()).find((row) => row.id === "settings")?.accelerator;
     await expect.poll(settingsAccelerator).toBe("Super+,");
 
     await appWindow.evaluate(() =>
@@ -664,6 +684,79 @@ test("the menu-bar menu lists recent Tasks, opens one, and follows customized sh
         (await menuRows()).some((row) => row.accelerator === "Super+Alt+J")
       )
       .toBe(true);
+  } finally {
+    await app.close();
+    await stub.close();
+  }
+});
+
+test("the menu-bar More row opens the Tasks page, and the Task section leaves with the last In progress Task", async ({
+  browserName: _browserName,
+}, testInfo) => {
+  const stub = await startChatSmokeStub({
+    includeTaskInInbox: true,
+    sessionEmail: E2E_EMAIL,
+    taskStatus: "active",
+  });
+  const menuFilePath = join(userDataDir, "status-tray-menu.json");
+  const app = await electron.launch({
+    args: [electronMain, `--user-data-dir=${userDataDir}`],
+    cwd: electronAppDir,
+    env: {
+      ...electronEnv(stub.baseUrl),
+      COMMA_ELECTRON_E2E_ACTIVATE_STATUS_TRAY_MENU_ITEM: "more-tasks",
+      COMMA_ELECTRON_E2E_STATUS_TRAY_MENU_FILE_PATH: menuFilePath,
+    },
+    ...electronVideoOptions(testInfo),
+  });
+  const menuRows = async () => {
+    try {
+      const { rows } = JSON.parse(await readFile(menuFilePath, "utf8")) as {
+        rows: { id?: string; type?: string }[];
+      };
+      return rows.map((row) => row.id ?? row.type);
+    } catch {
+      return [];
+    }
+  };
+
+  try {
+    const appWindow = await findElectronWindowByRole(app, "complementary", {
+      name: "App sidebar",
+    });
+    await expect(appWindow).toHaveURL(/#\/tasks$/);
+    await expect
+      .poll(menuRows)
+      .toEqual([
+        "open-comma",
+        "open-side-chat",
+        "separator",
+        "header",
+        `task:${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`,
+        "more-tasks",
+        "separator",
+        "settings",
+        "separator",
+        "quit",
+      ]);
+
+    // The only In progress Task moves to review: the title, the Task and More leave.
+    await expect.poll(() => stub.activeTaskListEventStreams).toBeGreaterThan(0);
+    stub.publishTaskReviewUpdate({
+      assistantMessages: ["Ready for review."],
+      title: chatSmokeTaskConversation.title,
+      updatedAt: chatSmokeTaskConversation.updated_at + 1,
+    });
+    await expect
+      .poll(menuRows)
+      .toEqual([
+        "open-comma",
+        "open-side-chat",
+        "separator",
+        "settings",
+        "separator",
+        "quit",
+      ]);
   } finally {
     await app.close();
     await stub.close();

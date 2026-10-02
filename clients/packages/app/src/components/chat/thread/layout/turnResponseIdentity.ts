@@ -23,7 +23,7 @@ export function reconcileTurnResponseIdentity(
   let draftKey: string | undefined;
   for (const entry of entries) {
     if (entry.kind !== "assistant-response") continue;
-    if (entry.message) {
+    if (entry.message && !entry.message.platformSource) {
       canonicalIds.add(entry.message.messageId);
       latestCanonicalId = entry.message.messageId;
     } else if (entry.draft) {

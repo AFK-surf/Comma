@@ -1485,6 +1485,11 @@ func applyAgentVMMUpdate(opts runOptions, config map[string]any, update map[stri
 		return false, agentVMMAdministratorUpdateAdvisory(config, update), nil
 	}
 	lifecycle, err := requirePath(config, "host_runtime_lifecycle")
+	if err == nil {
+		if policyErr := checkHostMaintenancePolicy(lifecycle, ""); policyErr != nil {
+			return false, nil, policyErr
+		}
+	}
 	if err != nil || !executable(lifecycle) {
 		return false, nil, provisionerError{code: "agent_vmm.lifecycle_unavailable", message: "Agent VMM lifecycle helper is unavailable"}
 	}
@@ -1924,6 +1929,18 @@ func applyAgentVMMInstallDescriptor(opts runOptions, config map[string]any, stat
 		return err
 	}
 	args := []string{"install", "--disable-personal-mesh-pairing", "--request-id", operationID}
+	if policyErr := checkHostMaintenancePolicy(path, operationID); policyErr != nil {
+		if provisionerFailureCode(policyErr, "") != "agent_vmm.local_disposed" {
+			return policyErr
+		}
+		if err := writeJSON(agentVMMInstallFailurePath(stateDir, operationID), map[string]any{"operation_id": operationID, "failure_code": "agent_vmm.local_disposed"}, 0o600); err != nil {
+			return err
+		}
+		if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
 	var encoded []byte
 	if expired {
 		args = append(args, "--resume-operation", operationID)
@@ -1987,7 +2004,7 @@ func applyAgentVMMInstallDescriptor(opts runOptions, config map[string]any, stat
 	return writeWorkerStatus(workerStatusPath, map[string]any{"status": "agent_vmm_install_applied", "progress": progressPayload(map[string]any{"stage": "agent_vmm_install_applied", "operation_id": operationID})})
 }
 
-func applyAgentVMMControls(opts runOptions, config map[string]any, workerStatusPath string, heartbeat map[string]any) error {
+func applyAgentVMMControls(opts runOptions, config map[string]any, stateDir, workerStatusPath string, heartbeat map[string]any) error {
 	if !opts.start {
 		return nil
 	}
@@ -2028,16 +2045,38 @@ func applyAgentVMMControls(opts runOptions, config map[string]any, workerStatusP
 		registrationID := strings.TrimSpace(stringValue(control["registration_id"]))
 		state := stringValue(control["state"])
 		registrationRevision := positiveRevision(control["registration_revision"])
-		if operationID == "" || registrationID == "" || registrationRevision == 0 || (state != "enabled" && state != "draining") {
+		if !validAgentVMMOperationID(operationID) || registrationID == "" || len(registrationID) > 200 || registrationRevision == 0 || (state != "enabled" && state != "draining") {
 			return provisionerError{code: "agent_vmm.control_invalid", message: "agent-vmm registration control is incomplete"}
 		}
+		// A durable terminal report is sent through the existing delivery-failure owner.
+		// Skip only this exact operation while its acknowledgement is pending.
+		report, readErr := loadJSON(agentVMMInstallFailurePath(stateDir, operationID))
+		if readErr == nil && stringValue(report["operation_id"]) == operationID && stringValue(report["failure_code"]) == "agent_vmm.local_disposed" {
+			continue
+		}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
 		requestID := fmt.Sprintf("%s-r%d", operationID, registrationRevision)
+		if policyErr := checkHostMaintenancePolicy(path, operationID); policyErr != nil {
+			if provisionerFailureCode(policyErr, "") == "agent_vmm.local_disposed" {
+				continue
+			}
+			return policyErr
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		args := append([]string{"registration-state", "--registration-id", registrationID, "--state", state, "--request-id", requestID}, serviceArgs...)
 		command := exec.CommandContext(ctx, path, args...)
 		output, commandErr := command.Output()
 		cancel()
 		if commandErr != nil {
+			var result map[string]any
+			if json.Unmarshal(output, &result) == nil && stringValue(result["requestId"]) == requestID && stringValue(result["failureCode"]) == "local_disposed" && !boolValue(result["retryable"]) {
+				if err := writeJSON(agentVMMInstallFailurePath(stateDir, operationID), map[string]any{"operation_id": operationID, "failure_code": "agent_vmm.local_disposed"}, 0o600); err != nil {
+					return err
+				}
+				continue
+			}
 			_ = writeWorkerStatus(workerStatusPath, map[string]any{"status": "agent_vmm_control_failed", "failure_code": "agent_vmm.control_failed", "failure_message": "Agent VMM registration control did not complete.", "progress": progressPayload(map[string]any{"stage": "agent_vmm_control_failed", "operation_id": operationID, "registration_id": registrationID})})
 			return provisionerError{code: "agent_vmm.control_failed", message: "Agent VMM registration control did not complete"}
 		}
@@ -2807,7 +2846,7 @@ func runWorkerIteration(opts runOptions, config map[string]any, stateDir, worker
 	if err != nil || exclusiveUpdate {
 		return err
 	}
-	if err := applyAgentVMMControls(opts, config, workerStatusPath, heartbeat); err != nil {
+	if err := applyAgentVMMControls(opts, config, stateDir, workerStatusPath, heartbeat); err != nil {
 		fmt.Fprintf(os.Stderr, "Agent VMM registration control failed: %v\n", err)
 		return nil
 	}

@@ -90,7 +90,10 @@ defmodule BridgeForTeams.Auth.Sessions do
 
   def revoke(_), do: :ok
 
-  @doc "List non-expired sessions for a user."
+  @doc """
+  List non-expired sessions for a user, newest first. Options: `:device`
+  filters by device, `:limit` caps the number of rows.
+  """
   @spec list_for_user(User.t() | Ecto.UUID.t(), keyword()) :: [AuthSession.t()]
   def list_for_user(user_or_id, opts \\ []) do
     user_id = user_id(user_or_id)
@@ -100,6 +103,7 @@ defmodule BridgeForTeams.Auth.Sessions do
     |> where([s], s.user_id == ^user_id and s.expires_at > ^now)
     |> maybe_filter_device(Keyword.get(opts, :device))
     |> order_by([s], desc: s.created_at)
+    |> maybe_limit(Keyword.get(opts, :limit))
     |> Repo.all()
   end
 
@@ -131,6 +135,9 @@ defmodule BridgeForTeams.Auth.Sessions do
 
   defp maybe_filter_device(query, nil), do: query
   defp maybe_filter_device(query, device), do: where(query, [s], s.device == ^device)
+
+  defp maybe_limit(query, limit) when is_integer(limit) and limit > 0, do: limit(query, ^limit)
+  defp maybe_limit(query, _limit), do: query
 
   defp touch(session) do
     session

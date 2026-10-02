@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@comma/test-utils/render";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import type { ApplicationMenuCommand } from "@comma/native-bridge";
 import { expect, it, vi } from "vitest";
+import { useHoldOnboardingOpen } from "../../onboarding/onboardingPresence";
 import { useApplicationMenu } from "../useApplicationMenu";
 
 it("withdraws unmounted actions and dispatches the latest handler only while enabled", async () => {
@@ -107,4 +108,53 @@ it("publishes one settled command set when a surface changes presentation", asyn
   await waitFor(() =>
     expect(update).toHaveBeenLastCalledWith({ locale: "en", items: [] })
   );
+});
+
+it("holds every command unavailable while the onboarding covers the window", async () => {
+  let invoke: ((id: ApplicationMenuCommand) => void) | undefined;
+  const update = vi.fn(async () => {});
+  installNativeBridgeMock({
+    platform: "electron",
+    applicationMenu: {
+      update,
+      onCommand: (listener) => {
+        invoke = listener;
+        return () => {
+          invoke = undefined;
+        };
+      },
+    },
+  });
+  const openSearch = vi.fn();
+  const menu = renderHook(() =>
+    useApplicationMenu([
+      { id: "go-search", enabled: true, accelerator: "Super+K", run: openSearch },
+    ])
+  );
+  await waitFor(() => expect(update).toHaveBeenCalledOnce());
+
+  const onboarding = renderHook(() => useHoldOnboardingOpen());
+  await waitFor(() =>
+    expect(update).toHaveBeenLastCalledWith({
+      locale: "en",
+      items: [{ id: "go-search", enabled: false, accelerator: "Super+K" }],
+    })
+  );
+  await act(async () => {
+    invoke?.("go-search");
+  });
+  expect(openSearch).not.toHaveBeenCalled();
+
+  onboarding.unmount();
+  await waitFor(() =>
+    expect(update).toHaveBeenLastCalledWith({
+      locale: "en",
+      items: [{ id: "go-search", enabled: true, accelerator: "Super+K" }],
+    })
+  );
+  await act(async () => {
+    invoke?.("go-search");
+  });
+  expect(openSearch).toHaveBeenCalledOnce();
+  menu.unmount();
 });

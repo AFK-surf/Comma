@@ -31,6 +31,7 @@ import {
   useCommaAppearance,
 } from "../../commaAppearance";
 import { CommaUiThemeProvider } from "../../commaUiTheme";
+import { RouterIdentityProvider } from "../../router-identity/RouterIdentityProvider";
 import { useSideChatAppearance, useSideChatThemeName } from "../../sideChatAppearance";
 import { ChatProvider } from "../ChatProvider";
 import { Composer } from "../composer/Composer";
@@ -196,7 +197,9 @@ function SideChatAuthenticated({
 
   return (
     <ChatProvider api={api} productLease={productLease} sessionSignal={sessionSignal}>
-      <SideChatConversationResolver api={api} onPreferredHeight={onPreferredHeight} />
+      <RouterIdentityProvider>
+        <SideChatConversationResolver api={api} onPreferredHeight={onPreferredHeight} />
+      </RouterIdentityProvider>
     </ChatProvider>
   );
 }

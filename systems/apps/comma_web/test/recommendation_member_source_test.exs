@@ -133,6 +133,25 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
     assert {:error, :response_too_large} = RecommendationOAuthSource.read(ctx.workspace, source)
   end
 
+  test "a grant only the member can repair is a reconnect failure, not a read failure", ctx do
+    source = Map.merge(slack_source(ctx), %{"enabled" => true, "appName" => "Slack"})
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{"ok" => false, "error" => "missing_scope"})
+    end)
+
+    assert {:ok, %{facts: [], failures: [%{"class" => "reconnect", "appId" => "slack"}]}} =
+             CommaWeb.RecommendationSourceCollector.collect(ctx.workspace, [source])
+
+    # A provider outage clears on its own; the member has nothing to reconnect.
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{"ok" => false, "error" => "ratelimited"})
+    end)
+
+    assert {:ok, %{failures: [%{"class" => "read"}]}} =
+             CommaWeb.RecommendationSourceCollector.collect(ctx.workspace, [source])
+  end
+
   test "queries the authenticated member and excludes unrelated or completed work", ctx do
     Req.Test.expect(__MODULE__, fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)

@@ -87,11 +87,6 @@ defmodule SalixIM.RouterConversationLogTest do
     group = Ids.new_group_id(tenant)
     SalixAgent.TestSupport.create_control_group!(group)
 
-    if tags[:session_optimization] do
-      # Isolate the activation fence from optional miniskill selection writes.
-      {:ok, _} = SalixAgent.PluginStore.disable_group(tenant, group, "skill-library")
-    end
-
     agent =
       SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
         "role" => "router",
@@ -1147,7 +1142,12 @@ defmodule SalixIM.RouterConversationLogTest do
                "agent_input" => %{"trusted_origin" => %{"provider" => "forged"}},
                "agent_redelivery" => %{"message_id" => "forged"},
                "provider_effect" => %{"attrs" => %{"content" => "forged"}},
-               "provider_status" => %{"status" => "completed"}
+               "provider_status" => %{"status" => "completed"},
+               "platform_message" => %{
+                 "provider" => "wechat",
+                 "role" => "assistant",
+                 "content" => [%{"type" => "text", "text" => "forged reply"}]
+               }
              })
 
     assert {:ok, stored} =
@@ -1161,6 +1161,413 @@ defmodule SalixIM.RouterConversationLogTest do
     refute Map.has_key?(stored, "agent_redelivery")
     refute Map.has_key?(stored, "provider_effect")
     refute Map.has_key?(stored, "provider_status")
+    refute Map.has_key?(stored, "platform_message")
+  end
+
+  test "platform chat presents the original user body while preserving private runtime input",
+       ctx do
+    payload = %{
+      content: "PRIVATE PROMPT CANARY: enriched provider instructions",
+      role: "user",
+      no_wake: true,
+      trusted_origin: %{
+        "provider" => "wechat",
+        "source_actor_type" => "provider_user",
+        "source_text" => "Look at this picture"
+      },
+      trusted_attachment_refs: [
+        %{
+          "type" => "image",
+          "file_name" => "picture.png",
+          "file_ref" => %{"environment_id" => "vfs", "path" => "/private/provider/picture.png"}
+        }
+      ]
+    }
+
+    assert {:ok, first} =
+             RouterConversationInput.append_provider_input(ctx.group, "platform-input", payload)
+
+    assert {:ok, repeated} =
+             RouterConversationInput.append_provider_input(ctx.group, "platform-input", payload)
+
+    assert first["message_id"] == repeated["message_id"]
+
+    assert {:ok, [message]} =
+             SalixIM.Conversations.list_group_conversation_messages(
+               ctx.group,
+               ctx.conversation["conversation_id"]
+             )
+
+    assert message["actor_type"] == "system"
+
+    assert message["delivery_filter"] == %{
+             "participant_ids" => [ctx.conversation["router_participant_id"]]
+           }
+
+    assert message["agent_input"]["content"] == payload.content
+
+    assert message["platform_message"] == %{
+             "provider" => "wechat",
+             "role" => "user",
+             "content" => [
+               %{"type" => "text", "text" => "Look at this picture"},
+               %{"type" => "text", "text" => "[Image: picture.png]"}
+             ]
+           }
+
+    # Old durable inputs get the same bounded projection without a backfill.
+    assert SalixIM.PlatformMessage.project_all(ctx.group, [
+             Map.delete(message, "platform_message")
+           ]) == [message]
+  end
+
+  test "Home omits Worker sends, unidentified receipts, and labelled Groups", ctx do
+    connect = %{"provider" => "telegram", "connect_id" => "telegram-one"}
+    sent = {:ok, %{"message_id" => 42}}
+    router = %{group_id: ctx.group, agent_id: ctx.agent["agent_id"], tool_call_id: "router"}
+
+    send_text = fn scope, text, result ->
+      SalixIM.PlatformMessage.record_success(
+        result,
+        scope,
+        connect,
+        "telegram.send_message",
+        %{"text" => text, "chat_id" => "123"}
+      )
+    end
+
+    assert ^sent =
+             send_text.(%{router | agent_id: "agt_worker", tool_call_id: "w"}, "Worker", sent)
+
+    assert {:ok, %{}} =
+             send_text.(Map.delete(router, :tool_call_id), "No receipt", {:ok, %{}})
+
+    assert ^sent = send_text.(router, "Router", sent)
+    {_input, _context} = append_wechat_input(ctx, "wechat-one", "inbound")
+
+    [reply] = await_platform_messages(ctx)
+    assert reply["platform_message"]["content"] == [%{"type" => "text", "text" => "Router"}]
+    Process.sleep(100)
+    assert [^reply] = await_platform_messages(ctx)
+
+    {:ok, _} =
+      SalixStore.CasRecord.update(
+        Keys.ctl_group(ctx.group),
+        &Map.put(&1, "ifc", %{"mode" => "audit"})
+      )
+
+    assert ^sent = send_text.(%{router | tool_call_id: "labelled"}, "Labelled", sent)
+    Process.sleep(100)
+
+    assert {:ok, messages} =
+             SalixIM.Conversations.list_group_conversation_messages(
+               ctx.group,
+               ctx.conversation["conversation_id"]
+             )
+
+    assert length(messages) == 2
+    refute Enum.any?(messages, &Map.has_key?(&1, "platform_message"))
+    assert Enum.all?(messages, &SalixIM.ConversationMessage.internal_delivery?/1)
+
+    assert {:ok, message} =
+             SalixIM.Conversations.get_group_conversation_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               reply["message_id"]
+             )
+
+    refute Map.has_key?(message, "platform_message")
+  end
+
+  test "successful platform replies are visible facts without another agent input", ctx do
+    Application.put_env(:salix_agent, :llm, ObservedLLM)
+    Application.put_env(:salix_agent, :conversation_source_mod, ConversationSource)
+    Application.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+
+    scope = %{group_id: ctx.group, agent_id: ctx.agent["agent_id"], tool_call_id: "reply-one"}
+    connect = %{"provider" => "telegram", "connect_id" => "telegram-one"}
+    params = %{"text" => "Sent to Telegram", "chat_id" => "123"}
+    sent = {:ok, %{"message_id" => 42}}
+
+    {:ok, owner} =
+      SalixIM.ConversationFleet.ensure_started(ctx.group, ctx.conversation["conversation_id"])
+
+    :ok = :sys.suspend(owner)
+
+    try do
+      caller = self()
+
+      Task.start(fn ->
+        for _ <- 1..2 do
+          result =
+            SalixIM.PlatformMessage.record_success(
+              sent,
+              scope,
+              connect,
+              "telegram.send_message",
+              params
+            )
+
+          send(caller, {:platform_send_returned, result})
+        end
+      end)
+
+      # A blocked history owner cannot consume the successful send's tool budget.
+      assert_receive {:platform_send_returned, ^sent}, 1_000
+      assert_receive {:platform_send_returned, ^sent}, 1_000
+    after
+      :ok = :sys.resume(owner)
+    end
+
+    assert {:error, :timeout} =
+             SalixIM.PlatformMessage.record_success(
+               {:error, :timeout},
+               %{scope | tool_call_id: "reply-failed"},
+               connect,
+               "telegram.send_message",
+               params
+             )
+
+    [message] = await_platform_messages(ctx)
+
+    assert message["platform_message"] == %{
+             "provider" => "telegram",
+             "role" => "assistant",
+             "content" => [%{"type" => "text", "text" => "Sent to Telegram"}]
+           }
+
+    assert message["delivery_filter"] == %{"participant_ids" => []}
+    refute Map.has_key?(message, "agent_input")
+    assert :ok = AgentActor.notify_conversation(ctx.agent["agent_id"], source_ref(ctx))
+    session = await_source(ctx, message["seq"])
+    assert InternalSession.export(session).input_queue == []
+    refute_receive :model_request_started, 100
+  end
+
+  test "WeChat replies retain the triggering input after a newer input arrives", ctx do
+    {first, context} = append_wechat_input(ctx, "wechat-one", "first")
+    {later, _} = append_wechat_input(ctx, "wechat-one", "later")
+
+    connect = %{
+      "provider" => "wechat",
+      "connect_id" => "wechat-one",
+      "latest_context_message_id" => later["source_message_id"]
+    }
+
+    {:ok, owner} =
+      SalixIM.ConversationFleet.ensure_started(ctx.group, ctx.conversation["conversation_id"])
+
+    :ok = :sys.suspend(owner)
+
+    try do
+      # The caller's source disappears before the asynchronous history task can
+      # commit. Model parameters and a newer connect cursor cannot replace it.
+      record_wechat_reply(ctx, connect, context, "reply-first", %{
+        "text" => "Answer to the first message",
+        "reply_to_message_id" => later["message_id"]
+      })
+    after
+      :ok = :sys.resume(owner)
+    end
+
+    [reply] = await_platform_messages(ctx)
+    assert reply["reply_to_message_id"] == first["message_id"]
+    assert reply["thread_root_message_id"] == first["thread_root_message_id"]
+    refute reply["thread_root_message_id"] == reply["message_id"]
+
+    assert reply["platform_message"]["content"] ==
+             [%{"type" => "text", "text" => "Answer to the first message"}]
+
+    assert reply["delivery_filter"] == %{"participant_ids" => []}
+    refute Map.has_key?(reply, "agent_input")
+
+    assert {:ok, repeated} =
+             SalixIM.ConversationServer.append_platform_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               reply["platform_message"],
+               reply["idempotency_key"],
+               Map.take(context, ~w(source_message_id session_id))
+               |> Map.put("connect_id", "wechat-one")
+             )
+
+    assert repeated["message_id"] == reply["message_id"]
+    refute repeated["inserted"]
+    assert [^reply] = await_platform_messages(ctx)
+  end
+
+  test "WeChat history does not guess a parent without matching committed provenance", ctx do
+    {input, context} = append_wechat_input(ctx, "wechat-one", "first")
+    connect = %{"provider" => "wechat", "connect_id" => "wechat-one"}
+    params = %{"text" => "Visible reply", "reply_to_message_id" => input["message_id"]}
+
+    record_wechat_reply(ctx, connect, %{}, "without-context", params)
+
+    record_wechat_reply(
+      ctx,
+      %{connect | "connect_id" => "wechat-other"},
+      context,
+      "other-connect",
+      params
+    )
+
+    missing_source = "im_provider:wechat:wechat-one:missing"
+
+    missing_context = %{
+      context
+      | "source_message_id" => missing_source,
+        "source_message_ids" => [missing_source],
+        "trusted_origin" =>
+          Map.put(context["trusted_origin"], "source_message_id", missing_source)
+    }
+
+    record_wechat_reply(ctx, connect, missing_context, "missing-input", params)
+
+    replies = await_platform_messages(ctx, 3)
+    assert Enum.all?(replies, &is_nil(&1["reply_to_message_id"]))
+    assert Enum.all?(replies, &(&1["thread_root_message_id"] == &1["message_id"]))
+
+    # The owner independently checks stored provenance, even if an internal
+    # caller supplies a source hint for a different connect.
+    assert {:ok, forged} =
+             SalixIM.ConversationServer.append_platform_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               hd(replies)["platform_message"],
+               "foreign-connect-hint",
+               Map.take(context, ~w(source_message_id session_id))
+               |> Map.put("connect_id", "wechat-other")
+             )
+
+    assert {:ok, message} =
+             SalixIM.Conversations.get_group_conversation_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               forged["message_id"]
+             )
+
+    refute Map.has_key?(message, "reply_to_message_id")
+  end
+
+  test "retrying an older platform receipt preserves its original relation", ctx do
+    {_input, context} = append_wechat_input(ctx, "wechat-one", "first")
+
+    presentation = %{
+      "provider" => "wechat",
+      "role" => "assistant",
+      "content" => [%{"type" => "text", "text" => "Already sent"}]
+    }
+
+    assert {:ok, first} =
+             SalixIM.ConversationServer.append_platform_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               presentation,
+               "existing-receipt"
+             )
+
+    assert {:ok, repeated} =
+             SalixIM.ConversationServer.append_platform_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               presentation,
+               "existing-receipt",
+               Map.take(context, ~w(source_message_id session_id))
+               |> Map.put("connect_id", "wechat-one")
+             )
+
+    assert first["message_id"] == repeated["message_id"]
+    refute repeated["inserted"]
+    [message] = await_platform_messages(ctx)
+    refute Map.has_key?(message, "reply_to_message_id")
+  end
+
+  defp append_wechat_input(ctx, connect_id, event_id) do
+    source = "im_provider:wechat:" <> connect_id <> ":" <> event_id
+
+    origin = %{
+      "provider" => "wechat",
+      "source_actor_type" => "provider_user",
+      "source_message_id" => source,
+      "agent_group_id" => ctx.group,
+      "source_text" => event_id,
+      "provider_context" => %{"connect_id" => connect_id}
+    }
+
+    assert {:ok, appended} =
+             RouterConversationInput.append_provider_input(ctx.group, source, %{
+               content: "Private runtime input: " <> event_id,
+               role: "user",
+               no_wake: true,
+               session_id: ctx.agent["router_session_id"],
+               trusted_origin: origin
+             })
+
+    assert {:ok, message} =
+             SalixIM.Conversations.get_group_conversation_message(
+               ctx.group,
+               ctx.conversation["conversation_id"],
+               appended["message_id"]
+             )
+
+    context = %{
+      "source_message_id" => source,
+      "source_message_ids" => [source],
+      "session_id" => ctx.agent["router_session_id"],
+      "trusted_origin" => origin
+    }
+
+    {message, context}
+  end
+
+  defp record_wechat_reply(ctx, connect, context, tool_call_id, params) do
+    previous = Process.get(:salix_im_provider_tool_context)
+    Process.put(:salix_im_provider_tool_context, context)
+    sent = {:ok, %{"client_id" => tool_call_id}}
+
+    try do
+      assert ^sent =
+               SalixIM.PlatformMessage.record_success(
+                 sent,
+                 %{
+                   group_id: ctx.group,
+                   agent_id: ctx.agent["agent_id"],
+                   tool_call_id: tool_call_id
+                 },
+                 connect,
+                 "wechat.reply_text",
+                 params
+               )
+    after
+      if previous,
+        do: Process.put(:salix_im_provider_tool_context, previous),
+        else: Process.delete(:salix_im_provider_tool_context)
+    end
+  end
+
+  defp await_platform_messages(ctx, count \\ 1, attempts \\ 200)
+  defp await_platform_messages(_, _, 0), do: flunk("Platform history did not commit")
+
+  defp await_platform_messages(ctx, count, attempts) do
+    case SalixIM.Conversations.list_group_conversation_messages(
+           ctx.group,
+           ctx.conversation["conversation_id"]
+         ) do
+      {:ok, messages} ->
+        replies =
+          Enum.filter(messages, &(get_in(&1, ["platform_message", "role"]) == "assistant"))
+
+        if length(replies) == count do
+          replies
+        else
+          Process.sleep(25)
+          await_platform_messages(ctx, count, attempts - 1)
+        end
+
+      _ ->
+        Process.sleep(25)
+        await_platform_messages(ctx, count, attempts - 1)
+    end
   end
 
   defp await_external(agent, session, attempts \\ 200)

@@ -18,23 +18,28 @@
 (* execution stays running and the same queued steer remains dispatchable.     *)
 (* Even a terminal failure installs the fence only after its durable failure   *)
 (* record commits; persistence failure leaves the same snapshot dispatchable.  *)
+(* Financial refusal logs the exact input prefix before local queue removal.  *)
+(* Restart retains that refusal; new input is not part of the refused prefix. *)
+(* LogLocalRefusal/ApplyLocalRefusal map to ExternalSessionStore rejection     *)
+(* records and commit_status_record; neither changes an existing execution.  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
 CONSTANTS MaxMsg, MaxExec, AckConfirmsRunning, FenceExecution,
           ExactSnapshotAck, FenceCapability, FenceFailedDispatch,
           FenceOnlyTerminalFailure, FenceOnlyPersistedFailure,
-          RestartReleasesFailedDispatch, IsolateProviderSource
+          RestartReleasesFailedDispatch, IsolateProviderSource, DurableLocalRefusal
 
 Msg == 1..MaxMsg
 Exec == 1..MaxExec
 Dispatch == 0..MaxMsg
 Statuses == {"idle", "starting", "running", "failed", "unknown"}
 WorkStates == {"running", "settled", "failed"}
-DispatchKinds == {"none", "terminal", "steer"}
+DispatchKinds == {"none", "terminal", "steer", "unknown"}
 FailurePersistenceStates == {"none", "durable", "error"}
 
-VARIABLES enqueued,          \* all messages durably admitted by Server
+VARIABLES locallyRejected,   \* durable Server-owned financial refusal records
+          enqueued,          \* all messages durably admitted by Server
           queue,             \* current durable external input queue
           connectorOwned,    \* messages durably accepted in connector DB
           records,           \* accepted input materialized in SessionRecords
@@ -59,7 +64,7 @@ VARIABLES enqueued,          \* all messages durably admitted by Server
           capabilityCurrent,
           staleCapabilityAppend
 
-vars == <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+vars == <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
           snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
           failedDispatch, targetDispatch, targetExecution, status,
           evidenceDispatch, evidenceExecution, sourceWatermark, nextRecord,
@@ -67,6 +72,7 @@ vars == <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
           staleCapabilityAppend>>
 
 TypeOK ==
+  /\ locallyRejected \subseteq Msg
   /\ enqueued \subseteq Msg /\ queue \subseteq Msg
   /\ connectorOwned \subseteq Msg /\ records \subseteq Msg
   /\ nextMsg \in 1..(MaxMsg + 1)
@@ -86,6 +92,7 @@ TypeOK ==
   /\ staleCapabilityAppend \in BOOLEAN
 
 Init ==
+  /\ locallyRejected = {}
   /\ enqueued = {} /\ queue = {} /\ connectorOwned = {} /\ records = {}
   /\ nextMsg = 1 /\ actorPC = "idle" /\ snapshot = {} /\ dispatch = 0
   /\ queueFence = 0
@@ -108,7 +115,7 @@ Enqueue ==
   /\ enqueued' = enqueued \cup {nextMsg}
   /\ queue' = queue \cup {nextMsg}
   /\ nextMsg' = nextMsg + 1
-  /\ UNCHANGED <<connectorOwned, records, actorPC, snapshot, dispatch,
+  /\ UNCHANGED <<locallyRejected, connectorOwned, records, actorPC, snapshot, dispatch,
                  queueFence, dispatchKind, failurePersistence, failedDispatch,
                  targetDispatch, targetExecution, status, evidenceDispatch,
                  evidenceExecution, sourceWatermark, nextRecord, connectorRun,
@@ -119,23 +126,29 @@ Enqueue ==
 \* the actor-local terminal failure fence separately captures the full queue.
 BeginDispatch ==
   /\ actorPC = "idle" /\ queue # {} /\ capabilityCurrent
+  /\ MinOf(queue) \notin locallyRejected
   /\ (~FenceFailedDispatch \/ MaxOf(queue) # failedDispatch)
   /\ snapshot' = DispatchPrefix(queue)
   /\ dispatch' = MaxOf(DispatchPrefix(queue))
   /\ queueFence' = MaxOf(queue)
   /\ targetDispatch' = MaxOf(DispatchPrefix(queue))
   /\ actorPC' = "await_ack"
-  /\ dispatchKind' =
-       IF status = "running" /\ targetExecution # 0 THEN "steer" ELSE "terminal"
+  \* Session admission precedes RPC. A failed status observation does not
+  \* gate that RPC or certify whether a previous execution is still active.
+  /\ dispatchKind' \in
+       {"unknown", IF status = "running" /\ targetExecution # 0 THEN "steer" ELSE "terminal"}
   /\ failurePersistence' = "none"
-  /\ IF status = "running" /\ targetExecution # 0
+  /\ IF dispatchKind' = "unknown"
+       THEN /\ status' = "unknown"
+            /\ UNCHANGED <<targetExecution, evidenceDispatch, evidenceExecution>>
+       ELSE IF status = "running" /\ targetExecution # 0
        THEN UNCHANGED <<status, targetExecution, evidenceDispatch,
                         evidenceExecution>>
        ELSE /\ status' = "starting"
             /\ targetExecution' = 0
             /\ evidenceDispatch' = 0
             /\ evidenceExecution' = 0
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg,
                  failedDispatch,
                  sourceWatermark, nextRecord, connectorRun, availabilityRun,
                  connected, capabilityCurrent, staleCapabilityAppend>>
@@ -159,7 +172,7 @@ AcceptSnapshot ==
   /\ dispatchKind' = "none"
   /\ failurePersistence' = "none"
   /\ failedDispatch' = 0
-  /\ UNCHANGED <<enqueued, nextMsg, targetDispatch, sourceWatermark,
+  /\ UNCHANGED <<locallyRejected, enqueued, nextMsg, targetDispatch, sourceWatermark,
                  nextRecord, connectorRun, availabilityRun, connected,
                  capabilityCurrent, staleCapabilityAppend>>
 
@@ -175,17 +188,17 @@ PersistDispatchFailure ==
   /\ actorPC = "await_ack"
   /\ failurePersistence' = "durable"
   /\ failedDispatch' =
-       IF dispatchKind = "steer" /\ FenceOnlyTerminalFailure
+       IF dispatchKind \in {"steer", "unknown"} /\ FenceOnlyTerminalFailure
          THEN 0
          ELSE queueFence
   /\ actorPC' = "idle" /\ snapshot' = {} /\ dispatch' = 0
   /\ queueFence' = 0
-  /\ IF status = "starting"
+  /\ IF status = "starting" /\ dispatchKind = "terminal"
        THEN /\ status' = "failed"
             /\ evidenceDispatch' = targetDispatch
             /\ evidenceExecution' = targetExecution
        ELSE UNCHANGED <<status, evidenceDispatch, evidenceExecution>>
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg,
                  targetDispatch, targetExecution, sourceWatermark, nextRecord,
                  connectorRun, availabilityRun, connected, capabilityCurrent,
                  staleCapabilityAppend, dispatchKind>>
@@ -202,7 +215,7 @@ DispatchFailurePersistenceError ==
        IF FenceOnlyPersistedFailure THEN 0 ELSE queueFence
   /\ actorPC' = "idle" /\ snapshot' = {} /\ dispatch' = 0
   /\ queueFence' = 0
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg,
                  targetDispatch, targetExecution, status, evidenceDispatch,
                  evidenceExecution, sourceWatermark, nextRecord, connectorRun,
                  availabilityRun, connected, capabilityCurrent,
@@ -220,11 +233,35 @@ ActorRestart ==
   /\ failurePersistence' = "none"
   /\ failedDispatch' =
        IF RestartReleasesFailedDispatch THEN 0 ELSE failedDispatch
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg,
                  targetDispatch, targetExecution, status, evidenceDispatch,
                  evidenceExecution, sourceWatermark, nextRecord, connectorRun,
                  availabilityRun, connected, capabilityCurrent,
                  staleCapabilityAppend>>
+
+\* Financial refusal is local input disposition, not Connector acceptance.
+\* Log the exact prefix before removing it; new Enqueue tails may interleave.
+LogLocalRefusal(prefix) ==
+  /\ actorPC = "idle" /\ queue # {}
+  /\ MinOf(queue) \notin locallyRejected
+  /\ locallyRejected' = IF DurableLocalRefusal THEN locallyRejected \cup prefix ELSE locallyRejected
+  /\ records' = IF DurableLocalRefusal THEN records \cup prefix ELSE records
+  /\ queue' = IF DurableLocalRefusal THEN queue ELSE queue \ prefix
+  /\ UNCHANGED <<enqueued, connectorOwned, nextMsg, actorPC, snapshot, dispatch,
+                 queueFence, dispatchKind, failurePersistence, failedDispatch,
+                 targetDispatch, targetExecution, status, evidenceDispatch,
+                 evidenceExecution, sourceWatermark, nextRecord, connectorRun,
+                 availabilityRun, connected, capabilityCurrent, staleCapabilityAppend>>
+
+ApplyLocalRefusal ==
+  /\ actorPC = "idle" /\ queue # {} /\ MinOf(queue) \in locallyRejected
+  /\ queue' = queue \ locallyRejected
+  /\ UNCHANGED <<locallyRejected, enqueued, connectorOwned, records, nextMsg,
+                 actorPC, snapshot, dispatch, queueFence, dispatchKind,
+                 failurePersistence, failedDispatch, targetDispatch, targetExecution,
+                 status, evidenceDispatch, evidenceExecution, sourceWatermark,
+                 nextRecord, connectorRun, availabilityRun, connected,
+                 capabilityCurrent, staleCapabilityAppend>>
 
 (***************************************************************************)
 (* Runtime events are persisted before projection.  Matching identity and a *)
@@ -249,7 +286,7 @@ RuntimeEvent(d, e, ws) ==
                    ELSE "failed"
          ELSE UNCHANGED <<targetExecution, evidenceDispatch,
                           evidenceExecution, sourceWatermark, status>>
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
                  snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
                  failedDispatch, targetDispatch, connectorRun, availabilityRun,
                  connected, capabilityCurrent, staleCapabilityAppend>>
@@ -257,7 +294,7 @@ RuntimeEvent(d, e, ws) ==
 StartingTimeout ==
   /\ status = "starting"
   /\ status' = "unknown"
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
                  snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
                  failedDispatch, targetDispatch, targetExecution,
                  evidenceDispatch, evidenceExecution, sourceWatermark,
@@ -267,7 +304,7 @@ StartingTimeout ==
 Disconnect ==
   /\ connected
   /\ connected' = FALSE
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
                  snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
                  failedDispatch, targetDispatch, targetExecution, status,
                  evidenceDispatch, evidenceExecution, sourceWatermark,
@@ -281,7 +318,7 @@ Reconnect ==
   /\ connectorRun' = connectorRun + 1
   /\ availabilityRun' = connectorRun + 1
   /\ connected' = TRUE
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
                  snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
                  failedDispatch, targetDispatch, targetExecution, status,
                  evidenceDispatch, evidenceExecution, sourceWatermark,
@@ -290,7 +327,7 @@ Reconnect ==
 Rebind ==
   /\ capabilityCurrent
   /\ capabilityCurrent' = FALSE
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
                  snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
                  failedDispatch, targetDispatch, targetExecution, status,
                  evidenceDispatch, evidenceExecution, sourceWatermark,
@@ -300,7 +337,7 @@ Rebind ==
 AttemptStaleCapabilityEvent ==
   /\ ~capabilityCurrent
   /\ staleCapabilityAppend' = ~FenceCapability
-  /\ UNCHANGED <<enqueued, queue, connectorOwned, records, nextMsg, actorPC,
+  /\ UNCHANGED <<locallyRejected, enqueued, queue, connectorOwned, records, nextMsg, actorPC,
                  snapshot, dispatch, queueFence, dispatchKind, failurePersistence,
                  failedDispatch, targetDispatch, targetExecution, status,
                  evidenceDispatch, evidenceExecution, sourceWatermark,
@@ -308,6 +345,8 @@ AttemptStaleCapabilityEvent ==
                  capabilityCurrent>>
 
 Next ==
+  \/ (\E cutoff \in queue : LogLocalRefusal({m \in queue : m <= cutoff}))
+  \/ ApplyLocalRefusal
   \/ Enqueue \/ BeginDispatch \/ AcceptSnapshot \/ PersistDispatchFailure
   \/ DispatchFailurePersistenceError
   \/ ActorRestart
@@ -322,7 +361,19 @@ RestartSpec == Spec /\ WF_vars(ActorRestart)
 (***************************************************************************)
 (* Queue/acceptance accounting and lifecycle accuracy.                       *)
 (***************************************************************************)
-QueueAccounting == queue = enqueued \ connectorOwned
+QueueAccounting ==
+  /\ queue \cup connectorOwned \cup locallyRejected = enqueued
+  /\ queue \cap connectorOwned = {}
+  /\ connectorOwned \cap locallyRejected = {}
+  /\ locallyRejected \subseteq records
+  /\ records \subseteq enqueued
+
+RefusedInputCannotDispatch ==
+  actorPC = "await_ack" => snapshot \cap locallyRejected = {}
+
+RefusalRecoveryEnabled ==
+  actorPC = "idle" /\ queue # {} /\ MinOf(queue) \in locallyRejected
+  => ENABLED ApplyLocalRefusal
 AcceptedInputIsDurable ==
   connectorOwned \subseteq records /\ connectorOwned \subseteq enqueued
 
@@ -338,26 +389,30 @@ FailedBatchCannotRedispatch ==
 
 FreshInputReleasesFailedBatch ==
   actorPC = "idle" /\ failedDispatch # 0 /\ queue # {} /\
-  MaxOf(queue) # failedDispatch /\ capabilityCurrent
+  MaxOf(queue) # failedDispatch /\ capabilityCurrent /\
+  MinOf(queue) \notin locallyRejected
   => ENABLED BeginDispatch
 
-\* A running-session steer failure is non-terminal.  It leaves the active
-\* execution truth intact and must not turn the terminal failed-batch guard
+\* Steer and unknown-mode errors are non-terminal. They leave the existing
+\* execution observation intact and must not turn the terminal failed-batch guard
 \* into durable poison for the still-pending steer snapshot.
 FailedSteerRemainsDispatchable ==
-  actorPC = "idle" /\ dispatchKind = "steer" /\ queue # {} /\
-  capabilityCurrent
+  actorPC = "idle" /\ dispatchKind \in {"steer", "unknown"} /\ queue # {} /\
+  capabilityCurrent /\
+  MinOf(queue) \notin locallyRejected
   => /\ failedDispatch = 0
      /\ ENABLED BeginDispatch
 
 UnpersistedFailureRemainsDispatchable ==
   actorPC = "idle" /\ failurePersistence = "error" /\ queue # {} /\
-  capabilityCurrent
+  capabilityCurrent /\
+  MinOf(queue) \notin locallyRejected
   => /\ failedDispatch = 0
      /\ ENABLED BeginDispatch
 
 UnfencedQueueIsDispatchable ==
-  actorPC = "idle" /\ failedDispatch = 0 /\ queue # {} /\ capabilityCurrent
+  actorPC = "idle" /\ failedDispatch = 0 /\ queue # {} /\ capabilityCurrent /\
+  MinOf(queue) \notin locallyRejected
   => ENABLED BeginDispatch
 
 ActorRestartEventuallyReleasesTerminalFence ==

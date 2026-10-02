@@ -6,6 +6,7 @@ import {
   sessionOperationErrorSchema,
   sessionOperationErrorSchemaFor,
   sessionOperationResultSchema,
+  sessionPrincipalKind,
   sessionProductLease,
   sessionReconcileInputSchema,
   sessionReconcileResultSchema,
@@ -82,6 +83,23 @@ describe("SessionLifecycle contract", () => {
     ],
   ])("rejects secret-like unknown fields at every object boundary", (value) => {
     expect(() => sessionLifecycleSnapshotSchema.parse(value)).toThrow();
+  });
+
+  it("reads a principal without a kind as a registered account", () => {
+    const registered = signedInSessionSnapshotSchema.parse(signedInSnapshot);
+    const guest = signedInSessionSnapshotSchema.parse({
+      ...signedInSnapshot,
+      principal: { ...signedInSnapshot.principal, kind: "guest" },
+    });
+
+    expect(sessionPrincipalKind(registered.principal)).toBe("registered");
+    expect(sessionPrincipalKind(guest.principal)).toBe("guest");
+    expect(() =>
+      signedInSessionSnapshotSchema.parse({
+        ...signedInSnapshot,
+        principal: { ...signedInSnapshot.principal, kind: "anonymous" },
+      })
+    ).toThrow();
   });
 
   it("requires protocol mismatch to wait for a host change", () => {

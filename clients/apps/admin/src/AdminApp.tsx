@@ -13,6 +13,7 @@ import {
   MenuPopover,
   MenuTrigger,
   PanelLeftIcon,
+  PeopleCircleIcon,
   ShieldCheckIcon,
 } from "@comma/ui";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -24,6 +25,7 @@ import {
 } from "./adminNavigation";
 import { AuditLogView } from "./AuditLogView";
 import { BillingView } from "./BillingView";
+import { GuestModeView } from "./GuestModeView";
 import { ModelSelectionView } from "./ModelSelectionView";
 import { ComputeNodesView } from "./ComputeNodesView";
 import { OAuthClientsView } from "./OAuthClientsView";
@@ -33,6 +35,7 @@ const sectionLabels: Record<AdminSection, string> = {
   audit: "Audit log",
   billing: "Redeem codes",
   compute: "Compute nodes",
+  guest: "Guest mode",
   models: "Models",
   oauth: "OAuth clients",
   users: "Users",
@@ -199,6 +202,12 @@ function AdminSurface() {
             label="Models"
             onPress={() => selectSection("models")}
           />
+          <AdminNavButton
+            active={section === "guest"}
+            icon={<PeopleCircleIcon />}
+            label="Guest mode"
+            onPress={() => selectSection("guest")}
+          />
           <p>Operations</p>
           <AdminNavButton
             active={section === "audit"}
@@ -312,6 +321,12 @@ function AdminSurface() {
               />
             ) : section === "models" ? (
               <ModelSelectionView api={api} onAccessDenied={onAccessDenied} />
+            ) : section === "guest" ? (
+              <GuestModeView
+                api={api}
+                onAccessDenied={onAccessDenied}
+                onOpenFreeRouterModels={() => selectSection("billing")}
+              />
             ) : (
               <AuditLogView api={api} onAccessDenied={onAccessDenied} />
             )}

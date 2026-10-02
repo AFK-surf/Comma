@@ -272,6 +272,29 @@ defmodule Comma.Release do
   end
 
   @doc """
+  One-time repair of Routine member provenance on legacy managed OAuth
+  connections (see `CommaWeb.MemberIdentityBackfill`). Run it on the serving
+  node; the default lists candidates without writing:
+
+      bin/comma rpc 'Comma.Release.backfill_member_identity(dry_run: true)'
+      bin/comma rpc 'Comma.Release.backfill_member_identity(dry_run: false)'
+
+  Each call covers at most 100 profiles; repeat with `after: <next_after>`
+  until `next_after` is nil.
+  """
+  @spec backfill_member_identity(keyword()) :: {:ok, map()}
+  def backfill_member_identity(opts \\ []) do
+    case apply(Module.concat([CommaWeb, MemberIdentityBackfill]), :run, [opts]) do
+      {:ok, %{"failed" => 0} = summary} ->
+        IO.puts("member identity backfill: #{apply(Jason, :encode!, [summary])}")
+        {:ok, summary}
+
+      {:ok, summary} ->
+        raise "member identity backfill failed: #{apply(Jason, :encode!, [summary])}"
+    end
+  end
+
+  @doc """
   Release-native entry for the format-1 backup prune (the OTP release ships
   no Mix, so the documented Mix task cannot run in a pod):
 

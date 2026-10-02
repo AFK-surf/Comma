@@ -35,14 +35,7 @@ export class ChatEntries {
 
   constructor(
     openBoundary: () => ChatSessionBoundary,
-    {
-      getClientDeviceId,
-      locale = baseLocale,
-      onCanonicalMessagesAppended,
-      onLocalFilesCommitted,
-      onStateChanged,
-      transcodeAttachment,
-    }: Pick<
+    options: Pick<
       ChatCoordinatorOptions,
       | "getClientDeviceId"
       | "locale"
@@ -52,9 +45,20 @@ export class ChatEntries {
       | "transcodeAttachment"
     >
   ) {
+    const {
+      getClientDeviceId,
+      onCanonicalMessagesAppended,
+      onLocalFilesCommitted,
+      onStateChanged,
+      transcodeAttachment,
+    } = options;
     this.#channelHost = {
       getClientDeviceId,
-      locale,
+      // Read when an entry opens: a host whose language can change (Electron
+      // Main follows the account language) exposes it as a getter.
+      get locale() {
+        return options.locale ?? baseLocale;
+      },
       onCanonicalMessagesAppended,
       onLocalFilesCommitted,
       transcodeAttachment,

@@ -2,7 +2,7 @@ defmodule BridgeForTeams.SkillsTest do
   @moduledoc """
   Unit tests for the Skills context's pure pieces: SKILL.md format validation
   (what the Plugins upload gate enforces) and name slugging. The erpc-backed
-  reads/writes are exercised through the PluginLive tests.
+  reads/writes are exercised through the Agent Swarm page tests.
   """
   use ExUnit.Case, async: true
 

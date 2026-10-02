@@ -45,9 +45,17 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		return runVMMCertificates(ctx, args[1:], stdin, stdout)
 	}
 	if len(args) == 0 || len(args) > 3 {
-		return &exitError{exitUsage, errors.New("usage: comma-release <plan|status|observe|reconcile|legacy-upgrade|prepare|migrate|sync-provider|finish-agent-configuration|publish-runtime-release|apply|verify|recover> [--resume-forward] [--retry-failed]")}
+		return &exitError{exitUsage, errors.New("usage: comma-release <plan|status|observe|reconcile|legacy-upgrade|prepare|migrate|sync-provider|finish-agent-configuration|publish-runtime-release|apply|verify|recover|repair> [--resume-forward] [--retry-failed]")}
 	}
 	command := args[0]
+	replaceRelease := ""
+	if command == "repair" {
+		if len(args) != 3 || args[1] != "--replace-release" || args[2] == "" {
+			return &exitError{exitUsage, errors.New("usage: comma-release repair --replace-release OLD_RELEASE_ID")}
+		}
+		replaceRelease = args[2]
+		args = args[:1]
+	}
 	resumeForward, retryFailed := false, false
 	seenFlags := map[string]bool{}
 	for _, flag := range args[1:] {
@@ -196,7 +204,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		}
 	}
 	switch command {
-	case "prepare", "reconcile", "legacy-upgrade":
+	case "prepare", "reconcile", "legacy-upgrade", "repair":
 		releaseID, image := os.Getenv("COMMA_RELEASE_ID"), os.Getenv("COMMA_IMAGE")
 		if releaseID == "" || image == "" {
 			return &exitError{exitUsage, errors.New("COMMA_RELEASE_ID and COMMA_IMAGE are required")}
@@ -209,12 +217,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		if err != nil {
 			return err
 		}
-		if command == "legacy-upgrade" {
+		if command == "repair" {
+			state, err = engine.PrepareRepair(ctx, spec.Environment, releaseID, image, bundle, replaceRelease)
+		} else if command == "legacy-upgrade" {
 			state, err = engine.PrepareLegacyUpgrade(ctx, spec.Environment, releaseID, image, bundle)
 		} else {
 			state, err = engine.Prepare(ctx, spec.Environment, releaseID, image, bundle)
 		}
-		if err == nil && (command == "reconcile" || command == "legacy-upgrade") {
+		if err == nil && (command == "reconcile" || command == "legacy-upgrade" || command == "repair") {
 			state, err = engine.Reconcile(ctx)
 			if err == nil {
 				err = platform.FinishAgentConfiguration(ctx, state)

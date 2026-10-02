@@ -21,7 +21,7 @@ type Story = StoryObj<typeof meta>;
 
 export const Shadows: Story = {
   render: () => (
-    <div className="flex w-full max-w-[840px] flex-wrap gap-6 p-4 sm:p-8">
+    <div className="flex w-full max-w-[840px] flex-wrap gap-6 p-4 @min-[640px]/comma-window:p-8">
       {Object.keys(shadow).map((name) => (
         <div
           key={name}
@@ -54,7 +54,7 @@ export const FocusRings: Story = {
 
 export const BackdropBlur: Story = {
   render: () => (
-    <div className="grid w-full max-w-[640px] gap-4 p-4 sm:p-8">
+    <div className="grid w-full max-w-[640px] gap-4 p-4 @min-[640px]/comma-window:p-8">
       {Object.entries(backdropBlur).map(([name, value]) => (
         <div
           key={name}

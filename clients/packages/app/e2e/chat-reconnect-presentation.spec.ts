@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { installSharedWorkerClock } from "../../../e2e/helpers/shared-worker-clock";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
-import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
+import { chatSmokeAssistantReply, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
 // The canonical and Participant snapshots cross independent server owners.
 // Only their publication is atomic; this fixture makes later HTTP chunks late
@@ -225,6 +225,67 @@ test("an acknowledged silent reply becomes a static wait and yields to later pro
       content.locator('[data-message-id="msg-assistant-smoke"]')
     ).toContainText("Complete.");
     await expect(slot).toBeHidden();
+  } finally {
+    try {
+      await clock?.dispose();
+    } finally {
+      await stub.close();
+    }
+  }
+});
+
+test("a brief connection loss reconnects without the stale-sync toast", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub({
+    holdCompletedWorkspaceChatEventStream: true,
+  });
+  let clock: Awaited<ReturnType<typeof installSharedWorkerClock>> | undefined;
+  try {
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "lid-wake@comma.local",
+      token: "comma_lid_wake",
+    });
+    await page.goto("/");
+    const content = page.getByRole("region", { name: "Content" });
+    await content.getByRole("textbox", { name: "AI prompt" }).fill("Before sleep");
+    await content.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(content.getByText(chatSmokeAssistantReply)).toBeVisible();
+    // Backoff timers belong to the SharedWorker channel, not page.clock.
+    clock = await installSharedWorkerClock(page);
+    await expect.poll(() => stub.activeCompletedWorkspaceChatEventStreams).toBe(1);
+    const warning = page.getByTestId("chat-sync-warning");
+
+    // Waking from sleep drops the stream; the retries fail until Wi-Fi rejoins.
+    // Chromium may resend a reset request, so count drops only as progress.
+    const dropsAfter = async (previous: number) => {
+      await expect
+        .poll(() => stub.droppedWorkspaceChatEventStreamCount)
+        .toBeGreaterThan(previous);
+      return stub.droppedWorkspaceChatEventStreamCount;
+    };
+    stub.setWorkspaceChatEventsUnreachable(true);
+    let drops = await dropsAfter(0);
+    for (const backoffMs of [1_000, 2_000]) {
+      await expect(warning).toHaveCount(0);
+      await clock.advance(backoffMs + 250);
+      drops = await dropsAfter(drops);
+    }
+    await page.waitForTimeout(200);
+    await expect(warning).toHaveCount(0);
+
+    // A sustained outage still warns, and recovery clears the warning.
+    await clock.advance(4_250);
+    await dropsAfter(drops);
+    await expect(warning).toContainText(
+      "Connection interrupted. Showing the most recently synced content."
+    );
+    stub.setWorkspaceChatEventsUnreachable(false);
+    await clock.advance(8_250);
+    await expect.poll(() => stub.activeCompletedWorkspaceChatEventStreams).toBe(1);
+    await expect(warning).toHaveCount(0);
+    await expect(content.getByText(chatSmokeAssistantReply)).toBeVisible();
   } finally {
     try {
       await clock?.dispose();

@@ -873,6 +873,7 @@ export type NativeRendererWindowRole =
   | "meeting-recorder-window"
   | "dev-workbench"
   | "main-window"
+  | "onboarding-window"
   | "side-chat-test-window"
   | "side-chat-window"
   | "unknown";
@@ -899,13 +900,39 @@ export type AppLaunchAtLoginStatus = z.output<typeof appLaunchAtLoginStatusSchem
 // Whether the operating system lets Comma post notifications at all. Main reads
 // this back from the platform (macOS notification authorization, notification
 // support elsewhere); it is never persisted and the renderer never writes it.
+// `undetermined`: macOS has not asked the user about Comma yet. It asks on the
+// first banner, or when asked to through the request capability below.
+// `unknown`: macOS could not be asked (no authorization reader, or the read
+// failed); Electron decides when a banner is posted, so it reads like
+// `available` where a banner is about to be sent, but nothing may claim the
+// user allowed it.
 export const systemNotificationsStatusSchema = z.enum([
   "available",
+  "undetermined",
   "denied",
   "unsupported",
+  "unknown",
 ]);
 export type SystemNotificationsStatus = z.output<
   typeof systemNotificationsStatusSchema
+>;
+
+// macOS: whether Comma's sleep guard daemon may run. The user allows it once in
+// System Settings › General › Login Items. Main reads this back from the
+// system; it is never persisted and the renderer never writes it.
+// `not-registered`: Comma has not asked yet. Turning the setting on registers
+// the daemon, and macOS then waits for the user's approval.
+// `requires-approval`: the user has not allowed the daemon yet, or turned it
+// off in Login Items.
+// `unavailable`: this build has no sleep guard.
+export const keepAwakeWhenLidClosedStatusSchema = z.enum([
+  "available",
+  "not-registered",
+  "requires-approval",
+  "unavailable",
+]);
+export type KeepAwakeWhenLidClosedStatus = z.output<
+  typeof keepAwakeWhenLidClosedStatusSchema
 >;
 
 export const commaClientLocalePreferenceSchema = z.enum(["system", "en", "zh-CN"]);
@@ -1090,10 +1117,11 @@ export type CommaClientSideChatAppearance = z.output<
 >;
 
 export const sideChatShortcutSchema = z.object({
-  // Keys identify KeyboardEvent.code positions (KeyA/Digit1/Space),
+  // Keys identify KeyboardEvent.code positions (KeyA/Digit1/Space/Comma),
   // not layout-dependent KeyboardEvent.key characters.
   key: z.enum([
     "space",
+    "comma",
     "a",
     "b",
     "c",
@@ -1159,7 +1187,7 @@ export const defaultSideChatShortcut: SideChatShortcut = {
 };
 
 export const defaultOpenCommaShortcut: SideChatShortcut = {
-  key: "space",
+  key: "comma",
   modifiers: { alt: true, control: false, meta: false, shift: false },
 };
 
@@ -1179,6 +1207,10 @@ export const commaClientSettingsSchema = z
     // running build no longer knows is dropped on read and one it newly ships
     // is appended, so a rail change never invalidates the whole settings file.
     sidebarNavOrder: z.array(z.string()).default([]),
+    // Signed-in user ids that finished or closed first-launch onboarding on
+    // this device. Per device like every client setting, so each account sees
+    // the introduction once per installation.
+    onboardingCompletedUserIds: z.array(z.string()).default([]),
   })
   .strict();
 export const commaClientSettingsPatchSchema = z
@@ -1200,6 +1232,7 @@ export const commaClientSettingsPatchSchema = z
     sideChatShortcut: sideChatShortcutBindingSchema.optional(),
     openCommaShortcut: sideChatShortcutBindingSchema.optional(),
     sidebarNavOrder: z.array(z.string()).optional(),
+    onboardingCompletedUserIds: z.array(z.string()).optional(),
   })
   .strict()
   .refine((patch) => Object.keys(patch).length > 0, {
@@ -1223,6 +1256,8 @@ const mutableAppPreferencesSchema = z
     /** macOS: the name nearby devices see; null means `defaultAirDropName`. */
     airDropName: airDropNameSchema.nullable(),
     clientSettings: commaClientSettingsSchema.optional(),
+    /** macOS: whether the sleep guard daemon keeps the Mac awake with the lid closed. */
+    keepAwakeWhenLidClosed: z.boolean(),
     launchAtLogin: z.boolean(),
     /** macOS: how far the compact Notch reaches past each side of the notch. */
     notchSideWidth: notchSideWidthSchema,
@@ -1234,22 +1269,27 @@ const mutableAppPreferencesSchema = z
     showInMenuBar: z.boolean(),
     /** macOS: whether Comma shows running Tasks and AirDrop around the notch. */
     showInNotch: z.boolean(),
+    /** Whether the shortcut, the macOS edge gesture and the menus open Side Chat. */
+    sideChatEnabled: z.boolean(),
     systemNotifications: z.boolean(),
   })
   .strict();
 export const appPreferencesSchema = mutableAppPreferencesSchema.extend({
   openCommaShortcutStatus: z.enum(["registered", "unset", "unavailable"]).optional(),
   launchAtLoginStatus: appLaunchAtLoginStatusSchema.optional(),
-  // Defaults keep preference files written before notifications, AirDrop and
-  // the Notch settings shipped parseable; patches derive from the default-free
+  // Defaults keep preference files written before notifications, AirDrop,
+  // the Notch and the Side Chat settings shipped parseable; patches derive from the default-free
   // mutable schema below.
   airDropName: airDropNameSchema.nullable().default(null),
+  keepAwakeWhenLidClosed: z.boolean().default(false),
+  keepAwakeWhenLidClosedStatus: keepAwakeWhenLidClosedStatusSchema.optional(),
   notchSideWidth: notchSideWidthSchema.default(notchSideWidthRange.default),
   notificationSound: z.boolean().default(true),
   notifyRouterMessages: z.boolean().default(true),
   revision: z.number().int().nonnegative().default(0),
   showInAirDrop: z.boolean().default(true),
   showInNotch: z.boolean().default(true),
+  sideChatEnabled: z.boolean().default(true),
   systemNotifications: z.boolean().default(true),
   systemNotificationsStatus: systemNotificationsStatusSchema.optional(),
 });
@@ -1294,6 +1334,7 @@ export type ConnectorSetScopeInput = z.output<typeof connectorSetScopeInputSchem
 
 export const defaultAppPreferences = appPreferencesSchema.parse({
   airDropName: null,
+  keepAwakeWhenLidClosed: false,
   launchAtLogin: false,
   notchSideWidth: notchSideWidthRange.default,
   notificationSound: true,
@@ -1303,6 +1344,7 @@ export const defaultAppPreferences = appPreferencesSchema.parse({
   showInDock: true,
   showInMenuBar: true,
   showInNotch: true,
+  sideChatEnabled: true,
   systemNotifications: true,
 });
 
@@ -1687,6 +1729,7 @@ export const nativeRendererIdentitySchema = z.object({
     "meeting-recorder-window",
     "dev-workbench",
     "main-window",
+    "onboarding-window",
     "side-chat-test-window",
     "side-chat-window",
     "unknown",
@@ -1889,7 +1932,7 @@ export const appPreferencesInitializeClientSettingsCapability = defineNativeCapa
   webFallback: defaultAppPreferences,
 });
 
-const appPreferencesOpenNotificationSettingsResultSchema = z
+const appPreferencesOpenSettingsResultSchema = z
   .object({ opened: z.boolean() })
   .strict();
 
@@ -1905,13 +1948,61 @@ export const appPreferencesOpenNotificationSettingsCapability = defineNativeCapa
   id: "appPreferences.openNotificationSettings",
   input: z.void(),
   mock: { opened: false },
-  output: appPreferencesOpenNotificationSettingsResultSchema,
+  output: appPreferencesOpenSettingsResultSchema,
   permission: "app-preferences.settings",
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
     "Opens the operating-system Notifications pane. No Session state is involved.",
   webFallback: { opened: false },
 });
+
+// macOS: opens Login Items, where the user allows Comma's sleep guard daemon
+// once. Main then reads the approval back through the preferences state.
+export const appPreferencesOpenLoginItemsSettingsCapability = defineNativeCapability({
+  bridge: { method: "openLoginItemsSettings", namespace: "appPreferences" },
+  channel: "comma:app-preferences:open-login-items-settings",
+  handler: {
+    exportName: "AppPreferencesProvider",
+    member: "openLoginItemsSettings",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "appPreferences",
+  },
+  id: "appPreferences.openLoginItemsSettings",
+  input: z.void(),
+  mock: { opened: false },
+  output: appPreferencesOpenSettingsResultSchema,
+  permission: "app-preferences.settings",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Opens the operating-system Login Items pane. No Session state is involved.",
+  webFallback: { opened: false },
+});
+
+// Asks the OS to let Comma notify: macOS shows its prompt while it has not asked
+// the user about Comma yet, and answers a decided status from its record. Main
+// then reads the status back, publishes it through the preferences state, and
+// resolves with it. The same authority as opening the Notifications pane: the
+// OS owns the decision either way.
+export const appPreferencesRequestNotificationAuthorizationCapability =
+  defineNativeCapability({
+    bridge: { method: "requestNotificationAuthorization", namespace: "appPreferences" },
+    channel: "comma:app-preferences:request-notification-authorization",
+    handler: {
+      exportName: "AppPreferencesProvider",
+      member: "requestNotificationAuthorization",
+      module: "../../../apps/electron/src/main/modules/native/index",
+      provider: "appPreferences",
+    },
+    id: "appPreferences.requestNotificationAuthorization",
+    input: z.void(),
+    mock: "unsupported",
+    output: systemNotificationsStatusSchema,
+    permission: "app-preferences.settings",
+    sessionAdmission: "local_only",
+    sessionAdmissionRationale:
+      "Asks the operating system to let Comma post notifications. No Session state is involved.",
+    webFallback: "unsupported",
+  });
 
 const unavailableConnectorScope = connectorScopeStateSchema.parse({
   available: false,
@@ -2519,6 +2610,205 @@ export const surfacesWindowFullScreenStateLeaf = defineNativeState({
   subscribe: surfacesWindowFullScreenChangedEvent,
 });
 
+export const onboardingPresentWindowInputSchema = z
+  .object({ session: sessionProductLeaseSchema })
+  .strict();
+export type OnboardingPresentWindowInput = z.output<
+  typeof onboardingPresentWindowInputSchema
+>;
+
+export const onboardingPresentWindowResultSchema = z
+  .object({ presented: z.boolean() })
+  .strict();
+export type OnboardingPresentWindowResult = z.output<
+  typeof onboardingPresentWindowResultSchema
+>;
+
+// A browser cannot draw over the desktop: the web keeps the onboarding as an
+// overlay inside its own window.
+const onboardingWindowNotPresented: OnboardingPresentWindowResult = {
+  presented: false,
+};
+
+/**
+ * Shows the first-launch onboarding in its own transparent window over the
+ * whole display that holds the main window. Main binds it to the user of the
+ * admitted session, closes it when that user signs out or another signs in, and
+ * keeps one at a time: presenting again brings the open one to the front.
+ * Closing it by hand (⌘W) records the onboarding as completed.
+ */
+export const onboardingPresentWindowCapability = defineNativeCapability({
+  bridge: { method: "presentWindow", namespace: "onboarding" },
+  channel: "comma:onboarding:present-window",
+  handler: {
+    exportName: "OnboardingWindowProvider",
+    member: "presentWindow",
+    module: "../../../apps/electron/src/main/onboarding-window",
+    provider: "onboardingWindow",
+  },
+  id: "onboarding.presentWindow",
+  input: onboardingPresentWindowInputSchema,
+  mock: onboardingWindowNotPresented,
+  output: onboardingPresentWindowResultSchema,
+  permission: "onboarding.window.present",
+  sessionAdmission: "required",
+  webFallback: onboardingWindowNotPresented,
+});
+
+/**
+ * A plugin authorization the onboarding started and the user has not finished
+ * in the browser yet. The install happens only when a window verifies it, so
+ * the main window takes it over when the onboarding window closes.
+ */
+export const onboardingPluginAuthorizationSchema = z
+  .object({
+    workspaceId: z.string().min(1),
+    pluginId: z.string().min(1),
+    authorizationState: z.string().min(1),
+    /** When the attempt expires, in epoch milliseconds. */
+    expiresAt: z.number(),
+  })
+  .strict();
+export type OnboardingPluginAuthorization = z.output<
+  typeof onboardingPluginAuthorizationSchema
+>;
+
+export const onboardingCloseWindowInputSchema = z
+  .object({ pluginAuthorization: onboardingPluginAuthorizationSchema.optional() })
+  .strict();
+export type OnboardingCloseWindowInput = z.output<
+  typeof onboardingCloseWindowInputSchema
+>;
+
+/**
+ * The onboarding window ended with "Start chatting" and finished its exit
+ * reveal. Main records the completion for the user it presented the window
+ * to, closes it, and hands focus back to the main window, then tells the main
+ * window of the hand-off (`onboarding.handoff`) with any plugin authorization
+ * still open.
+ */
+export const onboardingCloseWindowCapability = defineNativeCapability({
+  bridge: { method: "closeWindow", namespace: "onboarding" },
+  channel: "comma:onboarding:close-window",
+  handler: {
+    exportName: "OnboardingWindowProvider",
+    member: "closeWindow",
+    module: "../../../apps/electron/src/main/onboarding-window",
+    provider: "onboardingWindow",
+  },
+  id: "onboarding.closeWindow",
+  input: onboardingCloseWindowInputSchema,
+  mock: undefined,
+  output: z.void(),
+  permission: "onboarding.window.close",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Closes the local onboarding window after its exit; Main records completion for the user it bound at presentation.",
+  webFallback: undefined,
+});
+
+export const onboardingWindowStateSchema = z.object({ open: z.boolean() }).strict();
+export type OnboardingWindowState = z.output<typeof onboardingWindowStateSchema>;
+
+const onboardingWindowClosed: OnboardingWindowState = { open: false };
+
+/**
+ * Whether the onboarding window is open over the main window, from the moment
+ * Main creates it until its presentation ends. The main window's product
+ * stands down for exactly that long, as it does under the in-window overlay:
+ * its shortcuts and menu commands would act on surfaces the user cannot see.
+ */
+export const onboardingWindowCapability = defineNativeCapability({
+  bridge: { method: "window", namespace: "onboarding" },
+  channel: "comma:onboarding:window",
+  handler: {
+    exportName: "OnboardingWindowProvider",
+    member: "window",
+    module: "../../../apps/electron/src/main/onboarding-window",
+    provider: "onboardingWindow",
+  },
+  id: "onboarding.window",
+  input: z.void(),
+  mock: onboardingWindowClosed,
+  output: onboardingWindowStateSchema,
+  permission: "onboarding.window.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads whether the local onboarding window is open, without Session state or authenticated transport.",
+  webFallback: onboardingWindowClosed,
+});
+
+export const onboardingOutputVolumeSchema = z
+  .object({ volume: z.number().min(0).max(1).nullable() })
+  .strict();
+export type OnboardingOutputVolume = z.output<typeof onboardingOutputVolumeSchema>;
+
+// A browser cannot read the system's volume.
+const onboardingOutputVolumeUnknown: OnboardingOutputVolume = { volume: null };
+
+/**
+ * The Mac's output volume, from 0 to 1, as the onboarding opens: its sound
+ * plays quieter on a loud Mac. Null where it cannot be read (another
+ * platform, an output that has no volume, or a read that failed).
+ */
+export const onboardingOutputVolumeCapability = defineNativeCapability({
+  bridge: { method: "outputVolume", namespace: "onboarding" },
+  channel: "comma:onboarding:output-volume",
+  handler: {
+    exportName: "OnboardingWindowProvider",
+    member: "outputVolume",
+    module: "../../../apps/electron/src/main/onboarding-window",
+    provider: "onboardingWindow",
+  },
+  id: "onboarding.outputVolume",
+  input: z.void(),
+  mock: onboardingOutputVolumeUnknown,
+  output: onboardingOutputVolumeSchema,
+  permission: "onboarding.sound.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads the local Mac's output volume for the onboarding's sound, without Session state or authenticated transport.",
+  webFallback: onboardingOutputVolumeUnknown,
+});
+
+// Every window whose role may read it: the Router name shown there may have
+// been changed by the onboarding, and is read again once it closes.
+export const onboardingWindowChangedEvent = defineNativeEvent({
+  channel: "comma:onboarding:window-changed",
+  id: "onboarding.window.changed",
+  mock: onboardingWindowClosed,
+  payload: onboardingWindowStateSchema,
+  permission: onboardingWindowCapability.permission,
+  target: { type: "all" },
+});
+
+export const onboardingWindowStateLeaf = defineNativeState({
+  bridge: { method: "window", namespace: "onboarding" },
+  get: onboardingWindowCapability,
+  id: "onboarding.window",
+  subscribe: onboardingWindowChangedEvent,
+});
+
+/**
+ * The onboarding window ended with "Start chatting" and has closed, after Main
+ * gave the main window the focus back: Home focuses its composer, and the main
+ * window goes on verifying a plugin authorization the onboarding left open.
+ */
+export const onboardingHandoffSchema = z
+  .object({ pluginAuthorization: onboardingPluginAuthorizationSchema.optional() })
+  .strict();
+export type OnboardingHandoff = z.output<typeof onboardingHandoffSchema>;
+
+export const onboardingHandoffEvent = defineNativeEvent({
+  bridge: { method: "onHandoff", namespace: "onboarding" },
+  channel: "comma:onboarding:handoff",
+  id: "onboarding.handoff",
+  mock: {},
+  payload: onboardingHandoffSchema,
+  permission: onboardingWindowCapability.permission,
+  target: { type: "window", windowId: "win_main" },
+});
+
 export const clipboardReadTextResultSchema = z
   .object({
     text: z.string(),
@@ -2733,6 +3023,9 @@ const tokenDanceAuthorizationStatusSchema = z.object({
     .optional(),
 });
 
+// TokenDance and subscription account authorization store model credentials:
+// a permission of their own, so a window granted only to open a URL in the
+// browser (`shell.open-external`) cannot start or save them.
 export const tokenDanceAuthorizationStartCapability = defineNativeCapability({
   bridge: { namespace: "tokenDanceAuthorization", method: "start" },
   channel: "comma:tokendance-authorization:start",
@@ -2751,7 +3044,7 @@ export const tokenDanceAuthorizationStartCapability = defineNativeCapability({
     })
     .strict(),
   output: tokenDanceAuthorizationStatusSchema,
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { status: "failed", error: "unsupported" },
   webFallback: { status: "failed", error: "unsupported" },
@@ -2771,7 +3064,7 @@ export const tokenDanceAuthorizationStatusCapability = defineNativeCapability({
     .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
     .strict(),
   output: tokenDanceAuthorizationStatusSchema,
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { status: "failed", error: "unsupported" },
   webFallback: { status: "failed", error: "unsupported" },
@@ -2791,14 +3084,12 @@ export const tokenDanceAuthorizationSaveCapability = defineNativeCapability({
     .object({
       session: sessionProductLeaseSchema,
       requestId: z.string().uuid(),
-      model: z.string().min(1).max(200),
+      /** The profile's name; it serves every model TokenDance listed. */
       name: z.string().min(1).max(120),
-      maxTokens: z.number().int().min(1).max(1_000_000),
-      contextTokens: z.number().int().min(0).max(10_000_000),
     })
     .strict(),
   output: z.object({ ok: z.boolean() }),
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { ok: false },
   webFallback: { ok: false },
@@ -2824,7 +3115,7 @@ export const tokenDanceAuthorizationCancelCapability = defineNativeCapability({
     .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
     .strict(),
   output: z.object({ ok: z.literal(true) }),
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { ok: true },
   webFallback: { ok: true },
@@ -2854,7 +3145,7 @@ export const subscriptionAuthorizationStartCapability = defineNativeCapability({
     status: z.enum(["pending", "complete", "failed"]),
     error: z.string().optional(),
   }),
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { status: "failed", error: "unsupported" },
   webFallback: { status: "failed", error: "unsupported" },
@@ -2877,7 +3168,7 @@ export const subscriptionAuthorizationStatusCapability = defineNativeCapability(
     status: z.enum(["pending", "complete", "failed"]),
     error: z.string().optional(),
   }),
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { status: "failed", error: "unsupported" },
   webFallback: { status: "failed", error: "unsupported" },
@@ -2897,7 +3188,7 @@ export const subscriptionAuthorizationCancelCapability = defineNativeCapability(
     .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
     .strict(),
   output: z.object({ ok: z.literal(true) }),
-  permission: "shell.open-external",
+  permission: "model-account.authorize",
   sessionAdmission: "required",
   mock: { ok: true },
   webFallback: { ok: true },
@@ -5380,11 +5671,14 @@ export const computeNodeStateSchema = z.strictObject({
       ]),
     })
     .optional(),
+  confirmationId: z.string().min(1).max(160).optional(),
   bindingWorkspaceId: z.string().min(1).max(160).optional(),
   bindingInstallationId: z.string().min(1).max(160).optional(),
+  bindingRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   observedAt: z.string().optional(),
   observationFresh: z.boolean().optional(),
   remoteRevocationConfirmed: z.boolean().optional(),
+  canAbandonRequest: z.boolean().optional(),
   issue: z
     .enum([
       "unsupported",
@@ -5394,9 +5688,18 @@ export const computeNodeStateSchema = z.strictObject({
       "enable_incomplete",
       "operation_unknown",
       "needs_attention",
+      "removal_incomplete",
+      "installation_receipt_missing",
+      "shell_initialization_pending",
+      "authorization_unavailable",
+      "capability_missing",
     ])
     .optional(),
-  recoveryActions: z.array(z.enum(["continue_enable", "check_status"])).optional(),
+  recoveryActions: z
+    .array(
+      z.enum(["continue_enable", "check_status", "finish_remove", "continue_shell"])
+    )
+    .optional(),
   desiredEnabled: z.boolean(),
   eligibility: z.strictObject({
     eligible: z.boolean(),
@@ -5452,6 +5755,295 @@ const unavailableComputeNodeState: ComputeNodeState = {
   revision: 1,
   status: "action_required",
 };
+
+const localComputeByteCount = z
+  .string()
+  .max(20)
+  .regex(/^(0|[1-9][0-9]*)$/)
+  .refine((value) => BigInt(value) <= 18446744073709551615n);
+
+export const hostMaintenanceInputSchema = z
+  .strictObject({
+    action: z.enum(["update", "reinstall", "uninstall"]),
+    dataPolicy: z.enum(["preserve", "reset"]),
+  })
+  .refine((value) => value.action !== "update" || value.dataPolicy === "preserve");
+export type HostMaintenanceInput = z.infer<typeof hostMaintenanceInputSchema>;
+export const hostMaintenanceStateSchema = z.strictObject({
+  installation: z.enum(["installed", "not_installed", "unreadable"]),
+  installedReleaseId: z.string().max(200).optional(),
+  selectedReleaseId: z.string().max(200),
+  updateAvailable: z.boolean(),
+  operation: z
+    .strictObject({
+      requestId: z.string().uuid(),
+      action: z.enum(["update", "reinstall", "uninstall"]),
+      dataPolicy: z.enum(["preserve", "reset"]),
+      phase: z.enum([
+        "preparing",
+        "stopping",
+        "installing",
+        "removing",
+        "checking",
+        "completed",
+        "failed",
+      ]),
+      outcome: z.enum(["pending", "failed", "succeeded"]),
+      problem: z.string().max(2000).optional(),
+    })
+    .optional(),
+});
+export type HostMaintenanceState = z.infer<typeof hostMaintenanceStateSchema>;
+const hostMaintenanceFallback: HostMaintenanceState = {
+  installation: "unreadable",
+  selectedReleaseId: "unavailable",
+  updateAvailable: false,
+};
+export const hostMaintenanceStateCapability = defineNativeCapability({
+  bridge: { method: "hostMaintenanceState", namespace: "computeNode" },
+  channel: "comma:compute-node:host-maintenance-state",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "hostMaintenanceState",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.hostMaintenanceState",
+  input: z.void(),
+  output: hostMaintenanceStateSchema,
+  mock: hostMaintenanceFallback,
+  webFallback: hostMaintenanceFallback,
+  permission: "compute-node.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads local component version and the durable shared Host maintenance receipt without cloud credentials.",
+});
+export const maintainHostCapability = defineNativeCapability({
+  bridge: { method: "maintainHost", namespace: "computeNode" },
+  channel: "comma:compute-node:maintain-host",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "maintainHost",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.maintainHost",
+  input: hostMaintenanceInputSchema,
+  output: hostMaintenanceStateSchema,
+  mock: hostMaintenanceFallback,
+  webFallback: hostMaintenanceFallback,
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Main confirms the complete shared Host scope and data policy in a trusted native dialog; renderer input cannot authorize deletion.",
+});
+export const resumeHostMaintenanceCapability = defineNativeCapability({
+  bridge: { method: "resumeHostMaintenance", namespace: "computeNode" },
+  channel: "comma:compute-node:resume-host-maintenance",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "resumeHostMaintenance",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.resumeHostMaintenance",
+  input: z.strictObject({ requestId: z.string().uuid() }),
+  output: hostMaintenanceStateSchema,
+  mock: hostMaintenanceFallback,
+  webFallback: hostMaintenanceFallback,
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Continues only Main's original confirmed shared Host maintenance request and data policy, even without cloud login.",
+});
+
+export const localComputeEnvironmentSchema = z.strictObject({
+  key: z.string().min(1).max(200),
+  label: z.string().max(80),
+  origin: z.enum(["local", "remote"]),
+  state: z.enum(["unknown", "observed_active", "retired", "vm_stopped"]),
+  privateDiskBytes: localComputeByteCount.optional(),
+  sampledAt: z.string().optional(),
+  canDisposeLocal: z.boolean(),
+  canReadWorkloads: z.boolean(),
+  canOperate: z.boolean(),
+});
+export const localComputeOverviewSchema = z.strictObject({
+  availability: z.enum(["available", "unavailable", "capability_missing"]),
+  collectedAt: z.string().optional(),
+  bootId: z.string().optional(),
+  disk: z
+    .strictObject({
+      usedBytes: localComputeByteCount,
+      capacityBytes: localComputeByteCount,
+      importReservationBytes: localComputeByteCount,
+    })
+    .optional(),
+  environments: z.array(localComputeEnvironmentSchema).max(32),
+  nextCursor: z.string().optional(),
+  disposal: z
+    .strictObject({
+      requestId: z.string().uuid(),
+      operationId: z.string().optional(),
+      outcome: z.enum(["pending", "completed", "unknown", "superseded"]),
+      resetRequestId: z.string().uuid().optional(),
+    })
+    .optional(),
+});
+export type LocalComputeOverview = z.infer<typeof localComputeOverviewSchema>;
+export const localComputeDisposalResultSchema = z.strictObject({
+  outcome: z.enum(["cancelled", "pending", "completed", "unknown", "superseded"]),
+  resetRequestId: z.string().uuid().optional(),
+  requestId: z.string().optional(),
+  operationId: z.string().optional(),
+});
+export type LocalComputeDisposalResult = z.infer<
+  typeof localComputeDisposalResultSchema
+>;
+export const localComputeOverviewCapability = defineNativeCapability({
+  bridge: { method: "localOverview", namespace: "computeNode" },
+  channel: "comma:compute-node:local-overview",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "localOverview",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.localOverview",
+  input: z.strictObject({
+    cursor: z.string().max(200).optional(),
+    workspaceId: z.string().min(1).max(160).optional(),
+  }),
+  output: localComputeOverviewSchema,
+  mock: { availability: "unavailable", environments: [] },
+  webFallback: { availability: "unavailable", environments: [] },
+  permission: "compute-node.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads a bounded local disk and environment summary without cloud content or credentials.",
+});
+export const localComputeDisposeCapability = defineNativeCapability({
+  bridge: { method: "disposeLocal", namespace: "computeNode" },
+  channel: "comma:compute-node:dispose-local",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "disposeLocal",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.disposeLocal",
+  input: z.strictObject({ key: z.string().min(1).max(200) }),
+  output: localComputeDisposalResultSchema,
+  mock: { outcome: "cancelled" },
+  webFallback: { outcome: "cancelled" },
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Requests Main's exact local disposal preview and trusted native confirmation. Renderer input cannot confirm deletion.",
+});
+
+export const localComputeResumeCapability = defineNativeCapability({
+  bridge: { method: "resumeLocalDisposal", namespace: "computeNode" },
+  channel: "comma:compute-node:resume-local-disposal",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "resumeLocalDisposal",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.resumeLocalDisposal",
+  input: z.strictObject({ requestId: z.string().uuid() }),
+  output: localComputeDisposalResultSchema,
+  mock: { outcome: "unknown" },
+  webFallback: { outcome: "unknown" },
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Continues only Main's original persisted exact local disposal receipt. It cannot select another target.",
+});
+
+export const computeRecoveryCandidatesSchema = z.strictObject({
+  confirmationId: z.string().min(1).max(160),
+  candidates: z
+    .array(z.strictObject({ key: z.string().uuid(), label: z.string().max(80) }))
+    .max(32),
+  nextCursor: z.string().max(200).optional(),
+});
+export type ComputeRecoveryCandidates = z.infer<typeof computeRecoveryCandidatesSchema>;
+export const computeRecoveryCandidatesCapability = defineNativeCapability({
+  bridge: { method: "recoveryCandidates", namespace: "computeNode" },
+  channel: "comma:compute-node:recovery-candidates",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "recoveryCandidates",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.recoveryCandidates",
+  input: z.strictObject({
+    workspaceId: z.string().min(1).max(160),
+    cursor: z.string().max(200).optional(),
+  }),
+  output: computeRecoveryCandidatesSchema,
+  mock: { confirmationId: "unavailable", candidates: [] },
+  webFallback: { confirmationId: "unavailable", candidates: [] },
+  permission: "compute-node.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Main rechecks the current product Session and verifies original subject and fixed-purpose Host proof before exposing each recovery candidate.",
+});
+export const computeRecoverCapability = defineNativeCapability({
+  bridge: { method: "recover", namespace: "computeNode" },
+  channel: "comma:compute-node:recover",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "recover",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.recover",
+  input: z.strictObject({
+    key: z.string().uuid(),
+    confirmationId: z.string().min(1).max(160),
+  }),
+  output: computeNodeStateSchema,
+  mock: unavailableComputeNodeState,
+  webFallback: unavailableComputeNodeState,
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Consumes only Main's verified original installation challenge under the same frozen current Session. Local disposal authority is separate.",
+});
+
+export const localComputeWorkloadsSchema = z.strictObject({
+  workloads: z
+    .array(z.strictObject({ label: z.string().max(300), state: z.string().max(80) }))
+    .max(32),
+  nextCursor: z.string().max(200).optional(),
+});
+export type LocalComputeWorkloads = z.infer<typeof localComputeWorkloadsSchema>;
+export const localComputeWorkloadsCapability = defineNativeCapability({
+  bridge: { method: "localWorkloads", namespace: "computeNode" },
+  channel: "comma:compute-node:local-workloads",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "localWorkloads",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.localWorkloads",
+  input: z.strictObject({
+    key: z.string().min(1).max(200),
+    cursor: z.string().max(200).optional(),
+  }),
+  output: localComputeWorkloadsSchema,
+  mock: { workloads: [] },
+  webFallback: { workloads: [] },
+  permission: "compute-node.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Main rechecks current cloud read authority and exact native registration/allocation/generation mapping. Local disposal permission does not grant cloud content access.",
+});
 
 export const computeNodeStateCapability = defineNativeCapability({
   bridge: { method: "state", namespace: "computeNode" },
@@ -5568,8 +6160,10 @@ export const computeNodeRebuildCapability = defineNativeCapability({
 });
 
 export const computeNodeExpectedBindingSchema = z.strictObject({
+  confirmationId: z.string().min(1).max(160).optional(),
   workspaceId: z.string().min(1).max(160),
   installationId: z.string().min(1).max(160).nullable(),
+  bindingRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 export type ComputeNodeExpectedBinding = z.infer<
   typeof computeNodeExpectedBindingSchema
@@ -5610,6 +6204,26 @@ export const computeNodeRemoveCapability = defineNativeCapability({
   permission: "compute-node.write",
   sessionAdmission: "local_only",
   sessionAdmissionRationale: "Removes the Main-owned local compute node lifecycle.",
+  webFallback: unavailableComputeNodeState,
+});
+
+export const computeNodeAbandonCapability = defineNativeCapability({
+  bridge: { method: "abandon", namespace: "computeNode" },
+  channel: "comma:compute-node:abandon",
+  handler: {
+    exportName: "ComputeNodeProvider",
+    member: "abandon",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "computeNode",
+  },
+  id: "computeNode.abandon",
+  input: computeNodeExpectedBindingSchema,
+  mock: unavailableComputeNodeState,
+  output: computeNodeStateSchema,
+  permission: "compute-node.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Main rechecks the current account and cloud owner before closing an unexchanged request.",
   webFallback: unavailableComputeNodeState,
 });
 
@@ -7662,7 +8276,9 @@ export const nativeCapabilityRegistry = [
   nativeInfoCapability,
   appPreferencesCapability,
   appPreferencesInitializeClientSettingsCapability,
+  appPreferencesOpenLoginItemsSettingsCapability,
   appPreferencesOpenNotificationSettingsCapability,
+  appPreferencesRequestNotificationAuthorizationCapability,
   appPreferencesUpdateCapability,
   connectorRuntimeStateCapability,
   connectorRuntimeScopeCapability,
@@ -7685,6 +8301,10 @@ export const nativeCapabilityRegistry = [
   windowsCreateCapability,
   windowsFocusCapability,
   windowsCloseCapability,
+  onboardingPresentWindowCapability,
+  onboardingCloseWindowCapability,
+  onboardingOutputVolumeCapability,
+  onboardingWindowCapability,
   clipboardReadTextCapability,
   clipboardReadImageCapability,
   clipboardWriteTextCapability,
@@ -7730,8 +8350,18 @@ export const nativeCapabilityRegistry = [
   computeNodeRefreshCapability,
   computeNodeRepairCapability,
   computeNodeRebuildCapability,
+  localComputeOverviewCapability,
+  localComputeDisposeCapability,
+  localComputeResumeCapability,
+  hostMaintenanceStateCapability,
+  maintainHostCapability,
+  resumeHostMaintenanceCapability,
+  computeRecoveryCandidatesCapability,
+  computeRecoverCapability,
+  localComputeWorkloadsCapability,
   computeNodeDrainCapability,
   computeNodeRemoveCapability,
+  computeNodeAbandonCapability,
   sessionHistoryStateCapability,
   sessionHistoryLoadCapability,
   sessionHistoryRetainCapability,
@@ -7833,6 +8463,8 @@ export const nativeEventRegistry = [
   browserSidebarOpenTabRequestedEvent,
   surfacesChangedEvent,
   surfacesWindowFullScreenChangedEvent,
+  onboardingWindowChangedEvent,
+  onboardingHandoffEvent,
   notchHostEvent,
   sessionStateChangedEvent,
   sessionHistoryStateChangedEvent,
@@ -7857,6 +8489,7 @@ export const nativeStateRegistry = [
   connectorRuntimeStateLeaf,
   surfacesStateLeaf,
   surfacesWindowFullScreenStateLeaf,
+  onboardingWindowStateLeaf,
   sessionStateLeaf,
   sessionHistoryStateLeaf,
   productInboxStateLeaf,

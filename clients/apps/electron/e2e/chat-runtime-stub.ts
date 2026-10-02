@@ -8,6 +8,7 @@ export const runtimeAccountA = {
   email: "runtime-a@comma.local",
   groupId: "grp1_1720000000000000001_1720000000000000002",
   token: "runtime-token-a",
+  userId: "user-runtime-a",
   workspaceId: "ws-runtime-a",
 };
 
@@ -16,6 +17,7 @@ export const runtimeAccountB = {
   email: "runtime-b@comma.local",
   groupId: "grp1_1720000000000000003_1720000000000000004",
   token: "runtime-token-b",
+  userId: "user-runtime-b",
   workspaceId: "ws-runtime-b",
 };
 
@@ -625,7 +627,7 @@ function issuedSessionFor(account: typeof runtimeAccountA | typeof runtimeAccoun
     token: account.token,
     user: {
       email: account.email,
-      id: account === runtimeAccountA ? "user-runtime-a" : "user-runtime-b",
+      id: account.userId,
       name: null,
       status: "active",
     },

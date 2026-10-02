@@ -30,7 +30,6 @@ defmodule SalixEnv.ComputeReconciler do
   @claim_retry_ms 5_000
   @max_retry_ms 60_000
   @concurrency 4
-  @task_budget_ms 870_000
   @cursor_id "compute-reconciler-agent-vmm"
   @provider "agent_vmm"
   # One release-owned row, three product templates. Selection adds no Host RPC
@@ -153,8 +152,7 @@ defmodule SalixEnv.ComputeReconciler do
          true <- allocation.status != "released" || {:error, :allocation_released},
          %Compute.ProviderBinding{provider: provider} <-
            Repo.get(Compute.ProviderBinding, allocation.provider_binding_id),
-         :ok <- provider_budget(provider, workload, allocation, opts),
-         result <- reconcile_provider(provider, allocation, workload, opts) do
+         result <- reconcile_with_budget(provider, allocation, workload, opts) do
       settle_result(workload, result, Keyword.get(opts, :claim_token))
     else
       nil -> {:error, :not_found}
@@ -171,6 +169,22 @@ defmodule SalixEnv.ComputeReconciler do
       )
 
       {:error, :unavailable}
+  end
+
+  defp reconcile_with_budget(provider, allocation, workload, opts) do
+    confirmation =
+      if provider == "cloudflare",
+        do: apply(SalixWeb.ComputeProviders.Cloudflare, :confirm_completed_wake, [workload]),
+        else: :continue
+
+    case confirmation do
+      :continue ->
+        with :ok <- provider_budget(provider, workload, allocation, opts),
+             do: reconcile_provider(provider, allocation, workload, opts)
+
+      result ->
+        result
+    end
   end
 
   defp provider_budget("agent_vmm", workload, allocation, opts),
@@ -588,7 +602,12 @@ defmodule SalixEnv.ComputeReconciler do
     task =
       Task.async(fn -> SystemsObservability.Context.run(context, fn -> run_claim(claim) end) end)
 
-    timer = Process.send_after(self(), {:claim_timeout, task.ref}, @task_budget_ms)
+    # Stop the local task before its provider-specific claim expires.
+    # Cloudflare imports can use 45 minutes. Agent VMM keeps its existing budget.
+    budget =
+      max(1, DateTime.diff(claim.lease_expires_at, DateTime.utc_now(), :millisecond) - 30_000)
+
+    timer = Process.send_after(self(), {:claim_timeout, task.ref}, budget)
     entry = Map.merge(claim, %{pid: task.pid, timer: timer})
     %{state | tasks: Map.put(state.tasks, task.ref, entry)}
   end
@@ -1005,6 +1024,7 @@ defmodule SalixEnv.ComputeReconciler do
         %{
           workload: workload,
           claim_token: claim_token,
+          lease_expires_at: lease_expires_at,
           row: %{
             id: "#{provider}:#{workload.id}:#{workload.generation}",
             provider: provider,
@@ -1042,7 +1062,7 @@ defmodule SalixEnv.ComputeReconciler do
       end
     end)
 
-    Enum.map(claimed, &Map.take(&1, [:workload, :claim_token]))
+    Enum.map(claimed, &Map.take(&1, [:workload, :claim_token, :lease_expires_at]))
   end
 
   defp settle_claim(workload, {:ok, %{outcome: :group_reconciled}}, claim_token),
@@ -1098,6 +1118,14 @@ defmodule SalixEnv.ComputeReconciler do
               "group_provider_recovery_expired"
             ] do
     park_action_required(workload, Map.put(error, "kind", "action_required"), claim_token)
+  end
+
+  defp settle_claim(workload, {:error, :invalid_connection_epoch}, claim_token) do
+    park_action_required(
+      workload,
+      %{"kind" => "action_required", "code" => "invalid_connection_epoch"},
+      claim_token
+    )
   end
 
   defp settle_claim(workload, result, claim_token) do

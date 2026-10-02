@@ -82,14 +82,47 @@ catalog_rule storedResult (state event)
 catalog_rule transcriptToolResult (state event)
 catalog_rule transcriptAssistant (state event)
 catalog_rule transcriptLog (state event)
-catalog_rule runtimeAppend (state event)
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). This is much
+cheaper than a walk over every branch of `runtimeAppend`. -/
+theorem runtimeAppend_catalog_frame {state event next : Term} {journal rest : List Term}
+    (call : runtimeAppend state event journal = .ok (next, rest)) : CatalogFrame state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
+  exact catalog_frame_trans (appendFields_catalog_frame appended) (catalog_frame_trans (write_catalog_frame written rfl rfl rfl)
+    (catalog_frame_trans (bumpHwm_catalog_frame bumped) (resetFresh_catalog_frame reset)))
+
+theorem runtimeAppend_catalog_frame_step {state event next : Term} {journal rest : List Term} :
+    runtimeAppend state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = runtimeAppend state event journal ∧ CatalogFrame state next :=
+  step_iff runtimeAppend_catalog_frame
 catalog_rule transcriptRuntime (state event)
-catalog_rule transcriptDelivery (state event)
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). This is
+much cheaper than a walk over every branch of `transcriptDelivery`. -/
+theorem transcriptDelivery_catalog_frame {state event next : Term} {journal rest : List Term}
+    (call : transcriptDelivery state event journal = .ok (next, rest)) : CatalogFrame state next := by
+  rcases transcriptDelivery_ops call with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
+  · exact catalog_frame_refl _
+  · exact catalog_frame_trans (appendFields_catalog_frame appended) (catalog_frame_trans (write_catalog_frame written rfl rfl rfl)
+      (catalog_frame_trans (addObligation_catalog_frame obligated) (catalog_frame_trans (bumpHwm_catalog_frame bumped) (resetFresh_catalog_frame reset))))
+
+theorem transcriptDelivery_catalog_frame_step {state event next : Term} {journal rest : List Term} :
+    transcriptDelivery state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = transcriptDelivery state event journal ∧ CatalogFrame state next :=
+  step_iff transcriptDelivery_catalog_frame
 catalog_rule transcriptSeed (state event)
 catalog_rule queueAppend (state event)
 catalog_rule queueAck (state event)
 catalog_rule queueConsume (state event)
-catalog_rule sessionEvent (state event)
+/-- `sessionEvent` writes only `sessionEventWrittenKeys`. This frame is much cheaper than a
+walk over every branch of `sessionEvent`. -/
+theorem sessionEvent_catalog_frame {state event next : Term} {journal rest : List Term}
+    (call : sessionEvent state event journal = .ok (next, rest)) : CatalogFrame state next :=
+  have kept := (sessionEvent_fields call).2
+  ⟨kept "segment_catalog" rfl, kept "archived_through" rfl, kept "session_id" rfl⟩
+
+theorem sessionEvent_catalog_frame_step {state event next : Term} {journal rest : List Term} :
+    sessionEvent state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = sessionEvent state event journal ∧ CatalogFrame state next :=
+  step_iff sessionEvent_catalog_frame
 theorem mergePredicate_catalog_frame {state kind through replacement extra next : Term} {journal rest : List Term}
     (call : mergePredicate state kind through replacement extra journal = .ok (next, rest)) : CatalogFrame state next := by
   unfold mergePredicate at call

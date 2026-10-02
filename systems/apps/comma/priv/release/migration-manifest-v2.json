@@ -4693,6 +4693,29 @@
       ]
     },
     {
+      "id": "comma-20260930100000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20260930100000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20260930100000_add_apple_login_and_watch_sessions.exs",
+      "checksum": "sha256:ffa3bf5922eae716545362ed5dc180cc946c8b6b8bd50aedc3a67d1b07ec43e0",
+      "postconditions": [
+        "comma_core.migration-ledger/20260930100000=apple-login-and-watch-session-schema-ready"
+      ],
+      "repair": "transaction_rollback_then_exact_retry; after_commit_forward_repair_preserving_apple_login_identities_and_paired_watch_sessions"
+    },
+    {
+      "id": "comma-20260930110000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20260930110000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20260930110000_add_auth_session_notification_targets.exs",
+      "checksum": "sha256:c0eda421042a6783fee9526b88d7166f55b6137497ae6ddabbcdae0a48d08542",
+      "postconditions": [
+        "comma_core.migration-ledger/20260930110000=auth-session-notification-target-schema-ready"
+      ]
+    },
+    {
       "id": "billing-20260930132400",
       "owner": "billing_core",
       "store": "postgres",
@@ -4702,6 +4725,166 @@
       "postconditions": [
         "billing_core.migration-ledger/20260930132400=applied-and-schema-ready"
       ]
+    },
+    {
+      "id": "comma-20261001000000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001000000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261001000000_add_comma_guest_mode.exs",
+      "checksum": "sha256:05b31bfdc89ae5156db50f9773fe97f19f72d62364b3d6524bf83e52c3d54247",
+      "postconditions": [
+        "postgres.comma_users.kind=registered-default-with-guest-placeholder-domain-check-and-unique-guest-pow-id",
+        "postgres.comma_workspaces.kind=standard-default-with-guest-router-only-check",
+        "postgres.comma_workspaces.salix_tenant_id=unique-for-standard-workspaces",
+        "postgres.comma_guest_policy=disabled-singleton-without-guest-tenant-and-12-bit-pow",
+        "postgres.comma_auth_sessions.source_method_valid=guest-login-allowed",
+        "postgres.comma_admin_audit_events.action_valid=guest-policy-actions-allowed-with-existing-history-preserved"
+      ],
+      "repair": "transaction_rollback_then_exact_retry; after_commit_forward_repair_preserving_accounts_and_audit_history"
+    },
+    {
+      "id": "comma-20261001000001",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001000001,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261001000001_raise_user_avatar_byte_limit.exs",
+      "checksum": "sha256:2da3676cb50e83450062c1ca9016379a2329d437c9ff2dd246656e90b2572d2f",
+      "postconditions": [
+        "postgres.comma_user_avatars.byte_size_valid=positive-and-at-most-2097152"
+      ]
+    },
+    {
+      "id": "comma-20261001000002",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001000002,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261001000002_add_comma_auth_session_active_at.exs",
+      "checksum": "sha256:e60a4b2f35271786928bde54f05f4e3f28cc02278955b142666d55dac393321d",
+      "postconditions": [
+        "postgres.comma_auth_sessions.active_at=nullable-utc-datetime-usec"
+      ]
+    },
+    {
+      "id": "comma-20261001090000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001090000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261001090000_add_notification_target_app_identity.exs",
+      "checksum": "sha256:55802bc2d4014ed1cb080082445d22dadf062ee7304f3e69781e0c2bdc4a387a",
+      "postconditions": [
+        "comma_core.migration-ledger/20261001090000=notification-target-app-identity-and-locale-ready"
+      ]
+    },
+    {
+      "id": "comma-20261001100000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001100000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261001100000_restore_apple_and_watch_session_methods.exs",
+      "checksum": "sha256:ec5b291eb8e698d57734abb39d645ec9eee0ac8dc6fa64aa88d7ae9e88f63520",
+      "postconditions": [
+        "postgres.comma_auth_sessions.source_method_valid=apple-watch-and-guest-login-union-with-existing-restricted-source-clauses-new-writes-enforced"
+      ],
+      "repair": "transaction_rollback_then_exact_retry; after_commit_forward_repair_preserving_login_identities_and_sessions"
+    },
+    {
+      "id": "comma-20261001190000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001190000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261001190000_add_user_locale.exs",
+      "checksum": "sha256:7b2c19f99d39a271a43ee1e35b92922a7b6cbed4a6eaac30fa7d5ef9eb74232d",
+      "postconditions": [
+        "comma_core.migration-ledger/20261001190000=user-locale-ready"
+      ]
+    },
+    {
+      "id": "comma-20261001190001",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261001190001,
+      "source": "systems/apps/comma_core/priv/release_migrations/20261001190001_drop_recommendation_profile_locale.exs",
+      "checksum": "sha256:b3624ac4a161ec432744dd94eb123f29eba56cf9a3185c2e1e746a4b5e5b2e3e",
+      "phase": "contract",
+      "compatibility": {
+        "oldRuntimeRead": false,
+        "oldRuntimeWrite": false
+      },
+      "safety": {
+        "destructive": true,
+        "backupRequired": true
+      },
+      "postconditions": [
+        "comma_core.column/comma_recommendation_profiles.locale=absent"
+      ]
+    },
+    {
+      "id": "salix-20261001000100",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261001000100,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261001000100_add_agent_vmm_recovery_authority.exs",
+      "checksum": "sha256:ef993070b3d68fb7ab0ffc22f978b56351d0b107099804209a4b730fa96982a2",
+      "postconditions": [
+        "salix_store.column/agent_vmm_install_operations.authorizing_subject_id=nullable-text",
+        "salix_store.column/agent_vmm_install_operations.authorizing_audience=nullable-text",
+        "salix_store.column/agent_vmm_install_operations.recovery_challenge=nullable-jsonb",
+        "salix_store.table/agent_vmm_install_operations=existing-rows-preserved"
+      ]
+    },
+    {
+      "id": "salix-20261001000200",
+      "owner": "salix_store",
+      "store": "postgres",
+      "version": 20261001000200,
+      "source": "systems/apps/salix_store/priv/repo/migrations/20261001000200_contract_agent_vmm_active_registration_uniqueness.exs",
+      "checksum": "sha256:8975c9385cd5f310df987baffd774e36606e4bc46029d101cc1e04293da70009",
+      "phase": "contract",
+      "execution": {
+        "transactional": false,
+        "idempotent": true
+      },
+      "repair": "inspect_active_uniqueness_then_retry_exact_contract_without_restoring_full_fence",
+      "postconditions": [
+        "postgres.index/agent_vmm_registrations_active_scope_device_index=unique-valid-ready-and-non-revoked",
+        "postgres.index/agent_vmm_registrations_tenant_id_group_id_device_id_index=absent",
+        "postgres.table/agent_vmm_registrations=existing-rows-preserved"
+      ]
+    },
+    {
+      "id": "comma-20261002000000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261002000000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261002000000_allow_android_session_client_kind.exs",
+      "checksum": "sha256:b8efd68b9682cdb0a3eb11efd0dde111fb88e15081a3d1587481b9396a4b1251",
+      "postconditions": [
+        "postgres.comma_auth_sessions=android-client-kind-allowed"
+      ]
+    },
+    {
+      "id": "comma-20261002100000",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261002100000,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261002100000_add_notification_target_delivery_lease.exs",
+      "checksum": "sha256:1dc71712785f69be3d31989cbe73efb2d448e49149806e558a1d63e761067270",
+      "postconditions": [
+        "comma_core.migration-ledger/20261002100000=notification-target-delivery-lease-ready"
+      ]
+    },
+    {
+      "id": "comma-20261002100001",
+      "owner": "comma_core",
+      "store": "postgres",
+      "version": 20261002100001,
+      "source": "systems/apps/comma_core/priv/repo/migrations/20261002100001_allow_apple_session_client_kinds.exs",
+      "checksum": "sha256:9fb39afec41c854b705dacc0ffbe1df796aa2b409bbb9bfe6f1eb2d074874c1c",
+      "postconditions": [
+        "postgres.comma_auth_sessions.client_kind_valid=android-ios-and-watch-union-new-writes-enforced"
+      ],
+      "repair": "transaction_rollback_then_exact_retry; after_commit_forward_repair_preserving_sessions"
     }
   ],
   "orderingConstraints": [
@@ -4792,6 +4975,30 @@
     {
       "before": "bridge-20260826000001",
       "after": "bridge-20260827000002"
+    },
+    {
+      "before": "salix-20260824000005",
+      "after": "salix-20261001000200"
+    },
+    {
+      "before": "comma-20260930100000",
+      "after": "comma-20261001100000"
+    },
+    {
+      "before": "comma-20261001000000",
+      "after": "comma-20261001100000"
+    },
+    {
+      "before": "comma-20261001090000",
+      "after": "comma-20261001100000"
+    },
+    {
+      "before": "comma-20260930100000",
+      "after": "comma-20261002100001"
+    },
+    {
+      "before": "comma-20261002000000",
+      "after": "comma-20261002100001"
     }
   ]
 }

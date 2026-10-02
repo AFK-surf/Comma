@@ -17,6 +17,7 @@ defmodule Salix.Bindings.AgentManagement do
       {:ok, binding} -> {:ok, binding}
       {:error, :target_not_found} -> {:error, :target_not_found}
       {:error, :target_discovery_required} -> {:error, :target_discovery_required}
+      {:error, %{"error_class" => "billing_unavailable"}} = error -> error
       {:error, {:bad_request, _}} -> {:error, :target_not_found}
       _ -> {:error, :target_unavailable}
     end

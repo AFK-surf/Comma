@@ -851,6 +851,71 @@ defmodule CommaWeb.PluginConnectionsTest do
     assert Enum.find(unavailable, &(&1["toolkit"] == "slack"))["connectionId"] == "ca_old"
   end
 
+  test "the backfill confirms a legacy Composio account only when it is the only one" do
+    {:ok, user} =
+      Comma.Accounts.create_user(%{
+        "email" => "legacy-backfill-#{System.unique_integer([:positive])}@comma.test"
+      })
+
+    workspace = create_composio_workspace!(user)
+    assert {:ok, _} = Comma.Plugins.install(user, %{}, workspace["id"], composio_plugin_id())
+
+    account = fn id ->
+      %{
+        "id" => id,
+        "user_id" => workspace["default_group_id"],
+        "toolkit" => %{"slug" => "slack"},
+        "status" => "ACTIVE",
+        "created_at" => "2026-09-01T00:00:00Z"
+      }
+    end
+
+    Application.put_env(:comma_web, :plugin_connection_accounts, [account.("ca_only")])
+    assert {:ok, _} = Comma.Recommendations.get(user, %{}, workspace["id"])
+    assert {:ok, profile} = Comma.Recommendations.get_runtime_profile(workspace["id"], user["id"])
+
+    assert {:ok, _} =
+             Comma.Recommendations.reconcile_discovered_sources(profile.id, [
+               %{
+                 "appId" => "slack",
+                 "appName" => "Slack",
+                 "connectionId" => "ca_only",
+                 "kind" => "composio",
+                 "label" => "Slack",
+                 "toolkit" => "slack"
+               }
+             ])
+
+    # The default run lists the account without reading or writing anything.
+    assert {:ok, %{"candidates" => [%{"kind" => "composio", "connection_id" => "ca_only"}]}} =
+             CommaWeb.MemberIdentityBackfill.run()
+
+    refute_received {:identity_checked, _}
+    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") == nil
+
+    # Writing reads the provider's own identity first, as a confirmation does.
+    assert {:ok, %{"stamped" => 1, "failed" => 0}} =
+             CommaWeb.MemberIdentityBackfill.run(dry_run: false)
+
+    assert_received {:identity_checked, "ca_only"}
+
+    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") ==
+             "ca_only"
+
+    assert {:ok, %{"candidates" => []}} = CommaWeb.MemberIdentityBackfill.run(dry_run: false)
+
+    # With two accounts the system cannot know which is the owner's.
+    Comma.Repo.delete_all(Comma.Data.MemberSourceConsent)
+
+    Application.put_env(:comma_web, :plugin_connection_accounts, [
+      account.("ca_only"),
+      account.("ca_other")
+    ])
+
+    assert {:ok, %{"candidates" => []}} = CommaWeb.MemberIdentityBackfill.run(dry_run: false)
+    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") == nil
+  end
+
   test "confirming an already listed account refreshes Routine once" do
     {:ok, user} =
       Comma.Accounts.create_user(%{

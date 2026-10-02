@@ -45,6 +45,9 @@ defmodule SalixStore.AgentVMMInstallations do
       field(:ticket_expires_at, :utc_datetime_usec)
       field(:ticket_consumed_at, :utc_datetime_usec)
       field(:host_identity_digest, :binary)
+      field(:authorizing_subject_id, :string)
+      field(:authorizing_audience, :string)
+      field(:recovery_challenge, :map)
       field(:material_ciphertext, :string)
       field(:material_handoff_expires_at, :utc_datetime_usec)
       field(:material_handed_off_at, :utc_datetime_usec)
@@ -66,18 +69,50 @@ defmodule SalixStore.AgentVMMInstallations do
     observe_mutation(telemetry_surface(Map.get(attrs, :surface)), fn ->
       now = Keyword.get(opts, :now, DateTime.utc_now())
 
-      with :ok <- validate_request(attrs) do
-        Repo.transaction(fn ->
-          lock_idempotency!(attrs.surface, attrs.scope_key, attrs.client_request_id)
+      Repo.transaction(fn ->
+        lock_idempotency!(attrs.surface, attrs.scope_key, attrs.client_request_id)
 
-          case operation_by_request(attrs.surface, attrs.scope_key, attrs.client_request_id) do
-            nil -> create_operation!(attrs, now)
-            %Operation{} = operation -> rotate_for_request!(operation, attrs, now)
-          end
-        end)
-        |> normalize_transaction()
-      end
+        case Keyword.get(opts, :authorize) do
+          nil -> :ok
+          authorize -> if authorize.() != :ok, do: Repo.rollback(:authorization_changed)
+        end
+
+        existing = operation_by_request(attrs.surface, attrs.scope_key, attrs.client_request_id)
+        attrs = request_environment!(attrs, existing, opts)
+
+        case validate_request(attrs) do
+          :ok -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+        case existing do
+          nil -> create_operation!(attrs, now)
+          %Operation{} = operation -> rotate_for_request!(operation, attrs, now)
+        end
+      end)
+      |> normalize_transaction()
     end)
+  end
+
+  # Product environment creation shares the request's existing idempotency lock.
+  # Lost responses and simultaneous retries reuse the original environment.
+  defp request_environment!(attrs, existing, opts) do
+    case Keyword.get(opts, :create_environment) do
+      create when is_function(create, 0) ->
+        case existing do
+          %Operation{} ->
+            Map.put(attrs, :environment_id, existing.environment_id)
+
+          nil ->
+            case create.() do
+              {:ok, %Compute.Environment{id: id}} -> Map.put(attrs, :environment_id, id)
+              {:error, reason} -> Repo.rollback(reason)
+            end
+        end
+
+      nil ->
+        attrs
+    end
   end
 
   @doc "Return a secret-free operation projection."
@@ -91,6 +126,242 @@ defmodule SalixStore.AgentVMMInstallations do
     _ -> {:error, :unavailable}
   end
 
+  @doc "Read the original subject's unexchanged request without rotating its ticket or delivery target."
+  def get_by_request(surface, scope_key, client_request_id, authority, opts)
+      when is_binary(client_request_id) and byte_size(client_request_id) in 1..160 do
+    Repo.transaction(fn ->
+      case operation_by_request(surface, scope_key, client_request_id) do
+        nil ->
+          Repo.rollback(:not_found)
+
+        found ->
+          operation = lock_operation!(found.id)
+          require_recovery_authority!(operation, authority, opts)
+
+          unless is_nil(operation.host_identity_digest) and is_nil(operation.ticket_consumed_at),
+            do: Repo.rollback(:operation_not_abandonable)
+
+          project(operation)
+      end
+    end)
+    |> normalize_transaction()
+  end
+
+  def get_by_request(_surface, _scope_key, _client_request_id, _authority, _opts),
+    do: {:error, :invalid_recovery_confirmation}
+
+  @doc "Match one bounded page of exact local registration IDs to Comma recovery operations."
+  def recovery_candidates(registration_ids, authority, opts) when is_list(registration_ids) do
+    if length(registration_ids) > 32 or
+         not Enum.all?(registration_ids, &(is_binary(&1) and byte_size(&1) in 1..200)) do
+      {:error, :invalid_recovery_candidates}
+    else
+      ids =
+        Repo.all(
+          from(o in Operation,
+            where:
+              o.registration_id in ^registration_ids and o.surface == "comma" and
+                o.tenant_id == ^authority.tenant_id and o.group_id == ^authority.group_id and
+                o.scope_key == ^authority.scope_key and
+                (o.authorizing_subject_id == ^authority.subject or
+                   is_nil(o.authorizing_subject_id)),
+            order_by: o.id,
+            limit: 32,
+            select: o.id
+          )
+        )
+
+      candidates =
+        Enum.flat_map(ids, fn id ->
+          case recovery_challenge(id, authority, opts) do
+            {:ok, candidate} -> [candidate]
+            {:error, _} -> []
+          end
+        end)
+
+      {:ok, candidates}
+    end
+  end
+
+  def recovery_candidates(_, _, _), do: {:error, :invalid_recovery_candidates}
+
+  @doc "Issue one dedicated challenge under the original installation authority."
+  def recovery_challenge(operation_id, authority, opts \\ []) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    Repo.transaction(fn ->
+      operation = lock_operation!(operation_id)
+      require_recovery_authority!(operation, authority, opts)
+      require_recoverable_registration!(operation)
+      subject = recovery_subject!(operation, opts)
+
+      challenge = %{
+        "purpose" => SalixStore.AgentVMMRecovery.purpose(),
+        "audience" => authority.audience,
+        "subject" => subject,
+        "session_id" => authority.session_id,
+        "tenant_id" => operation.tenant_id,
+        "group_id" => operation.group_id,
+        "scope_key" => operation.scope_key,
+        "environment_id" => operation.environment_id,
+        "operation_id" => operation.id,
+        "registration_id" => operation.registration_id,
+        "nonce" => Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false),
+        # The database trigger advances revision when it stores the challenge.
+        "revision" => operation.revision + 1,
+        "expires_at" => DateTime.to_unix(now) + SalixStore.AgentVMMRecovery.ttl()
+      }
+
+      saved =
+        update_operation!(operation.id,
+          authorizing_subject_id: subject,
+          authorizing_audience: authority.audience,
+          recovery_challenge: challenge,
+          updated_at: now
+        )
+
+      if saved.revision != challenge["revision"], do: Repo.rollback(:revision_conflict)
+
+      %{
+        operation_id: operation.id,
+        registration_id: operation.registration_id,
+        challenge: challenge
+      }
+    end)
+    |> normalize_transaction()
+  end
+
+  @doc "Verify machine possession; consume once only when explicitly recovering management."
+  def recover(operation_id, authority, proof, consume, opts \\ [])
+
+  def recover(operation_id, authority, proof, consume, opts)
+      when is_boolean(consume) and is_map(proof) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    Repo.transaction(fn ->
+      operation = lock_operation!(operation_id)
+      require_recovery_authority!(operation, authority, opts)
+      registration = require_recoverable_registration!(operation)
+      challenge = operation.recovery_challenge
+
+      unless is_map(challenge) and challenge["session_id"] == authority.session_id and
+               challenge["revision"] == operation.revision and
+               challenge["nonce"] == proof["nonce"] and
+               challenge["expires_at"] > DateTime.to_unix(now) do
+        Repo.rollback(:invalid_recovery_challenge)
+      end
+
+      with {:ok, identity} <- normalize_recovery_identity(proof),
+           true <- identity_digest(identity) == operation.host_identity_digest,
+           true <- identity.device_id == registration.device_id,
+           {:ok, wire} <- SalixStore.AgentVMMRecovery.wire(challenge),
+           {:ok, signature} <- decode_recovery_binary(proof["signature"]),
+           true <- SalixStore.P256Signature.verify(wire, signature, identity.root_public_key) do
+        if consume do
+          update_operation!(operation.id,
+            delivery_target_type: "comma_main_device",
+            delivery_target_id: authority.session_id,
+            recovery_challenge: nil,
+            updated_at: now
+          )
+          |> project()
+        else
+          project(operation)
+        end
+      else
+        _ -> Repo.rollback(:invalid_recovery_proof)
+      end
+    end)
+    |> normalize_transaction()
+  end
+
+  def recover(_, _, _, _, _), do: {:error, :invalid_recovery_proof}
+
+  @doc "Close only an unexchanged original request after the original subject explicitly abandons it."
+  def abandon_unexchanged(operation_id, authority, opts \\ []) do
+    Repo.transaction(fn ->
+      operation = lock_operation!(operation_id)
+      require_recovery_authority!(operation, authority, opts)
+
+      unless is_nil(operation.host_identity_digest) and is_nil(operation.ticket_consumed_at) and
+               operation.authorization_status in ["requested", "action_required", "revoked"] do
+        Repo.rollback(:operation_not_abandonable)
+      end
+
+      update_operation!(operation.id,
+        authorization_status: "revoked",
+        ticket_status: "revoked",
+        recovery_challenge: nil,
+        updated_at: Keyword.get(opts, :now, DateTime.utc_now())
+      )
+      |> project()
+    end)
+    |> normalize_transaction()
+  end
+
+  defp recovery_subject!(operation, opts) do
+    case operation.authorizing_subject_id do
+      subject when is_binary(subject) ->
+        subject
+
+      nil ->
+        resolver = Keyword.fetch!(opts, :original_subject)
+
+        case resolver.(operation.delivery_target_type, operation.delivery_target_id) do
+          {:ok, subject} when is_binary(subject) -> subject
+          _ -> Repo.rollback(:original_subject_unknown)
+        end
+    end
+  end
+
+  defp require_recovery_authority!(operation, authority, opts) do
+    unless operation.surface == "comma" and operation.delivery_target_type == "comma_main_device" and
+             operation.tenant_id == authority.tenant_id and
+             operation.group_id == authority.group_id and
+             operation.scope_key == authority.scope_key and
+             recovery_subject!(operation, opts) == authority.subject and
+             (is_nil(operation.authorizing_audience) or
+                operation.authorizing_audience == authority.audience) do
+      Repo.rollback(:not_found)
+    end
+
+    case Keyword.fetch!(opts, :authorize).() do
+      :ok -> :ok
+      {:error, _} -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp require_recoverable_registration!(operation) do
+    registration = Repo.get(AgentVMM.Registration, operation.registration_id)
+
+    unless operation.authorization_status == "handed_off" and
+             is_binary(operation.host_identity_digest) and
+             not is_nil(registration) and registration.status != "revoked" and
+             registration.tenant_id == operation.tenant_id and
+             registration.group_id == operation.group_id do
+      Repo.rollback(:recovery_target_unavailable)
+    end
+
+    registration
+  end
+
+  defp decode_recovery_binary(value) when is_binary(value) and byte_size(value) <= 684,
+    do: Base.decode64(value)
+
+  defp decode_recovery_binary(_), do: {:error, :invalid_recovery_proof}
+
+  defp normalize_recovery_identity(proof) do
+    with {:ok, key} <- decode_recovery_binary(proof["root_public_key"]) do
+      normalize_host_identity(%{
+        device_id: proof["device_id"],
+        root_public_key: key,
+        root_key_revision: proof["root_key_revision"]
+      })
+    else
+      _ -> {:error, :invalid_host_identity}
+    end
+  end
+
   @doc "Rotate one requested ticket or reopen the same pre-handoff ticket-budget exhaustion."
   @spec retry(String.t(), keyword()) :: {:ok, descriptor()} | {:error, atom() | tuple()}
   def retry(operation_id, opts \\ []) when is_binary(operation_id) do
@@ -99,6 +370,7 @@ defmodule SalixStore.AgentVMMInstallations do
 
       Repo.transaction(fn ->
         operation = lock_operation!(operation_id)
+        require_expected_authorization!(operation, opts)
 
         cond do
           operation.authorization_status == "requested" ->
@@ -366,6 +638,7 @@ defmodule SalixStore.AgentVMMInstallations do
 
       Repo.transaction(fn ->
         operation = lock_operation!(operation_id)
+        require_expected_authorization!(operation, opts)
 
         case operation.authorization_status do
           "revoked" ->
@@ -396,11 +669,12 @@ defmodule SalixStore.AgentVMMInstallations do
   end
 
   @doc "Enable or disable one exact handed-off registration without changing authorization history."
-  def configure_registration(operation_id, enabled)
+  def configure_registration(operation_id, enabled, opts \\ [])
       when is_binary(operation_id) and is_boolean(enabled) do
     observe_mutation("system", fn ->
       Repo.transaction(fn ->
         operation = lock_operation!(operation_id)
+        require_expected_authorization!(operation, opts)
 
         if operation.authorization_status != "handed_off" do
           Repo.rollback(:installation_not_handed_off)
@@ -429,6 +703,27 @@ defmodule SalixStore.AgentVMMInstallations do
               {:ok, _registration} -> project(operation)
               {:error, reason} -> Repo.rollback(reason)
             end
+        end
+      end)
+      |> normalize_transaction()
+    end)
+  end
+
+  @doc "Initialize the existing node Workload under its installation authorization fence."
+  def initialize_workload(operation_id, opts \\ []) do
+    observe_mutation("comma", fn ->
+      Repo.transaction(fn ->
+        operation = lock_operation!(operation_id)
+        require_expected_authorization!(operation, opts)
+        if product_status(operation) != "ready", do: Repo.rollback(:compute_node_not_ready)
+
+        case Compute.ensure_node_workload(
+               operation.tenant_id,
+               operation.environment_id,
+               operation.registration_id
+             ) do
+          {:ok, _workload} -> project(operation)
+          {:error, reason} -> Repo.rollback(reason)
         end
       end)
       |> normalize_transaction()
@@ -490,6 +785,8 @@ defmodule SalixStore.AgentVMMInstallations do
           environment_id: attrs.environment_id,
           delivery_target_type: attrs.delivery_target_type,
           delivery_target_id: attrs.delivery_target_id,
+          authorizing_subject_id: Map.get(attrs, :authorizing_subject_id),
+          authorizing_audience: Map.get(attrs, :authorizing_audience),
           registration_id: new_id("vmm_registration"),
           authorization_status: "requested",
           ticket_generation: 1,
@@ -953,6 +1250,13 @@ defmodule SalixStore.AgentVMMInstallations do
       match?(%AgentVMM.Registration{desired_enabled: false}, registration) ->
         "stopped"
 
+      (binding && not is_nil((binding.observation || %{})["connection_epoch"])) and
+          not match?(
+            {:ok, _},
+            ComputeContract.connection_epoch(binding.observation["connection_epoch"])
+          ) ->
+        "action_required"
+
       match?(%AgentVMM.Registration{status: "ready", desired_enabled: true}, registration) and
         match?(%Compute.ProviderBinding{status: "available"}, binding) and
           current_binding_observation?(binding) ->
@@ -969,7 +1273,7 @@ defmodule SalixStore.AgentVMMInstallations do
     observation = binding.observation
 
     is_binary(observation["gateway_instance_id"]) and
-      is_binary(observation["connection_epoch"]) and
+      match?({:ok, _}, ComputeContract.connection_epoch(observation["connection_epoch"])) and
       ComputeContract.ready?(%{
         readable: true,
         desired: "present",
@@ -990,6 +1294,39 @@ defmodule SalixStore.AgentVMMInstallations do
             o.client_request_id == ^client_request_id
       )
     )
+  end
+
+  defp require_expected_authorization!(operation, opts) do
+    case Keyword.get(opts, :authorize) do
+      nil ->
+        :ok
+
+      authorize ->
+        case authorize.() do
+          :ok -> :ok
+          _ -> Repo.rollback(:authorization_changed)
+        end
+    end
+
+    case Keyword.get(opts, :expected_authorization) do
+      nil ->
+        :ok
+
+      expected when is_map(expected) ->
+        fields = [
+          :revision,
+          :tenant_id,
+          :group_id,
+          :surface,
+          :scope_key,
+          :delivery_target_type,
+          :delivery_target_id
+        ]
+
+        if Enum.any?(fields, &(Map.fetch!(expected, &1) != Map.fetch!(operation, &1))) do
+          Repo.rollback(:authorization_changed)
+        end
+    end
   end
 
   defp lock_operation!(operation_id) do

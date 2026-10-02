@@ -5,9 +5,11 @@ import {
   type ElectronApplication,
   type Locator,
 } from "@playwright/test";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { execSync } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import {
   chatSmokeWorkspace,
   chatSmokeWorkspaceChat,
@@ -56,6 +58,7 @@ test("Electron text and link context menus use the Main-owned clipboard", async 
     additionalInboxConversations: [chatSmokeWorkspaceChat],
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-context-menu-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const app = await electron.launch({
     args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -203,6 +206,7 @@ test("Side Chat roles can copy and explicitly open assistant links", async () =>
     assistantReply: `[External docs](${externalDocsUrl})`,
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-side-chat-links-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const app = await electron.launch({
     args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -400,6 +404,7 @@ function openedExternalUrls(app: ElectronApplication) {
 test("application menu navigates Comma and reflects shortcut and sidebar state", async () => {
   const apiStub = await startChatSmokeStub();
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-application-menu-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const app = await electron.launch({
     args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -417,7 +422,11 @@ test("application menu navigates Comma and reflects shortcut and sidebar state",
     await app.evaluate(({ app: electronApp }) => electronApp.focus({ steal: true }));
     await expect
       .poll(() => nativeWindow.evaluate((window) => window.isFocused()))
-      .toBe(true);
+      .toBe(true)
+      .catch(async (error: unknown) => {
+        await describeFocus(app, userDataDir);
+        throw error;
+      });
     const item = (id: string) =>
       app.evaluate(({ Menu }, commandId) => {
         const entry = Menu.getApplicationMenu()?.getMenuItemById(commandId);
@@ -531,3 +540,58 @@ test("application menu navigates Comma and reflects shortcut and sidebar state",
     await rm(userDataDir, { recursive: true, force: true });
   }
 });
+
+// TEMPORARY CI diagnosis for a focus failure seen only on CI runners: what
+// holds focus when the main window does not get it. Remove once understood.
+function run(command: string, timeout = 5_000) {
+  try {
+    return execSync(command, { encoding: "utf8", timeout });
+  } catch (error) {
+    return String(error);
+  }
+}
+
+async function describeFocus(app: ElectronApplication, userDataDir: string) {
+  const state = await app.evaluate(({ app: electronApp, BrowserWindow }) => ({
+    focusedWindow: BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? null,
+    hidden: electronApp.isHidden(),
+    windows: BrowserWindow.getAllWindows().map((window) => ({
+      alwaysOnTop: window.isAlwaysOnTop(),
+      focused: window.isFocused(),
+      url: window.webContents.getURL(),
+      visible: window.isVisible(),
+    })),
+  }));
+  console.log(
+    `[focus-diagnosis] front app: ${run("lsappinfo info -only name `lsappinfo front`")}`
+  );
+  // Runners cannot capture the screen; the unified log says which alert the
+  // front app shows and who asked for it.
+  console.log(
+    `[focus-diagnosis] alerts:\n${run(
+      'log show --last 30m --style compact --predicate \'process == "UserNotificationCenter" OR eventMessage CONTAINS[c] "CFUserNotification"\' | tail -40',
+      60_000
+    )}`
+  );
+  console.log(
+    `[focus-diagnosis] alert text: ${run(
+      'osascript -e \'tell application "System Events" to get value of every static text of every window of process "UserNotificationCenter"\'',
+      15_000
+    )}`
+  );
+  console.log(
+    `[focus-diagnosis] Electron processes:\n${run(
+      "ps -axo pid,etime,command | grep -i '[E]lectron' | cut -c1-220"
+    )}`
+  );
+  const log = await readFile(join(userDataDir, "logs", "main.log"), "utf8").catch(
+    (error: unknown) => String(error)
+  );
+  console.log(
+    `[focus-diagnosis] ${JSON.stringify(state)}\n[focus-diagnosis] main.log tail:\n${log
+      .split("\n")
+      .filter((line) => !/^\s+at /.test(line))
+      .slice(-40)
+      .join("\n")}`
+  );
+}

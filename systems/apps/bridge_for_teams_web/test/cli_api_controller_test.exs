@@ -1065,13 +1065,13 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     approve =
       :post
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}/approve", user, %{
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/approve", user, %{
         "org_ids" => [org.id]
       })
       |> json_data()
 
-    assert approve["authorization"]["status"] == "approved"
-    assert approve["authorization"]["client_name"] == "agent laptop"
+    assert approve["request"]["status"] == "approved"
+    assert approve["request"]["client_name"] == "agent laptop"
 
     approved =
       :post
@@ -1132,7 +1132,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     approve_conn =
       :post
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}/approve", user, %{
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/approve", user, %{
         "org_ids" => [org.id, other_org.id]
       })
 
@@ -1170,12 +1170,12 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     approve =
       :post
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}/approve", user, %{
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/approve", user, %{
         "org_ids" => [other_org.id]
       })
       |> json_data()
 
-    assert approve["authorization"]["status"] == "approved"
+    assert approve["request"]["status"] == "approved"
 
     granted =
       :post
@@ -1222,10 +1222,10 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     cancel =
       :post
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}/cancel", user, %{})
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/deny", user, %{})
       |> json_data()
 
-    assert cancel["authorization"]["status"] == "cancelled"
+    assert cancel["request"]["status"] == "cancelled"
 
     poll =
       :post
@@ -1250,19 +1250,19 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     status_conn =
       :get
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}", member, %{})
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}", member, %{})
 
     assert status_conn.status == 403
 
     approve_conn =
       :post
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}/approve", member, %{})
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/approve", member, %{})
 
     assert approve_conn.status == 403
 
     cancel_conn =
       :post
-      |> dashboard_api("/dashboard/cli/device-authorizations/#{user_code}/cancel", member, %{})
+      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/deny", member, %{})
 
     assert cancel_conn.status == 403
 

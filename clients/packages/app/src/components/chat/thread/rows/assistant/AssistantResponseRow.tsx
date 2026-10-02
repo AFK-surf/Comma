@@ -4,6 +4,7 @@ import { memo, useContext, useState, type Ref } from "react";
 import type { CommaApiClient } from "../../../../../api";
 import { nativePlatformClipboard } from "../../../../../runtime-chat/nativePlatformActions";
 import { useCommaUiThemeName } from "../../../../commaUiTheme";
+import { useRouterDisplayName } from "../../../../router-identity/RouterIdentityProvider";
 import type {
   ChatAssistantDraft,
   ChatConversationRef,
@@ -66,6 +67,7 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
 }) {
   const messagesApi = useCommaMessages();
   const isDark = useCommaUiThemeName() === "Dark mode";
+  const routerName = useRouterDisplayName();
   const relationshipId = message?.messageId ?? draft?.draftId;
   // Only a newly mounted canonical row enters. Committing an existing draft,
   // and later renders of that completed row, cannot restart its entrance.
@@ -86,9 +88,7 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   const actorRole = message?.actorRole ?? defaultActorRole;
   const hideRouterIdentity = defaultActorRole === "router" && actorRole === "router";
   const actorSourceLabel =
-    actorRole === "router"
-      ? messagesApi.chat_actor_router()
-      : messagesApi.chat_actor_worker();
+    actorRole === "router" ? routerName : messagesApi.chat_actor_worker();
   const markdown = (
     <ChatMarkdownStream
       animation="reveal"
@@ -164,13 +164,17 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
         {showActions && message ? (
           <MessageCopyAction
             ariaLabel={messagesApi.chat_copy_reply()}
-            copyText={messagePartsPlainText(
-              message.parts ?? [{ kind: "markdown", text: message.text }],
-              {
-                task: messagesApi.chat_ref_task(),
-                unavailableTask: messagesApi.chat_ref_task_unavailable(),
-              }
-            )}
+            copyText={
+              message.platformSource
+                ? message.text
+                : messagePartsPlainText(
+                    message.parts ?? [{ kind: "markdown", text: message.text }],
+                    {
+                      task: messagesApi.chat_ref_task(),
+                      unavailableTask: messagesApi.chat_ref_task_unavailable(),
+                    }
+                  )
+            }
             messageId={message.messageId}
           />
         ) : null}

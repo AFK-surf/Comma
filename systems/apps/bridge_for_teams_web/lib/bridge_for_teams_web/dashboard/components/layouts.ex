@@ -12,7 +12,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
     * `@current_org_role` — the user's role in the active org, when known
     * `@orgs`          — orgs the user belongs to (for the switcher); default `[]`
     * `@active_nav`    — atom marking the active sidebar item
-                         (`:overview | :projects | :fin | :operations | :triage | :members | :plugins | :settings`)
+                         (`:overview | :projects | :fin | :operations`)
     * `@breadcrumbs`   — list of `{label, path | nil}` for the topbar; default `[]`
     * `@flash`         — the flash map (always present in LiveView)
 
@@ -40,7 +40,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
   attr(:breadcrumbs, :list, default: [])
   attr(:locale, :string, default: "en")
   attr(:onboarding, :map, default: nil)
-  attr(:suppress_onboarding_checklist, :boolean, default: false)
   attr(:oauth_reminder_alert, :map, default: nil)
   attr(:content_chrome, :atom, default: :panel)
   attr(:inner_content, :any, default: nil)
@@ -133,7 +132,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
       <.flash_group flash={@flash} />
       <OnboardingComponents.onboarding_ui :if={@onboarding} onboarding={@onboarding} />
       <OnboardingComponents.checklist_widget
-        :if={@onboarding && !@suppress_onboarding_checklist}
+        :if={@onboarding}
         onboarding={@onboarding}
       />
       <OnboardingComponents.oauth_reminder_toast
@@ -234,13 +233,12 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
             label={gettext("Agent Swarms")}
             icon="folder"
             navigate={org_projects_path(@current_org)}
-            active={@active_nav == :projects && is_nil(@project)}
             section_active={@active_nav == :projects}
             data_tour="nav-swarms"
             close_target={@close_target}
           />
             <.nav_item
-              label={gettext("Fin")}
+              label={pgettext("health signal", "Runners")}
               icon="zap"
               navigate={org_fin_path(@current_org)}
               active={@active_nav == :fin}
@@ -248,26 +246,24 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
             />
           <.nav_item
             :if={can_view_operations?(@current_org_role)}
-            label={gettext("Operations")}
+            label={gettext("Health")}
             icon="chart-bar"
             navigate={org_operations_path(@current_org)}
             active={@active_nav == :operations}
             close_target={@close_target}
           />
           <.nav_item
-            :if={triage_workbench_visible?(@current_org_role)}
+            :if={can_manage_settings?(@current_org_role)}
             label={gettext("Triage")}
             icon="inbox"
             navigate={org_triage_path(@current_org)}
-            active={@active_nav == :triage}
             close_target={@close_target}
           />
           <.nav_item
-            :if={information_flow_visible?(@current_org_role)}
-            label={gettext("Information flow")}
+            :if={can_manage_settings?(@current_org_role)}
+            label={gettext("Data policy")}
             icon="shield-check"
             navigate={org_information_flow_path(@current_org)}
-            active={@active_nav == :information_flow}
             close_target={@close_target}
           />
           <.nav_item
@@ -275,7 +271,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
             label={gettext("Meetings")}
             icon="calendar"
             navigate={org_meetings_path(@current_org)}
-            active={@active_nav == :meetings}
             close_target={@close_target}
           />
           </div>
@@ -294,7 +289,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
         :if={@current_org}
         org={@current_org}
         role={@current_org_role}
-        active_nav={@active_nav}
         close_target={@close_target}
       />
 
@@ -386,11 +380,10 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
 
         <div class="space-y-3 pb-1 pt-2">
           <.project_nav_group label={gettext("Work")}>
+            <.nav_item label={gettext("Overview")} icon="home" navigate={project_overview_path(@org, @project)} active={false} tone="project" close_target={@close_target} />
             <.nav_item label={gettext("Tasks")} icon="chat-bubble" navigate={project_tasks_path(@org, @project)} active={@active == :tasks} tone="project" close_target={@close_target} />
             <.nav_item label={gettext("Agents")} icon="users" navigate={project_agents_path(@org, @project)} active={@active == :agents} tone="project" close_target={@close_target} />
-            <.nav_item label={gettext("Schedules")} icon="calendar" navigate={project_schedules_path(@org, @project)} active={@active == :schedules} tone="project" close_target={@close_target} />
             <.nav_item label={gettext("Devices")} icon="bolt" navigate={project_devices_path(@org, @project)} active={@active == :environments} tone="project" close_target={@close_target} />
-            <.nav_item label={gettext("Websites")} icon="globe" navigate={project_websites_path(@org, @project)} active={@active == :websites} tone="project" close_target={@close_target} />
           </.project_nav_group>
 
           <.project_nav_group label={gettext("Configure")}>
@@ -420,12 +413,11 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
 
   attr(:org, :any, required: true)
   attr(:role, :string, default: nil)
-  attr(:active_nav, :atom, default: nil)
   attr(:close_target, :string, default: nil)
 
+  # Every administration page is a React page, so no LiveView marks an item
+  # active here; the group keeps the open state the user chose.
   defp administration_navigation(assigns) do
-    assigns = assign(assigns, :active, assigns.active_nav in [:members, :plugins, :settings])
-
     ~H"""
     <nav
       class="border-t border-neutral-200/80 px-2 py-2"
@@ -433,34 +425,23 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
     >
       <details
         id={"administration-navigation-#{@org.id}"}
-        open={@active}
         phx-hook="PersistDisclosure"
         data-storage-key={"bft:sidebar:administration:#{@org.id}"}
-        data-default-open={to_string(@active)}
-        data-force-open={to_string(@active)}
         class="group"
       >
-        <summary class={[
-          "flex min-h-10 cursor-pointer list-none items-center gap-2 rounded-md px-2 text-[13px] marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 lg:min-h-8",
-          @active && "bg-neutral-200/80 font-medium text-neutral-900",
-          !@active && "text-neutral-600 hover:bg-neutral-200/50 hover:text-neutral-900"
-        ]}>
+        <summary class="flex min-h-10 cursor-pointer list-none items-center gap-2 rounded-md px-2 text-[13px] text-neutral-600 marker:hidden hover:bg-neutral-200/50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 lg:min-h-8">
           <.icon name="cog" variant="outlined" class="h-4 w-4 text-neutral-500" />
           <span class="min-w-0 flex-1 truncate">{gettext("Administration")}</span>
           <.icon name="chevron-down" variant="outlined" class="h-4 w-4 text-neutral-400 transition-transform group-open:rotate-180" />
         </summary>
         <div class="space-y-px pb-1 pl-2 pt-1">
-          <.nav_item label={gettext("Members")} icon="users" navigate={org_members_path(@org)} active={@active_nav == :members} close_target={@close_target} />
-          <.nav_item label={gettext("Organization plugins")} icon="plug" navigate={org_plugins_path(@org)} active={@active_nav == :plugins} close_target={@close_target} />
-          <.nav_item
-            :if={can_manage_settings?(@role)}
-            label={gettext("Settings")}
-            icon="cog"
-            navigate={org_settings_path(@org)}
-            active={@active_nav == :settings}
-            data_tour="nav-settings"
-            close_target={@close_target}
-          />
+          <.nav_item label={gettext("Members")} icon="users" navigate={org_members_path(@org)} close_target={@close_target} />
+          <.nav_item label={gettext("Organization plugins")} icon="plug" navigate={org_plugins_path(@org)} close_target={@close_target} />
+          <%!-- Settings pages are the React dashboard; LiveView loads them in full. --%>
+          <.nav_item :if={can_manage_settings?(@role)} label={gettext("General")} icon="cog" navigate={org_settings_path(@org)} close_target={@close_target} />
+          <.nav_item :if={can_manage_settings?(@role)} label={gettext("AI models")} icon="sparkles" navigate={org_settings_path(@org, "models")} close_target={@close_target} />
+          <.nav_item :if={can_manage_settings?(@role)} label={gettext("Single sign-on")} icon="user" navigate={org_settings_path(@org, "sso")} close_target={@close_target} />
+          <.nav_item :if={can_manage_settings?(@role)} label={gettext("Integrations")} icon="cube" navigate={org_settings_path(@org, "integrations")} data_tour="nav-settings" close_target={@close_target} />
         </div>
       </details>
     </nav>
@@ -498,13 +479,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
           <.org_avatar org={org} size="xs" />
           <span class="min-w-0 flex-1 truncate">{org.name}</span>
           <.icon :if={@current_org && org.id == @current_org.id} name="check" variant="outlined" class="h-4 w-4 text-brand-600" />
-        </.link>
-        <.link
-          navigate={orgs_path()}
-          phx-click={close_navigation(JS.remove_attribute("open", to: "#org-switcher"), @close_target)}
-          class="block min-h-10 border-t border-neutral-100 px-3 py-2 text-sm text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500 lg:min-h-8 lg:py-1.5"
-        >
-          {gettext("View all organizations")}
         </.link>
       </div>
     </details>
@@ -607,26 +581,23 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
         >
           <.navigation_search_item :if={@current_org} label={gettext("Overview")} scope={gettext("Workspace")} icon="home" navigate={org_show_path(@current_org)} />
           <.navigation_search_item :if={@current_org} label={gettext("Agent Swarms")} scope={gettext("Workspace")} icon="folder" navigate={org_projects_path(@current_org)} />
-          <.navigation_search_item :if={@current_org} label={gettext("Fin")} scope={gettext("Workspace")} icon="zap" navigate={org_fin_path(@current_org)} />
-          <.navigation_search_item :if={@current_org && can_view_operations?(@current_org_role)} label={gettext("Operations")} scope={gettext("Workspace")} icon="chart-bar" navigate={org_operations_path(@current_org)} />
-          <.navigation_search_item :if={@current_org && triage_workbench_visible?(@current_org_role)} label={gettext("Triage")} scope={gettext("Workspace")} icon="inbox" navigate={org_triage_path(@current_org)} />
+          <.navigation_search_item :if={@current_org} label={pgettext("health signal", "Runners")} scope={gettext("Workspace")} icon="zap" navigate={org_fin_path(@current_org)} />
+          <.navigation_search_item :if={@current_org && can_view_operations?(@current_org_role)} label={gettext("Health")} scope={gettext("Workspace")} icon="chart-bar" navigate={org_operations_path(@current_org)} />
+          <.navigation_search_item :if={@current_org && can_manage_settings?(@current_org_role)} label={gettext("Triage")} scope={gettext("Workspace")} icon="inbox" navigate={org_triage_path(@current_org)} />
           <.navigation_search_item :if={@current_org && can_manage_settings?(@current_org_role)} label={gettext("Meetings")} scope={gettext("Workspace")} icon="calendar" navigate={org_meetings_path(@current_org)} />
 
           <.navigation_search_item :if={@project && @current_org} label={gettext("Agents")} scope={@project.name} icon="users" navigate={project_agents_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Tasks")} scope={@project.name} icon="chat-bubble" navigate={project_tasks_path(@current_org, @project)} />
-          <.navigation_search_item :if={@project && @current_org} label={gettext("Schedules")} scope={@project.name} icon="calendar" navigate={project_schedules_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Plugins")} scope={@project.name} icon="plug" navigate={project_plugins_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Skills")} scope={@project.name} icon="sparkles" navigate={project_skills_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Integrations")} scope={@project.name} icon="cube" navigate={project_integrations_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Connections")} scope={@project.name} icon="attachment" navigate={project_connections_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Devices")} scope={@project.name} icon="bolt" navigate={project_devices_path(@current_org, @project)} />
-          <.navigation_search_item :if={@project && @current_org} label={gettext("Websites")} scope={@project.name} icon="globe" navigate={project_websites_path(@current_org, @project)} />
           <.navigation_search_item :if={@project && @current_org} label={gettext("Settings")} scope={@project.name} icon="cog" navigate={project_settings_path(@current_org, @project)} />
 
           <.navigation_search_item :if={@current_org} label={gettext("Members")} scope={gettext("Administration")} icon="users" navigate={org_members_path(@current_org)} />
           <.navigation_search_item :if={@current_org} label={gettext("Organization plugins")} scope={gettext("Administration")} icon="plug" navigate={org_plugins_path(@current_org)} />
           <.navigation_search_item :if={@current_org && can_manage_settings?(@current_org_role)} label={gettext("Settings")} scope={gettext("Administration")} icon="cog" navigate={org_settings_path(@current_org)} />
-          <.navigation_search_item label={gettext("View all organizations")} scope={gettext("Workspace")} icon="building-office" navigate={orgs_path()} />
 
           <p
             data-navigation-search-empty
@@ -698,9 +669,8 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
     cond do
       assigns[:active_nav] != :projects -> nil
       is_atom(tab) and not is_nil(tab) -> tab
-      Map.has_key?(assigns, :agent) -> :agents
       Map.has_key?(assigns, :conversation) -> :tasks
-      true -> :agents
+      true -> nil
     end
   end
 
@@ -729,7 +699,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
 
   # Routes (kept as plain strings so this module has no compile dep on the
   # router macro; page agents may use ~p in their own modules).
-  defp orgs_path, do: "/orgs"
   defp org_show_path(org), do: "/orgs/#{org.slug}"
   defp org_projects_path(org), do: "/orgs/#{org.slug}/projects"
   defp org_fin_path(org), do: "/orgs/#{org.slug}/fin"
@@ -740,17 +709,19 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
   defp org_information_flow_path(org), do: "/orgs/#{org.slug}/information-flow"
   defp org_members_path(org), do: "/orgs/#{org.slug}/members"
   defp org_settings_path(org), do: "/orgs/#{org.slug}/settings"
+  defp org_settings_path(org, page), do: "/orgs/#{org.slug}/settings/#{page}"
 
   defp project_path(org, project), do: "/orgs/#{org.slug}/projects/#{project.id}"
+
+  # The Agent Swarm overview is the React dashboard; LiveView falls back to a
+  # full page load for routes outside its live_session.
+  defp project_overview_path(org, project), do: "/orgs/#{org.slug}/projects/#{project.id}"
 
   defp project_agents_path(org, project),
     do: "#{project_path(org, project)}/agents"
 
   defp project_tasks_path(org, project),
     do: "#{project_path(org, project)}/tasks"
-
-  defp project_schedules_path(org, project),
-    do: "#{project_path(org, project)}/schedules"
 
   defp project_integrations_path(org, project),
     do: "#{project_path(org, project)}/integrations"
@@ -770,20 +741,9 @@ defmodule BridgeForTeamsWeb.Dashboard.Layouts do
   defp project_devices_path(org, project),
     do: "#{project_path(org, project)}/devices"
 
-  defp project_websites_path(org, project),
-    do: "#{project_path(org, project)}/websites"
-
   defp can_view_operations?(role), do: role in ["owner", "admin"]
 
-  # Triage is a normal owner/admin product surface. Source readiness, channel
-  # authority and listening state are enforced inside the Workbench and at
-  # ingress; navigation has no second deployment gate.
-  defp triage_workbench_visible?(role), do: role in ["owner", "admin"]
-
-  # Mirrors InformationFlowLive's mount guard: the page flips whether a Group
-  # refuses effects, so members never see the link.
-  defp information_flow_visible?(role), do: role in ["owner", "admin"]
-
-  # Mirrors SettingsLive's mount guard so members never see a link they can't open.
+  # Settings, Slack triage, Meetings and Data policy are owner/admin pages, so
+  # members never see a link they can't open.
   defp can_manage_settings?(role), do: role in ["owner", "admin"]
 end

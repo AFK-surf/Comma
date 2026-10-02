@@ -73,6 +73,7 @@ export type SettingsControl =
         id: string;
         label: string;
         tone?: "default" | "destructive";
+        disabled?: boolean;
         onPress: () => void;
       }[];
     }
@@ -96,7 +97,13 @@ export type SettingsControl =
       value?: string;
       placeholder: string;
       disabled?: boolean;
-      items: readonly { id: string; label: string; disabled?: boolean }[];
+      items: readonly {
+        id: string;
+        label: string;
+        disabled?: boolean;
+        /** Leads the item, and the trigger while the item is chosen. */
+        icon?: ReactNode;
+      }[];
       groups: readonly {
         id: string;
         label: string;
@@ -305,7 +312,7 @@ const Control = ({
                 key={item.id}
                 id={item.id}
                 onAction={item.onPress}
-                {...definedProps({ tone: item.tone })}
+                {...definedProps({ tone: item.tone, isDisabled: item.disabled })}
               >
                 {item.label}
               </MenuItem>
@@ -354,6 +361,19 @@ const Control = ({
       selected && "selectedLabel" in selected
         ? selected.selectedLabel
         : selected?.label;
+    // The maker's mark leads the chosen model, whoever serves it.
+    const selectedGroup = control.groups.find((group) =>
+      group.models.some((model) =>
+        "efforts" in model
+          ? model.efforts.some((effort) => effort.id === control.value)
+          : model.id === control.value
+      )
+    );
+    const selectedIcon = selectedGroup ? (
+      <ModelVendorIcon vendor={selectedGroup.vendor ?? selectedGroup.id} />
+    ) : (
+      control.items.find((item) => item.id === control.value)?.icon
+    );
     const renderChoice = (choice: ModelMenuChoice, descriptionId: string) => (
       <MenuItem
         aria-label={choice.label}
@@ -386,8 +406,11 @@ const Control = ({
           size="sm"
           {...definedProps({ disabled: control.disabled })}
         >
-          <span className="min-w-0 truncate">
-            {selectedLabel ?? control.placeholder}
+          <span className="flex min-w-0 items-center gap-sm">
+            {selectedIcon ?? null}
+            <span className="min-w-0 truncate">
+              {selectedLabel ?? control.placeholder}
+            </span>
           </span>
         </Button>
         <MenuPopover closeSubmenusOnPointerLeave placement="bottom end">
@@ -395,7 +418,7 @@ const Control = ({
             {control.items.map((item) => (
               <MenuItem
                 id={item.id}
-                {...definedProps({ isDisabled: item.disabled })}
+                {...definedProps({ isDisabled: item.disabled, icon: item.icon })}
                 key={item.id}
                 onAction={() => control.onChange(item.id)}
               >

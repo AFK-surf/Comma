@@ -1,11 +1,138 @@
 defmodule Comma.Accounts.SessionsTest do
   use Comma.DataCase, async: false
 
-  alias Comma.Accounts.{AuthSession, Sessions, User}
+  alias Comma.Accounts.{AuthSession, Repository, SessionIssuer, Sessions, SSHIdentities, User}
 
   setup do
     Comma.AuthChallengeStore.Memory.reset!()
     :ok
+  end
+
+  test "all registered login methods persist after guest schema expansion" do
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("login-methods")})
+
+    {:ok, apple} =
+      Repository.ensure_identity(user["id"], %{
+        provider: "apple",
+        issuer: "https://appleid.apple.com",
+        subject: "apple-#{System.unique_integer([:positive])}",
+        email_snapshot: user["email"],
+        email_verified: true
+      })
+
+    {:ok, ssh} = SSHIdentities.enroll(user, :crypto.strong_rand_bytes(64))
+
+    for {method, identity_id} <- [
+          {"email_otp", nil},
+          {"google", nil},
+          {"apple", apple.id},
+          {"ssh_public_key", ssh.id}
+        ] do
+      assert {:ok, issued} =
+               SessionIssuer.issue(user, auth_method: method, login_identity_id: identity_id)
+
+      stored = Repo.get!(AuthSession, issued["session_id"])
+      assert stored.auth_method == method
+      assert stored.session_source == "user_login"
+      assert stored.login_identity_id == identity_id
+      assert byte_size(stored.token_hash) == 32
+      refute stored.token_hash == issued["token"]
+      assert {:ok, _, resolved} = Comma.Accounts.validate_session(issued["token"])
+      assert resolved["id"] == stored.id
+      assert :ok = Comma.Accounts.revoke_session_token(issued["token"])
+      assert {:error, :revoked} = Comma.Accounts.validate_session(issued["token"])
+    end
+
+    assert {:error, changeset} = SessionIssuer.issue(user, auth_method: "apple")
+    assert Keyword.has_key?(changeset.errors, :login_identity_id)
+
+    assert {:ok, issued} =
+             SessionIssuer.issue(user, auth_method: "apple", login_identity_id: apple.id)
+
+    apple |> Ecto.Changeset.change(disabled_at: DateTime.utc_now()) |> Repo.update!()
+    assert {:error, :revoked} = Comma.Accounts.validate_session(issued["token"])
+  end
+
+  test "guest login persists a session for a distinct guest account" do
+    # Valid persisted guest fixture, matching GuestMode's account shape. This
+    # tests session persistence, not proof-of-work admission or Tenant setup.
+    guest =
+      %User{}
+      |> User.changeset(%{
+        id: User.new_id(),
+        email: "session-#{System.unique_integer([:positive])}@guest.comma.invalid",
+        status: "active"
+      })
+      |> Ecto.Changeset.put_change(:kind, "guest")
+      |> Ecto.Changeset.put_change(
+        :guest_pow_id,
+        "session-pow-#{System.unique_integer([:positive])}"
+      )
+      |> Repo.insert!()
+
+    assert {:ok, issued} = SessionIssuer.issue(guest, auth_method: "guest")
+    assert issued["user"]["kind"] == "guest"
+    assert Repo.get!(AuthSession, issued["session_id"]).auth_method == "guest"
+    assert {:ok, user, session} = Comma.Accounts.validate_session(issued["token"])
+    assert user["id"] == guest.id
+    assert user["kind"] == "guest"
+    assert session["session_source"] == "user_login"
+    assert :ok = Comma.Accounts.revoke_session_token(issued["token"])
+    assert {:error, :revoked} = Comma.Accounts.validate_session(issued["token"])
+  end
+
+  test "restored login methods do not broaden restricted sources or Watch parent rules" do
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("source-methods")})
+    {:ok, phone} = Comma.Accounts.create_session(user["id"])
+
+    assert {:ok, ops} =
+             Comma.Accounts.create_session(user["id"],
+               restricted: true,
+               session_source: "ops_api"
+             )
+
+    assert ops["auth_method"] == nil
+    assert {:ok, _, %{"restricted" => true}} = Comma.Accounts.validate_session(ops["token"])
+
+    assert {:ok, panel} =
+             Comma.Accounts.create_session(user["id"],
+               restricted: true,
+               session_source: "channel_task_panel",
+               auth_method: "telegram_miniapp",
+               workspace_id: "wsp_source_method",
+               group_id: "grp_source_method",
+               channel_subject: "42001",
+               channel_connect_id: "source-method-connection"
+             )
+
+    assert {:ok, _, %{"session_source" => "channel_task_panel"}} =
+             Comma.Accounts.validate_session(panel["token"])
+
+    for opts <- [
+          [auth_method: "email_otp", parent_session_id: phone["id"]],
+          [auth_method: "watch_pairing"],
+          [auth_method: "watch_pairing", parent_session_id: phone["id"], restricted: true]
+        ] do
+      assert {:error, changeset} = Comma.Accounts.create_session(user["id"], opts)
+      assert Keyword.has_key?(changeset.errors, :parent_session_id)
+    end
+
+    # Exercise PostgreSQL enforcement too, not only the Elixir changeset.
+    for {source, method} <- [{"user_login", "telegram_miniapp"}, {"ops_api", "google"}] do
+      assert_raise Postgrex.Error, ~r/comma_auth_sessions_source_method_valid/, fn ->
+        Repo.transaction(
+          fn ->
+            insert_session_shape!(user["id"],
+              restricted: false,
+              session_source: source,
+              auth_method: method,
+              workspace_id: nil
+            )
+          end,
+          mode: :savepoint
+        )
+      end
+    end
   end
 
   test "Email OTP creates one PostgreSQL user and a hash-only revocable session" do
@@ -158,6 +285,27 @@ defmodule Comma.Accounts.SessionsTest do
              :gt
   end
 
+  test "the owner is present only while a desktop App reports use" do
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("present")})
+    {:ok, web} = Comma.Accounts.create_session(user["id"], client_kind: "web")
+    {:ok, desktop} = Comma.Accounts.create_session(user["id"], client_kind: "electron")
+    {:ok, _user, web} = Comma.Accounts.resolve_session(web["token"])
+    {:ok, _user, desktop} = Comma.Accounts.resolve_session(desktop["token"])
+    now = DateTime.utc_now()
+
+    refute Sessions.present?(user["id"], now: now)
+    assert {:error, :not_desktop_app} = Sessions.touch_active(web, now: now)
+    refute Sessions.present?(user["id"], now: now)
+
+    assert :ok = Sessions.touch_active(desktop, now: now)
+    assert Sessions.present?(user["id"], now: DateTime.add(now, 9 * 60))
+    refute Sessions.present?(user["id"], now: DateTime.add(now, 11 * 60))
+
+    # A signed-out App no longer keeps the owner present.
+    :ok = Comma.Accounts.revoke_session(user["id"], desktop["id"])
+    refute Sessions.present?(user["id"], now: DateTime.add(now, 60))
+  end
+
   test "ordinary ops updates cannot change the verified login email" do
     {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("fixed-email")})
 
@@ -245,7 +393,20 @@ defmodule Comma.Accounts.SessionsTest do
     )
 
     assert {:error, :revoked} = Comma.Accounts.validate_session(session["token"])
+    assert {:error, :revoked} = Sessions.authorize_current(user["id"], session["id"])
     assert is_nil(Repo.get!(AuthSession, session["id"]).revoked_at)
+  end
+
+  test "owner mutation rechecks exact current subject and revoked or expired Session" do
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("owner-check")})
+    {:ok, other} = Comma.Accounts.create_user(%{"email" => unique_email("other-owner")})
+    {:ok, session} = Comma.Accounts.create_session(user["id"])
+    assert :ok = Sessions.authorize_current(user["id"], session["id"])
+    assert {:error, :not_found} = Sessions.authorize_current(other["id"], session["id"])
+    assert :ok = Sessions.revoke(user["id"], session["id"])
+    assert {:error, :revoked} = Sessions.authorize_current(user["id"], session["id"])
+    {:ok, expired} = Comma.Accounts.create_session(user["id"], ttl_seconds: -1)
+    assert {:error, :expired} = Sessions.authorize_current(user["id"], expired["id"])
   end
 
   test "ops-issued target session is ordinary, hash-only, and has no admin capability" do

@@ -220,6 +220,7 @@ defmodule SalixAgent.ToolDisclosure do
       |> reject_disabled_memory_consultation(ctx)
       |> Enum.filter(&SalixAgent.PluginPolicy.allowed_tool?(ctx, &1["name"]))
       |> Enum.filter(&SalixAgent.RecommendationPolicy.allowed_disclosure?(ctx, &1))
+      |> Enum.filter(&SalixAgent.GuestPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.filter(&SalixAgent.InspectorPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.map(&SalixAgent.InspectorPolicy.describe(&1, ctx))
       |> reject_unconfigured_capabilities(ctx)

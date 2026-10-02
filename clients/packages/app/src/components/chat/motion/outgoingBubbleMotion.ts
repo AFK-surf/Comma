@@ -15,8 +15,14 @@ function tailedFlightClip(
   top: number,
   right: number,
   bottom: number,
-  radius: number
+  radius: number,
+  mirrored: boolean
 ) {
+  // A tail on the start side (the resting bubble flips its tail's mask) flips
+  // the whole outline about the shape's middle: the rounded rectangle and the
+  // tail keep one winding, so they still add up to one shape.
+  const x = (value: number) => (mirrored ? left + right - value : value);
+  const arcSweep = mirrored ? 0 : 1;
   let coordinate = 0;
   const tail = tailCommands
     .map((token) => {
@@ -24,11 +30,12 @@ function tailedFlightClip(
         coordinate = 0;
         return token;
       }
-      const origin = coordinate++ % 2 === 0 ? right - 24 : bottom - 8 / 3;
-      return String(origin + (Number(token) * 2) / 3);
+      return coordinate++ % 2 === 0
+        ? String(x(right - 24 + (Number(token) * 2) / 3))
+        : String(bottom - 8 / 3 + (Number(token) * 2) / 3);
     })
     .join(" ");
-  return `path("M ${left} ${top + radius} A ${radius} ${radius} 0 0 1 ${left + radius} ${top} H ${right - radius} A ${radius} ${radius} 0 0 1 ${right} ${top + radius} V ${bottom - radius} A ${radius} ${radius} 0 0 1 ${right - radius} ${bottom} H ${left + radius} A ${radius} ${radius} 0 0 1 ${left} ${bottom - radius} Z ${tail}")`;
+  return `path("M ${x(left)} ${top + radius} A ${radius} ${radius} 0 0 ${arcSweep} ${x(left + radius)} ${top} H ${x(right - radius)} A ${radius} ${radius} 0 0 ${arcSweep} ${x(right)} ${top + radius} V ${bottom - radius} A ${radius} ${radius} 0 0 ${arcSweep} ${x(right - radius)} ${bottom} H ${x(left + radius)} A ${radius} ${radius} 0 0 ${arcSweep} ${x(left)} ${bottom - radius} Z ${tail}")`;
 }
 
 const textStyleProperties = [
@@ -202,6 +209,51 @@ export function measureOutgoingBubbleSource(element: HTMLElement | null | undefi
   };
 }
 
+/**
+ * The slot's growth, played on the compositor: where `host` and the elements
+ * that keep to the slot's bottom (`data-outgoing-follow`) sit with the slot
+ * collapsed and at its full height, and a move from the first to the second
+ * on the height curve. The returned animations wait, paused, for the flight.
+ */
+function liftSlotGrowth(
+  host: HTMLElement,
+  slot: HTMLElement,
+  height: number,
+  frames: readonly { offset: number; height: number }[],
+  duration: number
+) {
+  const followers = Array.from(
+    host.querySelectorAll<HTMLElement>("[data-outgoing-follow]")
+  );
+  const tops = () =>
+    [host, ...followers].map((element) => element.getBoundingClientRect().top);
+  slot.style.height = "0px";
+  const collapsed = tops();
+  slot.style.height = `${height}px`;
+  const full = tops();
+  const hostShift = collapsed[0]! - full[0]!;
+  const animations: Animation[] = [];
+  const lift = (element: HTMLElement, shift: number) => {
+    if (Math.abs(shift) < 0.5) return;
+    const animation = element.animate(
+      frames.map(({ offset, height: progress }) => ({
+        offset,
+        translate: `0px ${shift * (1 - Math.max(0, Math.min(1, progress)))}px`,
+      })),
+      { duration, easing: "linear", fill: "both" }
+    );
+    animation.pause();
+    animation.currentTime = 0;
+    animations.push(animation);
+  };
+  lift(host, hostShift);
+  // A follower moves inside the host, so it takes what is left of its own move.
+  followers.forEach((follower, index) =>
+    lift(follower, collapsed[index + 1]! - full[index + 1]! - hostShift)
+  );
+  return animations;
+}
+
 /** One live message surface: a rounded outline morph plus a uniform bubble/text pulse. */
 export type OutgoingBubblePlaybackRate = 0.25 | 0.5 | 0.75 | 1;
 
@@ -224,7 +276,16 @@ export function animateOutgoingBubble({
   reducedMotion: boolean;
   onComplete: () => void;
 }) {
-  const hasTail = Boolean(bubble.closest('[data-bubble-tail="right"]'));
+  // A sent message keeps its end edge on the composer's. A bubble on its
+  // row's start side (the first-launch greeting speaks from the assistant's
+  // side) keeps its start edge on the source's instead: the same flight,
+  // mirrored, its tail too.
+  const startAligned = Boolean(bubble.closest('[data-outgoing-align="start"]'));
+  const tailSide = bubble
+    .closest("[data-bubble-tail]")
+    ?.getAttribute("data-bubble-tail");
+  const startTail = startAligned && tailSide === "left";
+  const hasTail = tailSide === "right" || startTail;
   const target = bubble.getBoundingClientRect();
   const viewport = slot.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
   // A preceding flight can still release its own reserve. Only a stable
@@ -257,7 +318,7 @@ export function animateOutgoingBubble({
     start.height / 2,
     start.width / 2
   );
-  const dx = start.right - target.right;
+  const dx = startAligned ? start.left - target.left : start.right - target.right;
   const dy = start.bottom - target.bottom;
   const timeline = createOutgoingBubbleTimeline(config, {
     width: target.width - start.width,
@@ -271,9 +332,11 @@ export function animateOutgoingBubble({
   );
   const materialEnd = Math.min(duration, materialStart + motionDuration.stateChange);
   let animation: Animation | undefined;
+  let materialAnimation: Animation | undefined;
   let contentAnimation: Animation | undefined;
   let chromeAnimation: Animation | undefined;
   let slotAnimation: Animation | undefined;
+  let liftAnimations: Animation[] = [];
   let turnAnimation: Animation | undefined;
   let startFrame: number | undefined;
   let frame: number | undefined;
@@ -290,9 +353,11 @@ export function animateOutgoingBubble({
     if (startFrame !== undefined) cancelAnimationFrame(startFrame);
     if (timer !== undefined) clearTimeout(timer);
     animation?.cancel();
+    materialAnimation?.cancel();
     contentAnimation?.cancel();
     chromeAnimation?.cancel();
     slotAnimation?.cancel();
+    for (const lift of liftAnimations) lift.cancel();
     turnAnimation?.cancel();
     reserve?.remove();
     source.chrome?.remove();
@@ -353,7 +418,20 @@ export function animateOutgoingBubble({
     slot.dataset.outgoingPresentationSlot = "true";
     slot.style.width = `${target.width}px`;
     slot.style.height = `${target.height}px`;
-    if (typeof slot.animate === "function") {
+    // A host that keeps its transcript's layout still while a message flies
+    // (the first-launch onboarding marks it data-outgoing-lift) lays the slot
+    // out at its full height at once. What the growing slot would push aside
+    // moves on the compositor instead, on the same height curve.
+    const liftHost = slot.closest<HTMLElement>("[data-outgoing-lift]");
+    if (liftHost && typeof liftHost.animate === "function") {
+      liftAnimations = liftSlotGrowth(
+        liftHost,
+        slot,
+        target.height,
+        timeline.frames,
+        duration
+      );
+    } else if (typeof slot.animate === "function") {
       slotAnimation = slot.animate(
         timeline.frames.map(({ offset, height }) => ({
           offset,
@@ -381,7 +459,7 @@ export function animateOutgoingBubble({
       maxWidth: "none",
       margin: "0",
       zIndex: "8",
-      transformOrigin: "right bottom",
+      transformOrigin: startAligned ? "left bottom" : "right bottom",
     });
     const previous = source.tailAnchor;
     const column = slot.closest<HTMLElement>(".comma-chat-column");
@@ -426,39 +504,33 @@ export function animateOutgoingBubble({
         { offset: 0, opacity: 0, transform: "none" },
         { offset: 1, opacity: 1, transform: "none" },
       ]
-    : [
-        ...shapeFrames.map(({ offset, width, position, height, surfaceScale }) => {
-          const paintedWidth = start.width + (target.width - start.width) * width;
-          const paintedHeight = start.height + (target.height - start.height) * height;
-          const radiusProgress = Math.max(0, Math.min(1, width, height));
-          const radius = Math.min(
-            sourceRadius + (targetRadius - sourceRadius) * radiusProgress,
-            paintedWidth / 2,
-            paintedHeight / 2
-          );
-          return {
-            offset,
-            transform: `translate3d(${dx * (1 - position)}px, ${dy * (1 - position)}px, 0) scale(${surfaceScale})`,
-            clipPath: hasTail
-              ? tailedFlightClip(
-                  target.width - paintedWidth,
-                  target.height - paintedHeight,
-                  target.width,
-                  target.height,
-                  Math.max(0, radius)
-                )
-              : `inset(${target.height - paintedHeight}px 0px 0px ${target.width - paintedWidth}px round ${Math.max(0, radius)}px)`,
-          };
-        }),
-        { offset: 0, backgroundColor: source.background ?? targetBackground },
-        {
-          offset: materialStart / duration,
-          backgroundColor: source.background ?? targetBackground,
-        },
-        { offset: materialEnd / duration, backgroundColor: targetBackground },
-        { offset: 1, backgroundColor: targetBackground },
-      ];
-  keyframes.sort((a, b) => Number(a.offset) - Number(b.offset));
+    : shapeFrames.map(({ offset, width, position, height, surfaceScale }) => {
+        const paintedWidth = start.width + (target.width - start.width) * width;
+        const paintedHeight = start.height + (target.height - start.height) * height;
+        const radiusProgress = Math.max(0, Math.min(1, width, height));
+        const radius = Math.min(
+          sourceRadius + (targetRadius - sourceRadius) * radiusProgress,
+          paintedWidth / 2,
+          paintedHeight / 2
+        );
+        // The painted shape grows from the anchored edge.
+        const left = startAligned ? 0 : target.width - paintedWidth;
+        const right = left + paintedWidth;
+        return {
+          offset,
+          transform: `translate3d(${dx * (1 - position)}px, ${dy * (1 - position)}px, 0) scale(${surfaceScale})`,
+          clipPath: hasTail
+            ? tailedFlightClip(
+                left,
+                target.height - paintedHeight,
+                right,
+                target.height,
+                Math.max(0, radius),
+                startTail
+              )
+            : `inset(${target.height - paintedHeight}px ${target.width - right}px 0px ${left}px round ${Math.max(0, radius)}px)`,
+        };
+      });
   if (typeof bubble.animate !== "function") {
     timer = window.setTimeout(() => settle(true), duration / playbackRate);
     return { cleanup: () => settle(false) };
@@ -471,6 +543,25 @@ export function animateOutgoingBubble({
   animation = bubble.animate(keyframes, timing);
   animation.pause?.();
   animation.currentTime = 0;
+  if (!reducedMotion) {
+    // The source's material becomes the bubble's on the plane behind the
+    // shape, the flight's only material: the bubble's own background stays
+    // clear, or a translucent material would show twice over its box.
+    materialAnimation = bubble.animate(
+      [
+        { offset: 0, backgroundColor: source.background ?? targetBackground },
+        {
+          offset: materialStart / duration,
+          backgroundColor: source.background ?? targetBackground,
+        },
+        { offset: materialEnd / duration, backgroundColor: targetBackground },
+        { offset: 1, backgroundColor: targetBackground },
+      ],
+      { ...timing, pseudoElement: "::before" }
+    );
+    materialAnimation.pause?.();
+    materialAnimation.currentTime = 0;
+  }
   if (!reducedMotion && typeof content.animate === "function") {
     // Use the final text layout from frame zero. The input-sized rounded clip
     // contains overflow while the whole surface travels and scales.
@@ -523,9 +614,11 @@ export function animateOutgoingBubble({
       const startTime = document.timeline?.currentTime;
       for (const active of [
         animation,
+        materialAnimation,
         contentAnimation,
         chromeAnimation,
         slotAnimation,
+        ...liftAnimations,
         turnAnimation,
       ]) {
         if (!active) continue;

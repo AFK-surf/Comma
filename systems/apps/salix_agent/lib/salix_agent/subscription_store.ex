@@ -62,7 +62,12 @@ defmodule SalixAgent.SubscriptionStore do
       "id" => record["id"],
       "version" => record["version"],
       "credential_kind" => "provider_api_key",
+      # A key has no sign-in to expire; whether it works shows on use.
+      "status" => "active",
+      "source" => record["source"] || "custom",
       "name" => record["name"],
+      "key_hint" => record["key_hint"],
+      "models" => record["models"],
       "connection" => connection,
       "compatible_runtimes" => compatible_runtimes(connection["protocol"]),
       "disabled" => record["disabled"] == true,
@@ -73,6 +78,8 @@ defmodule SalixAgent.SubscriptionStore do
 
   def public(%{"credential_kind" => "subscription_oauth"} = record) do
     record
+    |> Map.put("source", record["provider"])
+    |> Map.put_new("name", record["email"])
     |> Map.drop([
       "credentials",
       "prepared",
@@ -300,10 +307,55 @@ defmodule SalixAgent.SubscriptionStore do
     end
   end
 
-  def list(tenant, after_id) do
+  # API-key Profiles a request may use. A tenant connects a handful; the cap
+  # keeps one dispatch bounded however many are saved.
+  @doc "Whether one of the tenant's Custom Profiles lists the model id."
+  def custom_model?(tenant, model) when is_binary(model) do
+    case query(
+           """
+           SELECT 1 FROM subscription_accounts
+           WHERE tenant_id=$1 AND value->>'credential_kind'='provider_api_key'
+             AND value->>'source'='custom' AND value->'models' ? $2
+           LIMIT 1
+           """,
+           [tenant, model]
+         ) do
+      {:ok, %{rows: [_]}} -> true
+      _ -> false
+    end
+  end
+
+  def custom_model?(_, _), do: false
+
+  def usable_api_keys(tenant) do
     with {:ok, %{rows: rows}} <-
            query(
-             "SELECT value,version FROM subscription_accounts WHERE tenant_id=$1 AND id>$2 ORDER BY id LIMIT 26",
+             """
+             SELECT value,version FROM subscription_accounts
+             WHERE tenant_id=$1 AND value->>'credential_kind'='provider_api_key'
+               AND value->>'disabled'='false'
+             ORDER BY id LIMIT 50
+             """,
+             [tenant]
+           ) do
+      {:ok, Enum.map(rows, fn [value, version] -> Map.put(value, "version", version) end)}
+    end
+  end
+
+  # Comma apps released before Profiles parse only Codex and Claude
+  # subscriptions and fail the whole page on any other account.
+  @legacy_view "AND value->>'credential_kind'='subscription_oauth' AND value->>'provider' IN ('codex','claude')"
+
+  @doc """
+  One page of accounts. `:legacy` lists only Codex and Claude subscriptions,
+  the accounts that Comma apps released before Profiles can show.
+  """
+  def list(tenant, after_id, view \\ :all) do
+    filter = if view == :legacy, do: @legacy_view, else: ""
+
+    with {:ok, %{rows: rows}} <-
+           query(
+             "SELECT value,version FROM subscription_accounts WHERE tenant_id=$1 AND id>$2 #{filter} ORDER BY id LIMIT 26",
              [tenant, after_id]
            ) do
       accounts =
@@ -379,7 +431,9 @@ defmodule SalixAgent.SubscriptionStore do
 
   # Indexed tenant lookup; ranking is performed in the database and returns only
   # three candidates. The request path never loads a whole pool into the caller.
-  def candidates(tenant, provider, model) do
+  # `only`: one account id (a pin), which then passes the same filter.
+  # `exclude`: accounts this request already tried.
+  def candidates(tenant, provider, model, only \\ nil, exclude \\ []) do
     sql = """
     SELECT value,version FROM subscription_accounts a
     LEFT JOIN LATERAL (
@@ -390,10 +444,15 @@ defmodule SalixAgent.SubscriptionStore do
     WHERE tenant_id=$1 AND value->>'provider'=$2
       AND value->>'credential_kind'='subscription_oauth' AND value->>'disabled'='false'
       AND value->>'status'='active'
+      AND ($4::text IS NULL OR a.id=$4)
+      AND NOT (a.id = ANY($5::text[]))
       AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(COALESCE(a.value->'quota'->'windows','[]'::jsonb)) AS blocked(item)
         WHERE (blocked.item->>'remaining_percent')::float=0 AND (blocked.item->>'reset_at')::timestamptz>now()
-          AND (COALESCE(blocked.item->>'model','')='' OR strpos(lower($3),lower(blocked.item->>'model'))>0)
+          AND (COALESCE(blocked.item->>'model','')=''
+            -- Gemini windows name exact models; gemini-2.5-flash is not -flash-lite.
+            OR ($2='gemini' AND lower($3)=lower(blocked.item->>'model'))
+            OR ($2<>'gemini' AND strpos(lower($3),lower(blocked.item->>'model'))>0))
       )
     ORDER BY
       CASE WHEN (value->>'cooldown_until')::timestamptz>now() THEN 1 ELSE 0 END,
@@ -407,7 +466,7 @@ defmodule SalixAgent.SubscriptionStore do
     LIMIT 3
     """
 
-    with {:ok, %{rows: rows}} <- query(sql, [tenant, provider, model || ""]) do
+    with {:ok, %{rows: rows}} <- query(sql, [tenant, provider, model || "", only, exclude]) do
       {:ok, Enum.map(rows, fn [v, version] -> Map.put(v, "version", version) end)}
     end
   end

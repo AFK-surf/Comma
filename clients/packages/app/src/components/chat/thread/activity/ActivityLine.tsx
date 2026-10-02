@@ -5,6 +5,9 @@ import type {
   ChatActivity,
   ChatParticipantStatus,
 } from "../../model/conversationChannel";
+import { useRouterDisplayName } from "../../../router-identity/RouterIdentityProvider";
+import { routerDisplayName } from "../../../router-identity/routerDisplayName";
+import { withRouterNameSpacing } from "../../../router-identity/routerNameSpacing";
 import { participantStatusLabel } from "./participantStatusLabel";
 import { toolActivityLabel } from "./toolActivityLabel";
 import { workerMeshGradientStyle } from "./workerAvatar";
@@ -48,6 +51,7 @@ export function ParticipantStatusSlot({
   toolPresentation?: "inline" | "bubble";
 }) {
   const messages = useCommaMessages();
+  const routerName = useRouterDisplayName();
   const generationFailed = messages.chat_generation_failed();
   const participant = participantPresentation(participantStatus, messages);
   const taskPresentations = participantStatuses?.flatMap((taskParticipant) => {
@@ -56,9 +60,12 @@ export function ParticipantStatusSlot({
       ? [
           {
             ...presentation,
+            // Participants snapshot the Agent name when they join; the
+            // Router's current name comes from its identity.
             name:
-              taskParticipant.name?.replace(/^Default workspace\s+/i, "").trim() ||
-              "Agent",
+              taskParticipant.actorRole === "router"
+                ? routerName
+                : routerDisplayName(taskParticipant.name, "Agent"),
             actorId: taskParticipant.actorId,
             actorRole: taskParticipant.actorRole,
           },
@@ -171,21 +178,24 @@ export function ParticipantStatusSlot({
         signal: messages.chat_activity_working_signal,
       }[workingProvider]()
     : taskPresentations
-      ? named.length === 1
-        ? messages.chat_active_single({ name: named[0]!.name! })
-        : named.length === 2
-          ? messages.chat_active_pair({
-              first: named[0]!.name!,
-              second: named[1]!.name!,
-            })
-          : named.length > 2
-            ? router
-              ? messages.chat_active_router_workers({
-                  router: messages.chat_actor_router(),
-                  count: named.length - 1,
-                })
-              : messages.chat_active_workers({ count: named.length })
-            : errors.map((item) => `${item.name} · ${item.label}`).join("; ")
+      ? named.length > 0
+        ? // Agent names are formatted into the copy; a CJK name sits flush.
+          withRouterNameSpacing(
+            named.length === 1
+              ? messages.chat_active_single({ name: named[0]!.name! })
+              : named.length === 2
+                ? messages.chat_active_pair({
+                    first: named[0]!.name!,
+                    second: named[1]!.name!,
+                  })
+                : router
+                  ? messages.chat_active_router_workers({
+                      router: routerName,
+                      count: named.length - 1,
+                    })
+                  : messages.chat_active_workers({ count: named.length })
+          )
+        : errors.map((item) => `${item.name} · ${item.label}`).join("; ")
       : (presentations[0]?.label ?? "");
   const visible = presentations.length > 0;
   const toolBubble = Boolean(

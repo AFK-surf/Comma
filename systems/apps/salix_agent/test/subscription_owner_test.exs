@@ -456,6 +456,24 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     a
   end
 
+  test "an exhausted Gemini model window blocks only that exact model", %{tenant: tenant} do
+    reset = DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 3600))
+
+    gemini =
+      account(tenant, %{
+        "provider" => "gemini",
+        "quota" => %{
+          "windows" => [
+            %{"model" => "gemini-3-flash", "remaining_percent" => 0, "reset_at" => reset}
+          ]
+        }
+      })
+
+    assert {:ok, []} = Store.candidates(tenant, "gemini", "gemini-3-flash")
+    assert {:ok, [%{"id" => id}]} = Store.candidates(tenant, "gemini", "gemini-3.1-flash-lite")
+    assert id == gemini["id"]
+  end
+
   test "runtime candidates skip global exhaustion and cooldown without hiding later accounts", %{
     tenant: tenant
   } do

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -853,4 +854,84 @@ func TestClaudeUsageLimitSettlesFailedAndNextTurnCanRecover(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("next successful turn did not settle")
+}
+
+// Claude Code reads --model and --effort only at start. A changed choice
+// restarts the idle process on the same native session; an unchanged one
+// reuses it.
+func TestClaudeModelChangeRestartsIdleSessionOnSameNativeSession(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	t.Setenv("SALIX_TEST_FAKE_CLAUDE_LOG", logPath)
+	command := fakeClaudeRuntimeCommand(t)
+	c, err := newConnector(config{name: "claude-model-test", root: t.TempDir(), systemInfoInterval: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.closeExternalRuntimes()
+	defer func() {
+		if c.bridgeServer != nil {
+			_ = c.bridgeServer.Shutdown(context.Background())
+		}
+	}()
+	implementation := c.runtimeImplementations["claude"].(*claudeRuntimeImplementation)
+	input := externalRuntimeInput{
+		sessionID: "model-session", token: "model-token",
+		command: command, workspace: t.TempDir(), model: "claude-opus-5",
+		messages: []map[string]any{{"role": "user", "content": "test"}},
+	}
+	turn := func(n int, model, effort string) {
+		t.Helper()
+		input.dispatchID, input.executionID = fmt.Sprintf("dispatch-%d", n), fmt.Sprintf("execution-%d", n)
+		input.model, input.reasoningEffort = model, effort
+		if _, _, err := implementation.Send(context.Background(), input); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, event := range runtimeEventPayloads(t, c) {
+				if event["dispatch_id"] == input.dispatchID && event["work_state"] == "settled" {
+					return
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("turn %d did not settle", n)
+	}
+	starts := func() []string {
+		t.Helper()
+		log, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lines []string
+		for _, line := range strings.Split(string(log), "\n") {
+			if strings.HasPrefix(line, "start ") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+
+	turn(1, "claude-opus-5", "")
+	turn(2, "claude-opus-5", "")
+	if got := starts(); len(got) != 1 {
+		t.Fatalf("unchanged choice restarted Claude: %q", got)
+	}
+	turn(3, "claude-sonnet-5", "high")
+	got := starts()
+	if len(got) != 2 {
+		t.Fatalf("changed choice did not restart Claude: %q", got)
+	}
+	first := regexp.MustCompile(`--session-id=(\S+)`).FindStringSubmatch(got[0])
+	if first == nil || !strings.Contains(got[1], "--resume="+first[1]) ||
+		!strings.Contains(got[1], "--model claude-sonnet-5") || !strings.Contains(got[1], "--effort high") {
+		t.Fatalf("restart did not resume the native session with the new choice: %q", got)
+	}
+	// Back to the runtime default: restart without --model or --effort.
+	turn(4, "", "")
+	got = starts()
+	if len(got) != 3 || !strings.Contains(got[2], "--resume="+first[1]) ||
+		strings.Contains(got[2], "--model") || strings.Contains(got[2], "--effort") {
+		t.Fatalf("return to the default did not restart without a model: %q", got)
+	}
 }

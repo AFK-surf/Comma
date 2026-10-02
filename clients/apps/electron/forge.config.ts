@@ -17,6 +17,7 @@ import {
 import { ensureDevNativeAddons } from "./scripts/dev-native-addons";
 import { electronDownloadCache } from "./scripts/electron-download-cache";
 import { macosDisplayNameHook } from "./scripts/macos-display-name";
+import { sleepGuardLaunchdHook } from "./scripts/sleep-guard-launchd";
 import { getCommaReleaseConfig } from "./src/release-config";
 
 const require = createRequire(import.meta.url);
@@ -143,7 +144,10 @@ const config: ForgeConfig = {
       notificationSoundPath,
       ...statusTrayIconPaths,
     ],
-    afterCopyExtraResources: [macosDisplayNameHook(releaseConfig.productName)],
+    afterCopyExtraResources: [
+      macosDisplayNameHook(releaseConfig.productName),
+      sleepGuardLaunchdHook(releaseConfig.productName, releaseConfig.appBundleId),
+    ],
     afterCopy: [
       (buildPath, _electronVersion, platform, arch, callback) => {
         try {

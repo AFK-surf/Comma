@@ -295,7 +295,7 @@
     color: inherit;
   }
 }
-@media (max-width: 480px) {
+@container comma-window (width <= 480px) {
   .comma-meeting-recorder[data-phase="recording"],
   .comma-meeting-recorder[data-phase="paused"] {
     flex-wrap: wrap;
@@ -559,7 +559,7 @@
 
 /* A narrow native buffer is not a mobile viewport: its endpoint must stay
    consistent with the desktop recorder's reserved 56px height. */
-@media (max-width: 480px) {
+@container comma-window (width <= 480px) {
   :root:not([data-comma-window-role="meeting-recorder"])
     .comma-meeting-recorder:is([data-phase="recording"], [data-phase="paused"]):not(
       [data-compact]

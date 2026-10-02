@@ -337,6 +337,9 @@ defmodule SalixWeb.TwilioWebhook do
     |> send_resp(status, Jason.encode!(body))
   end
 
+  defp admit_error_text(%{"error_class" => "billing_unavailable", "message" => message}),
+    do: message
+
   defp admit_error_text(:busy), do: "The assistant is on another call. Please try again later."
   defp admit_error_text(:node_full), do: "All lines are busy. Please try again later."
 

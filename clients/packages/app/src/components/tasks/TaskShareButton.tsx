@@ -157,25 +157,31 @@ function TaskShareDialog({
     controlsRef.current?.querySelector<HTMLElement>("[data-share-primary]")?.focus();
   }, [state]);
 
+  /** Resolves to the share the server confirmed, or undefined on failure. */
   const run = async (change: () => Promise<CommaTaskShare | undefined>) => {
     setPending(true);
     try {
-      setState({ kind: "ready", share: await change() });
+      const next = await change();
+      setState({ kind: "ready", share: next });
+      return next;
     } catch {
       toast.error(messages.task_share_failed(), { id: SHARE_TOAST_ID });
+      return undefined;
     } finally {
       setPending(false);
     }
   };
 
-  const copy = async (url: string) => {
+  const copy = async (url: string, { reportFailure = true } = {}) => {
     // Clearing first makes a repeat copy confirm again: the button label
-    // flips back and the live region announces the new text.
+    // flips back, and the shared toast id replaces any earlier result.
     setCopiedUrl(undefined);
     try {
       await copyTextToClipboard(url);
       setCopiedUrl(url);
+      toast.success(messages.task_share_copied(), { id: SHARE_TOAST_ID });
     } catch {
+      if (!reportFailure) return;
       toast.error(messages.copy_failed_title(), {
         description: messages.copy_failed_detail(),
         id: SHARE_TOAST_ID,
@@ -184,6 +190,14 @@ function TaskShareDialog({
   };
 
   const publish = () => run(() => api.publishTaskShare(groupId, conversationId));
+  // A new link is created to be pasted somewhere, so it lands on the clipboard.
+  // The write runs after the request, outside the click's user activation, and
+  // Safari denies it there. That miss stays quiet: the link and Copy link are
+  // already on screen.
+  const create = async () => {
+    const created = await publish();
+    if (created) await copy(created.url, { reportFailure: false });
+  };
   const share = state.kind === "ready" ? state.share : undefined;
   const copied = share !== undefined && copiedUrl === share.url;
 
@@ -237,11 +251,6 @@ function TaskShareDialog({
           </div>
         ) : share ? (
           <div className="flex flex-col gap-md">
-            {/* The label swap on Copy link is silent; this carries it to
-                assistive technology, as the toast it replaced did. */}
-            <output aria-live="polite" className="sr-only">
-              {copied ? messages.task_share_copied() : ""}
-            </output>
             {share.has_newer_messages ? (
               <div
                 className="flex items-center gap-md rounded-lg bg-tertiary py-xs pr-xs pl-md"
@@ -351,7 +360,7 @@ function TaskShareDialog({
               hierarchy="primary"
               iconLeading={<ChainLinkIcon />}
               isPending={pending}
-              onPress={() => void publish()}
+              onPress={() => void create()}
               size="sm"
             >
               {messages.task_share_create()}

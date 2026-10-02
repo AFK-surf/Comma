@@ -325,3 +325,26 @@ func legacyV3RoundTrip(body []byte) ([]byte, error) {
 	delete(fields, "lifecycleWriterEpoch")
 	return json.Marshal(fields)
 }
+
+func TestArchiveRetryAfterRecoveryTimestampChange(t *testing.T) {
+	old := NewState("staging", "old", "broken", 43, time.Unix(1, 0))
+	old.Phase = PhaseRecovering
+	old.RequiredMode = ModeOnline
+	encoded, _ := json.Marshal(old)
+	body, _ := json.Marshal(map[string]any{"immutable": true, "data": map[string]string{"state.json": string(encoded)}})
+	store := KubectlStore{Namespace: "comma", Runner: runnerFunc(func(_ context.Context, input []byte, _ ...string) ([]byte, error) {
+		if len(input) > 0 {
+			t.Fatal("retry modified immutable predecessor")
+		}
+		return body, nil
+	})}
+	retried := old
+	retried.UpdatedAt = time.Unix(2, 0)
+	if err := store.Archive(context.Background(), retried); err != nil {
+		t.Fatalf("recovery timestamp trapped repair retry: %v", err)
+	}
+	retried.Image = "different"
+	if err := store.Archive(context.Background(), retried); err == nil {
+		t.Fatal("different predecessor facts accepted")
+	}
+}

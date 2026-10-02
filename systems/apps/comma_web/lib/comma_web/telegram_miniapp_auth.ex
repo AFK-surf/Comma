@@ -20,7 +20,9 @@ defmodule CommaWeb.TelegramMiniAppAuth do
   @max_fields 32
   @max_age_seconds 120
   @future_skew_seconds 30
-  @session_ttl_seconds 15 * 60
+  # Long enough that a panel left open in Telegram keeps working through a day.
+  # Every read still rechecks the current link, so a disconnect ends it at once.
+  @session_ttl_seconds 24 * 60 * 60
 
   def complete(%{"init_data" => init_data, "group_id" => group_id}, cookie_token)
       when is_binary(init_data) and is_binary(group_id) do

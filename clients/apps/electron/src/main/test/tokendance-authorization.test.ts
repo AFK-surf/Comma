@@ -33,6 +33,12 @@ const models = {
       supports_images: false,
       supported_protocols: ["responses", "chat_completions"],
     },
+    {
+      id: "video-model",
+      name: "Video model",
+      supports_images: false,
+      supported_protocols: [],
+    },
   ],
 };
 
@@ -55,9 +61,9 @@ function setup(timeoutMs?: number, channel: CommaChannel = "dev") {
   const abort = new AbortController();
   const current = vi.fn().mockReturnValue(true);
   const discover = vi.fn().mockResolvedValue(models);
-  const create = vi.fn().mockResolvedValue({ template_id: "saved" });
+  const create = vi.fn().mockResolvedValue({ id: "saved" });
   const boundary = {
-    api: { discoverModels: discover, createModelTemplate: create },
+    api: { discoverModels: discover, createSubscriptionAccount: create },
     session,
     assertCurrent: () => {
       if (!current()) throw new Error("stale_session");
@@ -101,10 +107,7 @@ function setup(timeoutMs?: number, channel: CommaChannel = "dev") {
     });
   const saveInput = tokenDanceAuthorizationSaveCapability.input.parse({
     ...statusInput,
-    name: "My TokenDance model",
-    model: "gpt-model",
-    maxTokens: 4096,
-    contextTokens: 0,
+    name: "TokenDance",
   });
   const save = () =>
     guard.run({
@@ -197,16 +200,16 @@ describe("TokenDance Responses authorization", () => {
     ]);
     expect(JSON.stringify(metadata)).not.toContain("secret");
     expect(await flow.save()).toEqual({ ok: true });
-    expect(flow.create).toHaveBeenCalledWith(
-      "workspace",
-      expect.objectContaining({
-        model: "gpt-model",
-        protocol: "responses",
-        provider: "openai",
-        base_url: "https://tokendance.space/gateway/v1",
-        api_key: "provider-key-secret",
-      })
-    );
+    // One profile serving the chat models TokenDance listed.
+    expect(flow.create).toHaveBeenCalledWith("workspace", {
+      credential_kind: "provider_api_key",
+      source: "custom",
+      name: "TokenDance",
+      api_key: "provider-key-secret",
+      base_url: "https://tokendance.space/gateway/v1",
+      protocol: "chat_completions",
+      models: ["gpt-model"],
+    });
     await expect(flow.save()).rejects.toThrow();
     await expect(fetch(callback)).rejects.toThrow();
   });
@@ -235,7 +238,7 @@ describe("TokenDance Responses authorization", () => {
     }
   });
 
-  it("expires abandoned authorization and rejects models outside the discovered list", async () => {
+  it("expires abandoned authorization and saves nothing without a chat model", async () => {
     const expired = setup(30);
     await expired.start();
     const callback = expired.callback();
@@ -244,12 +247,13 @@ describe("TokenDance Responses authorization", () => {
     );
     await expect(fetch(callback)).rejects.toThrow();
     const flow = setup();
+    flow.discover.mockResolvedValueOnce({ ...models, data: [models.data[1]] });
     await flow.start();
     await fetch(flow.callback());
     await vi.waitFor(async () => expect((await flow.status()).status).toBe("complete"));
-    await expect(
-      flow.service.save({ ...flow.saveInput, model: "video-model" })
-    ).rejects.toThrow("invalid_model_configuration");
+    await expect(flow.service.save(flow.saveInput)).rejects.toThrow(
+      "invalid_model_configuration"
+    );
     expect(flow.create).not.toHaveBeenCalled();
   });
 
@@ -258,14 +262,14 @@ describe("TokenDance Responses authorization", () => {
     await flow.start();
     await fetch(flow.callback());
     await vi.waitFor(async () => expect((await flow.status()).status).toBe("complete"));
-    const saving = Promise.withResolvers<{ template_id: string }>();
+    const saving = Promise.withResolvers<{ id: string }>();
     flow.create.mockReturnValueOnce(saving.promise);
     const saved = flow.save();
     await vi.waitFor(() => expect(flow.create).toHaveBeenCalledOnce());
     flow.service.cancel(input);
     const next = { ...input, requestId: "22222222-2222-4222-8222-222222222222" };
     expect(await flow.service.start(next)).toEqual({ status: "pending" });
-    saving.resolve({ template_id: "saved" });
+    saving.resolve({ id: "saved" });
     await saved;
     expect(flow.service.status(next)).toEqual({ status: "pending" });
   });

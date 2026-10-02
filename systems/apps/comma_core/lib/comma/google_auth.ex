@@ -43,6 +43,23 @@ defmodule Comma.GoogleAuth do
     )
   end
 
+  defp verified_claims(%{"platform" => "android"} = attempt, attrs) do
+    authorized_parties = GoogleLoginAttempts.android_client_ids()
+
+    with {:ok, claims} <-
+           adapter().verify_id_token(trim(value(attrs, "credential")),
+             authorized_parties: authorized_parties,
+             client_id: attempt["client_id"],
+             nonce: attempt["nonce"],
+             platform: "android"
+           ) do
+      # Credential Manager sets azp to the Android client; require it explicitly.
+      if claims["azp"] in authorized_parties,
+        do: {:ok, claims},
+        else: {:error, :invalid_google_credential}
+    end
+  end
+
   defp verified_claims(%{"platform" => "electron"} = attempt, attrs) do
     started_at = System.monotonic_time()
 
@@ -85,10 +102,17 @@ defmodule Comma.GoogleAuth do
         Regex.match?(@pkce_verifier, code_verifier) and valid_desktop_redirect?(redirect_uri)
 
     case {web?, electron?} do
-      {true, false} -> {:ok, "web"}
+      {true, false} -> {:ok, credential_platform(attrs)}
       {false, true} -> {:ok, "electron"}
       _invalid_or_ambiguous -> {:error, :invalid_google_credential}
     end
+  end
+
+  # Web and Android both submit an ID token; the attempt ID selects the platform.
+  defp credential_platform(attrs) do
+    if String.starts_with?(trim(value(attrs, "attempt_id")) || "", "gla_android_"),
+      do: "android",
+      else: "web"
   end
 
   defp valid_desktop_redirect?(redirect_uri) do

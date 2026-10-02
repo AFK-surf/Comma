@@ -1,6 +1,7 @@
 defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
   @moduledoc "Cloudflare WebSocket transport; ConnectorSocket owns protocol, bounded RPC and runtime semantics."
   use WebSockex
+  require Logger
   alias SalixEnv.Registry, as: EnvRecords
   alias SalixEnv.VM.Providers.Cloudflare.Client
 
@@ -25,6 +26,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
       protocol: nil,
       run: nil,
       gateway_attempt: nil,
+      gateway_attempt_settled?: false,
       archive_repair: false,
       reconnect?: true
     }
@@ -44,9 +46,8 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
         {:ok, _pid} = ok ->
           ok
 
-        error ->
-          # The connection may have reached Cloudflare before the local failure.
-          # Leave the claim for release reconciliation.
+        {:error, reason} = error ->
+          _ = settle_failed_connection(state, reason)
           error
       end
     end
@@ -55,7 +56,16 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
   @impl true
   def handle_connect(_conn, state) do
     Process.flag(:trap_exit, true)
-    state = finish_gateway_attempt(state)
+    state = finish_gateway_attempt(%{state | gateway_attempt_settled?: true})
+
+    case Client.finish_gateway_starting(state.client, state.sandbox_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Cloudflare attachment pending start did not settle: #{inspect(reason)}")
+    end
+
     # Start the protocol before receiving frames. Each connection has its own
     # process, so reconnect cannot retain timers, pending calls or runtime jobs.
     register = fn ->
@@ -138,6 +148,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
     state = %{state | protocol: nil, run: nil}
 
     if state.gateway_attempt != nil do
+      state = settle_failed_connection(state, status.reason)
       {:ok, %{state | reconnect?: false}}
     else
       reconnect_after_disconnect(status, state)
@@ -151,7 +162,13 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
 
       case claim_attachment(state) do
         {:ok, operation_id, archive_repair} ->
-          state = %{state | gateway_attempt: operation_id, archive_repair: archive_repair}
+          state = %{
+            state
+            | gateway_attempt: operation_id,
+              gateway_attempt_settled?: false,
+              archive_repair: archive_repair
+          }
+
           {:reconnect, connect_conn(state), state}
 
         {:error, _reason} ->
@@ -163,13 +180,18 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
   end
 
   defp claim_attachment(state) do
-    case Client.begin_gateway_attempt(state.client) do
+    case Client.begin_gateway_attempt(state.client, :normal, state.sandbox_id, "connect") do
       {:ok, operation_id} ->
         {:ok, operation_id, false}
 
       {:error, {:vm_service_upgrading, %{"phase" => "prepared"}}} = error ->
         if state.meta["managed_compute"] == true do
-          case Client.begin_gateway_attempt(state.client, :archive, state.sandbox_id) do
+          case Client.begin_gateway_attempt(
+                 state.client,
+                 :archive,
+                 state.sandbox_id,
+                 "connect_repair"
+               ) do
             {:ok, operation_id} -> {:ok, operation_id, true}
             _ -> error
           end
@@ -183,7 +205,8 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
   end
 
   @impl true
-  def terminate(_reason, state) do
+  def terminate(reason, state) do
+    _ = settle_failed_connection(state, reason)
     stop_protocol(state)
     disconnect_current(state)
     :ok
@@ -235,14 +258,60 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Attachment do
   defp disconnect_current(_), do: :ok
 
   defp connect_conn(state) do
-    connect = Client.connect_request(state.client, state.sandbox_id)
+    connect =
+      Client.connect_request(state.client, state.sandbox_id,
+        claim_id: state.gateway_attempt,
+        archive_repair: state.archive_repair
+      )
+
     WebSockex.Conn.new(connect.url, extra_headers: connect.headers)
   end
 
   defp finish_gateway_attempt(%{gateway_attempt: nil} = state), do: state
 
   defp finish_gateway_attempt(state) do
-    _ = Client.finish_gateway_attempt(state.client, state.gateway_attempt)
-    %{state | gateway_attempt: nil}
+    case Client.finish_gateway_attempt(state.client, state.gateway_attempt) do
+      :ok ->
+        %{state | gateway_attempt: nil}
+
+      {:error, reason} ->
+        Logger.error("Cloudflare attachment attempt did not settle: #{inspect(reason)}")
+        state
+    end
   end
+
+  defp settle_failed_connection(%{gateway_attempt: nil} = state, _reason), do: state
+
+  defp settle_failed_connection(state, reason) do
+    if state.gateway_attempt_settled? or settled_connection_failure?(reason) do
+      finish_gateway_attempt(%{state | gateway_attempt_settled?: true})
+    else
+      # The request may have started the Container. Keep one exact-target claim
+      # until a ready response or successful connection confirms that start.
+      case Client.mark_gateway_starting(state.client, state.gateway_attempt, state.sandbox_id) do
+        :ok ->
+          %{state | gateway_attempt: nil}
+
+        {:error, reason} ->
+          Logger.error(
+            "Cloudflare attachment uncertain start did not persist: #{inspect(reason)}"
+          )
+
+          state
+      end
+    end
+  end
+
+  defp settled_connection_failure?({:error, reason}), do: settled_connection_failure?(reason)
+  defp settled_connection_failure?({:already_started, _pid}), do: true
+  defp settled_connection_failure?(%WebSockex.URLError{}), do: true
+  defp settled_connection_failure?(%WebSockex.ApplicationError{}), do: true
+
+  defp settled_connection_failure?(%WebSockex.ConnError{original: reason})
+       when reason in [:econnrefused, :nxdomain], do: true
+
+  defp settled_connection_failure?(%WebSockex.RequestError{code: code})
+       when code in 400..499 and code not in [408, 429], do: true
+
+  defp settled_connection_failure?(_reason), do: false
 end

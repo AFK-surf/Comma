@@ -558,18 +558,30 @@ a real MinIO, a two-node fencing test, and a ClickHouse service.
 
 ## Cloudflare Group VM archives
 
-The Connector archives Group VM data before an idle stop or Container image
-replacement. Archives have no total entry count limit. The expanded content
+The Connector uses full archives before an idle stop and ordinary image replacement.
+Fault recovery can use a critical checkpoint after persistent sealing and quiet confirmation.
+Archives have no total entry count limit. The expanded content
 limit is 16 GiB, and the compressed content limit is 4 GiB. The archive
-excludes generated caches and all `node_modules` directories. Other dependency
-installations need source installation evidence. It retains Git metadata, settings, credentials, the Salix managed runtime,
-and other ignored files. An Agent can use `env.dependency_installations` to
+excludes generated caches. It retains dependency installation trees, local changes,
+Git metadata, settings, credentials, the Salix managed runtime, and other ignored files.
+An Agent can use `env.dependency_installations` to
 declare repository packages or manually installed tools. A declaration does not
 exclude a directory by itself. The archive drops a declaration when its source
-directory was deleted before packing. After a restore, supported omitted
-packages install in the background; the Agent can read progress, stop the
+directory was deleted before packing. Restore preserves internal symbolic links
+even when an older archive omitted their package or cache targets.
+It still rejects links and extraction paths that escape the workspace.
+After a restore from an older archive, supported omitted
+packages install in the background. The Agent can read progress, stop the
 installer, and use the normal shell to install packages itself. An installation
 failure does not block VM commands.
+
+Recovery scope omits Agent workspaces, managed dependency packages, and workspace sweep archives.
+It retains runtime identity, native continuation, required credentials, and unknown files outside those paths.
+Required native files inside an omitted tree remain in the checkpoint.
+Active inputs and unacknowledged results must settle before export. Missing critical facts stop deletion.
+The original Salix Session resumes with a notice to rebuild omitted files and dependencies.
+Previous recovery generations remain held. Normal full archives keep their existing retention guarantee.
+See [Gateway recovery boundaries](cloudflare/salix-vm-gateway/RELEASE.md#container-image-release) for exact repair conditions.
 
 New Cloudflare archives use direct Connector transfer to R2 with short-lived
 URLs signed by Salix. Set `cloud_vm_archives.r2` in the environment config with

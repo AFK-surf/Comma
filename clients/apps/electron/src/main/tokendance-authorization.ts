@@ -20,6 +20,8 @@ import { getCommaReleaseConfig, type CommaReleaseConfig } from "../release-confi
 
 const origin = "https://tokendance.space";
 const baseUrl = `${origin}/gateway/v1`;
+/** The most model ids one profile keeps, as the backend bounds them. */
+const maxProfileModels = 500;
 const keyResponse = z.object({ key: z.string().min(1).max(8192) });
 type Status = TokenDanceAuthorizationStatus;
 type Attempt = {
@@ -237,23 +239,29 @@ export class TokenDanceAuthorizationService {
       attempt.saving
     )
       throw new Error("authorization_unavailable");
-    const model = attempt.result.models?.data.find((entry) => entry.id === input.model);
-    if (!model) throw new Error("invalid_model_configuration");
+    // The profile serves every chat model TokenDance listed; Agents pick among
+    // them. Chat Completions is the one protocol nearly all of them speak.
+    const models = (attempt.result.models?.data ?? [])
+      .filter(
+        (entry) =>
+          !entry.supported_protocols ||
+          entry.supported_protocols.includes("chat_completions")
+      )
+      .map((entry) => entry.id)
+      .filter((id) => id && Buffer.byteLength(id) <= 200)
+      .slice(0, maxProfileModels);
+    if (!models.length) throw new Error("invalid_model_configuration");
     attempt.saving = true;
     try {
       attempt.boundary.assertCurrent();
-      await attempt.boundary.api.createModelTemplate(attempt.workspaceId, {
+      await attempt.boundary.api.createSubscriptionAccount(attempt.workspaceId, {
+        credential_kind: "provider_api_key",
+        source: "custom",
         name: input.name,
-        model: model.id,
-        model_display_name: model.name,
-        model_vendor: model.vendor ?? null,
-        supports_images: model.supports_images,
-        provider: "openai",
-        protocol: "responses",
-        base_url: baseUrl,
         api_key: attempt.key,
-        max_tokens: input.maxTokens,
-        context_tokens: input.contextTokens,
+        base_url: baseUrl,
+        protocol: "chat_completions",
+        models,
       });
       attempt.boundary.assertCurrent();
       if (this.#attempt === attempt) this.dispose();

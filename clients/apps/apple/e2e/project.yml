@@ -1,0 +1,49 @@
+name: CommaGestureTests
+options:
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGNING_ALLOWED: NO
+packages:
+  CommaCore:
+    path: ../../../packages/apple-core
+  Markdown:
+    url: https://github.com/swiftlang/swift-markdown
+    from: 0.9.0
+targets:
+  CommaGestureFixture:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../iOS
+        excludes: [CommaApp.swift, "*.plist", "*.entitlements"]
+      - path: ../Shared
+      - path: Fixture
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: surf.comma.chat-gesture-fixture
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    dependencies:
+      - package: CommaCore
+      - package: Markdown
+  CommaGestureUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: surf.comma.chat-gesture-fixture.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: CommaGestureFixture
+schemes:
+  CommaGestureTests:
+    build:
+      targets:
+        CommaGestureFixture: all
+    test:
+      targets: [CommaGestureUITests]

@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
@@ -21,6 +22,7 @@ test("a toast raised behind the sidebar browser lands clear of the native view",
     assistantReply: `[Open browser](${browserStub.baseUrl}/page)`,
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-toast-native-surface-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],

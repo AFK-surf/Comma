@@ -27,44 +27,6 @@ const (
 	claudeReadinessMaxLineBytes = 1024 * 1024
 )
 
-type claudeDiagnosticBuffer struct {
-	mu   sync.Mutex
-	data []byte
-}
-
-func (b *claudeDiagnosticBuffer) text() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.data)
-}
-
-func (b *claudeDiagnosticBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if remaining := claudeDiagnosticMaxBytes - len(b.data); remaining > 0 {
-		b.data = append(b.data, p[:min(len(p), remaining)]...)
-	}
-	return len(p), nil
-}
-
-func (b *claudeDiagnosticBuffer) category() string {
-	b.mu.Lock()
-	text := strings.ToLower(string(b.data))
-	b.mu.Unlock()
-	switch {
-	case strings.Contains(text, "usage limit"), strings.Contains(text, "quota"), strings.Contains(text, "credit balance"):
-		return "quota_exhausted"
-	case strings.Contains(text, "rate limit"), strings.Contains(text, "too many requests"):
-		return "rate_limited"
-	case strings.Contains(text, "not logged in"), strings.Contains(text, "authentication"), strings.Contains(text, "please login"):
-		return "authentication_required"
-	case strings.Contains(text, "stream-json"), strings.Contains(text, "unknown option"), strings.Contains(text, "unexpected argument"):
-		return "unsupported_stream_json"
-	default:
-		return "runtime_failed"
-	}
-}
-
 type claudeRuntimeImplementation struct {
 	connector        *connector
 	activityMu       sync.RWMutex
@@ -97,6 +59,8 @@ type claudeRuntimeSlot struct {
 
 type claudeRuntimeSession struct {
 	managedCredential *managedRuntimeCredential
+	model             string
+	reasoningEffort   string
 	implementation    *claudeRuntimeImplementation
 	connector         *connector
 	sessionID         string
@@ -105,7 +69,7 @@ type claudeRuntimeSession struct {
 	runtimeContext    string
 	cmd               *exec.Cmd
 	stdin             io.WriteCloser
-	diagnostics       *claudeDiagnosticBuffer
+	diagnostics       *harnessDiagnosticBuffer
 	done              chan struct{}
 	authGeneration    *claudeAuthGeneration
 	promptFile        string
@@ -128,6 +92,8 @@ type claudeRuntimeSession struct {
 	processErr      error
 	turnFailure     map[string]any
 	limitInfo       map[string]any
+	startupPending  bool
+	startupRefused  bool
 }
 
 func newClaudeRuntimeImplementation(c *connector) *claudeRuntimeImplementation {
@@ -228,8 +194,14 @@ func (i *claudeRuntimeImplementation) Send(ctx context.Context, input externalRu
 
 	session := slot.session
 	managed := i.connector.managedRuntimeCredential("claude", input.command)
-	if session != nil && session.managedCredential != nil && managed != nil &&
-		!session.managedCredential.sameConfiguration(managed) && session.running() {
+	credentialChanged := session != nil && session.managedCredential != nil && managed != nil &&
+		!session.managedCredential.sameConfiguration(managed)
+	// Claude Code reads --model and --effort only at start. A changed choice
+	// restarts an idle process on the same native session; a busy one keeps
+	// running and the next idle input applies the change.
+	settingsChanged := session != nil &&
+		(session.model != input.model || session.reasoningEffort != input.reasoningEffort)
+	if (credentialChanged || settingsChanged) && session.running() {
 		session.mu.Lock()
 		busy := session.workState == "starting" || session.workState == "running" || session.backgroundWork || session.steering
 		session.mu.Unlock()
@@ -237,6 +209,9 @@ func (i *claudeRuntimeImplementation) Send(ctx context.Context, input externalRu
 			session.markAbandoned()
 			if err := session.drain(ctx); err != nil {
 				return nil, "", err
+			}
+			if stringParam(input.payload, "session_id") == "" {
+				input.payload = withNativeClaudeSession(input.payload, session.nativeID)
 			}
 			slot.session, session = nil, nil
 		}
@@ -274,6 +249,7 @@ func (i *claudeRuntimeImplementation) Send(ctx context.Context, input externalRu
 	}
 	session.mu.Lock()
 	session.abandoned = false
+	session.startupPending = false
 	session.mu.Unlock()
 	if err := session.prompt(ctx, input.text()); err != nil {
 		return nil, "", err
@@ -358,6 +334,7 @@ func (i *claudeRuntimeImplementation) Check(ctx context.Context, sessionID strin
 	slot.session = session
 	session.mu.Lock()
 	session.abandoned = false
+	session.startupPending = false
 	session.mu.Unlock()
 	if err := session.prompt(ctx, externalRuntimeRecoveryMessage); err != nil {
 		slot.session = nil
@@ -385,6 +362,23 @@ func (i *claudeRuntimeImplementation) sessionSlot(sessionID string) *claudeRunti
 }
 
 func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input externalRuntimeInput) (*claudeRuntimeSession, error) {
+	var err error
+	for _, launchCommand := range harnessLaunchCommands("claude", input.command) {
+		attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
+		session, startErr := i.startSessionCommand(attempt, input, launchCommand)
+		cancel()
+		if startErr == nil {
+			return session, nil
+		}
+		err = startErr
+		if !canRetryHarnessStartup(ctx, err) {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
+func (i *claudeRuntimeImplementation) startSessionCommand(ctx context.Context, input externalRuntimeInput, launchCommand string) (*claudeRuntimeSession, error) {
 	if input.command == "" {
 		return nil, errors.New("agent_runtime_input requires discovered claude command")
 	}
@@ -473,7 +467,7 @@ func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input ex
 	// Keep the private file until process exit, including any deferred reads.
 	args = append(args, "--append-system-prompt-file", promptFile.Name())
 
-	cmd := exec.Command(input.command, args...)
+	cmd := exec.Command(launchCommand, args...)
 	configureProcessGroup(cmd)
 	cmd.Dir = input.workspace
 	cmd.WaitDelay = claudeCloseTimeout
@@ -481,7 +475,7 @@ func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input ex
 		i.connector.cfg.computeRuntimeKind == "external_worker" &&
 		i.connector.cfg.computeRuntimeProvider == "claude"
 	environment := map[string]any{
-		"PATH":                  runtimeCommandPath(input.command, cliDir),
+		"PATH":                  runtimeCommandPath(launchCommand, cliDir),
 		"SALIX_CONNECT_URL":     bridgeURL,
 		"SALIX_CLI":             filepath.Join(cliDir, "salix"),
 		"SALIX_ENV_ROOT":        i.connector.root,
@@ -508,7 +502,7 @@ func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input ex
 	if err != nil {
 		return nil, err
 	}
-	diagnostics := &claudeDiagnosticBuffer{}
+	diagnostics := &harnessDiagnosticBuffer{}
 	cmd.Stderr = diagnostics
 	i.mu.Lock()
 	authGeneration := i.authGeneration
@@ -520,11 +514,13 @@ func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input ex
 	i.mu.Unlock()
 	if err := cmd.Start(); err != nil {
 		authGeneration.wait.Done()
-		return nil, err
+		return nil, &harnessStartupError{err}
 	}
 
 	session := &claudeRuntimeSession{
 		managedCredential: managed,
+		model:             input.model,
+		reasoningEffort:   input.reasoningEffort,
 		implementation:    i,
 		connector:         i.connector,
 		sessionID:         input.sessionID,
@@ -542,9 +538,10 @@ func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input ex
 		pendingReplays:    map[string]chan bool{},
 		// Initialization cannot accept user input. Suppress terminal execution
 		// events until startup succeeds and Send can persist the native binding.
-		abandoned:   true,
-		dispatchID:  input.dispatchID,
-		executionID: input.executionID,
+		abandoned:      true,
+		startupPending: true,
+		dispatchID:     input.dispatchID,
+		executionID:    input.executionID,
 	}
 	if input.executionID != "" {
 		session.workState = "starting"
@@ -564,8 +561,21 @@ func (i *claudeRuntimeImplementation) startSession(ctx context.Context, input ex
 	}()
 
 	if _, err := session.control(ctx, map[string]any{"subtype": "initialize"}); err != nil {
-		session.stop()
-		return nil, err
+
+		if cleanupErr := stopHarnessStartup(context.WithoutCancel(ctx), func() { killHarnessStartupGroup(session.cmd); session.stop() }, session.done); cleanupErr != nil {
+			return nil, cleanupErr
+		}
+		session.mu.Lock()
+		refused := session.startupRefused
+		session.mu.Unlock()
+		if refused {
+			return nil, err
+		}
+		var rejection *nativeControlRejection
+		if errors.As(err, &rejection) || !session.diagnostics.permitsStartupRetry() {
+			return nil, err
+		}
+		return nil, &harnessStartupError{err}
 	}
 	i.connector.registerRuntimeRoute(runtimeContext, session.token)
 	return session, nil
@@ -702,7 +712,7 @@ func (s *claudeRuntimeSession) control(ctx context.Context, request map[string]a
 			return nil, s.terminalError("control response")
 		}
 		if stringParam(message, "subtype") != "success" {
-			return nil, fmt.Errorf("claude control %s was rejected", stringParam(request, "subtype"))
+			return nil, &nativeControlRejection{fmt.Errorf("claude control %s was rejected", stringParam(request, "subtype"))}
 		}
 		return mapParam(message, "response"), nil
 	case <-ctx.Done():
@@ -843,7 +853,23 @@ func (s *claudeRuntimeSession) handleMessage(native map[string]any) {
 		return
 	}
 	if nativeID := stringParam(native, "session_id"); nativeID != "" && nativeID != s.nativeID {
+		s.mu.Lock()
+		s.startupRefused = s.startupPending
+		s.mu.Unlock()
 		s.failProtocol("session_identity_mismatch")
+		return
+	}
+	s.mu.Lock()
+	startup := s.startupPending
+	if startup && (messageType == "result" || messageType == "error") {
+		s.startupRefused = true
+	}
+	refused := s.startupRefused
+	s.mu.Unlock()
+	if startup {
+		if refused {
+			s.stop()
+		}
 		return
 	}
 
@@ -1210,7 +1236,9 @@ func (s *claudeRuntimeSession) drain(ctx context.Context) error {
 	select {
 	case <-s.done:
 	default:
-		s.writeMu.Lock()
+		if err := lockRuntimeContext(ctx, &s.writeMu); err != nil {
+			return err
+		}
 		if s.stdin == nil {
 			s.writeMu.Unlock()
 			return errors.New("Claude input stream is unavailable for a durable drain")
@@ -1417,4 +1445,14 @@ func (i *claudeRuntimeImplementation) retireManagedTarget(ctx context.Context, c
 		slot.mu.Unlock()
 	}
 	return nil
+}
+
+// withNativeClaudeSession returns a copy of payload that resumes nativeID.
+func withNativeClaudeSession(payload map[string]any, nativeID string) map[string]any {
+	resumed := make(map[string]any, len(payload)+1)
+	for key, value := range payload {
+		resumed[key] = value
+	}
+	resumed["session_id"] = nativeID
+	return resumed
 }

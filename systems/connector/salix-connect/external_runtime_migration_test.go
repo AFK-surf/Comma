@@ -324,7 +324,11 @@ func nativeMigrationIDKey(provider string) string {
 
 func configureMigrationNativeHome(t *testing.T, provider, url, model string) {
 	t.Helper()
-	home := t.TempDir()
+	configureMigrationNativeHomeAt(t, t.TempDir(), provider, url, model)
+}
+
+func configureMigrationNativeHomeAt(t *testing.T, home, provider, url, model string) {
+	t.Helper()
 	t.Setenv("HOME", home)
 	write := func(path, body string) {
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {

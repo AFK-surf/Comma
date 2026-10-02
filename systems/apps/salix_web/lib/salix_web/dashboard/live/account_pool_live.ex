@@ -1,8 +1,8 @@
 defmodule SalixWeb.Dashboard.AccountPoolLive do
   @moduledoc """
-  Shared subscription UI callbacks and rendering. The Salix route uses AccountPool.
-  BFT supplies an organization-authorized API and an opaque organization/user scope.
-  Neither the API module nor its scope comes from browser parameters.
+  The Salix operator page for a tenant's subscription accounts (`AccountPool`).
+  The tenant scope comes from the dashboard session, never from browser
+  parameters.
   """
   use SalixWeb.Dashboard, :live_view
   alias SalixAgent.AccountPool
@@ -22,7 +22,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
     socket =
       socket
       |> assign(
-        account_pool_api: socket.assigns[:account_pool_api] || AccountPool,
         active_nav: :account_pool,
         page_title: "Subscription Proxy",
         breadcrumbs: [{"Subscription Proxy", nil}],
@@ -42,7 +41,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
         usage: nil,
         usage_next: nil,
         usage_hidden_count: 0,
-        provider_defaults: %{},
         form_epoch: 0
       )
       |> allow_upload(:credentials,
@@ -68,22 +66,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
   def handle_event("open-import", _, socket), do: {:noreply, open_dialog(socket, :import)}
   def handle_event("open-connect", _, socket), do: {:noreply, open_dialog(socket, :connect)}
 
-  def handle_event("open-provider-key", _, socket),
-    do: {:noreply, open_dialog(socket, :provider_key)}
-
-  def handle_event("use-openrouter", _, socket) do
-    {:noreply,
-     assign(socket,
-       provider_defaults: %{
-         "endpoint" => "https://openrouter.ai/api",
-         "protocol" => "anthropic_messages",
-         "auth_scheme" => "bearer"
-       }
-     )}
-  end
-
   def handle_event("save-provider-key", params, socket) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
     selected = socket.assigns.selected
 
@@ -101,7 +84,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
       case {socket.assigns.dialog, selected} do
         {:provider_name, %{} = account} ->
           fn ->
-            api.update(
+            AccountPool.update(
               tenant,
               account["id"],
               Map.take(params, ["name"]) |> Map.put("version", account["version"])
@@ -110,15 +93,12 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
 
         {:provider_connection, %{} = account} ->
           fn ->
-            api.update(
+            AccountPool.update(
               tenant,
               account["id"],
               Map.put(Map.drop(attrs, ["name"]), "version", account["version"])
             )
           end
-
-        {:provider_key, nil} ->
-          fn -> api.create(tenant, Map.put(attrs, "credential_kind", "provider_api_key")) end
       end
 
     {:noreply,
@@ -159,7 +139,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
 
         case Jason.decode(contents || "") do
           {:ok, credentials} when is_map(credentials) ->
-            api = socket.assigns.account_pool_api
             tenant = socket.assigns.current_tenant
             selected = socket.assigns.selected
             provider = socket.assigns.provider
@@ -167,14 +146,14 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
             operation =
               if selected do
                 fn ->
-                  api.update(tenant, selected["id"], %{
+                  AccountPool.update(tenant, selected["id"], %{
                     "version" => selected["version"],
                     "credentials" => credentials
                   })
                 end
               else
                 fn ->
-                  api.create(tenant, %{
+                  AccountPool.create(tenant, %{
                     "credential_kind" => "subscription_oauth",
                     "provider" => provider,
                     "credentials" => credentials
@@ -194,7 +173,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
   end
 
   def handle_event("authorize", params, socket) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
     selected = socket.assigns.selected
 
@@ -214,7 +192,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
      socket
      |> assign(provider: provider, attempt: nil)
      |> run(:oauth, fn ->
-       api.begin_oauth(
+       AccountPool.begin_oauth(
          tenant,
          Map.put(attrs, "mode", if(provider == "codex", do: "device", else: "callback"))
        )
@@ -226,24 +204,22 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
         %{"id" => id},
         %{assigns: %{attempt: %{"id" => id, "mode" => "device"}}} = socket
       ) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
 
     {:noreply,
      start_async(socket, {:device_poll, id}, fn ->
-       api.complete_oauth(tenant, id, %{"code" => ""})
+       AccountPool.complete_oauth(tenant, id, %{"code" => ""})
      end)}
   end
 
   def handle_event("complete", params, %{assigns: %{attempt: %{"id" => id}}} = socket) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
     attrs = %{"code" => params["code"]}
 
     {:noreply,
      socket
      |> assign(attempt: nil)
-     |> run(:mutation, fn -> api.complete_oauth(tenant, id, attrs) end)}
+     |> run(:mutation, fn -> AccountPool.complete_oauth(tenant, id, attrs) end)}
   end
 
   def handle_event(
@@ -252,20 +228,20 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
         %{assigns: %{selected: account, dialog: :delete}} = socket
       )
       when is_map(account) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
 
     {:noreply,
      run(socket, :mutation, fn ->
-       api.delete(tenant, account["id"], account["version"])
+       AccountPool.delete(tenant, account["id"], account["version"])
      end)}
   end
 
   def handle_event("confirm-reset", _, %{assigns: %{dialog: :reset, selected: account}} = socket) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
     attrs = %{"version" => account["version"], "request_id" => socket.assigns.reset_request_id}
-    {:noreply, run(socket, :reset, fn -> api.reset_quota(tenant, account["id"], attrs) end)}
+
+    {:noreply,
+     run(socket, :reset, fn -> AccountPool.reset_quota(tenant, account["id"], attrs) end)}
   end
 
   def handle_event(
@@ -273,12 +249,11 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
         _,
         %{assigns: %{dialog: :disable, selected: account}} = socket
       ) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
 
     {:noreply,
      run(socket, :mutation, fn ->
-       api.update(tenant, account["id"], %{
+       AccountPool.update(tenant, account["id"], %{
          "version" => account["version"],
          "disabled" => true
        })
@@ -293,7 +268,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
          assign(socket, page_error: "Refresh the list before changing this subscription.")}
 
       account ->
-        api = socket.assigns.account_pool_api
         tenant = socket.assigns.current_tenant
 
         case event do
@@ -319,7 +293,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
             {:noreply, open_dialog(socket, :connect, account)}
 
           "quota" ->
-            {:noreply, run(socket, :mutation, fn -> api.quota(tenant, id) end)}
+            {:noreply, run(socket, :mutation, fn -> AccountPool.quota(tenant, id) end)}
 
           "toggle" ->
             if static_account?(account) and !account["disabled"] do
@@ -327,7 +301,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
             else
               {:noreply,
                run(socket, :mutation, fn ->
-                 api.update(tenant, id, %{
+                 AccountPool.update(tenant, id, %{
                    "version" => account["version"],
                    "disabled" => !account["disabled"]
                  })
@@ -366,8 +340,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
       dialog_error: nil,
       usage: nil,
       usage_next: nil,
-      usage_hidden_count: 0,
-      provider_defaults: %{}
+      usage_hidden_count: 0
     )
   end
 
@@ -382,14 +355,13 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
       )
 
   defp run(socket, :mutation, fun) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
     cursor = socket.assigns.cursor
 
     socket
     |> assign(busy: true, page_error: nil, dialog_error: nil)
     |> start_async(:mutation, fn ->
-      with {:ok, _} <- fun.(), do: api.list(tenant, cursor)
+      with {:ok, _} <- fun.(), do: AccountPool.list(tenant, cursor)
     end)
   end
 
@@ -397,18 +369,16 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
     do: socket |> assign(busy: true, page_error: nil, dialog_error: nil) |> start_async(kind, fun)
 
   defp load_usage(socket, account, cursor) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
 
     socket
     |> assign(busy: true, dialog_error: nil)
-    |> start_async(:usage, fn -> api.list_bindings(tenant, account["id"], cursor || 0) end)
+    |> start_async(:usage, fn -> AccountPool.list_bindings(tenant, account["id"], cursor || 0) end)
   end
 
   defp load(socket, cursor) do
-    api = socket.assigns.account_pool_api
     tenant = socket.assigns.current_tenant
-    socket |> assign(cursor: cursor) |> run(:list, fn -> api.list(tenant, cursor) end)
+    socket |> assign(cursor: cursor) |> run(:list, fn -> AccountPool.list(tenant, cursor) end)
   end
 
   @impl true
@@ -579,16 +549,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
   defp protocol_name("openai_responses"), do: "OpenAI Responses"
   defp protocol_name(value), do: value || "Unknown"
 
-  defp usage_path(assigns, binding) do
-    with %{slug: org_slug} <- assigns[:current_org],
-         project_id when is_binary(project_id) <- get_in(binding, ["project", "id"]),
-         workload_id when is_binary(workload_id) <- binding["workload_id"] do
-      "/orgs/#{org_slug}/projects/#{project_id}/devices?runtime_auth_target=#{URI.encode_www_form(workload_id)}"
-    else
-      _ -> nil
-    end
-  end
-
   defp primary_window(account) do
     all = get_in(account, ["quota", "windows"]) || []
 
@@ -680,19 +640,18 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
     """
   end
 
-  def dialog_title(:reset, _), do: "Use one reset credit"
-  def dialog_title(:delete, _), do: "Remove subscription"
-  def dialog_title(:connect, nil), do: "Connect subscription"
-  def dialog_title(:connect, _), do: "Reauthorize subscription"
-  def dialog_title(:provider_key, _), do: "Add Provider API key"
-  def dialog_title(:provider_name, _), do: "Edit account name"
-  def dialog_title(:provider_connection, _), do: "Edit connection"
-  def dialog_title(:usage, _), do: "Account usage"
-  def dialog_title(:disable, _), do: "Disable organization account"
-  def dialog_title(_, nil), do: "Import credentials"
-  def dialog_title(_, _), do: "Replace credentials"
+  defp dialog_title(:reset, _), do: "Use one reset credit"
+  defp dialog_title(:delete, _), do: "Remove subscription"
+  defp dialog_title(:connect, nil), do: "Connect subscription"
+  defp dialog_title(:connect, _), do: "Reauthorize subscription"
+  defp dialog_title(:provider_name, _), do: "Edit account name"
+  defp dialog_title(:provider_connection, _), do: "Edit connection"
+  defp dialog_title(:usage, _), do: "Account usage"
+  defp dialog_title(:disable, _), do: "Disable organization account"
+  defp dialog_title(_, nil), do: "Import credentials"
+  defp dialog_title(_, _), do: "Replace credentials"
 
-  def account_list(assigns) do
+  defp account_list(assigns) do
     ~H"""
       <div class="rounded-lg border border-neutral-200 bg-white">
         <div class="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
@@ -809,7 +768,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
     """
   end
 
-  def dialog_body(assigns) do
+  defp dialog_body(assigns) do
     ~H"""
         <p :if={@selected} class="mb-4 break-all text-sm text-neutral-600">{identity(@selected)}</p>
         <div :if={@dialog_error} role="alert" class="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{@dialog_error}</div>
@@ -851,13 +810,12 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
             </form>
           </div>
         </div>
-        <form :if={@dialog in [:provider_key, :provider_name, :provider_connection]} id={"provider-key-#{@form_epoch}"} phx-submit="save-provider-key" class="space-y-4">
-          <.input :if={@dialog in [:provider_key, :provider_name]} id="provider-account-name" name="name" label="Name" value={(@selected && @selected["name"]) || ""} required disabled={@busy} />
-          <div :if={@dialog in [:provider_key, :provider_connection]} class="space-y-4">
-            <.button :if={@dialog == :provider_key} type="button" size="sm" phx-click="use-openrouter" disabled={@busy}>Use OpenRouter settings</.button>
-            <.input id="provider-endpoint" name="endpoint" type="url" label="HTTPS endpoint" value={get_in(@selected || %{}, ["connection", "endpoint"]) || @provider_defaults["endpoint"] || ""} required disabled={@busy} />
-            <.select id="provider-protocol" name="protocol" label="Protocol" value={get_in(@selected || %{}, ["connection", "protocol"]) || @provider_defaults["protocol"] || "anthropic_messages"} options={[{"Anthropic Messages", "anthropic_messages"}, {"OpenAI Responses", "openai_responses"}, {"OpenAI Completions", "openai_completions"}]} disabled={@busy} />
-            <.select id="provider-auth-scheme" name="auth_scheme" label="Authentication" value={get_in(@selected || %{}, ["connection", "auth_scheme"]) || @provider_defaults["auth_scheme"] || "bearer"} options={[{"Bearer token", "bearer"}, {"API key header", "api_key"}]} disabled={@busy} />
+        <form :if={@dialog in [:provider_name, :provider_connection]} id={"provider-key-#{@form_epoch}"} phx-submit="save-provider-key" class="space-y-4">
+          <.input :if={@dialog == :provider_name} id="provider-account-name" name="name" label="Name" value={(@selected && @selected["name"]) || ""} required disabled={@busy} />
+          <div :if={@dialog == :provider_connection} class="space-y-4">
+            <.input id="provider-endpoint" name="endpoint" type="url" label="HTTPS endpoint" value={get_in(@selected || %{}, ["connection", "endpoint"]) || ""} required disabled={@busy} />
+            <.select id="provider-protocol" name="protocol" label="Protocol" value={get_in(@selected || %{}, ["connection", "protocol"]) || "anthropic_messages"} options={[{"Anthropic Messages", "anthropic_messages"}, {"OpenAI Responses", "openai_responses"}, {"OpenAI Completions", "openai_completions"}]} disabled={@busy} />
+            <.select id="provider-auth-scheme" name="auth_scheme" label="Authentication" value={get_in(@selected || %{}, ["connection", "auth_scheme"]) || "bearer"} options={[{"Bearer token", "bearer"}, {"API key header", "api_key"}]} disabled={@busy} />
             <.input id="provider-api-key" name="api_key" type="password" label="Provider API key" value="" required autocomplete="new-password" disabled={@busy} />
             <p class="text-xs text-neutral-600">The key is stored for this organization and sent to bound runtimes. Saving does not verify the provider.</p>
           </div>
@@ -868,8 +826,6 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
           <p :if={@usage == [] && @usage_hidden_count == 0} class="text-sm text-neutral-600">No workloads use this account.</p>
           <ul :if={is_list(@usage) && @usage != []} class="divide-y divide-neutral-100 rounded-md border border-neutral-200">
             <li :for={binding <- @usage} class="px-3 py-2 text-sm">
-              <a :if={usage_path(assigns, binding)} href={usage_path(assigns, binding)} class="font-medium text-brand-700 underline">{get_in(binding, ["project", "name"])}</a>
-              <div :if={!usage_path(assigns, binding)} class="font-medium">{get_in(binding, ["project", "name"])}</div>
               <div class="text-xs text-neutral-500">Workload {binding["workload_id"]}</div>
             </li>
           </ul>

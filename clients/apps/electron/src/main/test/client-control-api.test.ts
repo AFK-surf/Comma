@@ -217,6 +217,7 @@ describe("Comma Main client-control API", () => {
       })
     ).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -226,9 +227,23 @@ describe("Comma Main client-control API", () => {
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
     });
     expect(harness.appPreferences.update).toHaveBeenCalledWith({ showInDock: false });
+
+    // An agent may turn lid-closed keep-awake on or off; Main still owns the
+    // daemon approval that only the user can give.
+    await expect(
+      harness.registry.invoke({
+        api: "update",
+        input: { keepAwakeWhenLidClosed: true },
+        module: "global-settings",
+      })
+    ).resolves.toMatchObject({ keepAwakeWhenLidClosed: true });
+    expect(harness.appPreferences.update).toHaveBeenLastCalledWith({
+      keepAwakeWhenLidClosed: true,
+    });
 
     await expect(
       harness.registry.invoke({
@@ -403,6 +418,7 @@ async function createHarness() {
   roots.push(artifactRoot);
   let preferenceState: AppPreferences = {
     airDropName: null,
+    keepAwakeWhenLidClosed: false,
     launchAtLogin: false,
     notchSideWidth: 156,
     notificationSound: true,
@@ -412,6 +428,7 @@ async function createHarness() {
     showInDock: true,
     showInMenuBar: true,
     showInNotch: true,
+    sideChatEnabled: true,
     systemNotifications: true,
   };
   const appPreferences = {

@@ -4,6 +4,8 @@ import { appKeybindingKeycaps, cx, formatAppKeybinding } from "@comma/ui";
 import { useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
+import { useIsGuestSession } from "./auth-context";
+import { GuestSignUpBanner } from "./GuestSignUpBanner";
 import { ShellIconButton } from "./ShellIconButton";
 import { ChatSidebarToggle } from "./chat-sidebar/ChatSidebar";
 import { useCommandPalette } from "./search/CommandPaletteContext";
@@ -23,6 +25,7 @@ export function WindowBar() {
   const backShortcut = useAppShortcutBinding("history-back");
   const forwardShortcut = useAppShortcutBinding("history-forward");
   const hasTrafficLights = useHasTrafficLights();
+  const guest = useIsGuestSession();
 
   return (
     <div
@@ -30,6 +33,7 @@ export function WindowBar() {
         "comma-window-bar comma-window-titlebar-region grid shrink-0 items-center gap-lg pb-xs pr-lg pt-sm",
         hasTrafficLights ? "pl-sm" : "pl-lg"
       )}
+      data-guest={guest ? "true" : undefined}
       data-testid="comma-window-bar"
     >
       {/* The flank keeps the lights' 32px row height on every platform, so the
@@ -67,10 +71,10 @@ export function WindowBar() {
           />
         </div>
       </div>
-      <WindowBarSearch />
+      {guest ? <GuestSignUpBanner /> : <WindowBarSearch />}
       <div className="comma-window-bar-trailing flex shrink-0 items-center justify-end gap-xs">
-        <RecentTasksMenu />
-        <ChatSidebarToggle />
+        {guest ? null : <RecentTasksMenu />}
+        {guest ? null : <ChatSidebarToggle />}
       </div>
     </div>
   );

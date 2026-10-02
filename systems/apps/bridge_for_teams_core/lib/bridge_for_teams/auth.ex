@@ -19,27 +19,17 @@ defmodule BridgeForTeams.Auth do
   require Logger
 
   alias BridgeForTeams.Auth.{Feishu, OIDC, Sessions}
-  alias BridgeForTeams.{Memberships, Observability, Repo}
+  alias BridgeForTeams.{Observability, Repo}
 
   alias BridgeForTeams.Schema.{
     ApiKey,
     AuthSession,
-    DashboardImportToken,
     MacMiniInstallCode,
-    Organization,
     OrgMembership,
     OrgSsoConnection,
     OrgSsoIdentity,
-    Project,
     User
   }
-
-  # Raw import tokens carry a distinct prefix so they never collide with API
-  # keys (`bft_`) or opaque session tokens, and are easy to spot in logs.
-  @import_token_prefix "bfti_"
-  # Import tokens are deliberately short-lived (default 60 minutes): a project
-  # admin mints one, pastes it into a one-off import command, and it lapses.
-  @default_import_token_ttl_seconds 60 * 60
 
   @doc """
   Build the IdP authorization-code + PKCE redirect URL for an org's SSO
@@ -219,125 +209,6 @@ defmodule BridgeForTeams.Auth do
       nil ->
         {:ok, nil}
     end
-  end
-
-  @doc """
-  Mint a temporary My Space data-import token for `user` scoped to
-  `(org, project)`, returning the raw token exactly once.
-
-  Allowed for project admins or org owners/admins (the canonical project-write
-  RBAC check). The database stores only the token hash. Minting revokes the
-  user's previous active token for the same project, so a user holds at most one
-  active import token per project. TTL defaults to 60 minutes
-  (`:ttl_seconds` overrides). Audits the mint via Observability like the
-  neighboring auth events.
-  """
-  @spec create_import_token(User.t(), Organization.t(), Project.t(), keyword()) ::
-          {:ok,
-           %{token: String.t(), import_token: DashboardImportToken.t(), expires_at: DateTime.t()}}
-          | {:error, :forbidden | term()}
-  def create_import_token(
-        %User{} = user,
-        %Organization{} = org,
-        %Project{} = project,
-        opts \\ []
-      ) do
-    with :ok <- authorize_import_token(user, org, project) do
-      token = @import_token_prefix <> Sessions.generate_token()
-      now = DateTime.utc_now()
-      ttl = Keyword.get(opts, :ttl_seconds, @default_import_token_ttl_seconds)
-      expires_at = DateTime.add(now, ttl, :second)
-
-      attrs = %{
-        user_id: user.id,
-        org_id: org.id,
-        project_id: project.id,
-        token_hash: Sessions.hash_token(token),
-        expires_at: expires_at
-      }
-
-      Repo.transaction(fn ->
-        revoke_active_import_tokens(user.id, project.id, now)
-
-        case %DashboardImportToken{} |> DashboardImportToken.changeset(attrs) |> Repo.insert() do
-          {:ok, import_token} ->
-            _ = record_import_token_audit(user, import_token, opts)
-            %{token: token, import_token: import_token, expires_at: import_token.expires_at}
-
-          {:error, changeset} ->
-            Repo.rollback(changeset)
-        end
-      end)
-    end
-  end
-
-  @doc """
-  Authenticate a raw My Space import token.
-
-  Checks the hash, that the token is unrevoked and unexpired, that the user is
-  still active, AND re-verifies at use time that the user still has project
-  write access (membership may have been revoked since the token was minted).
-  Returns the resolved user and the token's org/project scope.
-  """
-  @spec authenticate_import_token(String.t()) ::
-          {:ok, %{user: User.t(), org_id: Ecto.UUID.t(), project_id: Ecto.UUID.t()}}
-          | {:error, :unauthenticated}
-  def authenticate_import_token(@import_token_prefix <> _ = raw) when is_binary(raw) do
-    hash = Sessions.hash_token(raw)
-
-    with %DashboardImportToken{revoked_at: nil} = token <-
-           Repo.get_by(DashboardImportToken, token_hash: hash),
-         true <- DateTime.compare(token.expires_at, DateTime.utc_now()) == :gt,
-         %User{status: "active"} = user <- Repo.get(User, token.user_id),
-         :ok <- Memberships.authorize(user.id, :write, %{project_id: token.project_id}) do
-      {:ok, %{user: user, org_id: token.org_id, project_id: token.project_id}}
-    else
-      _ -> {:error, :unauthenticated}
-    end
-  end
-
-  def authenticate_import_token(_), do: {:error, :unauthenticated}
-
-  # Project admins and org owners/admins can mint; the project-write RBAC check
-  # is exactly that set (org owner/admin derive project "admin").
-  defp authorize_import_token(%User{} = user, %Organization{} = org, %Project{} = project) do
-    cond do
-      project.org_id != org.id ->
-        {:error, :forbidden}
-
-      Memberships.authorize(user.id, :write, %{project_id: project.id}) == :ok ->
-        :ok
-
-      true ->
-        {:error, :forbidden}
-    end
-  end
-
-  defp revoke_active_import_tokens(user_id, project_id, now) do
-    from(t in DashboardImportToken,
-      where: t.user_id == ^user_id and t.project_id == ^project_id and is_nil(t.revoked_at)
-    )
-    |> Repo.update_all(set: [revoked_at: now])
-  end
-
-  defp record_import_token_audit(%User{} = user, %DashboardImportToken{} = token, opts) do
-    Observability.record_audit(%{
-      org_id: token.org_id,
-      actor_user_id: user.id,
-      actor_label: audit_actor_label(user),
-      action: "dashboard_import_token.created",
-      resource_type: "dashboard_import_token",
-      resource_id: token.id,
-      resource_label: "My Space import token #{short_id(token.id)}",
-      result: "ok",
-      request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
-      metadata: %{
-        "user_id" => user.id,
-        "project_id" => token.project_id,
-        "expires_at" => token.expires_at
-      },
-      redacted_diff: %{"credential" => %{"from" => nil, "to" => token.id}}
-    })
   end
 
   @doc """

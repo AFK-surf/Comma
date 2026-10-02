@@ -59,7 +59,10 @@ export type ChatSidebarDrivePreview = {
 export type ChatSidebarHistoryPage = {
   id: string;
   groupId: string;
-  participant: Pick<ChatParticipantStatus, "conversationId" | "participantId" | "name">;
+  participant: Pick<
+    ChatParticipantStatus,
+    "actorRole" | "conversationId" | "participantId" | "name"
+  >;
 };
 
 export type ChatSidebarFilePreview = { id: string; source: ConversationFileSource };
@@ -676,7 +679,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           !session.filePreviews?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
-          return { ...current, sessions };
+          return finishSidebarTabClose(current, sessions, host);
         }
 
         const closingActive =
@@ -711,7 +714,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           activeSurface,
           browserPages,
         });
-        return { ...current, sessions };
+        return finishSidebarTabClose(current, sessions, host);
       });
     },
     []
@@ -751,7 +754,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
                     : "file"
               : session.activeSurface,
         });
-        return { ...current, sessions };
+        return finishSidebarTabClose(current, sessions, host);
       });
     },
     []
@@ -798,9 +801,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
 
   const closeFilePreview = useCallback<ChatSidebarContextValue["closeFilePreview"]>(
     (host, id) => {
-      setRegistry((current) => ({
-        ...current,
-        sessions: updateSidebarSession(current.sessions, host, (session) => {
+      setRegistry((current) => {
+        const sessions = updateSidebarSession(current.sessions, host, (session) => {
           const previews = session.filePreviews ?? [];
           const index = previews.findIndex((preview) => preview.id === id);
           if (index < 0) return session;
@@ -824,8 +826,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
                       : "browser"
                 : session.activeSurface,
           };
-        }),
-      }));
+        });
+        return finishSidebarTabClose(current, sessions, host);
+      });
     },
     []
   );
@@ -908,7 +911,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           !session.filePreviews?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
-          return { ...current, sessions };
+          return finishSidebarTabClose(current, sessions, host);
         }
 
         const closingActive =
@@ -946,7 +949,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           activeSurface,
           drivePreviews,
         });
-        return { ...current, sessions };
+        return finishSidebarTabClose(current, sessions, host);
       });
     },
     []
@@ -1031,7 +1034,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           activeHistoryPageId,
           activeSurface,
         });
-        return { ...current, sessions };
+        return finishSidebarTabClose(current, sessions, host);
       });
     },
     []
@@ -1342,6 +1345,26 @@ function touchSidebarSession(
 ) {
   sessions.delete(hostKey);
   sessions.set(hostKey, session);
+}
+
+function finishSidebarTabClose(
+  current: ChatSidebarRegistry,
+  sessions: ReadonlyMap<string, ChatSidebarSession>,
+  host: ChatSidebarHost
+): ChatSidebarRegistry {
+  const key = chatSidebarHostKey(host);
+  const session = sessions.get(key);
+  const hasTabs =
+    session &&
+    (session.browserPages.length > 0 ||
+      session.chats.length > 0 ||
+      session.drivePreviews.length > 0 ||
+      (session.historyPages?.length ?? 0) > 0 ||
+      (session.filePreviews?.length ?? 0) > 0);
+  if (hasTabs || !current.openSessionKeys.has(key)) return { ...current, sessions };
+  const openSessionKeys = new Set(current.openSessionKeys);
+  openSessionKeys.delete(key);
+  return { ...current, openSessionKeys, sessions };
 }
 
 function openSidebarSession(

@@ -9,6 +9,7 @@ export interface RendererWindowIdentityOptions {
     | "meeting-recorder-window"
     | "dev-workbench"
     | "main-window"
+    | "onboarding-window"
     | "side-chat-test-window"
     | "side-chat-window";
 }
@@ -200,6 +201,66 @@ export function createSideChatTestWindowOptions({
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
+      additionalArguments: createRendererWindowIdentityArguments({
+        windowId,
+        windowRole,
+      }),
+    },
+  };
+}
+
+/**
+ * The first-launch onboarding: a transparent sheet over the display that holds
+ * the main window, below its menu bar and over its Dock. It is created at the
+ * normal window level; its presenter raises it above the Dock only while Comma
+ * is the active app, so the browser or System Settings come in front of it when
+ * the onboarding opens them. It cannot be moved, resized, minimized, or taken
+ * full screen; ⌘W closes it.
+ */
+export function createOnboardingWindowOptions({
+  bounds,
+  locale = baseLocale,
+  preloadPath,
+  productName,
+  windowId,
+  windowRole,
+}: {
+  bounds: { height: number; width: number; x: number; y: number };
+  locale?: CommaLocale;
+  preloadPath: string;
+  productName: string;
+} & RendererWindowIdentityOptions): BrowserWindowConstructorOptions {
+  return {
+    ...bounds,
+    // A click that brings Comma back from the browser or System Settings also
+    // presses the control under it.
+    acceptFirstMouse: true,
+    backgroundColor: "#00000000",
+    // Frameless: AppKit keeps the requested frame instead of moving the sheet
+    // below the menu bar.
+    enableLargerThanScreen: true,
+    frame: false,
+    fullscreenable: false,
+    hasShadow: false,
+    hiddenInMissionControl: true,
+    maximizable: false,
+    minimizable: false,
+    movable: false,
+    resizable: false,
+    roundedCorners: false,
+    show: false,
+    skipTaskbar: true,
+    title: messages.electron_onboarding_window_title({ productName }, { locale }),
+    transparent: true,
+    webPreferences: {
+      preload: preloadPath,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      // The onboarding's intro sound plays as it opens, before the user has
+      // pressed anything in this window.
+      autoplayPolicy: "no-user-gesture-required",
       additionalArguments: createRendererWindowIdentityArguments({
         windowId,
         windowRole,

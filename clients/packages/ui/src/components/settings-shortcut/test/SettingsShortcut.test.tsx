@@ -31,6 +31,22 @@ describe("SettingsShortcut", () => {
     expect(formatSettingsShortcut(onChange.mock.calls[0]![0])).toBe("Alt + Space");
   });
 
+  it("records Option-Comma from its physical key, whatever character Option types", async () => {
+    const onChange = vi.fn();
+    render(
+      <SettingsShortcut ariaLabel="Open Comma" value={null} onChange={onChange} />
+    );
+    const recorder = screen.getByRole("button", { name: /Open Comma:/ });
+    await userEvent.click(recorder);
+    fireEvent.keyDown(recorder, { code: "Comma", key: "≤", altKey: true });
+    fireEvent.keyUp(recorder, { code: "Comma", key: "≤", altKey: true });
+    expect(onChange).toHaveBeenCalledWith({
+      key: "comma",
+      modifiers: { alt: true, control: false, meta: false, shift: false },
+    });
+    expect(formatSettingsShortcut(onChange.mock.calls[0]![0])).toBe("Alt + ,");
+  });
+
   it("formats the default Control-Z shortcut", () => {
     expect(formatSettingsShortcut(shortcut)).toBe("Ctrl + Z");
     render(<SettingsShortcut ariaLabel="Open Side Chat" value={shortcut} />);

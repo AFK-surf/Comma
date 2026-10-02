@@ -71,12 +71,9 @@ defmodule CommaWeb.ModelTemplates do
     values = Map.merge(previous, attrs)
     key = Map.get(attrs, "api_key", get_in(old || %{}, ["provider_config", "api_key"]))
     pool = values["account_pool"]
-    pooled = pool in ["codex", "claude"]
-
-    protocol =
-      if pooled,
-        do: if(pool == "codex", do: "responses", else: "anthropic"),
-        else: values["protocol"]
+    route = with {:ok, route} <- SalixAgent.AccountPool.route(pool), do: route, else: (_ -> nil)
+    pooled = route != nil
+    protocol = if pooled, do: route["protocol"], else: values["protocol"]
 
     base_url = values["base_url"]
     max_tokens = values["max_tokens"] || 4096
@@ -105,11 +102,7 @@ defmodule CommaWeb.ModelTemplates do
          "model" => String.trim(values["model"]),
          "model_display_name" => values["model_display_name"],
          "model_vendor" => values["model_vendor"],
-         "provider" =>
-           if(pooled,
-             do: if(pool == "codex", do: "openai", else: "anthropic"),
-             else: String.trim(values["provider"])
-           ),
+         "provider" => if(pooled, do: route["provider"], else: String.trim(values["provider"])),
          "provider_config" =>
            if(pooled,
              do: %{"account_pool" => pool, "protocol" => protocol, "reasoning_effort" => effort},

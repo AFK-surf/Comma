@@ -129,6 +129,7 @@ export function AdminNotice({
 
 export function AdminConfirmationDialog({
   destructive = false,
+  explanation,
   expected,
   isOpen,
   onBusyChange,
@@ -137,6 +138,8 @@ export function AdminConfirmationDialog({
   title,
 }: {
   destructive?: boolean;
+  /** Consequences the operator must read before confirming. */
+  explanation?: string;
   expected: string;
   isOpen: boolean;
   onBusyChange?: (busy: boolean) => void;
@@ -208,7 +211,7 @@ export function AdminConfirmationDialog({
           onPress: () => void confirm(),
         },
       ]}
-      description={`Type “${expected}” to bind this audited command to the intended target.`}
+      description={`${explanation ? `${explanation} ` : ""}Type “${expected}” to bind this audited command to the intended target.`}
       input={{
         "aria-label": "Confirmation value",
         destructive,

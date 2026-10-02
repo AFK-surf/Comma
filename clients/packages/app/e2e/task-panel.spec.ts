@@ -1,3 +1,4 @@
+import { defaultCommaClientSettings } from "@comma/native-bridge";
 import { expect, test } from "@playwright/test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -79,9 +80,7 @@ test("the chat-hosted Task panel reads and refreshes one Task without starting c
       0
     );
     await expect(page.getByRole("button", { name: "Add label" })).toHaveCount(0);
-    await expect(
-      page.getByText("Continue the conversation in your chat.")
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Back to Telegram" })).toHaveCount(0);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth)
     ).toBeLessThanOrEqual(390);
@@ -231,6 +230,106 @@ test("Telegram Mini App reopens after its short session expires", async ({ page 
     expect(requests).toContain(`GET ${previewPath}`);
   } finally {
     releaseStyles();
+    await stub.close();
+  }
+});
+
+test("an ended Telegram panel session asks to reopen before offering Comma sign-in", async ({
+  page,
+}) => {
+  let ended = false;
+  const task = {
+    id: "cnv_panel",
+    group_id: "grp_panel",
+    kind: "agent_task",
+    title: "Long-open Telegram Task",
+    status: "ready_for_review",
+    activity_status: "idle",
+    freshness: { state: "fresh" },
+    updated_at: 1790100000,
+    origin: "telegram",
+    labels: [],
+  };
+  const stub = await startSessionProjectionStub({
+    email: "telegram-ended@comma.local",
+    handleRequest(request, response, path) {
+      if (request.method === "POST" && path === "/v1/comma/auth/telegram-miniapp") {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(
+            createE2eSessionProjection({ email: "telegram-ended@comma.local" })
+          )
+        );
+        return true;
+      }
+      if (ended && path.startsWith("/v1/comma/")) {
+        response.writeHead(401, { "content-type": "application/json" });
+        response.end('{"error":"unauthorized"}');
+        return true;
+      }
+      const body =
+        path === previewPath
+          ? task
+          : path === "/v1/comma/groups/grp_panel/conversations/cnv_panel"
+            ? { ...task, messages: [] }
+            : path === "/v1/comma/groups/grp_panel/task-labels"
+              ? { labels: [], colors: [], proposals: [] }
+              : undefined;
+      if (!body) return false;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+      return true;
+    },
+  });
+  try {
+    await page.addInitScript((baseUrl) => {
+      localStorage.setItem("comma.apiBaseUrl", baseUrl);
+      Object.defineProperty(window, "SharedWorker", { value: undefined });
+      const calls: string[] = [];
+      Object.assign(window, { telegramCalls: calls });
+      Object.defineProperty(window, "Telegram", {
+        value: {
+          WebApp: {
+            initData: "signed-launch",
+            ready: () => {},
+            isVersionAtLeast: () => true,
+            onEvent: () => {},
+            close: () => calls.push("close"),
+          },
+        },
+      });
+    }, stub.baseUrl);
+    await page.goto(
+      `/task-panel.html?${target}&workspace_id=wsp_panel&source=telegram`
+    );
+    await expect(
+      page.getByRole("heading", { name: "Long-open Telegram Task" })
+    ).toBeVisible();
+
+    // The session ends while the panel stays open; the next read finds it gone.
+    ended = true;
+    await page.route(`${stub.baseUrl}/v1/comma/auth/session`, (route) =>
+      route.fulfill({ status: 401, json: { error: "unauthorized" } })
+    );
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    // Only a new launch carries fresh Telegram data, so the panel asks for one.
+    await expect(
+      page.getByRole("heading", { name: "Reopen the Task panel" })
+    ).toBeVisible();
+    await expect(page.getByRole("textbox", { name: /email/i })).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 740 });
+    await page.screenshot({ path: "/tmp/comma-task-panel-reopen.png" });
+    await page.getByRole("button", { name: "Close panel" }).click();
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { telegramCalls: string[] }).telegramCalls
+      )
+    ).toContain("close");
+
+    // A Comma account remains available for readers who prefer it.
+    await page.getByRole("button", { name: "Sign in with Comma" }).click();
+    await expect(page.getByRole("textbox", { name: /email/i })).toBeVisible();
+  } finally {
     await stub.close();
   }
 });
@@ -509,7 +608,7 @@ for (const failure of [
   });
 }
 
-test("the Telegram Task list opens a bounded, read-only conversation from the same Task", async ({
+test("the Telegram Task list opens a bounded, read-only report of the same Task", async ({
   page,
 }) => {
   const requests: string[] = [];
@@ -648,9 +747,17 @@ test("the Telegram Task list opens a bounded, read-only conversation from the sa
     await expect(
       page.getByRole("complementary", { name: "Task details" })
     ).toContainText("Slack");
-    await page.getByRole("button", { name: "View conversation" }).click();
-    await expect(page.getByText("Please check the report from Slack")).toBeVisible();
-    await expect(page.getByText("Comma follow-up on the same Task")).toBeVisible();
+    // The Worker's reply leads; the reader's own message is a line of progress.
+    await expect(
+      page
+        .getByRole("region", { name: "Latest reply from Mira" })
+        .getByText("Comma follow-up on the same Task")
+    ).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Progress" }).getByRole("button", {
+        name: /You · .*Please check the report from Slack/,
+      })
+    ).toBeVisible();
     await expect(page.getByRole("textbox")).toHaveCount(0);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth)
@@ -660,16 +767,12 @@ test("the Telegram Task list opens a bounded, read-only conversation from the sa
     );
     expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
 
-    // A conversation bundle failure must leave Task navigation usable.
+    // A report bundle failure must leave the Task's properties readable.
     await page.reload();
-    await page.getByRole("button", { name: "Slack report" }).click();
-    await expect(
-      page.getByRole("complementary", { name: "Task details" })
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Slack report" })).toBeVisible();
     await page.route("**/assets/*.js", (route) => route.abort());
-    await page.getByRole("button", { name: "View conversation" }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
-    await page.getByRole("button", { name: "Task details", exact: true }).click();
+    await page.getByRole("button", { name: "Slack report" }).click();
+    await expect(page.getByRole("alert")).toContainText("Couldn't load the messages.");
     await expect(
       page.getByRole("complementary", { name: "Task details" })
     ).toBeVisible();
@@ -727,6 +830,24 @@ test("Task panel offers reload when its view cannot download", async ({ page }) 
   await expect(page.getByRole("button", { name: "Reload", exact: true })).toBeVisible();
 });
 
+/** A delegated Task message as Salix stores it. */
+function agentMessage(
+  id: string,
+  role: "delegator" | "worker",
+  at: number,
+  text: string
+) {
+  return {
+    actor_type: "agent",
+    agent_id: role === "delegator" ? "agt_router" : "agt_worker",
+    role_label: role,
+    content: [{ type: "text", text }],
+    created_at: at,
+    kind: "message",
+    message_id: id,
+  };
+}
+
 test("Telegram's dark scheme and back button drive the Task panel chrome", async ({
   page,
 }) => {
@@ -735,12 +856,50 @@ test("Telegram's dark scheme and back button drive the Task panel chrome", async
     group_id: "grp_panel",
     kind: "agent_task",
     title: "Night shift Task",
-    status: "active",
+    status: "ready_for_review",
     activity_status: "idle",
     freshness: { state: "fresh" },
-    updated_at: 1790100000,
+    updated_at: 1790100040,
     origin: "telegram",
     labels: [],
+  };
+  // Router instructions and a superseded reply precede the Worker's conclusion.
+  const transcript = {
+    ...task,
+    messages: [
+      agentMessage(
+        "m1",
+        "delegator",
+        1790100000,
+        "Check why the night shift report is late. Read only."
+      ),
+      {
+        actor_type: "system",
+        content: [{ type: "text", text: "active" }],
+        created_at: 1790100001,
+        kind: "app_event",
+        message_id: "m2",
+        metadata: { event_type: "provider.status" },
+      },
+      agentMessage(
+        "m3",
+        "worker",
+        1790100010,
+        "**I cannot read the schedule yet.** The Router must read it."
+      ),
+      agentMessage(
+        "m4",
+        "delegator",
+        1790100020,
+        "Router read the schedule: enabled at 08:00."
+      ),
+      agentMessage(
+        "m5",
+        "worker",
+        1790100030,
+        "Revised: **The report was generated but never delivered.** The schedule ran at 08:00."
+      ),
+    ],
   };
   let listReads = 0;
   const stub = await startSessionProjectionStub({
@@ -754,9 +913,11 @@ test("Telegram's dark scheme and back button drive the Task panel chrome", async
             ? { data: [task], has_more: false }
             : path === previewPath
               ? task
-              : path === "/v1/comma/groups/grp_panel/task-labels"
-                ? { labels: [], colors: [], proposals: [] }
-                : undefined;
+              : path === "/v1/comma/groups/grp_panel/conversations/cnv_panel"
+                ? transcript
+                : path === "/v1/comma/groups/grp_panel/task-labels"
+                  ? { labels: [], colors: [], proposals: [] }
+                  : undefined;
       if (!body) return false;
       response.writeHead(request.method === "POST" ? 201 : 200, {
         "content-type": "application/json",
@@ -786,6 +947,7 @@ test("Telegram's dark scheme and back button drive the Task panel chrome", async
             setBackgroundColor: (color: string) => calls.push(`background ${color}`),
             setHeaderColor: (color: string) => calls.push(`header ${color}`),
             HapticFeedback: { selectionChanged: () => calls.push("haptic selection") },
+            close: () => calls.push("close"),
             BackButton: {
               show: () => calls.push("back show"),
               hide: () => calls.push("back hide"),
@@ -819,7 +981,7 @@ test("Telegram's dark scheme and back button drive the Task panel chrome", async
       .toBeLessThan(64);
 
     // Changing the status filter gives the device's selection tick.
-    await page.getByRole("button", { name: "In progress" }).click();
+    await page.getByRole("button", { name: "Needs Review" }).click();
     expect(await calls()).toContain("haptic selection");
     await page.getByRole("button", { name: "All tasks" }).click();
 
@@ -828,6 +990,25 @@ test("Telegram's dark scheme and back button drive the Task panel chrome", async
     expect(await calls()).toContain("back show");
     // Telegram's own back control replaces the in-page one.
     await expect(page.getByRole("button", { name: "All tasks" })).toHaveCount(0);
+    // The Worker's conclusion leads, without its label or the evidence repeated as the lead.
+    const reply = page.getByRole("region", { name: /^Latest reply from / });
+    await expect(
+      reply.getByText("The report was generated but never delivered.", { exact: true })
+    ).toBeVisible();
+    await expect(reply).toContainText("The schedule ran at 08:00.");
+    const progress = page.getByRole("region", { name: "Progress" });
+    await expect(progress).toContainText("I cannot read the schedule yet.");
+    await expect(progress).toContainText("Needs Review");
+    // Status events are not messages.
+    await expect(progress.getByText("active", { exact: true })).toHaveCount(0);
+    // Router instructions stay one tap away.
+    const instruction = progress.getByRole("button", { name: /Router · .*Check why/ });
+    await expect(instruction).toHaveAttribute("aria-expanded", "false");
+    await instruction.click();
+    await expect(instruction).toHaveAttribute("aria-expanded", "true");
+    // Review actions live on the Telegram card, so the panel hands back to the chat.
+    await page.getByRole("button", { name: "Back to Telegram" }).click();
+    expect(await calls()).toContain("close");
     // Deeper work continues in Comma Web on the same Task.
     const openInComma = page.getByRole("link", { name: "Open in Comma Web" });
     await expect(openInComma).toHaveAttribute(
@@ -846,6 +1027,164 @@ test("Telegram's dark scheme and back button drive the Task panel chrome", async
     expect(
       await page.evaluate(() => JSON.stringify({ ...localStorage }))
     ).not.toContain('\\"theme\\":\\"dark\\"');
+  } finally {
+    await stub.close();
+  }
+});
+
+test("Task reports preserve structured replies and earlier attachments without writes", async ({
+  page,
+}, testInfo) => {
+  const requests: string[] = [];
+  const task = {
+    id: "cnv_panel",
+    group_id: "grp_panel",
+    kind: "agent_task",
+    title: "Delivery investigation",
+    status: "ready_for_review",
+    activity_status: "idle",
+    freshness: { state: "fresh" },
+    updated_at: 1790100040,
+    origin: "telegram",
+    labels: [],
+  };
+  const blob = { kind: "blob", uuid: "a".repeat(32), hash: "b".repeat(64), size: 68 };
+  const report = (id: string, summary: string, at: number) => ({
+    ...agentMessage(id, "worker", at, ""),
+    content: [
+      { type: "dynamic_ui", blob_ref: blob, version: 1, ui_ref: "delivery", summary },
+      {
+        type: "file",
+        file_name: `${id}.pdf`,
+        mime_type: "application/pdf",
+        blob_ref: blob,
+      },
+      { type: "image", file_name: `${id}.png`, mime_type: "image/png", blob_ref: blob },
+      {
+        type: "conversation_ref",
+        kind: "agent_task",
+        conversation_id: "cnv_evidence",
+        title: "Delivery evidence",
+      },
+      {
+        type: "conversation_ref",
+        presentation: "inline",
+        kind: "agent_task",
+        conversation_id: "cnv_followup",
+        title: "Delivery follow-up",
+        status: "active",
+      },
+    ],
+  });
+  const stub = await startSessionProjectionStub({
+    email: "task-report-content@comma.local",
+    handleRequest(request, response, path) {
+      requests.push(`${request.method} ${request.url}`);
+      if (/\/messages\/(latest|earlier)\/attachments\/2$/.test(path)) {
+        response.writeHead(200, { "content-type": "image/png" });
+        response.end(
+          Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=",
+            "base64"
+          )
+        );
+        return true;
+      }
+      const body =
+        path === previewPath
+          ? task
+          : path === "/v1/comma/groups/grp_panel/conversations/cnv_panel"
+            ? {
+                ...task,
+                messages: [
+                  report(
+                    "earlier",
+                    "Initial evidence: delivery was delayed.",
+                    1790100000
+                  ),
+                  report(
+                    "latest",
+                    "Final evidence: the report was delivered.",
+                    1790100030
+                  ),
+                ],
+              }
+            : path === "/v1/comma/groups/grp_panel/task-labels"
+              ? { labels: [], colors: [], proposals: [] }
+              : undefined;
+      if (!body) return false;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+      return true;
+    },
+  });
+  try {
+    await page.addInitScript(
+      ({ baseUrl, settings }) => {
+        localStorage.setItem("comma.apiBaseUrl", baseUrl);
+        localStorage.setItem("comma.client-settings", JSON.stringify(settings));
+        Object.defineProperty(window, "SharedWorker", { value: undefined });
+      },
+      {
+        baseUrl: stub.baseUrl,
+        settings: {
+          ...defaultCommaClientSettings,
+          appearance: { ...defaultCommaClientSettings.appearance, theme: "light" },
+        },
+      }
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/task-panel.html?${target}&workspace_id=ws_panel`);
+    const latest = page.getByRole("region", { name: /^Latest reply from / });
+    await expect(latest).toContainText("Final evidence: the report was delivered.");
+    await expect(latest).toContainText("latest.pdf");
+    await expect(latest).toContainText("Delivery evidence");
+    await expect(latest).toContainText("Delivery follow-up");
+    await expect(
+      latest.getByRole("img", { name: "latest.png", exact: true })
+    ).toBeVisible();
+    const progress = page.getByRole("region", { name: "Progress" });
+    const earlier = progress.getByRole("button", {
+      name: /Initial evidence: delivery was delayed/,
+    });
+    await earlier.click();
+    await expect(earlier).toHaveAttribute("aria-expanded", "true");
+    await expect(progress).toContainText("earlier.pdf");
+    await expect(progress).toContainText("Delivery evidence");
+    await expect(
+      progress.getByRole("img", { name: "earlier.png", exact: true })
+    ).toBeVisible();
+    expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
+    expect(
+      requests.some((request) => request.includes("/messages/latest/attachments/2"))
+    ).toBe(true);
+    expect(
+      requests.some((request) => request.includes("/messages/earlier/attachments/2"))
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth)
+    ).toBeLessThanOrEqual(390);
+    await earlier.click();
+    await latest.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: testInfo.outputPath("task-report-content-light.png"),
+      animations: "disabled",
+    });
+    await page.evaluate(() => {
+      const key = "comma.client-settings";
+      const current = JSON.parse(localStorage.getItem(key)!);
+      const newValue = JSON.stringify({
+        ...current,
+        appearance: { ...current.appearance, theme: "dark" },
+      });
+      localStorage.setItem(key, newValue);
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "Dark mode");
+    await page.screenshot({
+      path: testInfo.outputPath("task-report-content-dark.png"),
+      animations: "disabled",
+    });
   } finally {
     await stub.close();
   }

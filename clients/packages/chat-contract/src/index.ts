@@ -176,6 +176,7 @@ export const chatMessageSchema = z
     replyToMessageId: z.string().optional(),
     threadRootMessageId: z.string().optional(),
     parts: z.array(chatMessagePartSchema).optional(),
+    platformSource: z.string().min(1).max(64).optional(),
     refs: z.array(chatConversationRefSchema),
     role: z.string(),
     source: z.enum(["server", "pending"]),
@@ -688,6 +689,18 @@ export const sideChatShortcutRegistrationInputSchema = z.object({
 });
 
 /**
+ * One row of the macOS menu-bar menu, which the Side Chat helper draws so that
+ * hovering it never waits on Electron Main. A shortcut is display text only;
+ * the helper reports a chosen row by its opaque id and runs nothing itself.
+ */
+export const statusMenuRowSchema = z.object({
+  id: z.string().min(1).max(256).optional(),
+  kind: z.enum(["header", "item", "separator"]),
+  shortcut: z.string().min(1).max(64).optional(),
+  title: z.string().max(1024).optional(),
+});
+
+/**
  * Deliberately smaller than ConversationProjection. Renderer-owned draft text,
  * local attachment paths, retry queues, cursors, and server caches must remain
  * in Electron Main and never cross into the native view helper.
@@ -833,6 +846,13 @@ const sideChatSurfaceControlVariants = [
     kind: z.literal("side-chat.stop"),
     ...sideChatCommandEnvelopeShape,
   }),
+  // Off: the helper drops the edge gesture and the global shortcut, closes the
+  // surface, and ignores open requests until turned on again.
+  z.object({
+    enabled: z.boolean(),
+    kind: z.literal("side-chat.enabled"),
+    ...sideChatCommandEnvelopeShape,
+  }),
 ] as const;
 
 export const sideChatSurfaceControlSchema = z.discriminatedUnion(
@@ -840,9 +860,31 @@ export const sideChatSurfaceControlSchema = z.discriminatedUnion(
   sideChatSurfaceControlVariants
 );
 
+const statusMenuControlVariants = [
+  z.object({
+    iconPath: z.string().min(1).max(4096),
+    kind: z.literal("status-menu.show"),
+    rows: z.array(statusMenuRowSchema).max(64),
+    toolTip: z.string().max(256),
+    width: z.number().min(120).max(1200),
+    ...sideChatCommandEnvelopeShape,
+  }),
+  z.object({
+    kind: z.literal("status-menu.hide"),
+    ...sideChatCommandEnvelopeShape,
+  }),
+] as const;
+
+export const statusMenuSelectSchema = z.object({
+  id: z.string().min(1).max(256),
+  kind: z.literal("status-menu.select"),
+  ...sideChatCommandEnvelopeShape,
+});
+
 export const sideChatClientFrameSchema = z.discriminatedUnion("kind", [
   ...sideChatCommandVariants,
   sideChatPresentationSchema,
+  statusMenuSelectSchema,
   sideChatCommandResultSchema,
   sideChatProtocolErrorSchema,
 ]);
@@ -850,9 +892,11 @@ export const sideChatClientFrameSchema = z.discriminatedUnion("kind", [
 export const sideChatHostFrameSchema = z.discriminatedUnion("kind", [
   sideChatSnapshotEnvelopeSchema,
   ...sideChatSurfaceControlVariants,
+  ...statusMenuControlVariants,
   sideChatCommandResultSchema,
 ]);
 
+export type StatusMenuRow = z.infer<typeof statusMenuRowSchema>;
 export type ChatActivity = z.infer<typeof chatActivitySchema>;
 export type ChatAssistantDraft = z.infer<typeof chatAssistantDraftSchema>;
 export type ChatInlineTask = z.infer<typeof chatInlineTaskSchema>;

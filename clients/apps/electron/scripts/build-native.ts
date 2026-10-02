@@ -38,6 +38,9 @@ import {
   sideChatBackdropAddonDistPath,
   sideChatHostBundleId,
   sideChatHostDistAppPath,
+  sleepGuardAddonDistPath,
+  sleepGuardBinaryName,
+  sleepGuardDistPath,
   synchBinaryName,
   synchBinaryPath,
 } from "./native-paths";
@@ -55,6 +58,9 @@ const repoRoot = resolve(appDir, "../../..");
 const releaseConfig = getCommaReleaseConfig();
 const notchPackageDir = resolve(appDir, "native/macos/NotchHost");
 const micCapturePackageDir = resolve(appDir, "native/macos/MicCaptureHost");
+const sleepGuardDir = resolve(appDir, "native/macos/SleepGuard");
+const sleepGuardOutput = sleepGuardDistPath(appDir);
+const sleepGuardAddonOutput = sleepGuardAddonDistPath(appDir);
 const sideChatProjectDir = resolve(appDir, "native/macos/SideChatHost");
 const sideChatBackdropAddonDir = resolve(appDir, "native/macos/SideChatBackdrop");
 const notificationAuthorizationAddonDir = resolve(
@@ -138,6 +144,23 @@ function buildMicCaptureHost() {
   assertFile(micCaptureHostOutput, "Native MicCaptureHost");
 
   console.log(`Native MicCaptureHost built (${configuration}).`);
+}
+
+/** The privileged lid-sleep daemon and the addon Main talks to it through. */
+function buildSleepGuard() {
+  run("swift", ["build", "-c", configuration], sleepGuardDir);
+  mkdirSync(outputDir, { recursive: true });
+  copyFileSync(
+    resolve(sleepGuardDir, ".build", configuration, sleepGuardBinaryName),
+    sleepGuardOutput
+  );
+  assertFile(sleepGuardOutput, "Native CommaSleepGuard");
+  buildNodeAddon({
+    addonDir: sleepGuardDir,
+    label: "Native sleep guard addon",
+    output: sleepGuardAddonOutput,
+    targetName: "comma_sleep_guard",
+  });
 }
 
 function buildNotchHost() {
@@ -436,6 +459,8 @@ function verifyNativeOutputs() {
 
   assertFile(notchHostOutput, "Native NotchHost");
   assertFile(micCaptureHostOutput, "Native MicCaptureHost");
+  assertFile(sleepGuardOutput, "Native CommaSleepGuard");
+  assertFile(sleepGuardAddonOutput, "Native sleep guard addon");
   assertFile(sideChatBackdropOutput, "Native Side Chat backdrop addon");
   assertFile(
     notificationAuthorizationOutput,
@@ -540,6 +565,7 @@ async function buildNative() {
 
   buildNotchHost();
   buildMicCaptureHost();
+  buildSleepGuard();
   await buildAirDrop();
   buildSideChatBackdropAddon();
   buildNotificationAuthorizationAddon();

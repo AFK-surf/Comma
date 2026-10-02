@@ -153,7 +153,9 @@ theorem retire_discharge {s output : Term} {j r : List Term}
     have table : obligationMap s = .map xs := by
       have := obligationMap_isMap s
       revert hx
-      cases obligationMap s <;> simp_all [entries, pure_ok_iff, fail_ok_iff]
+      cases obligationMap s <;> simp [entries, pure_ok_iff, fail_ok_iff]
+      intro same _
+      exact same.symm
     simp only [List.mem_append] at member
     rcases member with ((retire | abort) | repaired) | settled
     · right
@@ -492,9 +494,8 @@ theorem onboarding_discharge {s output : Term} {results input j r : List Term} {
   split at call
   · exact Or.inl (pure_ok call)
   rename_i entry
-  have map : scope.isMap = true := by cases h : scope.isMap <;> simp_all
-  have onboard : origin = true := by cases h : origin <;> simp_all
-  have routed : router = true := by cases h : router <;> simp_all
+  obtain ⟨⟨map, onboard⟩, routed⟩ : (scope.isMap = true ∧ origin = true) ∧ router = true := by
+    simpa only [Bool.or_eq_true, Bool.not_eq_true', not_or, Bool.not_eq_false] using entry
   rw [onboard] at horigin
   obtain ⟨source, _, hsource, call⟩ := bind_ok call
   split at call
@@ -511,9 +512,8 @@ theorem onboarding_discharge {s output : Term} {results input j r : List Term} {
   split at call
   · exact Or.inl (pure_ok call)
   rename_i settle
-  have same : (scope' != scope) = false := by cases h : (scope' != scope) <;> simp_all
-  have isReady : ready = true := by cases h : ready <;> simp_all
-  have idle : running.truthy = false := by cases h : running.truthy <;> simp_all
+  simp only [Bool.or_eq_true, Bool.not_eq_true', not_or, Bool.not_eq_true, Bool.not_eq_false] at settle
+  obtain ⟨⟨⟨_, same⟩, isReady⟩, idle⟩ := settle
   rw [isReady] at hready
   obtain ⟨sid, _, hsid, call⟩ := bind_ok call
   obtain ⟨hwm, _, hhwm, call⟩ := bind_ok call
@@ -847,19 +847,29 @@ def guardPrepareOf : Term → Term → KernelM Term := native_decl% "VerifiedKer
 def guardCleanupEventsOf : Term → Term → KernelM Term :=
   native_decl% "VerifiedKernel.Session.Settlement.guardCleanupEvents"
 
-theorem ask_retire (s : Term) : Loop.queryAsk s "runaway_retirement" nil = Settlement.retireRunaway s := rfl
+-- These equations restate the `WorkEmbedding` answers. Each proof by `rfl` looks the query up
+-- in the whole query table again.
+theorem ask_retire (s : Term) : Loop.queryAsk s "runaway_retirement" nil = Settlement.retireRunaway s :=
+  ask_runaway_retirement s nil
 theorem ask_local (s : Term) :
-    Loop.queryAsk s "guard_failure_local_settlement" nil = Settlement.guardLocalSettlement s := rfl
-theorem ask_prepare (s x : Term) : Loop.queryAsk s "guard_failure_prepare" x = guardPrepareOf s x := rfl
-theorem ask_cleanup (s x : Term) : Loop.queryAsk s "guard_failure_cleanup_events" x = guardCleanupEventsOf s x := rfl
-theorem ask_finish (s x : Term) : Loop.queryAsk s "finish_output" x = finishOutputOf s x := rfl
-theorem ask_batch (s x : Term) : Loop.queryAsk s "settle_tool_batch" x = Settlement.batch s x := rfl
-theorem ask_timeout (s x : Term) : Loop.queryAsk s "wait_timeout_event" x = Command.waitTimeout s x := rfl
+    Loop.queryAsk s "guard_failure_local_settlement" nil = Settlement.guardLocalSettlement s :=
+  ask_guard_local s nil
+theorem ask_prepare (s x : Term) : Loop.queryAsk s "guard_failure_prepare" x = guardPrepareOf s x :=
+  ask_guard_prepare s x
+theorem ask_cleanup (s x : Term) : Loop.queryAsk s "guard_failure_cleanup_events" x = guardCleanupEventsOf s x :=
+  ask_guard_cleanup s x
+theorem ask_finish (s x : Term) : Loop.queryAsk s "finish_output" x = finishOutputOf s x :=
+  ask_finish_output s x
+theorem ask_batch (s x : Term) : Loop.queryAsk s "settle_tool_batch" x = Settlement.batch s x :=
+  ask_settle s x
+theorem ask_timeout (s x : Term) : Loop.queryAsk s "wait_timeout_event" x = Command.waitTimeout s x :=
+  ask_wait_timeout s x
 theorem ask_failure (s : Term) :
-    Loop.queryAsk s "llm_failure_ack?" nil = (do return Term.bool (← RoundQuery.llmFailureAck s)) := rfl
+    Loop.queryAsk s "llm_failure_ack?" nil = (do return Term.bool (← RoundQuery.llmFailureAck s)) := by rfl
 theorem ask_onboarding (s results events router : Term) :
     Loop.queryAsk s "onboarding_settlement" (.tuple [results, events, router]) =
-      (do Settlement.onboarding s (← asList results) (← asList events) router.truthy) := rfl
+      (do Settlement.onboarding s (← asList results) (← asList events) router.truthy) :=
+  ask_onboarding_eq s _
 
 syntax "leaf_walk" ident : tactic
 macro_rules
@@ -1234,7 +1244,8 @@ theorem failed_send_keeps_turn_open {s record result output : Term} {input j r :
 /-! ## The provider-wait yield write -/
 
 theorem ask_yield (s x : Term) :
-    Loop.queryAsk s "provider_wait_yield_events" x = StateQuery.waitYieldEvents s x := rfl
+    Loop.queryAsk s "provider_wait_yield_events" x = StateQuery.waitYieldEvents s x :=
+  LoopProof.ask_yield s x
 
 /-- The facts behind the ack of a provider-wait yield. A `wait_for` wait yields
 to queued human input. The ack is at `next_message_id - 1` and closes the
@@ -1265,8 +1276,8 @@ theorem yield_discharge {s expected out : Term} {j r : List Term}
            literal_raw_quiet same (by simp [b, Term.text, Term.isBinary]) (by decide) (by decide) normal)
        · exact absurd normal (fun normal =>
            literal_raw_quiet same (by simp [b, Term.text, Term.isBinary]) (by decide) (by decide) normal)
-       · exact ⟨⟨_, _, hyieldable⟩, _, _, _, ⟨_, _, ‹field s "session_id" _ = _›⟩,
-           ⟨_, _, ‹field s "next_message_id" _ = _›⟩, ⟨_, _, ‹sub _ (i 1) _ = _›⟩, same⟩)
+       · exact ⟨⟨_, _, hyieldable⟩, _, _, _, ⟨_, _, (hyp% field s "session_id" _ = _)⟩,
+           ⟨_, _, (hyp% field s "next_message_id" _ = _)⟩, ⟨_, _, (hyp% sub _ (i 1) _ = _)⟩, same⟩)
 
 /-- Every discharge event of a loop `write` effect is the ack of a provider-wait yield. -/
 theorem write_discharge_justified {s machine event raw : Term} {events : List Term}
@@ -1437,7 +1448,7 @@ theorem obligationCard_stored {s conversation limit t : Term} {j r : List Term} 
   repeat' first
     | (execution_head_is call "Pure.pure"; have same := pure_ok call; subst same; exact stored)
     | (execution_head_is call "VerifiedKernel.Data.write"
-       exact write_put_stored stored (normalizeObligation_binary ‹normalizeObligation _ _ = _›) call)
+       exact write_put_stored stored (normalizeObligation_binary (hyp% normalizeObligation _ _ = _)) call)
     | (execution_head_is call "Bind.bind"; obtain ⟨_, _, prior, call⟩ := bind_ok call
        try (execution_head_is prior "VerifiedKernel.fail"; exact (fail_ok prior).elim))
     | (execution_head_is call "VerifiedKernel.fail"; exact (fail_ok call).elim)
@@ -1865,8 +1876,8 @@ theorem intentRecord_quiet {state m out : Term} {record : Term} {j j' : List Ter
     | close_quiet
     | exact toolTurn_quiet safe h
     | exact toolTurn_quiet safe prior
-    | (obtain ⟨_, rfl⟩ := advance_ok ‹(loop% advance) m _ _ _ = _›
-       obtain ⟨_, rfl⟩ := advance_ok ‹(loop% advance) _ _ _ _ = _›
+    | (obtain ⟨_, rfl⟩ := advance_ok (hyp% (loop% advance) m _ _ _ = _)
+       obtain ⟨_, rfl⟩ := advance_ok (hyp% (loop% advance) _ _ _ _ = _)
        close_quiet)
 
 theorem toolsDone_quiet {state m out : Term} {results async : Term} {j j' : List Term} (safe : MachineQuiet m)
@@ -1876,7 +1887,7 @@ theorem toolsDone_quiet {state m out : Term} {results async : Term} {j j' : List
   run_split
   all_goals first
     | close_quiet
-    | (obtain ⟨_, rfl⟩ := advance_ok ‹(loop% advance) m _ _ _ = _›
+    | (obtain ⟨_, rfl⟩ := advance_ok (hyp% (loop% advance) m _ _ _ = _)
        close_quiet)
 
 theorem resultsStored_quiet {state m out : Term} {events hwm base stored : Term} {j j' : List Term} (safe : MachineQuiet m)
@@ -1910,7 +1921,7 @@ theorem continuation_quiet {state m out : Term} {j j' : List Term} (safe : Machi
   unfold MachineQuiet at safe
   unfold_loop continuation
   run_split
-  all_goals try (obtain ⟨_, rfl⟩ := advance_ok ‹(loop% advance) m _ _ _ = _›)
+  all_goals try (obtain ⟨_, rfl⟩ := advance_ok (hyp% (loop% advance) m _ _ _ = _))
   all_goals first
     | close_quiet
     | (refine quiet_after_park (park_quiet ?_ prior)
@@ -1963,7 +1974,7 @@ theorem timeoutEntry_quiet {state m out : Term} {j j' : List Term} (safe : Machi
        unfold MachineQuiet
        safe_norm
        intro _
-       have call := ‹Loop.queryAsk state "wait_timeout_event" _ _ = _›
+       have call := (hyp% Loop.queryAsk state "wait_timeout_event" _ _ = _)
        rw [ask_timeout] at call
        exact waitTimeout_quiet call (not_true_false ‹_›))
 
@@ -1972,33 +1983,19 @@ theorem classify_quiet {state m out : Term} {j j' : List Term} (safe : MachineQu
   have safe' := safe
   unfold MachineQuiet at safe
   open_classify
+  -- Select the helper lemma by the execution head. A failed `exact` against another helper
+  -- unfolds both helper bodies before it fails.
   all_goals first
-    | exact finalize_quiet safe' h
-    | exact finalize_quiet safe' prior
-    | exact toolTurn_quiet safe' h
-    | exact toolTurn_quiet safe' prior
-    | (refine modelFailure_quiet ?_ h
-       unfold MachineQuiet
-       safe_norm
-       exact safe)
-    | (refine modelFailure_quiet ?_ prior
-       unfold MachineQuiet
-       safe_norm
-       exact safe)
-    | (refine finalize_quiet ?_ h
-       unfold MachineQuiet
-       safe_norm
-       exact safe)
-    | (refine finalize_quiet ?_ prior
-       unfold MachineQuiet
-       safe_norm
-       exact safe)
-    | (refine toolTurn_quiet ?_ h
-       unfold MachineQuiet
-       safe_norm
-       exact safe)
-    | (refine toolTurn_quiet ?_ prior
-       unfold MachineQuiet
+    | (execution_head_is h "VerifiedKernel.Session.Loop.finalize"; refine finalize_quiet ?_ h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.toolTurn"; refine toolTurn_quiet ?_ h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailure"; refine modelFailure_quiet ?_ h)
+    | (execution_head_is prior "VerifiedKernel.Session.Loop.finalize"; refine finalize_quiet ?_ prior)
+    | (execution_head_is prior "VerifiedKernel.Session.Loop.toolTurn"; refine toolTurn_quiet ?_ prior)
+    | (execution_head_is prior "VerifiedKernel.Session.Loop.modelFailure"
+       refine modelFailure_quiet ?_ prior)
+  all_goals first
+    | exact safe'
+    | (unfold MachineQuiet
        safe_norm
        exact safe)
 
@@ -2035,9 +2032,10 @@ theorem step_quiet_out {state machine event out : Term} {j j' : List Term} (safe
     | (execution_head_is h "VerifiedKernel.Session.Loop.continuation"
        exact continuation_quiet safe' h)
     | (execution_head_is h "VerifiedKernel.Session.Loop.guardNotice"
+       refine guardNotice_quiet ?_ h
        first
-         | exact guardNotice_quiet safe' h
-         | (refine guardNotice_quiet (quiet_nil_entry ?_) h
+         | exact safe'
+         | (refine quiet_nil_entry ?_
             safe_norm
             simp))
     | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailure"
@@ -2045,20 +2043,22 @@ theorem step_quiet_out {state machine event out : Term} {j j' : List Term} (safe
        safe_norm
        simp)
     | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       refine activation_quiet ?_ h
        first
-         | exact activation_quiet safe' h
-         | (refine activation_quiet (fun he => ?_) h
+         | exact safe'
+         | (intro he
             safe_norm
             simp only [↓reduceIte, show ("round" = "entry") = False from by decide] at he
             exact absurd he (binary_ne (by decide)))
-         | (refine activation_quiet ?_ h
-            unfold MachineQuiet
+         | (unfold MachineQuiet
             safe_norm
             exact safe))
     | (execution_head_is h "VerifiedKernel.Session.Loop.timeoutEntry"
+       refine timeoutEntry_quiet ?_ h
        first
-         | exact timeoutEntry_quiet safe' h
-         | (refine timeoutEntry_quiet (fun _ => raw_quiet_non_map ?_) h
+         | exact safe'
+         | (intro _
+            refine raw_quiet_non_map ?_
             safe_norm
             simp [nil, Term.isMap]))
 

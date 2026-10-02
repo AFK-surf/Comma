@@ -96,16 +96,17 @@ const registry = createSettingsRegistry({
   its range and default, and `onValueCommit`; its slider writes once a drag is
   released or arrow keys stop, and animates the preview itself. Pass
   `onPreview` to offer showing that width once on the real Notch.
-- Use `SettingsChoiceTable` in a stacked custom row for a searchable single choice.
-  Keep its search and fetch action in the table toolbar. Pass localized labels and controlled values.
-- Use `ModelTemplatesTable` in a stacked custom row for custom models.
-  Use `ModelTemplateDialog` for model creation and editing. Keep assignment controls outside the dialog.
+- A `model-menu` groups models by maker; give models a `section` to head runs
+  of them, such as model families, inside the maker's menu. The trigger shows
+  the chosen model's maker mark, or the `icon` of a chosen top-level item.
+- Use `ModelPicker` in a custom row to choose what an Agent runs: models grouped
+  by family, the thinking effort beside them, and the account (automatic or one
+  profile) in a side panel. A new model waits for its effort; an effort or account is saved at once. The client passes
+  localized labels, the models and the accounts that serve each model. Turn
+  off `chooseAccount` for a model that runs on its own sign-in.
 - Use `CreatedSecretPanel` to show a just-minted credential once: its plaintext,
   an optional example command, copy actions and a dismiss action. Pass localized
   labels and stable test ids; do not rebuild this panel in a client.
-- Use `SubscriptionAccounts` in a stacked custom row for subscription account management.
-  Keep import and connection actions in its toolbar. Use dialogs for credential entry and deletion.
-  The client supplies localized account rows, quota values, and mutation callbacks.
 - Keep persistence, native capabilities, and server calls outside `@comma/ui`.
   Pass their current values and callbacks into the registry.
 

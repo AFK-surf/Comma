@@ -1,10 +1,12 @@
 import { execFile, execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -16,6 +18,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type HostCommand,
+  type HostConfiguration,
   AgentVMMHostPreparation,
   resolveHostConfiguration,
 } from "../modules/compute-node/host-preparation";
@@ -60,7 +63,189 @@ function downloadResponse(bytes: Buffer) {
   return new Response(new Uint8Array(bytes));
 }
 
+// Simulate only the native publication boundary. No test invokes real Host maintenance.
+async function publishFixture(
+  config: HostConfiguration,
+  command: string,
+  args: string[]
+) {
+  if (args[0] === "publish-host") {
+    const sourceApp = args[args.indexOf("--source-app") + 1]!;
+    expect(command).toBe(join(sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle"));
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "publish-host",
+        "--source-app",
+        sourceApp,
+        "--service-type",
+        "agent",
+      ])
+    );
+    await rename(sourceApp, config.appPath);
+  }
+  return "";
+}
+
 describe("Host preparation", () => {
+  it("prepares a pinned maintenance bundle even when an older Host is installed, and retains it outside the uninstall target", async () => {
+    vi.stubEnv("COMMA_R2_PUBLIC_BASE_URL", "https://example.test");
+    const config = resolveHostConfiguration("prod", {}, await temporary());
+    await mkdir(config.appPath, { recursive: true });
+    const bytes = await archiveFixture();
+    const artifact = {
+      release_id: "maintenance-test-release",
+      path: "agent-vmm-host/test/Host.zip",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.length,
+    };
+    const fetcher = vi.fn(async () => downloadResponse(bytes));
+    const run = vi.fn(async (_command: string, args: string[]) =>
+      args[0] === "version" ? JSON.stringify({ release_id: artifact.release_id }) : ""
+    );
+    const preparation = new AgentVMMHostPreparation(config, run, fetcher);
+    const requestId = randomUUID();
+    const staged = await preparation.stageMaintenance(requestId, () => {}, artifact);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(staged).toMatchObject({
+      targetReleaseId: artifact.release_id,
+      artifactSha256: artifact.sha256,
+      artifactSize: artifact.size,
+    });
+    expect(staged.sourceApp).not.toBe(config.appPath);
+    await rm(config.appPath, { recursive: true });
+    expect(
+      await readFile(
+        join(staged.sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle"),
+        "utf8"
+      )
+    ).toContain("#!/bin/sh");
+    const restarted = new AgentVMMHostPreparation(config, run, fetcher);
+    expect(await restarted.stageMaintenance(requestId, () => {}, artifact)).toEqual(
+      staged
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // A signed but wrong release in the retained cache must not strand recovery.
+    run.mockImplementationOnce(async () => "");
+    run.mockImplementationOnce(async () =>
+      JSON.stringify({ release_id: "wrong-release" })
+    );
+    expect(await restarted.stageMaintenance(requestId, () => {}, artifact)).toEqual(
+      staged
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(
+      run.mock.calls.every(
+        ([, args]) =>
+          args[0] !== "install" && args[0] !== "update" && args[0] !== "uninstall"
+      )
+    ).toBe(true);
+  });
+
+  it("keeps the preparation lock through maintenance execution and rejects a concurrent ordinary ensure", async () => {
+    vi.stubEnv("COMMA_R2_PUBLIC_BASE_URL", "https://example.test");
+    const config = resolveHostConfiguration("prod", {}, await temporary());
+    const bytes = await archiveFixture();
+    const artifact = {
+      release_id: "locked-maintenance-release",
+      path: "agent-vmm-host/test/Host.zip",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.length,
+    };
+    const fetcher = vi.fn(async () => downloadResponse(bytes));
+    const run = vi.fn(async (_command: string, args: string[]) =>
+      args[0] === "version" ? JSON.stringify({ release_id: artifact.release_id }) : ""
+    );
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execute = vi.fn(async (bundle: { sourceApp: string }) => {
+      await readFile(
+        join(bundle.sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle")
+      );
+      enter();
+      await held;
+    });
+    const maintenance = new AgentVMMHostPreparation(config, run, fetcher);
+    const ordinary = new AgentVMMHostPreparation(config, run, fetcher);
+    const pending = maintenance.stageMaintenance(
+      randomUUID(),
+      () => {},
+      artifact,
+      execute
+    );
+    await entered;
+    try {
+      await expect(ordinary.ensure(() => {})).rejects.toThrow("Another Comma process");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      release();
+    }
+    const staged = await pending;
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(staged);
+    expect(staged.targetReleaseId).toBe(artifact.release_id);
+    expect(run.mock.calls.some(([, args]) => args[0] === "publish-host")).toBe(false);
+  });
+
+  it("does not publish a download that completes after the local owner chose uninstall", async () => {
+    const config = resolveHostConfiguration(
+      "prod",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
+      await temporary()
+    );
+    const bytes = await archiveFixture();
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn(async () => {
+      enter();
+      await held;
+      return downloadResponse(bytes);
+    });
+    const run = vi.fn((command: string, args: string[]) =>
+      publishFixture(config, command, args)
+    );
+    const preparation = new AgentVMMHostPreparation(config, run, fetcher);
+    const pending = preparation.ensure(() => {});
+    await entered;
+    await mkdir(config.maintenanceDirectory, { recursive: true });
+    await writeFile(
+      join(config.maintenanceDirectory, "state.json"),
+      JSON.stringify({ version: 1, uninstalled: true })
+    );
+    const rejected = expect(pending).rejects.toThrow(/maintenance|reinstall/i);
+    release();
+    await rejected;
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(run.mock.calls.some(([, args]) => args[0] === "publish-host")).toBe(false);
+    await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    // An ordinary retry must retain the user's uninstalled choice without another download.
+    await expect(preparation.ensure(() => {})).rejects.toThrow(
+      /maintenance|reinstall/i
+    );
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(
+      JSON.parse(
+        await readFile(join(config.maintenanceDirectory, "state.json"), "utf8")
+      )
+    ).toMatchObject({ uninstalled: true });
+  });
+
   it("extracts a compressed executable completely in the shipped Electron runtime", async () => {
     const directory = await temporary();
     const payload = Buffer.alloc(2 * 1024 * 1024);
@@ -90,17 +275,20 @@ describe("Host preparation", () => {
       await temporary()
     );
     const fetcher = vi.fn(async () => downloadResponse(await archiveFixture()));
-    const verify = vi.fn(async (_command: string, args: string[]) => {
-      expect(
-        await readFile(
-          join(args.at(-1)!, "Contents/Helpers/agent-vmm-lifecycle"),
-          "utf8"
-        )
-      ).toContain("#!/bin/sh");
-      await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-      return "";
+    const verify = vi.fn(async (command: string, args: string[]) => {
+      if (command === "/usr/bin/codesign") {
+        expect(args.slice(0, 3)).toEqual(["--verify", "--deep", "--strict"]);
+        expect(
+          await readFile(
+            join(args.at(-1)!, "Contents/Helpers/agent-vmm-lifecycle"),
+            "utf8"
+          )
+        ).toContain("#!/bin/sh");
+        await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      }
+      return publishFixture(config, command, args);
     });
     const preparation = new AgentVMMHostPreparation(config, verify, fetcher);
     const phases: string[] = [];
@@ -115,7 +303,12 @@ describe("Host preparation", () => {
     expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
     await preparation.ensure(() => {});
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(verify).toHaveBeenCalledTimes(1);
+    expect(
+      verify.mock.calls.filter(([command]) => command === "/usr/bin/codesign")
+    ).toHaveLength(1);
+    expect(
+      verify.mock.calls.filter(([, args]) => args[0] === "publish-host")
+    ).toHaveLength(1);
   });
 
   it("retains no installed Host after failed verification and retries only when requested", async () => {
@@ -129,7 +322,9 @@ describe("Host preparation", () => {
     const verify = vi
       .fn()
       .mockRejectedValueOnce(new Error("invalid signature"))
-      .mockResolvedValue("");
+      .mockImplementation((command: string, args: string[]) =>
+        publishFixture(config, command, args)
+      );
     const first = new AgentVMMHostPreparation(config, verify, fetcher);
     await expect(first.ensure(() => {})).rejects.toThrow("invalid signature");
     await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
@@ -162,7 +357,11 @@ describe("Host preparation", () => {
       .fn()
       .mockResolvedValueOnce(downloadResponse(incomplete))
       .mockResolvedValueOnce(downloadResponse(bytes));
-    const preparation = new AgentVMMHostPreparation(config, async () => "", fetcher);
+    const preparation = new AgentVMMHostPreparation(
+      config,
+      (command, args) => publishFixture(config, command, args),
+      fetcher
+    );
     await expect(preparation.ensure(() => {})).rejects.toThrow("ENOENT");
     await preparation.ensure(() => {});
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -242,8 +441,9 @@ describe("Host preparation", () => {
       await blocked;
       return downloadResponse(bytes);
     });
-    const first = new AgentVMMHostPreparation(config, async () => "", fetcher);
-    const second = new AgentVMMHostPreparation(config, async () => "", fetcher);
+    const run: HostCommand = (command, args) => publishFixture(config, command, args);
+    const first = new AgentVMMHostPreparation(config, run, fetcher);
+    const second = new AgentVMMHostPreparation(config, run, fetcher);
     const pending = first.ensure(() => {});
     await started;
     await expect(second.ensure(() => {})).rejects.toThrow("Another Comma process");
@@ -260,7 +460,9 @@ describe("Host preparation", () => {
     expect(resolveHostConfiguration("prod", env, home).appPath).toBe(config.appPath);
     expect(resolveHostConfiguration("staging", env, home).appPath).toBe(config.appPath);
     const bytes = await archiveFixture();
-    const run = vi.fn(async (_command: string, _args: string[], _stdin?: string) => "");
+    const run = vi.fn((command: string, args: string[], _stdin?: string) =>
+      publishFixture(config, command, args)
+    );
     const fetcher = vi.fn(async () => downloadResponse(bytes));
     await new AgentVMMHostPreparation(config, run, fetcher).ensure(() => {});
     await new AgentVMMHostPreparation(
@@ -316,6 +518,8 @@ describe("Host preparation", () => {
     let failUpdate = true;
     const updates: string[][] = [];
     const run: HostCommand = async (command, args, _stdin, _timeout, options) => {
+      if (args[0] === "publish-host") return publishFixture(config, command, args);
+      if (args[0] === "maintenance-status") return "null";
       if (command === "make") {
         builds++;
         const output = options!.env!.OUTPUT_DIRECTORY!;

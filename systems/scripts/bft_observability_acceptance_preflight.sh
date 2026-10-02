@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Queue-safe preflight for the BFT Operations/Observability acceptance pass.
+# Queue-safe preflight for the BFT Health/Observability acceptance pass.
 # This script intentionally does not start services and does not run Mix.
 
 COMMA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -35,7 +35,8 @@ mix test --seed 0 \
   apps/bridge_for_teams_core/test/contexts/observability_test.exs \
   apps/bridge_for_teams_core/test/contexts/observability_producer_test.exs \
   apps/bridge_for_teams_core/test/contexts/run_checks_test.exs \
-  apps/bridge_for_teams_web/test/dashboard/operations_live_test.exs \
+  apps/bridge_for_teams_web/test/dashboard_api_controller_test.exs \
+  apps/bridge_for_teams_web/test/dashboard/operations_export_controller_test.exs \
   apps/bridge_for_teams_web/test/mac_mini_provisioner_flow_test.exs
 
 mix test --seed 0 \
@@ -55,7 +56,7 @@ mix test --seed 0 \
   apps/bridge_for_teams_core/test/bridge_for_teams/salix/reconciler_test.exs \
   apps/bridge_for_teams_web/test/dashboard/settings_live_test.exs \
   apps/bridge_for_teams_web/test/dashboard/project_show_live_test.exs \
-  apps/bridge_for_teams_web/test/dashboard/member_live_test.exs \
+  apps/bridge_for_teams_web/test/dashboard_api_members_test.exs \
   apps/bridge_for_teams_web/test/dashboard/project_live_index_test.exs \
   apps/bridge_for_teams_web/test/dashboard/auth_controller_test.exs
 
@@ -197,52 +198,38 @@ require_fixed "migration creates event table" "create table(:observability_event
 require_fixed "audit logs are linked back into events" "audit_log_id" \
   systems/apps/bridge_for_teams_core/priv/repo/migrations/20260622000003_add_audit_log_link_to_observability_events.exs
 
-section "Operations UI entrypoint"
+section "Health UI entrypoint"
 for path in \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/live/operations_live/index.ex \
+  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/controllers/dashboard_health.ex \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/controllers/operations_export_controller.ex \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/components/layouts.ex
 do
   require_file "$path"
 done
 
-require_fixed "dashboard has primary Operations route" \
-  "live(\"/orgs/:org/operations\", OperationsLive.Index, :overview)" \
+require_fixed "dashboard API serves the Health summary" \
+  "get(\"/orgs/:org/health\", DashboardAPIController, :health)" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dashboard has Delivery tab route" \
-  "live(\"/orgs/:org/operations/delivery\", OperationsLive.Index, :delivery)" \
+require_fixed "dashboard API serves the audit trail" \
+  "get(\"/orgs/:org/audit\", DashboardAPIController, :audit)" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dashboard has Integrations tab route" \
-  "live(\"/orgs/:org/operations/integrations\", OperationsLive.Index, :integrations)" \
+require_fixed "Operations bookmarks open the React Health page" \
+  "get(\"/orgs/:org/operations/:tab\", SPAController, :index)" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dashboard has Runners tab route" \
-  "live(\"/orgs/:org/operations/runners\", OperationsLive.Index, :runners)" \
+require_fixed "Runners page URL opens the React dashboard" \
+  "get(\"/orgs/:org/fin\", SPAController, :index)" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dashboard has Events tab route" \
-  "live(\"/orgs/:org/operations/events\", OperationsLive.Index, :events)" \
+require_fixed "dashboard API serves the Runners page" \
+  "get(\"/orgs/:org/runners\", DashboardAPIController, :runners)" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dashboard has Checks tab route" \
-  "live(\"/orgs/:org/operations/checks\", OperationsLive.Index, :checks)" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dashboard has Audit tab route" \
-  "live(\"/orgs/:org/operations/audit\", OperationsLive.Index, :audit)" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "dedicated Fin route remains wired to FinLive" \
-  "live(\"/orgs/:org/fin\", FinLive.Index, :index)" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
-require_fixed "sidebar exposes Operations" "gettext(\"Operations\")" \
+require_fixed "sidebar exposes Health" "gettext(\"Health\")" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/components/layouts.ex
 require_fixed "audit CSV export route exists" \
   "get(\"/orgs/:org/operations/audit.csv\", OperationsExportController, :audit)" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard_router.ex
 require_fixed "audit CSV export records export audit" "audit_log.exported" \
   systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/controllers/operations_export_controller.ex
-require_regex "Operations LiveView renders all tab containers" \
-  "operations-(overview|delivery|integrations|runners|events|checks|audit)" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/live/operations_live/index.ex
-require_fixed "audit view has an explicit denied state" "operations-audit-denied" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/live/operations_live/index.ex
 
 section "Producer hooks"
 require_fixed "IM diagnostics sink starts with BFT core" "BridgeForTeams.Observability.SalixIMSink" \
@@ -272,8 +259,9 @@ for path in \
   systems/apps/bridge_for_teams_core/test/contexts/observability_producer_test.exs \
   systems/apps/bridge_for_teams_core/test/support/observability_case.ex \
   systems/apps/bridge_for_teams_core/test/contexts/run_checks_test.exs \
-  systems/apps/bridge_for_teams_web/test/dashboard/operations_live_test.exs \
-  systems/apps/bridge_for_teams_web/test/dashboard/fin_live_test.exs \
+  systems/apps/bridge_for_teams_web/test/dashboard_api_controller_test.exs \
+  systems/apps/bridge_for_teams_web/test/dashboard/operations_export_controller_test.exs \
+  systems/apps/bridge_for_teams_web/test/dashboard_api_runners_test.exs \
   systems/apps/bridge_for_teams_web/test/mac_mini_provisioner_flow_test.exs
 do
   require_file "$path"
@@ -293,16 +281,17 @@ require_fixed "producer test helper exists" "assert_observability_contract!" \
   systems/apps/bridge_for_teams_core/test/support/observability_case.ex
 require_fixed "Run checks tests lock shared JSON shape" "serializes the shared dashboard result shape for CLI JSON output" \
   systems/apps/bridge_for_teams_core/test/contexts/run_checks_test.exs
-require_fixed "UI tests cover primary Operations entry" "renders the Operations overview from the sidebar entry" \
-  systems/apps/bridge_for_teams_web/test/dashboard/operations_live_test.exs
-require_fixed "UI tests cover redacted persisted rows" "renders persisted observability events, checks, and audit records" \
-  systems/apps/bridge_for_teams_web/test/dashboard/operations_live_test.exs
-require_fixed "UI tests cover audit CSV export" "exports filtered audit logs as bounded redacted CSV" \
-  systems/apps/bridge_for_teams_web/test/dashboard/operations_live_test.exs
-require_fixed "UI tests cover member audit denial" "ordinary org members cannot view the audit surface" \
-  systems/apps/bridge_for_teams_web/test/dashboard/operations_live_test.exs
-require_fixed "UI tests cover dedicated Fin page" "renders the Fin sidebar page empty state" \
-  systems/apps/bridge_for_teams_web/test/dashboard/fin_live_test.exs
+require_fixed "API tests cover the Health summary" "returns the org status, signal freshness and recent errors to an owner" \
+  systems/apps/bridge_for_teams_web/test/dashboard_api_controller_test.exs
+require_fixed "API tests cover member denial" "answers 404 to members and non-members" \
+  systems/apps/bridge_for_teams_web/test/dashboard_api_controller_test.exs
+require_fixed "API tests cover audit paging" "pages the audit trail newest first" \
+  systems/apps/bridge_for_teams_web/test/dashboard_api_controller_test.exs
+require_fixed "export tests cover audit CSV export" "exports filtered audit logs to an owner as redacted CSV" \
+  systems/apps/bridge_for_teams_web/test/dashboard/operations_export_controller_test.exs
+require_fixed "API tests cover the Runners page" \
+  "lists runners with status, versions, capacity and connector counts" \
+  systems/apps/bridge_for_teams_web/test/dashboard_api_runners_test.exs
 require_fixed "provisioner tests cover unauthenticated marker rejection" \
   "Fin run marker ingestion requires authenticated provisioner source" \
   systems/apps/bridge_for_teams_web/test/mac_mini_provisioner_flow_test.exs

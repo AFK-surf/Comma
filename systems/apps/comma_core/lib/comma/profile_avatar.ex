@@ -1,5 +1,5 @@
 defmodule Comma.ProfileAvatar do
-  @moduledoc "User-owned profile name and immutable private avatar lifecycle."
+  @moduledoc "User-owned profile name, app language and immutable private avatar lifecycle."
 
   import Ecto.Query
 
@@ -7,7 +7,7 @@ defmodule Comma.ProfileAvatar do
   alias Comma.ProfileAvatar.Storage
   alias Comma.Repo
 
-  @max_bytes 102_400
+  @max_bytes 2_097_152
   @max_name_length 64
   @upload_lease_seconds 90
 
@@ -18,14 +18,63 @@ defmodule Comma.ProfileAvatar do
     end
   end
 
-  def update_name(user_id, attrs) when is_map(attrs) do
-    with {:ok, name} <- normalize_name(attrs["name"] || attrs[:name]),
-         {:ok, user} <- Comma.Accounts.update_user(user_id, %{"name" => name}) do
-      {:ok, profile_from_public_user(user)}
+  @doc """
+  Update the profile name, the app language, or both. A changed language
+  regenerates the member's Routines once, so server-written text follows it.
+  """
+  def update(user_id, attrs) when is_map(attrs) do
+    with {:ok, changes} <- profile_changes(attrs) do
+      # The row lock orders concurrent language writes, so each change is
+      # compared with the value it replaces and enqueues its own refresh.
+      Repo.transaction(fn ->
+        previous =
+          Repo.one(
+            from(row in User, where: row.id == ^user_id, select: row.locale, lock: "FOR UPDATE")
+          )
+
+        with {:ok, user} <- Comma.Accounts.update_user(user_id, changes),
+             :ok <- maybe_refresh_language(user_id, changes, previous) do
+          profile_from_public_user(user)
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     end
   end
 
-  def update_name(_user_id, _attrs), do: {:error, :invalid_profile}
+  def update(_user_id, _attrs), do: {:error, :invalid_profile}
+
+  defp maybe_refresh_language(user_id, %{"locale" => locale}, previous)
+       when locale != previous do
+    case %{"user_id" => user_id}
+         |> Comma.Workers.RecommendationLanguageRefresh.new()
+         |> then(&Oban.insert(Comma.Oban, &1)) do
+      {:ok, _job} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp maybe_refresh_language(_user_id, _changes, _previous), do: :ok
+
+  defp profile_changes(attrs) do
+    name = Map.fetch(attrs, "name")
+    locale = Map.fetch(attrs, "locale")
+
+    with {:ok, changes} <- put_change(%{}, "name", name, &normalize_name/1),
+         {:ok, changes} <- put_change(changes, "locale", locale, &normalize_locale/1) do
+      if changes == %{}, do: {:error, :invalid_profile}, else: {:ok, changes}
+    end
+  end
+
+  defp put_change(changes, _key, :error, _normalize), do: {:ok, changes}
+
+  defp put_change(changes, key, {:ok, value}, normalize) do
+    with {:ok, value} <- normalize.(value), do: {:ok, Map.put(changes, key, value)}
+  end
+
+  defp normalize_locale(value) do
+    if value in User.locales(), do: {:ok, value}, else: {:error, :invalid_locale}
+  end
 
   def upload(user_id, %{path: path}) when is_binary(path) do
     with true <- Storage.configured?() || {:error, :avatar_storage_unavailable},
@@ -106,6 +155,8 @@ defmodule Comma.ProfileAvatar do
   end
 
   def upload_lease_seconds, do: @upload_lease_seconds
+
+  def max_bytes, do: @max_bytes
 
   defp normalize_name(value) when is_binary(value) do
     name = String.trim(value)
@@ -284,12 +335,13 @@ defmodule Comma.ProfileAvatar do
       "id" => user.id,
       "email" => user.email,
       "name" => user.name,
-      "avatar_id" => user.avatar_id
+      "avatar_id" => user.avatar_id,
+      "locale" => user.locale
     }
   end
 
   defp profile_from_public_user(user) do
-    Map.take(user, ["id", "email", "name", "avatar_id"])
+    Map.take(user, ["id", "email", "name", "avatar_id", "locale"])
   end
 
   defp read_header(path) do

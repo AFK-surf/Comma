@@ -50,11 +50,7 @@ theorem normalize_sequence_value {s t : Term} {j r : List Term}
     fail_if_success (bind_head_is h [write]; change (write _ _ >>= _) _ = _ at h)
     obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨normalized, _, written, h⟩ := bind_ok h
-  have selected : normalized.get (a "last_seq") = value := by
-    repeat
-      first
-      | exact (write_field_frame written rfl).trans (get_put_same _ _ _)
-      | obtain ⟨_, written⟩ := write_cons written
+  have selected : normalized.get (a "last_seq") = value := write_get_key "last_seq" written rfl
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, activityWrite, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h

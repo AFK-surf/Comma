@@ -30,6 +30,9 @@ export const recommendationSourceSchema = z.object({
   iconUrl: z.url().optional(),
   kind: recommendationSourceKindSchema,
   label: z.string().min(1).max(120),
+  // The latest read failed for a reason only the member can fix by
+  // reconnecting the source, such as a missing scope or a revoked grant.
+  needsReconnect: z.boolean().optional(),
 });
 
 export const recommendationScheduleSchema = z.object({

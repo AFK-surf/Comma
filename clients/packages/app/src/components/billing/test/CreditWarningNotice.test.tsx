@@ -193,3 +193,39 @@ it("ignores a late balance from the previous workspace", async () => {
   });
   expect(screen.queryByTestId("chat-credit-warning")).toBeNull();
 });
+
+it("shows the out-of-credits card when the balance is spent or every grant has expired", async () => {
+  let current: CommaBillingSummary = summary(0);
+  const getBillingSummary = vi.fn(async () => current);
+  const api = {
+    getBillingSummary,
+    listBillingPlans: vi.fn(async () => [plan]),
+  } as unknown as CommaApiClient;
+  render(<CreditWarningNotice api={api} workspaceId="workspace" active />);
+  const spent = await screen.findByTestId("chat-credit-warning");
+  expect(spent).toHaveTextContent("Out of usage credits");
+  expect(spent).toHaveAttribute("data-tone", "error");
+  expect(within(spent).getByRole("button", { name: "Add credits" })).toBeVisible();
+
+  // The summary lists only unexpired grants: after the last one expires there
+  // is no allowance, which must still read as exhausted, not as unknown.
+  current = { ...summary(0), active_grants: [] };
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(getBillingSummary).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId("chat-credit-warning")).toHaveTextContent(
+    "Out of usage credits"
+  );
+  fireEvent.click(
+    within(screen.getByTestId("chat-credit-warning")).getByRole("button", {
+      name: "Close",
+    })
+  );
+  expect(screen.queryByTestId("chat-credit-warning")).toBeNull();
+
+  // A spent grant whose package is unknown stays silent: it may be unlimited.
+  current = summary(0, "grant-unknown");
+  current.active_grants[0]!.package_code = null;
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(getBillingSummary).toHaveBeenCalledTimes(3));
+  expect(screen.queryByTestId("chat-credit-warning")).toBeNull();
+});

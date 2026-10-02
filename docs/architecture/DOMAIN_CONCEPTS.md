@@ -33,10 +33,10 @@ Calling stored data a projection does not authorize its deletion.
 
 | Concept | Meaning and boundary |
 | --- | --- |
-| User | A product identity that signs in and requests work. Comma and BFT own their respective users. |
+| User | A product identity that signs in and requests work. Comma and BFT own their respective users. A Comma `guest` User is a throwaway identity for [guest mode](#guest-mode). It never becomes a registered User. A Comma User holds the app language (`en` or `zh-CN`): a value on the User, not a device setting. Every signed-in device and server-written text (Routine, proactive messages, reminders, Telegram cards) follow it. A device keeps a local copy only to render before sign-in. |
 | Login Identity | An authentication identity associated with a product User. It is not an Agent or an external message sender. |
 | Auth Session | Login credentials, expiry, and access scope. It is not an Agent Runtime Session. |
-| Workspace | Comma's authorization scope and product entry to its current Agent work scope. It also references billing and Drive resources. |
+| Workspace | Comma's authorization scope and product entry to its current Agent work scope. It also references billing and Drive resources. A `guest` Workspace has only a Router agent and shares the guest Tenant. |
 | Owner / Membership | A user's authority within a product scope. It is not Conversation participation. |
 | Tenant | The Salix isolation scope. Comma Workspace and BFT Organization store their respective Tenant mappings. Its existing config records own [Slack command templates](../../systems/apps/salix_im/lib/salix_im/slack_command_templates.ex); Apps copy these values without inheritance. |
 | Group | A Salix Agent work scope within a Tenant. Comma Workspace references its current Group and generation. The Group owns its outbound SSH client key and trusted SSH host keys (see [Outbound SSH Session](#outbound-ssh-session)). |
@@ -50,13 +50,47 @@ Owners and entry points:
 [Electron Session](../../clients/apps/electron/src/main/modules/session/session-service.ts) owns local Auth Session recovery.
 A configured backend change removes credentials for other origins before login, without changing server sessions or unrelated profile data.
 
-Telegram Mini App access reuses [Auth Session](../../systems/apps/comma_core/lib/comma/accounts/auth_session.ex) with `session_source=channel_task_panel`. Its `channel_subject` is the verified Telegram user ID; Workspace and Group fields scope a 15-minute, read-only cookie. The current [Telegram link](../../systems/apps/comma_core/lib/comma/telegram_links.ex) owns the expected connection ID. [TelegramMiniAppAuth](../../systems/apps/comma_web/lib/comma_web/telegram_miniapp_auth.ex) checks it on every read and returns 401 if the connection changed, so a reconnect cannot revive a cookie from before disconnect. Task reads use the existing [Conversation](../../systems/apps/comma_core/lib/comma/conversations.ex) kind check; a panel cookie cannot read Router chat. This adds no User, Task, or Session identity.
+Native Apple login reuses [Login Identity](../../systems/apps/comma_core/lib/comma/accounts/identity.ex) with `provider=apple`, Apple's issuer and token subject.
+[AppleAuth](../../systems/apps/comma_core/lib/comma/apple_auth.ex) verifies Apple's keys, client ID, nonce and token lifetime.
+Existing emails require OTP before linking. [AuthChallenges](../../systems/apps/comma_core/lib/comma/auth_challenges.ex) owns expiring, single-use nonce attempts and linking codes.
+[WatchPairing](../../systems/apps/comma_core/lib/comma/watch_pairing.ex) uses the same challenge owner for a two-minute grant.
+The grant creates an ordinary [Auth Session](../../systems/apps/comma_core/lib/comma/accounts/auth_session.ex) with `parent_session_id`.
+Parent revocation rejects grants and child sessions. Natural parent expiry does not expire an issued child session.
+[CommaCore](../../clients/packages/apple-core/Sources/CommaCore/CommaClient.swift) owns each app's Keychain credential and stale-response fence.
+
+APNs targets are delivery-credential projections of Auth Session, Workspace and existing Task, not compute Devices or new Task identities.
+[Notifications](../../systems/apps/comma_core/lib/comma/notifications.ex) owns each session/kind slot, token rotation, authorization and expiry.
+A registration ID correlates token updates and deletion. It grants no authority. Revoked sessions and inaccessible Workspaces/Tasks reject delivery.
+Each projection records a validated main-app bundle ID, APNs environment, and alert locale. These values create no new app or Device identity.
+Ordinary alert intent remains installation-local. The current Auth Session owns its `device` slot, including explicit opt-out and legacy reconciliation.
+[NativePush](../../systems/apps/comma_core/lib/comma/workers/native_push.ex) re-reads owner facts and sends bounded APNs projections.
+[TaskActivityCoordinator](../../clients/apps/apple/iOS/TaskActivityCoordinator.swift) selects one Task for ActivityKit.
+Live Activity title/status/timestamps mirror Conversation facts. Apple owns activity presentation and lifetime. No widget or notification changes Task status.
+Reuse is sufficient because these credentials and projections have no independent account, Task or execution lifecycle.
+
+Telegram Mini App access reuses [Auth Session](../../systems/apps/comma_core/lib/comma/accounts/auth_session.ex) with `session_source=channel_task_panel`. Its `channel_subject` is the verified Telegram user ID; Workspace and Group fields scope a 24-hour, read-only cookie. The current [Telegram link](../../systems/apps/comma_core/lib/comma/telegram_links.ex) owns the expected connection ID. [TelegramMiniAppAuth](../../systems/apps/comma_web/lib/comma_web/telegram_miniapp_auth.ex) checks it on every read and returns 401 if the connection changed, so a reconnect cannot revive a cookie from before disconnect. Task reads use the existing [Conversation](../../systems/apps/comma_core/lib/comma/conversations.ex) kind check; a panel cookie cannot read Router chat. This adds no User, Task, or Session identity.
 
 Telegram Task review cards reuse the existing provider Participant and status delivery. At Task creation, [TaskConversationInput](../../systems/apps/salix_im/lib/salix_im/task_conversation_input.ex) asks the product adapter for the Workspace owner's bound private chat and adds one `task_status_personal` Participant. It subscribes to all status events and to no Messages. Only review, escalation and failure send new cards. Intermediate states retire the previous card, so a later review round sends a new card. [TelegramTaskCards](../../systems/apps/comma_web/lib/comma_web/telegram_task_cards.ex) authorizes each send against the current [Telegram link](../../systems/apps/comma_core/lib/comma/telegram_links.ex) and never resends an uncertain card. Its card, latest-card and change-prompt records are disposable interaction state. Reads reject a card after 14 days and a prompt after 24 hours. No job deletes the records. They hold IDs and the carded review version, never authority. A Task that stays in one attention status keeps one live card. The card records the end of its attention interval before an edit, so failed retirement cannot suppress a later review. Retirement clears the latest-card pointer only after a successful edit. Transient edits of a known message use the Participant owner's existing three-attempt budget. Exhaustion retains the failed delivery and card target. Ordered Participant delivery completes that budget before it processes a later card. Each click re-resolves the sender and calls `Comma.Conversations.accept_task_review/5` or `send_message/5`, so the Conversation owner keeps Task status and the Mini App stays read-only. This adds no Task, status, or card identity.
 
 The account scope and Agent work scope are distinct responsibilities.
 Comma presents both through Workspace. BFT separates Organization from Agent Swarm.
 These mappings do not make their IDs interchangeable.
+
+### Guest mode
+
+Guest mode lets a person try Comma in the web client without sign-in. The Electron app and other bearer clients still require sign-in. It adds no entity. It adds a `kind` value to User and Workspace, a Tenant profile, and one Comma Operation type.
+
+- **Guest User.** `comma_users.kind = 'guest'` marks the User. Its email is an undeliverable `g-<hex>@guest.comma.invalid` placeholder. A database check keeps the kind and the placeholder domain together. Registered sign-in paths reject that domain. The guest has no Login Identity and gets no sign-up credits. It never becomes a registered User.
+- **Guest Auth Session.** `POST /v1/comma/auth/guest` creates the User and an ordinary `user_login` Auth Session with `auth_method = 'guest'`. Only the web Cookie transport can create a guest; other clients get `guest_web_only`. The request must carry a solved [GuestPow](../../systems/apps/comma_core/lib/comma/guest_pow.ex) challenge from `GET /v1/comma/auth/guest`. The client finds a nonce so that SHA-256 of the challenge and nonce starts with the policy's number of zero bits. The default of 12 bits takes well under 0.5 s on a phone. The challenge is signed, expires after ten minutes, and creates at most one guest. Guest creation has no client-address limit. [CommaWeb.GuestRoutes](../../systems/apps/comma_web/lib/comma_web/guest_routes.ex) is a fail-closed route allowlist. A guest reads its session and profile, bootstraps its Workspace, and uses its Router chat. Other routes return `guest_signup_required`.
+- **Guest Workspace.** `comma_workspaces.kind = 'guest'` has no Worker agent and no Cloud VM. Its Group is in the shared guest Tenant. The unique Tenant index covers only `standard` Workspaces. Guest Workspaces reject VM changes and skip Synchronicity, so the placeholder email stays in Comma.
+- **Guest Tenant profile.** [SalixStore.TenantProfiles](../../systems/apps/salix_store/lib/salix_store/tenant_profiles.ex) stores the `product_profile` tenant config. A `router_only` Tenant admits only Routers with the `comma_guest_router` purpose and no VM. [AgentControl](../../systems/apps/salix_agent/lib/salix_agent/agent_control.ex) applies this rule at agent creation and keeps the guest purpose, VM, tool and runtime fields fixed. The Cloudflare provider refuses a VM in the Tenant. The profile also sets the Tenant's per-node dependency admission limit, which all guests share.
+- **Guest tool policy.** [SalixAgent.GuestPolicy](../../systems/apps/salix_agent/lib/salix_agent/guest_policy.ex) is a fail-closed tool allowlist for the guest Router purpose. Disclosure and dispatch both apply it. It excludes agent, plugin, MCP, environment, device, Task and account tools, so one guest cannot publish Tenant-scoped definitions to another.
+- **Handoff and import.** `POST /v1/comma/auth/guest/handoff` revokes the guest sessions and stores a one-hour claim hash on the guest User. The claim is an HttpOnly `comma_guest_claim` Cookie and never appears in a response body. `POST /v1/comma/guest-imports` lets a registered User redeem that Cookie once from the web. It creates a `guest_import` Comma Operation. [GuestImport](../../systems/apps/comma_core/lib/comma/workers/guest_import.ex) writes a Markdown transcript of the guest Router chat to the account Router's files and sends one ordinary user message that attaches it. A retry reuses the file path and `client_request_id`, so the Conversation keeps one import message.
+- **Clients.** The Session principal carries `kind`. A missing value means `registered`. Only the web offers guest mode. It solves the proof of work with WebCrypto. It keeps only an expiry marker in `localStorage`, because the claim is an HttpOnly Cookie. The Session settles `signed_out` with reason `guest_handoff`. The next registered web sign-in, startup reconcile or focus probe redeems the claim. A transient failure keeps it until expiry. A rejected or expired claim is dropped. Renderers never receive the claim. Guest UI shows Home, the Router chat and a sign-up banner only.
+- **Policy.** The Comma Admin dashboard owns the `comma_guest_policy` singleton: enabled state, guest Tenant, daily creation limit, Tenant concurrency, guest session lifetime and proof-of-work difficulty. `create_guest_tenant` creates a new router-only Tenant for new guests. Existing guest Workspaces stay in their Tenant. There is no config file setting.
+
+Owner: [Comma.GuestMode](../../systems/apps/comma_core/lib/comma/guest_mode.ex). A guest Router uses the platform default Router model. The guest has no credits, so that model must be on the free Router list.
+Guest Users, Workspaces and Groups stay after import or expiry. Deletion of guest data needs a separate owner decision.
 
 ## 2. Agents and execution
 
@@ -68,6 +102,7 @@ These mappings do not make their IDs interchangeable.
 | Agent Template | Model and related configuration selected for an Agent. Global and Tenant-private templates are not Agent instances. Main-model display name and vendor metadata are values on the template, separate from its configuration alias and transport provider. An Agent either selects one template or follows its platform role default. |
 | Agent Default | Platform pointers supply live role defaults. Tenant pointers supply initial choices for new Agents. These are values on existing configuration records. |
 | Comma Model Selection Policy | One Comma-wide rule lists global Agent Templates that users can newly select. It does not own templates, defaults, or Agent bindings. |
+| Model Catalog | Platform data that names models across sources. A catalog model has a model id, a display name, its maker, and one request id and protocol for each source that serves it. A source is an API-key provider or a subscription plan. It owns no credentials, tenant data, or Agent bindings. |
 | Runtime Session | An Agent's input, model, and tool execution context. A configured current Router has one canonical Session. A Worker can have many. |
 | Internal / External Runtime | Execution inside Salix or through an external runtime. Platform support does not imply product admission for every Agent role. |
 | Session Activity | One accepted execution activity. It is separate from an input batch, Task lifecycle, and device availability. |
@@ -103,6 +138,50 @@ templates and Default remain selectable. Existing Agent bindings and the Worker
 creation default continue to resolve after an ID leaves the list. The rule does
 not change runtime inference or the administrator support path.
 
+The Model Catalog is separate from Agent Templates because a template binds one model
+to one provider configuration. The catalog says that `openai/gpt-5.5` at OpenRouter and
+`gpt-5.5` at OpenAI are the same model, which no template or account can express.
+Its identity is the catalog model id, platform-wide. [SalixAgent.Models](../../systems/apps/salix_agent/lib/salix_agent/models.ex)
+owns it as read-only data compiled from `priv/model_catalog.json`.
+`scripts/generate-model-catalog.mjs` regenerates that file from the provider model data
+in the pinned pi-ai package; a release changes it, no runtime path does. The Gemini plan's
+routes come from `scripts/antigravity-models.json`, the Antigravity list of the pinned
+CLIProxyAPI SDK, because the subscription worker sends Antigravity model ids unchanged.
+Sources name what an account pool account connects to. Templates and accounts may
+reference catalog ids and source ids; the catalog references neither.
+
+A catalog choice is a private Agent Template with a catalog model id, a reasoning effort
+and `allow_paid`, and no endpoint or credential. [AccountPool](../../systems/apps/salix_agent/lib/salix_agent/account_pool.ex)
+chooses the Profile for each request: enabled subscription accounts whose plan serves the
+model first, then, when `allow_paid` is true, enabled API-key accounts whose source serves it.
+Every subscription provider is a plan. Its pool route sets the wire protocol;
+the catalog route gives only the request id.
+A request that fails before output moves to the next candidate, across providers.
+It never falls back to platform credentials, and it is billed as tenant-funded.
+A catalog route binds its Profile only at dispatch. Every step before dispatch therefore
+stays provider-neutral: the request is not encoded for a protocol or a request id, and each
+candidate's provider encodes it. Paths that post a resolved route themselves, such as the
+site LLM proxy, send a catalog or subscription route through the same dispatch.
+An Agent kept to an API-key Profile pays for it: its choice is stored with `allow_paid` true.
+A Custom Profile lists the model ids its endpoint serves. A catalog choice can also name
+one of these ids when it is not in the catalog. Such a choice has no reasoning efforts.
+
+A runtime choice is a hidden private Agent Template for a Worker on a Codex or Claude Code
+Compute runtime. It holds a catalog model id that the runtime can run, the runtime provider
+and a reasoning effort. It has no endpoint or credential, because the runtime uses its own login.
+Compute dispatch reads its model and effort only for fields that the runtime binding leaves blank.
+A binding that sets a model, model provider or effort keeps the Worker read-only.
+Codex and Claude Code accept only the runtime default or a runtime choice. Dispatch sends
+them only a runtime choice made for that runtime. With any other template, such as a copied
+creation default, an older catalog choice or a choice made before a rebind, they run their own
+default model. Codex applies a changed choice at its next turn. It keeps an override on its
+thread, so the Connector sends Codex's own reported default, for the thread's workspace, when
+no choice is set. It maps an effort that the model does not support to the closest supported
+effort. Claude Code applies a changed choice when the next input arrives while it is idle.
+Input that arrives during a running turn does not restart it.
+The binding does not change. [Templates](../../systems/apps/salix_agent/lib/salix_agent/templates.ex)
+reuses one template for each choice and deletes it when no Agent uses it.
+
 An external Runtime Session owns its runtime binding and accepted-input queue in
 [ExternalSessionStore](../../systems/apps/salix_agent/lib/salix_agent/external_session_store.ex).
 The Connector prepares one execution ID before native dispatch. The same execution
@@ -113,6 +192,20 @@ that activity. A direct Device Connector has no Compute allocation or Host usage
 right. It retains the native execution and input queue locally. After restart, native
 recovery precedes replay of input whose delivery was not acknowledged.
 The input batch, native execution, and Host usage right remain separate facts.
+The Session owner commits the dispatch identity and input source scope before the Actor sends input.
+A failed or uncertain Session write retains the queue and withholds that attempt.
+Derived status failure does not revoke committed dispatch admission.
+The observed start or steer mode survives a failed projection write.
+An unavailable status read leaves the mode unknown. A send error then preserves prior execution and permits a later wake.
+A missing legacy dispatch target does not prove that its queued input was never sent.
+A financial refusal before native dispatch is an outcome of the existing input batch.
+The Session owner records `billing_rejection` on the first original message record,
+outside the user-controlled `data`, then moves the exact rejected prefix from queue to history.
+The result keeps the original input IDs and normalized refusal. It adds no Job or ledger.
+A crash between log append and queue update uses indexed record lookup to finish that
+same refusal. An uncertain append reloads the existing log index before reuse.
+New queue tails and previously accepted native/tool work remain separate.
+
 The external Session owns a nullable `runtime_wait` value for accepted input awaiting device readiness.
 It preserves the same queue and binding, with no readiness timer. The Actor clears the value after resolving the original target.
 The existing Session work candidate projects the original `device_runtime_id`.
@@ -194,7 +287,7 @@ Provider tickets and refresh timers remain in memory. They add no Message, Task 
 | --- | --- |
 | Assistant Chat / Router Conversation | Comma's fixed Router Conversation for the current Group. Group users share this Conversation. |
 | Conversation | The aggregate for visible collaboration facts. Its main kinds are user_chat and agent_task. |
-| Message | An ordered Conversation fact with an explicit sender, content, reply relationships, and optional attachments. Views omit internal delivery events and provider prompt envelopes. |
+| Message | An ordered Conversation fact with an explicit sender, content, reply relationships, and optional attachments. Home can show owner-projected platform content. Views omit delivery control events and provider prompt envelopes. |
 | Participant | A Conversation delivery target. An Agent target identifies an Agent and an explicit Session. It is not a Message sender alias. |
 | Reply / Thread Reference | Relationships between messages. Internal replies use canonical Message IDs. |
 | Delivery | Sending a committed Message to a Participant target. Message persistence and target receipt are different facts. |
@@ -232,6 +325,17 @@ Participant filter or binding changes also register recovery. Owner-local member
 This is a discovery projection, not another Message, delivery queue, or lifecycle owner. Recovery queries only due rows, not the Conversation catalog.
 Participant mutation is separate from Message append.
 Visible canonical replies require an explicit provider send operation. Plain model output does not append a Message.
+
+`platform_message` is a presentation value on an existing Message, not another message identity or delivery authority.
+It carries the messaging provider, display role, and safe body or attachment label for Home.
+Provider input keeps its original Agent target and private prompt. A successful Router send with a receipt identity records a display event with no delivery targets.
+The Conversation owner stores the send value. Bounded reads derive the input value from its trusted sender body.
+Home readers are every Group user, outside the IFC reader model. Groups with IFC labelling, or an unreadable Group record, present neither value.
+WeChat replies reuse Message reply relationships. The owner resolves the checked input through its request identity and stores the parent Message ID.
+This display relationship does not change the WeChat request or create a delivery target.
+Implementation: [platform projection](../../systems/apps/salix_im/lib/salix_im/platform_message.ex),
+[provider dispatch](../../systems/apps/salix_im/lib/salix_im/provider.ex),
+[chat projection](../../clients/packages/app/src/components/chat/model/conversationChannel.ts).
 
 A widget (`dynamic_ui`) is a versioned Message content value backed by existing attachment blobs, not a separate application entity.
 It renders outside message bubbles and can fill the conversation width.
@@ -407,7 +511,8 @@ A one-second absolute deadline bounds selection and its final join. No retry or 
 Coalesced inputs share this deadline and a 10 KiB instruction-body budget, in input order.
 Timeout, provider errors, and saturation produce empty selections without dropping user input.
 
-The existing Session checkpoint owns accepted selections, including empty outcomes, before Agent dispatch.
+Accepted selections, including empty outcomes, join the existing Session activation checkpoint.
+Provider computation can overlap this checkpoint. Deltas and results wait for durable success.
 This value adds no decision entity. Retries reuse it; a crash before commit can repeat inference.
 The kernel renders bodies only for their active input scope. The next human input replaces them.
 Bodies stay outside ordinary transcript and compaction summaries. Compaction reserves their byte count conservatively as tokens.
@@ -546,7 +651,7 @@ See [Signal contracts](../messaging-voice.md#signal).
 | Background Loop | An Agent-owned eBPF program that spinfoam runs on the Agent's lease-holder node: the VFS path and hash of its compiled object, config, capability grants, target Session, status, and checkpoint. It has no occurrences (not a Schedule), no history (not a Runtime Session), and no visible collaboration facts (not a Task). Its incarnation is a fence value on the row, not another entity. A `script.run` program also runs in spinfoam but is a transient part of one tool call (no row, no incarnation, no checkpoint), not an entity. |
 | Calendar Item / Occurrence | A calendar object and one concrete occurrence. A Calendar Task does not contain the full Agent Task. |
 | Meeting / Meeting Task | Meeting work and its Task representation, including recording and results. Meeting and Runtime Session identities remain distinct. |
-| Recommendation Profile / Run / Snapshot | Member-scoped settings, one generation attempt, and the current Comma Center result within a Workspace. |
+| Recommendation Profile / Run / Snapshot | Member-scoped settings, one generation attempt, and the current Comma Center result within a Workspace. Runs write in the User's app language; a language change starts one run per Profile with enabled sources. |
 | Member Source Item | One normalized item that reaches a member through a connected source, with its current version. Collection writes it. Proactive attention reads arrivals and changes. Member Routine runs read current items. |
 
 Owners and entry points:
@@ -623,13 +728,13 @@ This provenance is private. HTTP parameters cannot supply it, and a group-visibl
 [RecommendationMemberIdentity](../../systems/apps/comma_web/lib/comma_web/recommendation_member_identity.ex) reads the live binding and connection for Linear, GitHub, Notion, and Slack.
 It uses the Linear viewer, GitHub user, explicit Notion user owner, or Slack authorized user and team. Organization and bot IDs cannot identify the member.
 This is a projection of the existing OAuth relationship, not a new identity entity or permission grant.
-Legacy connections without this provenance need fresh Comma consent before this resolver can use them.
+A legacy connection without this provenance is a system fault, not a member task: the run skips the source and logs `routine_source_identity_missing`. The one-time [member identity backfill](../../systems/apps/comma_web/lib/comma_web/member_identity_backfill.ex) stamps it when the Workspace has only ever had its owner as a member and the binding is in that Workspace's default group. Any other legacy connection still needs a reconnect.
 [Member Source Consent](../../systems/apps/comma_core/lib/comma/member_source_consents.ex) is Comma's private relationship between a member and the Composio account they authorized.
 Its key is Workspace, User, and toolkit. Verified installation completion or an owner's confirmed account choice replaces that toolkit's account ID.
 It survives multi-step Google setup and the completion of an installation attempt. User or Workspace deletion removes it.
 Its update timestamp fences renewed consent, even when the connected-account ID stays the same. Comma disconnect removes the receipt.
 A receipt does not prove external user identity, current connection status, or read permission. Readers must check these separately.
-Neither Settings nor a source list can create a receipt. For an old Composio connection, the owner can confirm its exact account in Plugins after Comma reads the provider's own identity. An active connection alone cannot create a receipt.
+Neither Settings nor a source list can create a receipt. For an old Composio connection, the owner can confirm its exact account in Plugins after Comma reads the provider's own identity. The one-time member identity backfill also writes it when the Workspace has only ever had its owner as a member, the toolkit has exactly one active account, and the provider identity read accepts it as a personal account. With more than one account, the owner chooses.
 The confirmation attempt stores a generation, owner, account, provider identity, old receipt revision, and expiry in the existing Plugin Install Attempt. Comma checks these values again before it writes the receipt and queues source discovery. Cancellation, expiry, uninstall, or a later operation rejects the old attempt. An OAuth reconnection keeps the old account until the new connection completes. Completion then retires only the account that the old receipt named. Other accounts of the toolkit, such as meeting calendars, remain.
 An installation attempt cannot own this relationship because completion clears its provider state. A Plugin Installation does not exist during partial setup.
 A Recommendation Profile cannot store it without creating default-UTC scheduling state before the first client read. The separate relationship avoids that side effect.
@@ -731,15 +836,39 @@ Comma rechecks the current User/Workspace binding and exact Device scope on each
 Reads do not probe devices. Loss of this disposable projection requires a new list command, without loss of product facts.
 No physical deletion deadline or exactly-once provider reply is claimed.
 
+### Local VMM disposal
+
+A local disposal records the OS operator's accepted deletion of an exact local Environment or remote registration.
+The Host store owns its immutable scope, replay fence, namespace checkpoints, and existing operation receipt.
+The registration and Environment remain the resource identities. Disposal does not transfer cloud authority or replace their owners.
+A generic operation has no durable target mapping. Resource rows can disappear during deletion, so they cannot preserve the replay fence.
+The fence survives cleanup and restart. A new authorized installation uses new identities and does not inherit disposed data.
+Implementation: [Host disposal store](https://github.com/AFK-surf/agent-vmm/blob/main/internal/host/store/local_disposal.go).
+
 ### Comma node settings and Shell creation
 
 Comma presents the local node separately from the selected Workspace's Workloads. An owner has one Compute Environment, enforced by its tenant/owner unique index.
 [ComputeNodeService](../../clients/apps/electron/src/main/modules/compute-node/index.ts) owns persisted node intent, binding scope, operation results, and read observations.
+[AccountComputeNodeService](../../clients/apps/electron/src/main/modules/compute-node/account-service.ts) partitions that intent by canonical backend audience and stable User subject.
+Its Session generation fences the entire command, including queued work and A-to-B-to-A login changes. Accepted late results persist only to their original partition.
+Unowned historical records migrate only after the original subject, scope, and existing Host root are proved. They grant no current authority.
+[AgentVMMInstallations](../../systems/apps/salix_store/lib/salix_store/agent_vmm_installations.ex) remains the cloud installation owner.
+A recovery challenge is a short-lived, single-use authorization value on that installation, not another identity or lifecycle.
+Consumption moves only its delivery target to a current Session of the original subject. Normal mutations recheck active authorization under the same row lock.
+An unexchanged request can be closed by its original subject before explicit new setup. A completed exchange must use proof-based recovery.
+[LocalComputeOperator](../../clients/apps/electron/src/main/modules/compute-node/local-operator.ts) projects bounded local metadata and submits trusted operator confirmations.
+Cloud mapping requires the current Workspace read permission and exact registration, Allocation, and generation. Read rights do not imply write rights.
+The resource page reads at most 32 environments, one disk total, one optional receipt, and one cloud mapping batch every five seconds while visible.
+Cached environment bytes are optional, with a 15-second freshness limit and exact boot, namespace, and generation checks. Missing values cause no Guest probe.
+Manual Workload reads contain at most 32 items and current owner phases. No per-environment polling or automatic pagination is added.
+
 Confirmation freezes the existing Workspace and installation identity. Main rejects a changed binding before drain or removal.
 Its `refresh` capability coalesces reads without installing, repairing, or changing desired state. `state.get` returns a snapshot.
 Connection, admission, readiness and work activity remain independent. An unknown result is not success or proof that children stopped.
+Main reads activity through the Comma installation GET after Workspace and exact Session delivery-target authorization. It never sends a Comma Session credential to the tenant API. Failed or absent activity observations are unknown; a genuine product 401 still invalidates the Session.
 The UI presents a status and an applicable action. Diagnostic details retain technical facts. Initial enablement ensures the existing node Workload.
-Disabling retires this registration's allocations. Removal revokes this Workspace registration. Both keep the shared Host, other registrations and database records; this registration's runtime files may not survive release.
+Disabling drains this registration's allocations. Normal removal revokes this Workspace registration and stops its environments into Retained.
+Retained preserves private volumes and writable layers. Only confirmed local disposal deletes them. All paths preserve the shared Host and other registrations.
 Local detachment after an inaccessible registration does not confirm remote revocation. Re-enabling does not promise restoration of previous work.
 
 [Comma.Compute](../../systems/apps/comma_core/lib/comma/compute.ex) authorizes every creation and indexed request lookup.
@@ -796,6 +925,13 @@ Group deletion or explicit Group release owns that decision, including when no A
 
 [Compute](../../systems/apps/salix_store/lib/salix_store/compute.ex) commits Group operations under row locks.
 The SQL commit acknowledges activity admission. Caller loss does not remove accepted operations or release intent.
+Gateway WebSocket attempts retain their exact Sandbox and Container profile in the existing Workload activity.
+Definitive connection failures settle their own attempts. Uncertain handshakes coalesce into one pending start per location.
+A successful connection or ready response settles those pending starts, without clearing active requests or another location's claims.
+Claims do not expire by age. Historical targetless attempts require exact operator repair.
+The Workload projects a fixed Cloudflare control permit from its existing operation and generation.
+The Sandbox DO enforces that permit and stores one pending carrier command. It does not own lifecycle or data disposal.
+Connector admission history and execution seals survive restarts. A sealed carrier can settle only its qualified, exact-location claims.
 [ComputeReconciler](../../systems/apps/salix_env/lib/salix_env/compute_reconciler.ex) selects Cloudflare and VMM through fixed provider branches.
 One indexed cursor and bounded claim page serve both providers. CloudVM retains settings only.
 [Cloudflare](../../systems/apps/salix_web/lib/salix_web/compute_providers/cloudflare.ex) implements provider operations and projects Group Workload facts.
@@ -812,6 +948,11 @@ Workloads use Cloudflare. The Workload remains the archive and runtime authority
 
 Cloudflare archive admission checks accepted Session demand, active operations, installation, and selection holds.
 The shared Connector owner confirms quiet and fences new work. A transactional native-state snapshot retains dormant Session identities.
+Each native quiet attempt has a 90-second budget, including ownership waits and native writes.
+Salix and Gateway allow 100 seconds for the control transport. The archive token lease is separate from this execution budget.
+Quiet inspects one 32-Session page at a time, with at most four concurrent native checks or drains.
+Workers join before the page releases admission fences. Slow or failed checks retain the source and require a later retry.
+These bounds do not promise successful quiet for an arbitrary number of slow Sessions.
 The archive retains files, credentials, permissions, and internal executable links. External links and unsupported entries fail closed.
 Older Connectors retain the 64 MiB compressed and 32 MiB per-file archive limits.
 New Connectors export up to 4 GiB in 4 MiB parts directly to R2 with Salix-signed URLs.
@@ -821,6 +962,11 @@ The Workload records the archive generation and queues old or failed generations
 The current Connector retains the 16 GiB expanded bound without a total entry limit.
 Older Connectors can still reject 100,000 entries until the migration upgrades them.
 Full-disk Group archives retain installed dependency trees, including local edits and mixed user files.
+Fault recovery uses the same archive operation, manifest, pointer, and previous generation with `scope=recovery`.
+The product permits omission of Agent workspaces, managed dependency packages, and workspace sweep archives in that scope.
+The Connector retains exact native continuation and credential paths, including paths inside an omitted tree.
+Unknown files outside those paths retain the full archive rules. Recovery still requires quiet and acknowledged runtime events.
+The recovered Agent receives a notice about omitted data. Normal idle archives retain their full scope.
 Installation declarations and directory markers cannot authorize omission. Existing approved cache omissions remain.
 Workspace sweep archives retain their separate scope. Historical omitted archives still consume their saved restore intent.
 Best-effort installation cannot prove recovery of bytes omitted from an old archive.
@@ -836,11 +982,17 @@ Restore imports native state only into an unused Connector. Generic archives can
 After archive persistence, the exact quiet token permanently fences the old process before provider destruction.
 An uncertain release or destruction retains the archive and interrupted transition. It cannot reopen input against a stale checkpoint.
 Idle and image-release archives support explicit pre-commit cancellation. Age alone does not transfer archive ownership.
-Container image releases use the same archive path before stopping active Containers.
+Container image releases use the same archive path before stopping active Group Containers.
+The image release ignores Containers without a business Workload association. Their disks are disposable during image replacement.
 Group release retains the stopped Workload and its archive.
 An interrupted wake keeps its Workload operation until the reconciler resumes it or reports a bounded recovery error.
 Creating or enabling an Agent does not create a Group VM. A valid `env.ensure_runtime` request or a command for the exact default Cloud VM environment creates the Group Workload on first use. Read-only Device discovery projects that default identity before creation, then projects it from the Workload while its Connector is offline. Discovery does not create the VM.
 The image release fence permits a restricted archive repair connection to the exact archiving Container.
+It also permits exact non-starting confirmation and sealing of a waking target.
+An unused target can rebuild after its quiet admission proof and complete retained archive check.
+An admitted or unknown target requires a critical checkpoint. Unknown execution outcomes still require exact repair.
+Confirmed destruction preserves the wake ID and uses existing `archive_reason` values for the next restore stage.
+The next permit starts that stage's budget once, after the release fence clears. Previous recovery generations remain held.
 These are refinements of existing accepted-work and ownership contracts. Local tests do not prove cloud-provider progress.
 
 ### Cloud VM runtime preparation
@@ -866,13 +1018,36 @@ Readiness uses current Connector inventory and authentication. It does not prove
 
 [RuntimeInstall](../../systems/apps/salix_web/lib/salix_web/cloud_vm/runtime_install.ex) installs the release lock's exact CLI versions.
 It requires Node 20 or later, npm, and flock. Missing prerequisites fail without a VM rebuild.
-The Cloudflare image contains the Go Connector. Its attachment delegates protocol handling to ConnectorSocket through
+The Cloudflare image contains the Go Connector and locked default Codex, Claude, and Pi commands.
+Default packages live under `/opt/salix/default-harness` outside restored user package trees.
+The image appends its command directory to PATH. Existing managed targets and PATH commands keep discovery priority.
+[Connector startup](../../systems/connector/salix-connect/harness_startup.go) preserves the discovered command and credential identity.
+Managed Cloudflare cold starts can try the original CLI, then one image default after a launch or protocol failure.
+Existing live processes remain preferred. Each failed candidate must stop before the next starts.
+Authentication, configuration, explicit native rejection, and unknown business sends do not trigger this retry.
+Failed fresh candidates cannot publish business output. Native Session IDs and durable recovery obligations remain unchanged.
+A confirmed normal process exit settles an existing native recovery execution through its Session owner.
+Published managed entries retain their target identity when package dependencies disappear. Empty installation directories declare no target.
+Codex readiness reads version evidence from the selected process generation. Older native servers receive one cached, bounded command-version probe.
+Version failures leave that process alive and unavailable. They grant no authentication, recovery, or cross-version retry authority.
+Managed Claude and Pi readiness use the same bounded startup selection before they query the selected command version.
+A version failure reports unavailable without another launch. Native auth, configuration, and explicit rejection remain terminal.
+Claude retries missing-executable or missing-module bootstrap failures only before a valid auth response.
+Pi consumes correlated native responses and stream closure in order. Local model configuration still requires provider verification.
+Readiness stops and joins each owned temporary process before another candidate starts.
+The request budget is twenty seconds, with at most one three-second cleanup tail.
+An installation without a published entry declares no target. Readiness does not create one.
+Image defaults do not prove authentication or native continuation.
+Its attachment delegates protocol handling to ConnectorSocket through
 [ConnectorSession](../../systems/apps/salix_web/lib/salix_web/cloud_vm/connector_session.ex).
 Installation uses the exact live Connector and refreshes inventory without restarting it.
+Repair installs a new package directory and checks the CLI before it updates the requested wrapper.
+Each wrapper retains its exact package path. A version cache reuses successful repairs without changing existing package trees or running children.
 Disconnect ends transport requests without replaying unknown commands or stopping independent native work.
 
 Packages and entry wrappers live under the VM user's `.local/share/salix` directory.
-Cloudflare keeps HOME and native state under `/workspace/.salix/home`. Its command and file root remains `/workspace`.
+Cloudflare links `/home/sprite` to `/workspace/.salix/sprite-home` to retain migrated entry paths.
+Its HOME and Connector state are under `/home/sprite/.local/share/salix/connector-home`. Its command and file root remains `/workspace`.
 Native queues, Session state, credentials, and VM disks are retained product data.
 Automatic unused-VM teardown and provider switching refuse to remove a VM with runtime intents.
 This change adds no deletion or cross-provider migration of those targets.
@@ -956,8 +1131,6 @@ See [free Router billing](../billing-models.md#free-comma-router-models).
 | Agent Swarm / Project | BFT's Agent work scope, stored under the historical Project name. It maps to Salix Group. |
 | Group meeting preparation settings | Calendar enrollment choices owned by the existing Group, keyed by Group ID. Enabled state and revision authorize subsequent meeting effects. This configuration does not own a second MeetingPlan lifecycle. |
 | BFT Agent | A product reference to a Salix Agent. The product row owns association and slot facts, not a second runtime configuration. |
-| User Assistant Chat | A User-by-Project binding to a Conversation. Unlike Comma's shared Group Chat, BFT retains this per-user binding. |
-| WorkspaceItem | A local My Space board item that can reference a canonical Task. It also represents local-only work. |
 | Calendar Task projection | A read-only calendar representation of a scheduled canonical Task, not another editable Task aggregate. |
 | Triage / Receipt / Bucket | Message triage, processing evidence, and grouping. BFT's workbench scopes access to Salix-owned triage facts. |
 | Triage follow-up | A retained context entry owned by `TriageProductRuntime`, with one Schedule for its next check. Explicit duplicate maintenance reuses `superseded_by`. It preserves evidence and leaves one selected entry active. It does not resolve the source goal. |
@@ -970,8 +1143,6 @@ Owners and entry points:
 [Group meeting settings](../../systems/apps/salix_store/lib/salix_store/meeting_calendar_settings.ex),
 [Meeting configuration authority](../../systems/apps/salix_meet/lib/salix_meet/calendar_configuration.ex),
 [BFT Agent](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/agent.ex),
-[UserAssistantChat](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user_assistant_chat.ex),
-[WorkspaceItems](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/workspace_items.ex),
 [Canonical item commands](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/conversations.ex),
 [Calendar projection adapter](../../systems/apps/salix_calendar/lib/salix_calendar/source_adapter/salix_task_schedule.ex),
 [Triage](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/triage.ex),
@@ -980,9 +1151,9 @@ Owners and entry points:
 [SourcedContextObject](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/sourced_context_object.ex),
 [ContextLifecycle](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/context_lifecycle.ex).
 
-WorkspaceItem contains Task-shaped fields, but a linked Task still has one canonical lifecycle.
-The product command path updates the linked Conversation and refreshes its projection.
-Local-only items can change locally. Do not generalize that local authority to canonical Task state.
+User Assistant Chat and WorkspaceItem are retired with the My Space board. BFT has no per-user Chat
+binding or local board item. The `user_assistant_chats` and `workspace_items` tables keep only stored
+rows, which the conversation and session identity migrations still rewrite.
 BFT Agent's salix field is virtual. It is not a persisted copy of Salix Agent configuration.
 ContextLifecycle supports explicit deletion and erasure. It does not yet schedule retention periods or implement legal holds.
 
@@ -1019,6 +1190,9 @@ Disabled or deleted accounts make the relationship unavailable rather than selec
 AccountPool owns encrypted credentials and their account type.
 Subscription OAuth accounts own refresh and quota state.
 Provider API key accounts own a name, an HTTPS endpoint, a protocol, and an authentication scheme.
+An account created for a Model Catalog source also records that source, its endpoints by protocol, and a key hint.
+A Custom account may have no key. It then has no key hint, and requests to it carry no authentication header.
+The product calls these accounts Profiles.
 They reuse the existing account identity, encrypted credential field, version, and binding lifecycle.
 The connector holds a runtime copy of the selected credential in native process memory.
 It can create a secret-free launch projection for a managed native process.
@@ -1144,9 +1318,11 @@ The server validates the item ID and hands critical and high items, with their u
 The Router reads current context and decides whether to notify the owner. The screening result is evidence, not a user-visible reply.
 The consumer routes only while the judged item still waits, unchanged. It holds the item and source state rows locked during the handoff. A revocation, source change, or new collection commits before the check, which routes nothing, or after the accepted input.
 The consumer records its outcome and the rated urgency on each judged item.
+An `unclear` or unusable judgment decides nothing: the items stay pending as `retry`, after new arrivals, and are judged again, at most three times, before they settle as `invalid`. A pool item whose matter the owner's watch follows is not handed over again by the check. The judgment rates only from the evidence and does not lower a level to stay quiet; the Router rereads the source before any message.
 Home Conversation metadata holds two budgets per owner. At most twelve automatic Router handoffs in 24 hours bound the Router's cost.
 ConversationActor spends the handoff budget when it reserves the hidden input. While it is closed, items keep waiting. Other judged items wait after each handoff.
 The Router records its decision on the matter with `proactive.act`: `notify`, `quiet` with a reason, or `snooze` to recheck later. The value keeps the latest decision and reason.
+While the notification budget is closed, the check hands over no non-critical item: judged items stay pending until the spacing passes. When even a critical matter could not notify, the check judges nothing.
 `notify` on an automatic matter spends the notification budget: at least 30 minutes apart and at most five in 24 hours. A critical matter skips the spacing, not the daily cap. `notify` fails while that budget is closed. Staying quiet spends no notification.
 Replies, reminders the owner scheduled and reports from watches the owner asked for do not spend the budget.
 Only a Router decision creates a visible reminder: the need, an offered next step, then the source link.
@@ -1154,7 +1330,7 @@ Background checks and due reminders cannot select personal IM delivery targets. 
 The Router uses ordinary reply tools. `proactive.act` with `track` updates source state without sending a message.
 Fixed system receipts, Task status cards, and direct Telegram Task topics retain their existing delivery contracts.
 Snooze, handled and other actions append hidden app events. Earlier reminders keep a stored `mail_reference` block. Clients render only their text.
-A proactive watch is a Background Loop with a Comma owner source binding, enrolled only when the owner asks Comma to follow one matter. Comma installs one bundled source-neutral program.
+A proactive watch is a Background Loop with a Comma owner source binding, enrolled only when the owner asks Comma to follow one matter. Comma installs one bundled source-neutral program. Its `agent.notify` wakes become the owner's Home matter, not automatic, on the one proactive handoff path; the Router input keeps the Loop's origin and label. Salix lets a product that owns a Loop deliver its wakes through the authorization adapter's `deliver/4`; other Loops wake their Session directly.
 Generic Loops remain Agent-authored. The binding pins a Workspace, user, connection, and consent revision. Each Agent admits at most 16 product bindings. Loop pause/resume and durable events retain their existing owners.
 Collection deletes the default Home and Gmail Loops that earlier releases enrolled. It discards their pending events and reads those items from the sources.
 A Task may hold existing `source_refs.comma_mail` or `source_refs.proactive` correlation metadata. ConversationServer and ConversationActor own atomic association writes.
@@ -1186,8 +1362,19 @@ Comma conversations are also a proactive source. An owned Task that becomes esca
 Salix calls the product's Task status observer when it publishes a Task status; the publication recovery row makes that call at least once per change. For an escalated or failed Task the observer queues one Oban job per status version; other statuses touch no Comma state. It never mutates the Task.
 The job re-reads the Task, requires the Workspace owner, and presents the matter as automatic with the observation `status:message_tail_seq`. One escalation hands over once, also after the owner answered. The switch and the handoff budget apply.
 The collection chain closes the matter when the Task left escalated or failed, which re-arms the next escalation even after the matter was handled, and when the owner wrote in the Task after it asked. It checks at most eight task matters from Home metadata and never lists Tasks.
+`proactive.state` lists the owner's bound personal chats as `personal_targets`: the exact Telegram or WeChat reply tool and arguments, never credentials. A WeChat target is ready only after the owner wrote once since binding. The Router sends a reminder it decided on to each ready target after its Home reply only while `app_active` is false; the server sends nothing through them. `app_active` is true when a signed-in desktop App reported use in the last ten minutes. The App reports use at most once a minute through `POST /v1/comma/auth/session/activity`, only while the computer had input in the last five minutes, its main window is open, and its system and Router message notifications are on and allowed by the OS. Then a Router reply in Home reaches the owner as a banner or in the open window. [Sessions](../../systems/apps/comma_core/lib/comma/accounts/sessions.ex) records it as `active_at` on the existing Auth Session; it adds no presence entity.  One `notify` spends one notification for every channel.
+A published scheduled Routine briefing is handed to the Workspace owner's Router as the automatic Home matter `["routine", "briefing"]`, observed at its generation, with its first items as evidence. The Router notifies only when an item needs the owner today.
 Draft actions create one Task through the durable creation receipt. Retries recover that Task. Source-only reminders create no Task.
+The proactive notebook is a projection, not an entity. It is one Markdown file, `Comma/Notebook.md`, in the owner's Drive.
+The server renders it from the owner's Home values, watch Loops, pool source states and the latest judged pool items. No model writes it.
+It also lists the latest published Routine briefing, also while a run refreshes it or after a failed run, with what happened to each item since, and marks quiet pool items that the briefing includes. Routine publication queues a render.
+It groups matters by what needs the owner, what comes up later, what waits, what the Router did not interrupt them about with its reason, and what is done. Each Home value keeps the time it last changed for this order.
+Matter changes, owner-scheduled due reminders, collections and proactive checks queue one render. Renders merge within one minute. A render equal to the stored file writes nothing, and source read times show only the hour.
+A lost or edited file is replaced by the next render. An owner's edit on a device stays as their own Drive version and changes no matter.
+The Drive is the Workspace's shared folder. The notebook holds private source titles, so it is written only while the owner is the Workspace's only member. Otherwise the render withdraws the hosted version. A copy that an owner's device already synced stays that device's version until the owner deletes it.
+`proactive.state` returns its `/drive` path when the Drive holds it, so the Router can point to it.
 Implementation: [product controls](../../systems/apps/comma_web/lib/comma_web/proactive.ex),
+[proactive notebook](../../systems/apps/comma_web/lib/comma_web/proactive_notebook.ex),
 [proactive consumer](../../systems/apps/comma_web/lib/comma_web/proactive_check.ex),
 [attention judgment](../../systems/apps/comma_web/lib/comma_web/recommendation_renderer.ex),
 [bundled watch and consent](../../systems/apps/comma_web/lib/comma_web/proactive_watch.ex),
@@ -1233,3 +1420,41 @@ The handling revision fences scheduled reminders after a report or owner change.
 The existing delivery workers own channel/thread delivery, leases, and uncertain-result reconciliation for both.
 [Remind](../../systems/apps/alert_router/lib/alert_router/workers/remind.ex) schedules one overdue notice per handling revision.
 It does not own incident closure or service recovery. See [alert handling](../observability.md#slack-cards-and-investigation-progress).
+
+### Paid-work admission
+
+`BillingCore.FeeControl` owns availability; runtime owners own operation outcomes.
+[BillingAvailability](../../systems/apps/salix_agent/lib/salix_agent/billing_availability.ex)
+normalizes `billing_unavailable`, its reason, message and retryability. It stores no balance.
+`insufficient_credits`, `account_inactive` and `missing_account` end the current attempt
+without automatic business retry. Billing infrastructure errors retain existing recovery.
+
+Paid platform LLM calls require at least one spendable credit before dispatch, including
+background and auxiliary calls. Free Router models, tenant credentials, account pools
+and unlimited grants retain their existing exemptions. This is availability admission,
+not a reservation or a guarantee that an unknown-duration call cannot exhaust its balance.
+Actual incurred usage still reaches the existing charging seam.
+
+Cloud VM creation, archive wake, runtime installation and paid voice start check at request
+and execution boundaries. A known refusal returns immediately through tools and Session
+errors, instead of waiting for READY. It does not discard files, archives, credentials or
+prior usage. A suspended resource remains recoverable under its existing lifecycle;
+a rejected command is not automatically replayed when credits return.
+Installation refusal retires only unclaimed pending targets. An accepted installation
+keeps its existing claim owner and can commit its result.
+
+Internal Sessions commit existing `llm_call_failed` at the materialized transcript HWM,
+with `retryable=false`, then use existing failure notification and settlement. Matching
+input cannot trigger another provider call after restart. Accepted messages, running tools
+and their results remain. Explicit resume or new input authorizes again. Existing
+`runtime_failure_reply` carries the financial reason after notification/compaction;
+financial failures must not appear as model connection failures.
+
+Implementation: [LLMMetering](../../systems/apps/billing_core/lib/billing_core/metering/llm_metering.ex),
+[Drive](../../systems/native/verified_kernel/runtime/VerifiedKernel/Session/Drive.lean),
+[Cloudflare](../../systems/apps/salix_web/lib/salix_web/compute_providers/cloudflare.ex),
+[VoiceMetering](../../systems/apps/billing_core/lib/billing_core/voice_metering.ex).
+
+Refusing new external input preserves any existing native execution owner and evidence.
+An idle Session projects the financial reason. The retained `ExternalRuntime` model
+checks durable local refusal before exact-prefix removal and prevents refused-input dispatch.

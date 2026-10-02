@@ -213,7 +213,7 @@ defmodule SalixAgent.GuardFailureReplyTest do
     refute Enum.any?(settlement, &(&1["kind"] == "terminal_reply_delivered"))
   end
 
-  test "a model failure cannot cancel running work owned by the same source" do
+  test "a financial refusal stops the input and preserves accepted running work after reload" do
     state = InternalSession.export(exhausted())
 
     session =
@@ -222,11 +222,19 @@ defmodule SalixAgent.GuardFailureReplyTest do
         %{
           "type" => "session_event",
           "kind" => "llm_call_failed",
-          "event" => %{"retryable" => false, "transcript_hwm" => 2, "status" => 402}
+          "event" => %{
+            "retryable" => false,
+            "transcript_hwm" => 2,
+            "status" => 402,
+            "error_class" => "billing_unavailable",
+            "reason" => "insufficient_credits"
+          }
         }
       ])
 
     assert InternalSession.query(session, :guard_disposition_pending?)
+    assert InternalSession.activity_issue(session) == "insufficient_credits"
+    refute "stable_input_pending" in InternalSession.query(session, :work_reasons)
 
     running =
       InternalSession.apply_events(session, [
@@ -245,6 +253,7 @@ defmodule SalixAgent.GuardFailureReplyTest do
     {events, call, _authorized} = prepare_notice(running)
 
     assert call["args"]["reply_mode"] == "progress"
+    assert call["args"]["params"]["text"] =~ "Not enough credits"
     reserved = InternalSession.apply_events(running, events)
     assert InternalSession.query(reserved, :guard_failure_cleanup_events, {nil, 123}) == []
     receipt = %{result("guidance") | id: call["id"]}
@@ -264,6 +273,7 @@ defmodule SalixAgent.GuardFailureReplyTest do
 
     {:ok, restored} = InternalSession.load(InternalSession.persist(settled))
     refute InternalSession.query(restored, :guard_disposition_pending?)
+    assert InternalSession.activity_issue(restored) == "insufficient_credits"
     assert InternalSession.query(restored, :guard_failure_settlement, {nil, []}) == nil
     refute "runtime_failure_reply" in InternalSession.query(restored, :work_reasons)
 

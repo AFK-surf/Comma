@@ -6,6 +6,7 @@ import { Button, Login, Text } from "@comma/ui";
 import type { LoginCopy } from "@comma/ui";
 import type {
   SessionAuthenticatorController,
+  SessionGuestController,
   SessionLoginChallenge,
 } from "../session/react";
 import { SessionOperationDisplayError } from "../session/operation-error-message";
@@ -14,6 +15,10 @@ type ChallengePurpose = SessionLoginChallenge["purpose"];
 
 type LoginScreenProps = {
   authenticator: SessionAuthenticatorController;
+  /** Offers "Try without an account" when the server enables guest mode. */
+  guest?: SessionGuestController | undefined;
+  /** Shown after a guest chose to sign up, so the next sign-in keeps the chat. */
+  guestHandoffNotice?: string | undefined;
   revocationPending?: boolean | undefined;
   /**
    * Generic banner shown while an OAuth IdP round trip is pending
@@ -43,6 +48,8 @@ export function LoginScreen(props: LoginScreenProps) {
  */
 function StagedLoginScreen({
   authenticator,
+  guest,
+  guestHandoffNotice,
   requestGoogleLogin,
   revocationPending = false,
   oauthResumeNotice,
@@ -57,6 +64,8 @@ function StagedLoginScreen({
   const [busy, setBusy] = useState(false);
   const [googlePending, setGooglePending] = useState(false);
   const [googleRetryAvailable, setGoogleRetryAvailable] = useState(false);
+  const guestAvailable = useGuestAvailability(guest);
+  const [guestPending, setGuestPending] = useState(false);
   const googleAttemptRef = useRef<(() => void) | undefined>(undefined);
 
   function clearGoogleAttempt() {
@@ -258,6 +267,14 @@ function StagedLoginScreen({
       });
   }
 
+  function handleTryAsGuest() {
+    if (!guest) return;
+    clearGoogleAttempt();
+    setGoogleRetryAvailable(false);
+    setGuestPending(true);
+    void runAuthTask(() => guest.start()).finally(() => setGuestPending(false));
+  }
+
   function handleCodeChange(nextCode: string) {
     setCode(nextCode);
     if (error) {
@@ -311,7 +328,8 @@ function StagedLoginScreen({
   return (
     <main className="app-login-shell">
       <div className="app-login-stage">
-        {oauthResumeNotice && <OauthResumeNotice text={oauthResumeNotice} />}
+        {oauthResumeNotice && <LoginNotice text={oauthResumeNotice} />}
+        {guestHandoffNotice && <LoginNotice text={guestHandoffNotice} />}
         {hasChallenge ? (
           <Login
             copy={loginCopy}
@@ -336,6 +354,15 @@ function StagedLoginScreen({
             googlePending={googlePending}
             {...(googleRetryAvailable && error ? { googleErrorMessage: error } : {})}
             onContinueWithGoogle={handleContinueWithGoogle}
+            {...(guest && guestAvailable
+              ? {
+                  secondaryAction: {
+                    label: messages.auth_guest_try(),
+                    onPress: handleTryAsGuest,
+                    pending: guestPending,
+                  },
+                }
+              : {})}
           />
         )}
 
@@ -367,6 +394,8 @@ function canRetryCompletedCode(error: unknown): boolean {
 
 function LegacyLoginScreen({
   authenticator,
+  guest,
+  guestHandoffNotice,
   revocationPending = false,
   oauthResumeNotice,
 }: LoginScreenProps) {
@@ -385,6 +414,7 @@ function LegacyLoginScreen({
   );
   const googleButtonRef = useRef<HTMLDivElement>(null);
   const hasChallenge = Boolean(challengeId);
+  const guestAvailable = useGuestAvailability(guest);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -512,6 +542,11 @@ function LegacyLoginScreen({
     setError("");
   }
 
+  function tryAsGuest() {
+    if (!guest) return;
+    void runAuthTask(() => guest.start());
+  }
+
   function retryGoogleSignIn() {
     setError("");
     setNotice("");
@@ -522,7 +557,8 @@ function LegacyLoginScreen({
   return (
     <main className="app-login-shell">
       <div className="app-login-container">
-        {oauthResumeNotice && <OauthResumeNotice text={oauthResumeNotice} />}
+        {oauthResumeNotice && <LoginNotice text={oauthResumeNotice} />}
+        {guestHandoffNotice && <LoginNotice text={guestHandoffNotice} />}
         <img
           className="app-login-logo"
           src={commaLogoUrl}
@@ -637,6 +673,16 @@ function LegacyLoginScreen({
                   {messages.auth_use_different_email()}
                 </Button>
               )}
+              {!hasChallenge && guest && guestAvailable && (
+                <Button
+                  hierarchy="link-gray"
+                  className="app-login-secondary"
+                  onPress={tryAsGuest}
+                  disabled={busy}
+                >
+                  {messages.auth_guest_try()}
+                </Button>
+              )}
             </div>
           </form>
 
@@ -656,6 +702,25 @@ function LegacyLoginScreen({
   );
 }
 
-function OauthResumeNotice({ text }: { text: string }) {
+function LoginNotice({ text }: { text: string }) {
   return <output className="app-login-oauth-notice">{text}</output>;
+}
+
+// One bounded read per login screen mount; a failure hides the guest action.
+function useGuestAvailability(guest: SessionGuestController | undefined) {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    if (!guest) return undefined;
+    let active = true;
+    void guest.availability().then(
+      (enabled) => {
+        if (active) setAvailable(enabled);
+      },
+      () => undefined
+    );
+    return () => {
+      active = false;
+    };
+  }, [guest]);
+  return available;
 }

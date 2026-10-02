@@ -6,13 +6,9 @@ Feature owners and tests, not deployment status.
 
 `clients/packages/app/` owns shared product interactions.
 Canonical Conversation and Task facts remain on the server.
-Draft append, suggestions, optimistic thinking, message replies, previews, and Task cards are client projections.
+Draft append, optimistic thinking, message replies, previews, and Task cards are client projections.
 Send a draft only through the intended user action.
 A stale asynchronous preview or send result must not affect another Conversation or account.
-
-Full chat offers four ranked follow-ups at most. Capsules send without consuming drafts.
-The best is also the placeholder. Tab accepts it without sending or replacing text.
-Both share ranked prompts of at most 12 graphemes. Longer prompts are dropped, not truncated. The single-line placeholder may ellipsize.
 
 Retain tests that exercise send/cancel, keyboard interaction, error recovery, loading accessibility, and canonical reconciliation.
 Use [Conversations](salix/conversation-owner-actor.md) and [Tasks](salix/tasks-background-execution.md) for durable guarantees.
@@ -31,14 +27,17 @@ Use the owner-backed file/capability path and handle unavailable content explici
 Drive mentions and catalogs must preserve current source scope and bounded lookup.
 Do not perform a full resource scan on each interaction.
 
-Browser sidebar navigation, side chat, site permissions, shortcuts, and memory sessions belong to their native owners.
-A renderer or page must not override native permission or account authority.
-Test the native boundary when the behavior depends on browser permissions, focus, keychain, protocol, or windows.
+Browser navigation, side chat, site permissions, shortcuts, and memory sessions have native owners.
+The macOS onboarding names the Side Chat shortcut after setup and ends with the Open Comma shortcut step, if set. Main suspends that shortcut and hides the main window during onboarding.
+Closing its last tab collapses the right sidebar.
+Pages and renderers cannot override native permission or account authority.
+Use native tests for browser permissions, focus, keychain, protocols, and windows.
 See [Clients](clients.md).
 
 ## Models and settings
 
 Router and default Worker selectors are independent.
+Owners can rename the Router (1 to 40 characters). Participants keep the join-time name; clients show the current one.
 Creating a custom model does not select it or rewrite existing Task Agents.
 Credentials remain transient in forms and protected in the owner store.
 Subscription catalogs are discovery results, not execution guarantees.
@@ -235,9 +234,8 @@ cancellation, and orphan recovery. Compiler tests cover paragraphs, references,
 action authority, partial failures, empty results, and card bounds. Migration
 checks must run the real migration and compare preserved data.
 
-These tests replace the old assumptions that a hidden Agent is provisioned and
-that context sealing completes a run. Shared Schedules and DependencyJob keep
-their existing system-level contracts. Their retained TLA+ models are unchanged;
+Shared Schedules and DependencyJob keep their existing system-level contracts.
+Their retained TLA+ models are unchanged;
 feature lifecycle regressions remain in implementation tests. Historical
 recommendation model anchors are not current TLC evidence.
 
@@ -287,15 +285,15 @@ When ready, it sends one authenticated `initialize-workload` request for that in
 The backend resolves the installation from the current workspace and main-device session.
 It uses only the available VMM binding for that registration and environment.
 An environment row lock serializes concurrent initialization requests.
-Reuse requires a `ready` desired state, a `pending` or `ready` observed state, and a pending, allocating, or ready allocation.
+Reuse requires a desired-ready Shell, including failed startup, and a pending, allocating, or ready allocation.
 Both records must belong to the current environment generation.
 Otherwise, the existing Compute owner places a `shell.default` workload on that binding.
 Response-loss retries reuse the existing workload. No separate initialization identity or lifecycle is stored.
 
-Initialization errors require **Continue setup**. Status refresh does not create workloads.
+Initialization errors require **Continue preparing Shell**. This resumes initialization without enabling the registration again. Refresh stays read-only.
 Disabling Compute Node drains its registration workloads and releases their allocations through the existing lifecycle.
-Re-enabling creates a new workload instead of reusing a draining, stopped, failed, or released workload.
-Old database records remain. Runtime files may not survive release.
+Re-enabling creates a new workload after drain, stop, or release. Startup failure retains the original Shell.
+Normal removal revokes this registration and stops its environments into Retained, preserving private files. Force deletion needs local confirmation.
 Deleting a workload does not trigger background replacement. A later explicit enable can initialize another workload.
 Creation acceptance does not prove runtime readiness or give an Agent permission to execute commands.
 Agent execution still requires the existing Compute grant and context.

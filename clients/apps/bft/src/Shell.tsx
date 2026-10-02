@@ -13,11 +13,20 @@ import {
 } from "@comma/ui";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { BftOrgContext } from "./api";
+import { FlashNotice } from "./flash";
 import { initials } from "./format";
 import { messages } from "./messages";
 import { navIcons } from "./navIcons";
-import { buildOrgNav, flattenNav, isNavItemActive, type NavItem } from "./navSpec";
-import { go, spaLinkClick } from "./router";
+import {
+  buildOrgNav,
+  flattenNav,
+  isNavItemActive,
+  isNavLinkActive,
+  type NavItem,
+  type NavLink,
+} from "./navSpec";
+import { go, normalizePath, spaLinkClick } from "./router";
+import { signOut } from "./session";
 
 const t = messages.topBar;
 
@@ -37,9 +46,10 @@ export function Shell({
             org: context.org.slug,
             capabilities: context.capabilities,
             projects: context.projects,
+            pathname,
           })
         : [],
-    [context]
+    [context, pathname]
   );
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -76,7 +86,10 @@ export function Shell({
       </header>
       <div className="bft-body">
         <Sidebar nav={nav} pathname={pathname} />
-        <main className="bft-main">{children}</main>
+        <main className="bft-main">
+          <FlashNotice pathname={pathname} />
+          {children}
+        </main>
       </div>
       {context ? (
         <NavPalette nav={nav} onOpenChange={setPaletteOpen} open={paletteOpen} />
@@ -127,10 +140,6 @@ function OrgSwitcher({ context }: { context: BftOrgContext | undefined }) {
               </span>
             </MenuItem>
           ))}
-          <MenuSeparator />
-          <MenuItem href="/orgs" id="all-orgs">
-            {t.allOrganizations}
-          </MenuItem>
         </Menu>
       </MenuPopover>
     </MenuTrigger>
@@ -160,8 +169,8 @@ function UserMenu({ user }: { user: BftOrgContext["user"] }) {
             </span>
           </MenuItem>
           <MenuSeparator />
-          <MenuItem href="/orgs" id="all-orgs">
-            {t.allOrganizations}
+          <MenuItem id="sign-out" onAction={signOut}>
+            {t.signOut}
           </MenuItem>
         </Menu>
       </MenuPopover>
@@ -189,8 +198,8 @@ function Sidebar({ nav, pathname }: { nav: NavItem[]; pathname: string }) {
           : nav.map((item) => {
               const active = isNavItemActive(item, pathname);
               const expanded = active && item.children.length > 0;
-              const childActive = item.children.some(
-                (child) => child.href === pathname
+              const childActive = item.children.some((child) =>
+                isNavLinkActive(child, pathname)
               );
               const Icon = navIcons[item.icon];
               return (
@@ -212,25 +221,53 @@ function Sidebar({ nav, pathname }: { nav: NavItem[]; pathname: string }) {
                     ) : null}
                   </a>
                   {expanded ? (
-                    <div className="bft-subnav">
-                      {item.children.map((child) => (
-                        <a
-                          aria-current={child.href === pathname ? "page" : undefined}
-                          className="bft-subnav-item"
-                          href={child.href}
-                          key={child.id}
-                          title={child.label}
-                        >
-                          {child.label}
-                        </a>
-                      ))}
-                    </div>
+                    <SubNav links={item.children} pathname={pathname} />
                   ) : null}
                 </div>
               );
             })}
       </nav>
     </ScrollArea>
+  );
+}
+
+function SubNav({
+  links,
+  nested = false,
+  pathname,
+}: {
+  links: NavLink[];
+  nested?: boolean;
+  pathname: string;
+}) {
+  const current = normalizePath(pathname);
+  return (
+    <div className={nested ? "bft-subnav bft-subnav-nested" : "bft-subnav"}>
+      {links.map((link) => {
+        const pages = link.children ?? [];
+        // An entry with its own pages hands "current page" to the matching page.
+        const exact = current === link.href && pages.length === 0;
+        return (
+          <div className="bft-subnav-group" key={link.id}>
+            <a
+              aria-current={exact ? "page" : undefined}
+              className="bft-subnav-item"
+              data-state={
+                !exact && isNavLinkActive(link, pathname) ? "parent" : undefined
+              }
+              href={link.href}
+              onClick={link.spa ? spaLinkClick : undefined}
+              title={link.label}
+            >
+              {link.label}
+            </a>
+            {pages.length > 0 ? (
+              <SubNav links={pages} nested pathname={pathname} />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

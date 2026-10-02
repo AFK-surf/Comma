@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   sessionExpectation,
   sessionOperationErrorSchemaFor,
@@ -11,7 +12,10 @@ import type {
 } from "../coordination-ports";
 import { webSessionCoordinationRecordSchema } from "../coordination-record";
 import { WebCookieSessionAdapter } from "../web-cookie-session-adapter";
-import { createWebSessionHostController } from "../web-session-host-controller";
+import {
+  createWebSessionHostController,
+  createWebSessionHostControllerFromAdapter,
+} from "../web-session-host-controller";
 
 const sessionA = {
   expires_at: 2_000_000_000,
@@ -23,6 +27,20 @@ const sessionA = {
     status: "active",
   },
 };
+
+const guestSession = {
+  expires_at: 2_000_000_050,
+  session_id: "33333333-3333-4333-8333-333333333333",
+  user: {
+    email: "g-0123abcd@guest.comma.invalid",
+    id: "guest-user",
+    kind: "guest",
+    name: "Guest",
+    status: "active",
+  },
+};
+
+const guestImportMarkerKey = "comma.guestImportPending.v1:https://api.example";
 
 const sessionB = {
   expires_at: 2_000_000_100,
@@ -819,6 +837,177 @@ describe("WebCookieSessionAdapter", () => {
     expect(adapter.getProductLease()).toBeUndefined();
   });
 
+  it("rejects a late Google credential after guest sign-in replaces its attempt", async () => {
+    const harness = createHarness(undefined);
+    const adapter = harness.createAdapter();
+    const host = createWebSessionHostControllerFromAdapter(adapter);
+    await host.initialize();
+    const snapshot = adapter.getSnapshotSync();
+    if (snapshot.phase !== "signed_out") throw new Error("Expected signed out.");
+    const preparation = await adapter.beginGoogleLogin({
+      expected: sessionExpectation(snapshot),
+    });
+    if (!preparation.ok) throw new Error("Expected Google preparation.");
+
+    await host.guest!.start();
+    const callCount = harness.server.calls.length;
+    await expect(
+      adapter.completeGoogleLogin({
+        attempt: preparation.value.attempt,
+        credential: "late-google-credential",
+        nonce: preparation.value.nonce,
+        providerAttemptId: preparation.value.providerAttemptId,
+      })
+    ).resolves.toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(harness.server.calls).toHaveLength(callCount);
+    expect(adapter.getSnapshotSync()).toMatchObject({
+      phase: "signed_in",
+      principal: { kind: "guest" },
+      session: { sessionId: guestSession.session_id },
+    });
+    host.dispose?.();
+  });
+
+  it("hands a guest Cookie session off and imports its chat after the next sign-in", async () => {
+    const harness = createHarness(undefined);
+    const adapter = harness.createAdapter();
+    await adapter.reconcile({ reason: "startup" });
+    await expect(adapter.guestAvailability()).resolves.toBe(true);
+    expect(
+      harness.server.calls.find(
+        (call) => call.method === "GET" && call.url.endsWith("/v1/comma/auth/guest")
+      )
+    ).toMatchObject({
+      expectedSessionId: "none",
+      lifecycleVersion: "1",
+      transport: "cookie",
+    });
+
+    const started = await adapter.startGuestSession({
+      expected: sessionExpectation(adapter.getSnapshotSync() as never) as never,
+    });
+    expect(started).toMatchObject({
+      ok: true,
+      value: { phase: "signed_in", principal: { kind: "guest" } },
+    });
+    const guestStart = harness.server.calls.find(
+      (call) => call.method === "POST" && call.url.endsWith("/v1/comma/auth/guest")
+    );
+    expect(guestStart?.body).toMatchObject({
+      client_kind: "web",
+      pow: { challenge: "gpow1.c2.mac" },
+    });
+    expect(solvesGuestChallenge(guestStart?.body)).toBe(true);
+
+    const handoff = await adapter.beginGuestSignUp({
+      expected: sessionExpectation(adapter.getSnapshotSync() as never),
+    });
+    expect(handoff).toMatchObject({
+      ok: true,
+      value: { phase: "signed_out", reason: "guest_handoff" },
+    });
+    expect(harness.storage.values.get(guestImportMarkerKey)).toBe(
+      JSON.stringify({ expiresAtEpochSeconds: 2_000_000_000 })
+    );
+    expect(harness.server.calls.some((call) => call.url.endsWith("/auth/logout"))).toBe(
+      false
+    );
+
+    let imported = 0;
+    adapter.subscribeGuestImported(() => {
+      imported += 1;
+    });
+    const requested = await adapter.requestEmailLogin({
+      email: "a@example.com",
+      expected: sessionExpectation(adapter.getSnapshotSync() as never) as never,
+    });
+    if (!requested.ok) throw new Error("Expected an email challenge.");
+    await adapter.verifyEmailLogin({
+      attempt: requested.value.attempt,
+      challengeId: requested.value.challengeId,
+      code: "123456",
+    });
+
+    await eventually(() => imported === 1);
+    const importCall = harness.server.calls.find((call) =>
+      call.url.endsWith("/v1/comma/guest-imports")
+    );
+    expect(importCall).toMatchObject({
+      body: {},
+      credentials: "include",
+      expectedSessionId: sessionA.session_id,
+      method: "POST",
+    });
+    expect(harness.server.guestClaimCookie).toBe(false);
+    expect(harness.storage.values.get(guestImportMarkerKey)).toBe("");
+    adapter.dispose();
+  });
+
+  it("retries a rejected guest proof of work once with a fresh challenge", async () => {
+    const harness = createHarness(undefined);
+    const adapter = harness.createAdapter();
+    await adapter.reconcile({ reason: "startup" });
+    const guestPosts = () =>
+      harness.server.calls.filter(
+        (call) => call.method === "POST" && call.url.endsWith("/v1/comma/auth/guest")
+      );
+
+    harness.server.guestPowRejections = 1;
+    await expect(
+      adapter.startGuestSession({
+        expected: sessionExpectation(adapter.getSnapshotSync() as never) as never,
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { phase: "signed_in", principal: { kind: "guest" } },
+    });
+    expect(guestPosts().map((call) => call.body)).toMatchObject([
+      { pow: { challenge: "gpow1.c1.mac" } },
+      { pow: { challenge: "gpow1.c2.mac" } },
+    ]);
+    adapter.dispose();
+
+    const rejected = createHarness(undefined);
+    const second = rejected.createAdapter();
+    await second.reconcile({ reason: "startup" });
+    rejected.server.guestPowRejections = 2;
+    await expect(
+      second.startGuestSession({
+        expected: sessionExpectation(second.getSnapshotSync() as never) as never,
+      })
+    ).resolves.toMatchObject({ error: { code: "unknown" }, ok: false });
+    expect(rejected.server.guestChallenges).toBe(2);
+    expect(
+      rejected.server.calls.filter(
+        (call) => call.method === "POST" && call.url.endsWith("/v1/comma/auth/guest")
+      )
+    ).toHaveLength(2);
+    expect(second.getSnapshotSync()).toMatchObject({
+      phase: "signed_out",
+      reason: "no_session",
+    });
+    second.dispose();
+  });
+
+  it("drops a pending guest import the server no longer recognizes", async () => {
+    const harness = createHarness(sessionA);
+    harness.storage.values.set(
+      guestImportMarkerKey,
+      JSON.stringify({ expiresAtEpochSeconds: 2_000_000_000 })
+    );
+    const adapter = harness.createAdapter();
+    let imported = 0;
+    adapter.subscribeGuestImported(() => {
+      imported += 1;
+    });
+
+    await adapter.reconcile({ reason: "startup" });
+
+    await eventually(() => harness.storage.values.get(guestImportMarkerKey) === "");
+    expect(imported).toBe(0);
+    adapter.dispose();
+  });
+
   it("rebinds to the Cookie's current session after a 409 without an error state", async () => {
     const harness = createHarness(sessionA);
     const adapter = harness.createAdapter();
@@ -1073,6 +1262,9 @@ class FakeCookieServer {
   defaultProbeStatus: number | undefined;
   emailVerificationSession: typeof sessionA = sessionA;
   googleCompletionStatus = 200;
+  guestChallenges = 0;
+  guestClaimCookie = false;
+  guestPowRejections = 0;
   readonly productCalls: Array<{
     authorization: string | null;
     credentials: RequestCredentials | undefined;
@@ -1167,6 +1359,53 @@ class FakeCookieServer {
       return jsonResponse(this.emailVerificationSession);
     }
 
+    if (url.endsWith("/v1/comma/auth/guest") && init?.method === "GET") {
+      // The server's lifecycle protocol rejects a web request without the
+      // signed-out Cookie transport headers before it reaches the route.
+      if (
+        headers.get("x-comma-session-transport") !== "cookie" ||
+        headers.get("x-comma-session-lifecycle-version") !== "1" ||
+        expectedSessionId !== "none"
+      ) {
+        return jsonResponse({ error: "invalid_session_transport" }, 400);
+      }
+      this.guestChallenges += 1;
+      return jsonResponse({
+        enabled: true,
+        pow: {
+          challenge: `gpow1.c${this.guestChallenges}.mac`,
+          difficulty: guestPowDifficulty,
+          expires_at: 2_000_000_000,
+        },
+      });
+    }
+
+    if (url.endsWith("/v1/comma/auth/guest")) {
+      if (
+        !solvesGuestChallenge(this.calls.at(-1)?.body) ||
+        this.guestPowRejections > 0
+      ) {
+        this.guestPowRejections = Math.max(0, this.guestPowRejections - 1);
+        return jsonResponse({ error: "guest_pow_invalid" }, 400);
+      }
+      this.session = guestSession;
+      return jsonResponse(guestSession);
+    }
+
+    if (url.endsWith("/v1/comma/auth/guest/handoff")) {
+      this.session = undefined;
+      this.guestClaimCookie = true;
+      return jsonResponse({ expires_at: 2_000_000_000 });
+    }
+
+    if (url.endsWith("/v1/comma/guest-imports")) {
+      if (!this.guestClaimCookie) {
+        return jsonResponse({ error: "guest_claim_invalid" }, 404);
+      }
+      this.guestClaimCookie = false;
+      return jsonResponse({ import_id: "import-1", status: "pending" }, 202);
+    }
+
     if (url.endsWith("/v1/comma/auth/logout")) {
       this.session = undefined;
       return jsonResponse({ signed_out: true });
@@ -1187,6 +1426,22 @@ class FakeCookieServer {
 
     return jsonResponse({ error: "not_found" }, 404);
   };
+}
+
+const guestPowDifficulty = 10;
+
+function solvesGuestChallenge(body: unknown) {
+  const pow = (body as { pow?: { challenge?: unknown; nonce?: unknown } } | undefined)
+    ?.pow;
+  if (typeof pow?.challenge !== "string" || typeof pow.nonce !== "string") {
+    return false;
+  }
+  if (!/^[0-9]{1,20}$/.test(pow.nonce)) return false;
+  const digest = createHash("sha256")
+    .update(`${pow.challenge}:${pow.nonce}`, "utf8")
+    .digest();
+  // 10 leading zero bits: one zero byte and the top two bits of the next.
+  return digest[0] === 0 && ((digest[1] ?? 0xff) & 0xc0) === 0;
 }
 
 function jsonResponse(body: unknown, status = 200) {

@@ -38,6 +38,13 @@ test("production Compose logs in, provisions a workspace, and serves its source"
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible({
     timeout: 90_000,
   });
+  // A new account meets the first-launch onboarding over the product; close
+  // it the way a user can, and it stays finished across the reload below.
+  const onboarding = page.getByRole("dialog", { name: "Welcome to Comma" });
+  await onboarding
+    .getByRole("button", { name: "Close onboarding" })
+    .click({ timeout: 30_000 });
+  await expect(onboarding).toHaveCount(0);
   expect(
     (await context.cookies()).some(
       (cookie) => cookie.name === "comma_session" && cookie.httpOnly
@@ -45,6 +52,7 @@ test("production Compose logs in, provisions a workspace, and serves its source"
   ).toBe(true);
   await page.reload();
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
+  await expect(onboarding).toHaveCount(0);
   expect(
     requests.filter((url) => /https?:\/\/(salix|app)(-staging)?\.comma\.surf/.test(url))
   ).toEqual([]);

@@ -1,6 +1,6 @@
 defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
   @moduledoc """
-  First-run onboarding (`/onboarding`): a four-step full-screen flow shown to
+  First-run onboarding (`/onboarding`): a three-step full-screen flow shown to
   users who have not finished it yet (`Dashboard.Auth :require_onboarded` gates
   every other dashboard surface).
 
@@ -19,9 +19,8 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
                           `ProjectComposioConnections.start_connection/5`.
                           Composio-only by design: the org opts in once with an
                           API key (or rides the platform default) instead of
-                          configuring per-provider OAuth apps.
-    4. `:tasks`         — accept suggested starter tasks (persisted as
-                          `BridgeForTeams.WorkspaceItems`, shown on New Home).
+                          configuring per-provider OAuth apps. Continuing
+                          from this step completes onboarding.
 
   Owned by slice "orgs-shell".
   """
@@ -30,14 +29,11 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
   require Logger
 
   alias BridgeForTeams.{
-    WorkspaceItems,
     Memberships,
     Orgs,
     ProjectComposioConnections,
     ProjectIMConnects,
     Projects,
-    RoutineSchedules,
-    TaskDelegation,
     UserOnboardings
   }
 
@@ -45,7 +41,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
 
   import BridgeForTeamsWeb.Dashboard.BrandLogos, only: [brand_logo: 1]
 
-  @steps ~w(capabilities profile integrations tasks)
+  @steps ~w(capabilities profile integrations)
   @max_contacts 4
 
   @impl true
@@ -79,10 +75,6 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
          |> assign(:im_connects, [])
          |> assign(:integrations_loaded, false)
          |> assign(:integrations_unavailable, false)
-         |> assign(:suggestions, [])
-         |> assign(:selected_ids, MapSet.new())
-         |> assign(:custom_tasks, [])
-         |> assign(:custom_title, "")
          |> assign(:resumed, false)}
 
       {:error, _reason} ->
@@ -112,7 +104,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
   # On the bare `/onboarding` entry, jump to the step the user previously
   # reached — but only on the first params pass, so Back navigation works.
   defp maybe_resume(%{assigns: %{resumed: false}} = socket, :capabilities) do
-    stored = socket.assigns.onboarding.current_step
+    stored = resume_step(socket.assigns.onboarding.current_step)
     socket = assign(socket, :resumed, true)
 
     if stored in @steps and stored != "capabilities" do
@@ -124,13 +116,17 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
 
   defp maybe_resume(socket, _step), do: {:stay, assign(socket, :resumed, true)}
 
+  # A record stored on the retired fourth step ("tasks") had already passed
+  # integrations, so it resumes on integrations, whose Continue now finishes.
+  defp resume_step("tasks"), do: "integrations"
+  defp resume_step(step), do: step
+
   # The profile step frames what the agent will learn against the *real*
   # connection set, so it loads the same integration snapshot the later steps
   # use (best-effort; a Salix hiccup just leaves the plans in their pre-connect
   # phrasing).
   defp load_step(socket, :profile), do: load_integrations(socket)
   defp load_step(socket, :integrations), do: load_integrations(socket)
-  defp load_step(socket, :tasks), do: socket |> load_integrations() |> load_suggestions()
   defp load_step(socket, _step), do: socket
 
   # The Salix OAuth callback returns the browser here, appending
@@ -229,73 +225,15 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
   end
 
   def handle_event("integrations_continue", _params, socket) do
-    case UserOnboardings.advance(socket.assigns.onboarding, "tasks") do
-      {:ok, onboarding} ->
+    case UserOnboardings.complete(socket.assigns.onboarding) do
+      {:ok, _onboarding} ->
         {:noreply,
          socket
-         |> assign(:onboarding, onboarding)
-         |> push_patch(to: ~p"/onboarding/tasks")}
+         |> put_flash(:info, gettext("You're all set."))
+         |> redirect(to: ~p"/")}
 
       {:error, _reason} ->
         {:noreply, save_failed(socket)}
-    end
-  end
-
-  # ---- events: tasks -------------------------------------------------------------
-
-  def handle_event("toggle_task", %{"id" => id}, socket) do
-    selected = socket.assigns.selected_ids
-
-    selected =
-      if MapSet.member?(selected, id),
-        do: MapSet.delete(selected, id),
-        else: MapSet.put(selected, id)
-
-    {:noreply, assign(socket, :selected_ids, selected)}
-  end
-
-  def handle_event("add_custom_task", %{"custom" => %{"title" => title}}, socket) do
-    title = title |> to_string() |> String.trim()
-
-    if title == "" do
-      {:noreply, socket}
-    else
-      id = "custom-#{System.unique_integer([:positive])}"
-      task = %{id: id, title: title, description: nil, category: "custom", platform: "comma"}
-
-      {:noreply,
-       socket
-       |> assign(:custom_tasks, socket.assigns.custom_tasks ++ [task])
-       |> assign(:selected_ids, MapSet.put(socket.assigns.selected_ids, id))
-       |> assign(:custom_title, "")}
-    end
-  end
-
-  def handle_event("finish_onboarding", _params, socket) do
-    user = socket.assigns.current_user
-    org = socket.assigns.current_org
-    project = org && default_project(org, user)
-    tasks = selected_task_attrs(socket)
-
-    # Board tasks belong to a swarm; with no project there is nowhere for them
-    # to live yet, so finishing just completes the flow (honest empty board).
-    create_result =
-      if tasks == [] or is_nil(project),
-        do: {:ok, []},
-        else: WorkspaceItems.create_tasks(user.id, org.id, project.id, tasks)
-
-    with {:ok, created} <- create_result,
-         {:ok, onboarding} <- UserOnboardings.complete(socket.assigns.onboarding) do
-      dispatch_accepted_tasks(created, socket)
-      materialize_routines(onboarding, socket)
-      seed_report_offers(socket)
-
-      {:noreply,
-       socket
-       |> put_flash(:info, finish_flash(length(created)))
-       |> redirect(to: ~p"/")}
-    else
-      {:error, _reason} -> {:noreply, save_failed(socket)}
     end
   end
 
@@ -351,55 +289,21 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
     |> assign(:integrations_loaded, true)
   end
 
-  defp load_suggestions(%{assigns: %{suggestions: [_ | _]}} = socket), do: socket
-
-  defp load_suggestions(socket) do
-    board_titles = existing_board_titles(socket)
-
-    suggestions =
-      socket.assigns.capabilities
-      |> Catalog.suggested_tasks(connected_providers(socket.assigns.connections))
-      |> Enum.reject(&MapSet.member?(board_titles, &1.title))
-
-    socket
-    |> assign(:suggestions, suggestions)
-    |> assign(:selected_ids, MapSet.new(Enum.map(suggestions, & &1.id)))
-  end
-
-  # Titles already on the user's board — a RESTARTED onboarding must not
-  # re-offer starter tasks the previous run already created (finishing again
-  # would duplicate them). First runs see an empty board, so this filters
-  # nothing there.
-  defp existing_board_titles(socket) do
-    user = socket.assigns.current_user
-    project = socket.assigns.project
-
-    if project do
-      user.id
-      |> WorkspaceItems.list_tasks(project_id: project.id)
-      |> MapSet.new(& &1.title)
-    else
-      MapSet.new()
-    end
-  end
-
   # The swarm this user's onboarding acts on: the same default-swarm
   # resolution the dashboard uses (owned project first, then any membership,
   # then the org-first-project fallback reserved for org owners/admins —
   # never "any org project"). A plain org member with no project grants gets
-  # `nil` and finishes onto an honest empty board instead of leaking their
-  # onboarding tasks, connects, and routines into someone else's swarm.
+  # `nil` and sees no integrations instead of connecting accounts into
+  # someone else's swarm.
   defp default_project(nil, _user), do: nil
 
   defp default_project(org, user), do: Projects.default_project_for_user(org.id, user.id)
 
   # A user entering first-run onboarding gets a swarm of their OWN when they
-  # don't already own one: the integrations step, the tasks the finish step
-  # creates, and the routine schedules it materializes all need a project to
-  # land in — without one the flow completes but silently drops everything
-  # the user chose. Idempotent (an owned swarm short-circuits) and
-  # best-effort: a failed create falls back to an empty board rather than
-  # blocking onboarding.
+  # don't already own one: the integrations step needs a project for its
+  # connections to land in. Idempotent (an owned swarm short-circuits) and
+  # best-effort: a failed create leaves the integrations step empty rather
+  # than blocking onboarding.
   defp ensure_default_swarm(org, user) do
     case Projects.ensure_owned_project(org.id, user.id, default_swarm_name(user)) do
       {:ok, _project} ->
@@ -500,189 +404,8 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
     %{"status" => if(connected, do: "learning", else: "planned"), "source" => provider}
   end
 
-  defp selected_task_attrs(socket) do
-    selected = socket.assigns.selected_ids
-
-    (socket.assigns.suggestions ++ socket.assigns.custom_tasks)
-    |> Enum.filter(&MapSet.member?(selected, &1.id))
-    |> Enum.map(fn task ->
-      # Starter tasks are WORK, not outputs: they live on the Tasks working
-      # list (`general`), never inside the output widgets ("Draft a reply…"
-      # is not a drafted email). The template's category rides
-      # `payload["category"]` as the output target — the same convention
-      # suggestions use — and the worker's kind-carrying report moves the
-      # row into that widget once there is an actual deliverable.
-      %{
-        "title" => task.title,
-        "description" => task.description,
-        "category" => "general",
-        "platform" => task.platform,
-        "status" => "accepted",
-        "source" => "onboarding",
-        "payload" => starter_target_payload(task.category)
-      }
-    end)
-  end
-
-  defp starter_target_payload(category) when category in ["general", "custom"], do: %{}
-  defp starter_target_payload(category), do: %{"category" => category}
-
-  # Best-effort per task: hand each accepted starter task to the project's
-  # agent as a real delegated conversation (`TaskDelegation.dispatch/2`). A
-  # failed dispatch keeps the task `accepted` with the error noted in its
-  # payload — the New Home board offers Run/Retry — and never blocks finishing
-  # onboarding.
-  defp dispatch_accepted_tasks([], _socket), do: :ok
-
-  defp dispatch_accepted_tasks(tasks, socket) do
-    user = socket.assigns.current_user
-    org = socket.assigns.current_org
-    project = org && default_project(org, user)
-
-    if project do
-      Enum.each(tasks, fn task ->
-        case TaskDelegation.dispatch(task,
-               actor_user_id: user.id,
-               actor_label: user.email || user.id
-             ) do
-          {:ok, _task} ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning(
-              "onboarding_task_dispatch_failed task_id=#{task.id} reason=#{inspect(reason)}"
-            )
-        end
-      end)
-    end
-
-    :ok
-  end
-
-  # Best-effort: materialize the user's granted time-shaped capabilities
-  # (morning briefing, digests, wrap-ups) into real Salix schedules owned by the
-  # project's agent, auditing the created ids back into the capabilities map.
-  # A missing project or a Salix outage just leaves nothing scheduled — the
-  # widget stays empty rather than blocking the finish.
-  defp materialize_routines(onboarding, socket) do
-    user = socket.assigns.current_user
-    org = socket.assigns.current_org
-    project = org && default_project(org, user)
-
-    if project do
-      case RoutineSchedules.reconcile(project, onboarding, socket.assigns.capabilities,
-             actor_user_id: user.id,
-             actor_label: user.email || user.id
-           ) do
-        {:ok, _onboarding} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "onboarding_routine_materialize_failed user_id=#{user.id} reason=#{inspect(reason)}"
-          )
-      end
-    end
-
-    :ok
-  end
-
-  # Report series live outside the capability catalog by design: the board's
-  # report OFFERS opt into them (`payload["offer"] == "report"` + Run). This
-  # is where those offer cards come from — one per catalog report definition,
-  # seeded at finish so the Reports widget starts with an actionable entry
-  # point instead of empty space. The series slug is namespaced per user
-  # (`definition_for_user/2`), matching what the Run flow's schedule writes,
-  # so the one-shot run and the recurring series share one directory.
-  # Best-effort, like routines: no project means no board, so nothing seeds.
-  defp seed_report_offers(socket) do
-    user = socket.assigns.current_user
-    org = socket.assigns.current_org
-    project = org && default_project(org, user)
-
-    if project do
-      # A restarted onboarding finishes again: series that already carry an
-      # offer row (archived ones included — a dismissed offer stays dismissed)
-      # are skipped, so re-finishing never duplicates them.
-      existing_series =
-        user.id
-        |> WorkspaceItems.list_tasks(
-          project_id: project.id,
-          category: "reports",
-          include_archived: true
-        )
-        |> Enum.filter(&(is_map(&1.payload) and &1.payload["offer"] == "report"))
-        |> MapSet.new(& &1.payload["series"])
-
-      offers =
-        RoutineSchedules.capability_definitions()
-        |> Enum.filter(&(&1.category == "reports"))
-        |> Enum.reject(&(socket.assigns.capabilities[&1.key] == true))
-        |> Enum.map(&RoutineSchedules.definition_for_user(&1, user.id))
-        |> Enum.reject(&MapSet.member?(existing_series, &1.series_slug))
-        |> Enum.map(fn definition ->
-          %{
-            "title" => definition.title,
-            "description" => offer_description(definition),
-            "category" => "reports",
-            "platform" => "comma",
-            "status" => "suggested",
-            "source" => "onboarding",
-            "payload" => %{
-              "offer" => "report",
-              "kind" => definition.kind,
-              "series" => definition.series_slug,
-              "summary" => offer_summary(definition)
-            }
-          }
-        end)
-
-      case offers != [] && WorkspaceItems.create_tasks(user.id, org.id, project.id, offers) do
-        false ->
-          :ok
-
-        {:ok, _offers} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "onboarding_report_offer_seed_failed user_id=#{user.id} reason=#{inspect(reason)}"
-          )
-      end
-    end
-
-    :ok
-  end
-
-  defp offer_description(%{kind: "daily"}),
-    do: gettext("Weekday mornings once scheduled — run it once to see today's.")
-
-  defp offer_description(%{kind: "weekly"}),
-    do: gettext("Monday mornings once scheduled — run it once to see this week's.")
-
-  defp offer_description(_definition),
-    do: gettext("Run it once to start the series.")
-
-  # Board-card content (like the report runs themselves), not UI chrome.
-  defp offer_summary(%{kind: "daily"}),
-    do: "Not scheduled yet. Running compiles today's briefing and starts the weekday series."
-
-  defp offer_summary(_definition),
-    do: "Not scheduled yet. Running compiles the current report and starts the recurring series."
-
   defp save_failed(socket),
     do: put_flash(socket, :error, gettext("Could not save. Please try again."))
-
-  defp finish_flash(0), do: gettext("You're all set.")
-
-  defp finish_flash(count),
-    do:
-      ngettext(
-        "You're all set — your agent picked up %{count} task.",
-        "You're all set — your agent picked up %{count} tasks.",
-        count,
-        count: count
-      )
 
   # Connecting integrations is a SWARM-scoped action (Composio connections and
   # IM connects bind to the project), so the gate is the effective project
@@ -743,20 +466,16 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
   defp step_path("capabilities"), do: ~p"/onboarding"
   defp step_path("profile"), do: ~p"/onboarding/profile"
   defp step_path("integrations"), do: ~p"/onboarding/integrations"
-  defp step_path("tasks"), do: ~p"/onboarding/tasks"
 
   defp prev_path(:profile), do: ~p"/onboarding"
   defp prev_path(:integrations), do: ~p"/onboarding/profile"
-  defp prev_path(:tasks), do: ~p"/onboarding/integrations"
   defp prev_path(_step), do: nil
 
   defp step_index(step), do: Enum.find_index(@steps, &(&1 == Atom.to_string(step))) || 0
+  defp step_indexes, do: 0..(length(@steps) - 1)
 
   defp group_on?(capabilities, group),
     do: Enum.any?(group.capabilities, &(capabilities[&1.key] == true))
-
-  defp selected_count(socket_assigns),
-    do: MapSet.size(socket_assigns.selected_ids)
 
   # ---- render -------------------------------------------------------------------
 
@@ -766,7 +485,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
     <div class="flex flex-1 flex-col">
       <div class="mb-6 flex items-center justify-center gap-1.5" aria-hidden="true">
         <span
-          :for={index <- 0..3}
+          :for={index <- step_indexes()}
           class={[
             "h-1.5 rounded-full transition-all",
             index == step_index(@step) && "w-6 bg-neutral-800",
@@ -794,13 +513,6 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
         im_connects={@im_connects}
         unavailable={@integrations_unavailable}
         can_connect={@can_connect}
-      />
-      <.tasks_step
-        :if={@step == :tasks}
-        suggestions={@suggestions}
-        custom_tasks={@custom_tasks}
-        custom_title={@custom_title}
-        selected_ids={@selected_ids}
       />
 
       <div class="mt-6 flex items-center justify-between pb-8">
@@ -834,28 +546,11 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
             {gettext("Continue")}
             <.icon name="chevron-right" class="h-3.5 w-3.5" />
           </.button>
-          <.button :if={@step == :tasks} variant="ghost" phx-click="finish_onboarding">
-            {gettext("Skip")}
-          </.button>
-          <.button
-            :if={@step == :tasks}
-            variant="primary"
-            phx-click="finish_onboarding"
-            disabled={selected_count(assigns) == 0}
-          >
-            {add_tasks_label(selected_count(assigns))}
-            <.icon name="chevron-right" class="h-3.5 w-3.5" />
-          </.button>
         </div>
       </div>
     </div>
     """
   end
-
-  defp add_tasks_label(0), do: gettext("Add tasks")
-
-  defp add_tasks_label(count),
-    do: ngettext("Add %{count} task", "Add %{count} tasks", count, count: count)
 
   # ---- step 1: capabilities ----
 
@@ -1200,91 +895,6 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingLive do
     Enum.any?(im_connects, fn connect ->
       connect["provider"] == provider and connect["status"] in ["active", "enabled", nil]
     end)
-  end
-
-  # ---- step 4: tasks ----
-
-  attr(:suggestions, :list, default: [])
-  attr(:custom_tasks, :list, default: [])
-  attr(:custom_title, :string, default: "")
-  attr(:selected_ids, :any, required: true)
-
-  defp tasks_step(assigns) do
-    ~H"""
-    <div class="rounded-xl border border-neutral-200 bg-white shadow-subtle">
-      <div class="border-b border-neutral-200 px-6 py-5">
-        <h1 class="text-lg font-semibold">{gettext("Tasks are how your agent gets work done")}</h1>
-        <p class="mt-1 text-sm text-neutral-500">
-          {gettext("Give it clear work to do, then track progress as it works through each task.")}
-        </p>
-      </div>
-
-      <div class="space-y-4 px-6 py-5">
-        <form
-          id="custom-task-form"
-          phx-submit="add_custom_task"
-          phx-hook="ResetOnSubmit"
-          class="flex items-end gap-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3"
-        >
-          <div class="min-w-0 flex-1">
-            <.input
-              name="custom[title]"
-              value={@custom_title}
-              placeholder={gettext("Describe a task in your own words…")}
-            />
-          </div>
-          <.button type="submit" variant="secondary">
-            <.icon name="plus" class="h-3.5 w-3.5" />
-            {gettext("Add")}
-          </.button>
-        </form>
-
-        <div>
-          <h2 class="text-xs font-semibold uppercase tracking-wide text-neutral-400">
-            {gettext("Suggested starter tasks")}
-          </h2>
-          <div class="mt-2 divide-y divide-neutral-100 rounded-lg border border-neutral-200">
-            <.task_row
-              :for={task <- @suggestions ++ @custom_tasks}
-              task={task}
-              selected={MapSet.member?(@selected_ids, task.id)}
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  attr(:task, :map, required: true)
-  attr(:selected, :boolean, default: false)
-
-  defp task_row(assigns) do
-    ~H"""
-    <label class="flex cursor-pointer items-start gap-3 px-4 py-3 hover:bg-neutral-50">
-      <input
-        type="checkbox"
-        checked={@selected}
-        phx-click="toggle_task"
-        phx-value-id={@task.id}
-        class="mt-0.5 h-4 w-4 rounded border-neutral-300 text-brand-500 focus:ring-brand-500"
-      />
-      <span class="min-w-0 flex-1">
-        <span class={[
-          "block text-sm",
-          (@selected && "text-neutral-900") || "text-neutral-500"
-        ]}>
-          {@task.title}
-        </span>
-        <span :if={@task.description} class="block text-xs text-neutral-400">
-          {@task.description}
-        </span>
-      </span>
-      <span class="shrink-0 text-xs font-medium text-neutral-400">
-        {Catalog.platform_label(@task.platform)}
-      </span>
-    </label>
-    """
   end
 
   defp profile_heading(%{name: name}) when is_binary(name) and name != "", do: name

@@ -1,11 +1,19 @@
 import { expect, test } from "@playwright/test";
-import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import {
+  dismissOnboarding,
+  installBrowserTestSession,
+} from "../../../e2e/helpers/browser-auth";
 import { installBrowserPlatform } from "../../../e2e/helpers/browser-platform";
 
-const installSession = (page: Parameters<typeof installBrowserTestSession>[0]) =>
+const installSession = (
+  page: Parameters<typeof installBrowserTestSession>[0],
+  { legacyStores = false } = {}
+) =>
   installBrowserTestSession(page, {
     apiBaseUrl: "http://127.0.0.1:65535",
     email: "app-shortcuts@comma.local",
+    // Legacy renderer stores migrate only into absent client settings.
+    onboardingCompleted: !legacyStores,
     token: "comma_sess_app_shortcuts",
   });
 
@@ -270,7 +278,7 @@ test("Search does not offer or navigate to Settings commands", async ({ page }) 
 test("product sequences share candidates across navigation and shell owners", async ({
   page,
 }) => {
-  await installSession(page);
+  await installSession(page, { legacyStores: true });
   await page.addInitScript(() => {
     localStorage.setItem(
       "comma.app.shortcuts",
@@ -286,6 +294,7 @@ test("product sequences share candidates across navigation and shell owners", as
     );
   });
   await page.goto("/");
+  await dismissOnboarding(page);
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
 
   const sidebar = page.getByTestId("comma-sidebar-slot");
@@ -314,7 +323,7 @@ test("product sequences share candidates across navigation and shell owners", as
 test("legacy prefix conflicts preserve the customization and disable its default", async ({
   page,
 }) => {
-  await installSession(page);
+  await installSession(page, { legacyStores: true });
   await page.addInitScript(() => {
     localStorage.setItem(
       "comma.app.shortcuts",
@@ -328,6 +337,7 @@ test("legacy prefix conflicts preserve the customization and disable its default
     );
   });
   await page.goto("/#/plugins");
+  await dismissOnboarding(page);
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
 
   await page.keyboard.press("KeyG");

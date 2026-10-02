@@ -125,6 +125,7 @@ const invokeSchema = z
 const emptyInputSchema = z.object({}).strict();
 const globalSettingsPatchSchema = z
   .object({
+    keepAwakeWhenLidClosed: z.boolean().optional(),
     launchAtLogin: z.boolean().optional(),
     showInDock: z.boolean().optional(),
     showInMenuBar: z.boolean().optional(),
@@ -369,7 +370,14 @@ export function createCommaClientControlRegistry({
           usage: `comma call global-settings get`,
         },
         {
-          description: "Update one or more Main-owned global application preferences.",
+          description:
+            "Update one or more Main-owned global application preferences. " +
+            "keepAwakeWhenLidClosed keeps the user's Mac awake with the lid closed. " +
+            "That drains the battery and can overheat a Mac in a bag, so turn it on " +
+            "only when the user asks, and turn it off when that work ends. macOS runs " +
+            "it only after the user allows Comma in System Settings › General › Login " +
+            'Items. If the result has keepAwakeWhenLidClosedStatus "requires-approval", ' +
+            "tell the user to allow Comma there. Only the user can give that approval.",
           handler: (input) =>
             appPreferences.update(input as z.output<typeof appPreferencesPatchSchema>),
           id: "update",

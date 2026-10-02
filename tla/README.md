@@ -3,8 +3,8 @@
 Owner decision, 2026-09-08: retain only the most important system-level
 properties, with **at most 5,000 physical lines** across every repository-owned
 `.tla` and `.cfg` file combined. Comments and blank lines count. The retained
-suite is **14 modules / 57 configurations / 4,480 lines** (3,590 model lines and
-890 configuration lines). Do not minify, relocate, generate, or archive models
+suite is **14 modules / 58 configurations / 4,609 lines** (3,673 model lines and
+936 configuration lines). Do not minify, relocate, generate, or archive models
 inside the repository to avoid the budget. Older models remain in Git history.
 
 ## Retained boundaries

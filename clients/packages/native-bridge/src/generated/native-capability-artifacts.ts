@@ -14,7 +14,9 @@ import {
   appPreferencesCapability,
   appPreferencesChangedEvent,
   appPreferencesInitializeClientSettingsCapability,
+  appPreferencesOpenLoginItemsSettingsCapability,
   appPreferencesOpenNotificationSettingsCapability,
+  appPreferencesRequestNotificationAuthorizationCapability,
   appPreferencesStateLeaf,
   appPreferencesUpdateCapability,
   audioCaptureCancelCapability,
@@ -70,6 +72,7 @@ import {
   clipboardReadTextCapability,
   clipboardWriteImageCapability,
   clipboardWriteTextCapability,
+  computeNodeAbandonCapability,
   computeNodeConfigureCapability,
   computeNodeDrainCapability,
   computeNodeRebuildCapability,
@@ -79,6 +82,8 @@ import {
   computeNodeStateCapability,
   computeNodeStateChangedEvent,
   computeNodeStateLeaf,
+  computeRecoverCapability,
+  computeRecoveryCandidatesCapability,
   computerUsePermissionFlowCapability,
   computerUsePermissionsCapability,
   connectorRuntimeCopyConnectCommandCapability,
@@ -96,9 +101,15 @@ import {
   filesOpenDownloadCapability,
   filesRevealDownloadCapability,
   filesSaveDownloadCapability,
+  hostMaintenanceStateCapability,
+  localComputeDisposeCapability,
+  localComputeOverviewCapability,
+  localComputeResumeCapability,
+  localComputeWorkloadsCapability,
   localDataStatusCapability,
   localFilesPickCapability,
   localFilesPreviewCapability,
+  maintainHostCapability,
   meetingPresenceIconCapability,
   meetingPresenceStateCapability,
   meetingPresenceStateChangedEvent,
@@ -126,6 +137,13 @@ import {
   notchStopCapability,
   notchToggleCapability,
   notchUpdateCapability,
+  onboardingCloseWindowCapability,
+  onboardingHandoffEvent,
+  onboardingOutputVolumeCapability,
+  onboardingPresentWindowCapability,
+  onboardingWindowCapability,
+  onboardingWindowChangedEvent,
+  onboardingWindowStateLeaf,
   peersConnectCapability,
   productInboxRefreshCapability,
   productInboxReleaseCapability,
@@ -134,6 +152,7 @@ import {
   productInboxStateChangedEvent,
   productInboxStateLeaf,
   recommendationMediaLoadCapability,
+  resumeHostMaintenanceCapability,
   sessionCancelAuthAttemptCapability,
   sessionHistoryLoadCapability,
   sessionHistoryReleaseCapability,
@@ -227,8 +246,12 @@ export const generatedNativeCapabilityContracts = {
   appPreferences: appPreferencesCapability.contract,
   appPreferencesInitializeClientSettings:
     appPreferencesInitializeClientSettingsCapability.contract,
+  appPreferencesOpenLoginItemsSettings:
+    appPreferencesOpenLoginItemsSettingsCapability.contract,
   appPreferencesOpenNotificationSettings:
     appPreferencesOpenNotificationSettingsCapability.contract,
+  appPreferencesRequestNotificationAuthorization:
+    appPreferencesRequestNotificationAuthorizationCapability.contract,
   appPreferencesUpdate: appPreferencesUpdateCapability.contract,
   connectorRuntimeState: connectorRuntimeStateCapability.contract,
   connectorRuntimeScope: connectorRuntimeScopeCapability.contract,
@@ -252,6 +275,10 @@ export const generatedNativeCapabilityContracts = {
   windowsCreate: windowsCreateCapability.contract,
   windowsFocus: windowsFocusCapability.contract,
   windowsClose: windowsCloseCapability.contract,
+  onboardingPresentWindow: onboardingPresentWindowCapability.contract,
+  onboardingCloseWindow: onboardingCloseWindowCapability.contract,
+  onboardingOutputVolume: onboardingOutputVolumeCapability.contract,
+  onboardingWindow: onboardingWindowCapability.contract,
   clipboardReadText: clipboardReadTextCapability.contract,
   clipboardReadImage: clipboardReadImageCapability.contract,
   clipboardWriteText: clipboardWriteTextCapability.contract,
@@ -297,8 +324,18 @@ export const generatedNativeCapabilityContracts = {
   computeNodeRefresh: computeNodeRefreshCapability.contract,
   computeNodeRepair: computeNodeRepairCapability.contract,
   computeNodeRebuild: computeNodeRebuildCapability.contract,
+  localComputeOverview: localComputeOverviewCapability.contract,
+  localComputeDispose: localComputeDisposeCapability.contract,
+  localComputeResume: localComputeResumeCapability.contract,
+  hostMaintenanceState: hostMaintenanceStateCapability.contract,
+  maintainHost: maintainHostCapability.contract,
+  resumeHostMaintenance: resumeHostMaintenanceCapability.contract,
+  computeRecoveryCandidates: computeRecoveryCandidatesCapability.contract,
+  computeRecover: computeRecoverCapability.contract,
+  localComputeWorkloads: localComputeWorkloadsCapability.contract,
   computeNodeDrain: computeNodeDrainCapability.contract,
   computeNodeRemove: computeNodeRemoveCapability.contract,
+  computeNodeAbandon: computeNodeAbandonCapability.contract,
   sessionHistoryState: sessionHistoryStateCapability.contract,
   sessionHistoryLoad: sessionHistoryLoadCapability.contract,
   sessionHistoryRetain: sessionHistoryRetainCapability.contract,
@@ -401,8 +438,12 @@ export const generatedNativeWebFallbacks = {
   appPreferences: appPreferencesCapability.webFallback,
   appPreferencesInitializeClientSettings:
     appPreferencesInitializeClientSettingsCapability.webFallback,
+  appPreferencesOpenLoginItemsSettings:
+    appPreferencesOpenLoginItemsSettingsCapability.webFallback,
   appPreferencesOpenNotificationSettings:
     appPreferencesOpenNotificationSettingsCapability.webFallback,
+  appPreferencesRequestNotificationAuthorization:
+    appPreferencesRequestNotificationAuthorizationCapability.webFallback,
   appPreferencesUpdate: appPreferencesUpdateCapability.webFallback,
   connectorRuntimeState: connectorRuntimeStateCapability.webFallback,
   connectorRuntimeScope: connectorRuntimeScopeCapability.webFallback,
@@ -426,6 +467,10 @@ export const generatedNativeWebFallbacks = {
   windowsCreate: windowsCreateCapability.webFallback,
   windowsFocus: windowsFocusCapability.webFallback,
   windowsClose: windowsCloseCapability.webFallback,
+  onboardingPresentWindow: onboardingPresentWindowCapability.webFallback,
+  onboardingCloseWindow: onboardingCloseWindowCapability.webFallback,
+  onboardingOutputVolume: onboardingOutputVolumeCapability.webFallback,
+  onboardingWindow: onboardingWindowCapability.webFallback,
   clipboardReadText: clipboardReadTextCapability.webFallback,
   clipboardReadImage: clipboardReadImageCapability.webFallback,
   clipboardWriteText: clipboardWriteTextCapability.webFallback,
@@ -473,8 +518,18 @@ export const generatedNativeWebFallbacks = {
   computeNodeRefresh: computeNodeRefreshCapability.webFallback,
   computeNodeRepair: computeNodeRepairCapability.webFallback,
   computeNodeRebuild: computeNodeRebuildCapability.webFallback,
+  localComputeOverview: localComputeOverviewCapability.webFallback,
+  localComputeDispose: localComputeDisposeCapability.webFallback,
+  localComputeResume: localComputeResumeCapability.webFallback,
+  hostMaintenanceState: hostMaintenanceStateCapability.webFallback,
+  maintainHost: maintainHostCapability.webFallback,
+  resumeHostMaintenance: resumeHostMaintenanceCapability.webFallback,
+  computeRecoveryCandidates: computeRecoveryCandidatesCapability.webFallback,
+  computeRecover: computeRecoverCapability.webFallback,
+  localComputeWorkloads: localComputeWorkloadsCapability.webFallback,
   computeNodeDrain: computeNodeDrainCapability.webFallback,
   computeNodeRemove: computeNodeRemoveCapability.webFallback,
+  computeNodeAbandon: computeNodeAbandonCapability.webFallback,
   sessionHistoryState: sessionHistoryStateCapability.webFallback,
   sessionHistoryLoad: sessionHistoryLoadCapability.webFallback,
   sessionHistoryRetain: sessionHistoryRetainCapability.webFallback,
@@ -585,7 +640,10 @@ export const generatedNativePreloadBindings = {
   appPreferences: {
     state: appPreferencesCapability.contract,
     initializeClientSettings: appPreferencesInitializeClientSettingsCapability.contract,
+    openLoginItemsSettings: appPreferencesOpenLoginItemsSettingsCapability.contract,
     openNotificationSettings: appPreferencesOpenNotificationSettingsCapability.contract,
+    requestNotificationAuthorization:
+      appPreferencesRequestNotificationAuthorizationCapability.contract,
     update: appPreferencesUpdateCapability.contract,
   },
   connectorRuntime: {
@@ -618,6 +676,12 @@ export const generatedNativePreloadBindings = {
     create: windowsCreateCapability.contract,
     focus: windowsFocusCapability.contract,
     close: windowsCloseCapability.contract,
+  },
+  onboarding: {
+    presentWindow: onboardingPresentWindowCapability.contract,
+    closeWindow: onboardingCloseWindowCapability.contract,
+    outputVolume: onboardingOutputVolumeCapability.contract,
+    window: onboardingWindowCapability.contract,
   },
   clipboard: {
     readText: clipboardReadTextCapability.contract,
@@ -691,8 +755,18 @@ export const generatedNativePreloadBindings = {
     refresh: computeNodeRefreshCapability.contract,
     repair: computeNodeRepairCapability.contract,
     rebuild: computeNodeRebuildCapability.contract,
+    localOverview: localComputeOverviewCapability.contract,
+    disposeLocal: localComputeDisposeCapability.contract,
+    resumeLocalDisposal: localComputeResumeCapability.contract,
+    hostMaintenanceState: hostMaintenanceStateCapability.contract,
+    maintainHost: maintainHostCapability.contract,
+    resumeHostMaintenance: resumeHostMaintenanceCapability.contract,
+    recoveryCandidates: computeRecoveryCandidatesCapability.contract,
+    recover: computeRecoverCapability.contract,
+    localWorkloads: localComputeWorkloadsCapability.contract,
     drain: computeNodeDrainCapability.contract,
     remove: computeNodeRemoveCapability.contract,
+    abandon: computeNodeAbandonCapability.contract,
   },
   sessionHistory: {
     state: sessionHistoryStateCapability.contract,
@@ -828,6 +902,10 @@ export const generatedNativePreloadEventBindings = {
     windowFullScreen: surfacesWindowFullScreenChangedEvent,
     windowResizeSettled: surfacesWindowResizeSettledEvent,
   },
+  onboarding: {
+    window: onboardingWindowChangedEvent,
+    handoff: onboardingHandoffEvent,
+  },
   notch: {
     event: notchHostEvent,
   },
@@ -898,6 +976,12 @@ export const generatedNativeStateBindings = {
     windowFullScreen: {
       get: surfacesWindowFullScreenCapability.contract,
       subscribe: surfacesWindowFullScreenChangedEvent,
+    },
+  },
+  onboarding: {
+    window: {
+      get: onboardingWindowCapability.contract,
+      subscribe: onboardingWindowChangedEvent,
     },
   },
   session: {
@@ -1029,6 +1113,15 @@ export const generatedNativeMainBindingsById = {
     sessionAdmissionRationale:
       appPreferencesInitializeClientSettingsCapability.sessionAdmissionRationale,
   },
+  "appPreferences.openLoginItemsSettings": {
+    contract: appPreferencesOpenLoginItemsSettingsCapability.contract,
+    id: appPreferencesOpenLoginItemsSettingsCapability.id,
+    method: "openLoginItemsSettings",
+    provider: "appPreferences",
+    sessionAdmission: appPreferencesOpenLoginItemsSettingsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesOpenLoginItemsSettingsCapability.sessionAdmissionRationale,
+  },
   "appPreferences.openNotificationSettings": {
     contract: appPreferencesOpenNotificationSettingsCapability.contract,
     id: appPreferencesOpenNotificationSettingsCapability.id,
@@ -1037,6 +1130,16 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: appPreferencesOpenNotificationSettingsCapability.sessionAdmission,
     sessionAdmissionRationale:
       appPreferencesOpenNotificationSettingsCapability.sessionAdmissionRationale,
+  },
+  "appPreferences.requestNotificationAuthorization": {
+    contract: appPreferencesRequestNotificationAuthorizationCapability.contract,
+    id: appPreferencesRequestNotificationAuthorizationCapability.id,
+    method: "requestNotificationAuthorization",
+    provider: "appPreferences",
+    sessionAdmission:
+      appPreferencesRequestNotificationAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestNotificationAuthorizationCapability.sessionAdmissionRationale,
   },
   "appPreferences.update": {
     contract: appPreferencesUpdateCapability.contract,
@@ -1220,6 +1323,39 @@ export const generatedNativeMainBindingsById = {
     provider: "windows",
     sessionAdmission: windowsCloseCapability.sessionAdmission,
     sessionAdmissionRationale: windowsCloseCapability.sessionAdmissionRationale,
+  },
+  "onboarding.presentWindow": {
+    contract: onboardingPresentWindowCapability.contract,
+    id: onboardingPresentWindowCapability.id,
+    method: "presentWindow",
+    provider: "onboardingWindow",
+    sessionAdmission: onboardingPresentWindowCapability.sessionAdmission,
+  },
+  "onboarding.closeWindow": {
+    contract: onboardingCloseWindowCapability.contract,
+    id: onboardingCloseWindowCapability.id,
+    method: "closeWindow",
+    provider: "onboardingWindow",
+    sessionAdmission: onboardingCloseWindowCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      onboardingCloseWindowCapability.sessionAdmissionRationale,
+  },
+  "onboarding.outputVolume": {
+    contract: onboardingOutputVolumeCapability.contract,
+    id: onboardingOutputVolumeCapability.id,
+    method: "outputVolume",
+    provider: "onboardingWindow",
+    sessionAdmission: onboardingOutputVolumeCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      onboardingOutputVolumeCapability.sessionAdmissionRationale,
+  },
+  "onboarding.window": {
+    contract: onboardingWindowCapability.contract,
+    id: onboardingWindowCapability.id,
+    method: "window",
+    provider: "onboardingWindow",
+    sessionAdmission: onboardingWindowCapability.sessionAdmission,
+    sessionAdmissionRationale: onboardingWindowCapability.sessionAdmissionRationale,
   },
   "clipboard.readText": {
     contract: clipboardReadTextCapability.contract,
@@ -1572,6 +1708,81 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: computeNodeRebuildCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRebuildCapability.sessionAdmissionRationale,
   },
+  "computeNode.localOverview": {
+    contract: localComputeOverviewCapability.contract,
+    id: localComputeOverviewCapability.id,
+    method: "localOverview",
+    provider: "computeNode",
+    sessionAdmission: localComputeOverviewCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeOverviewCapability.sessionAdmissionRationale,
+  },
+  "computeNode.disposeLocal": {
+    contract: localComputeDisposeCapability.contract,
+    id: localComputeDisposeCapability.id,
+    method: "disposeLocal",
+    provider: "computeNode",
+    sessionAdmission: localComputeDisposeCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeDisposeCapability.sessionAdmissionRationale,
+  },
+  "computeNode.resumeLocalDisposal": {
+    contract: localComputeResumeCapability.contract,
+    id: localComputeResumeCapability.id,
+    method: "resumeLocalDisposal",
+    provider: "computeNode",
+    sessionAdmission: localComputeResumeCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeResumeCapability.sessionAdmissionRationale,
+  },
+  "computeNode.hostMaintenanceState": {
+    contract: hostMaintenanceStateCapability.contract,
+    id: hostMaintenanceStateCapability.id,
+    method: "hostMaintenanceState",
+    provider: "computeNode",
+    sessionAdmission: hostMaintenanceStateCapability.sessionAdmission,
+    sessionAdmissionRationale: hostMaintenanceStateCapability.sessionAdmissionRationale,
+  },
+  "computeNode.maintainHost": {
+    contract: maintainHostCapability.contract,
+    id: maintainHostCapability.id,
+    method: "maintainHost",
+    provider: "computeNode",
+    sessionAdmission: maintainHostCapability.sessionAdmission,
+    sessionAdmissionRationale: maintainHostCapability.sessionAdmissionRationale,
+  },
+  "computeNode.resumeHostMaintenance": {
+    contract: resumeHostMaintenanceCapability.contract,
+    id: resumeHostMaintenanceCapability.id,
+    method: "resumeHostMaintenance",
+    provider: "computeNode",
+    sessionAdmission: resumeHostMaintenanceCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      resumeHostMaintenanceCapability.sessionAdmissionRationale,
+  },
+  "computeNode.recoveryCandidates": {
+    contract: computeRecoveryCandidatesCapability.contract,
+    id: computeRecoveryCandidatesCapability.id,
+    method: "recoveryCandidates",
+    provider: "computeNode",
+    sessionAdmission: computeRecoveryCandidatesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeRecoveryCandidatesCapability.sessionAdmissionRationale,
+  },
+  "computeNode.recover": {
+    contract: computeRecoverCapability.contract,
+    id: computeRecoverCapability.id,
+    method: "recover",
+    provider: "computeNode",
+    sessionAdmission: computeRecoverCapability.sessionAdmission,
+    sessionAdmissionRationale: computeRecoverCapability.sessionAdmissionRationale,
+  },
+  "computeNode.localWorkloads": {
+    contract: localComputeWorkloadsCapability.contract,
+    id: localComputeWorkloadsCapability.id,
+    method: "localWorkloads",
+    provider: "computeNode",
+    sessionAdmission: localComputeWorkloadsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localComputeWorkloadsCapability.sessionAdmissionRationale,
+  },
   "computeNode.drain": {
     contract: computeNodeDrainCapability.contract,
     id: computeNodeDrainCapability.id,
@@ -1587,6 +1798,14 @@ export const generatedNativeMainBindingsById = {
     provider: "computeNode",
     sessionAdmission: computeNodeRemoveCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRemoveCapability.sessionAdmissionRationale,
+  },
+  "computeNode.abandon": {
+    contract: computeNodeAbandonCapability.contract,
+    id: computeNodeAbandonCapability.id,
+    method: "abandon",
+    provider: "computeNode",
+    sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
+    sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
   },
   "sessionHistory.state": {
     contract: sessionHistoryStateCapability.contract,
@@ -2378,6 +2597,17 @@ export const generatedNativeCapabilityManifest = [
     transport: appPreferencesInitializeClientSettingsCapability.transport,
   },
   {
+    bridge: appPreferencesOpenLoginItemsSettingsCapability.bridge,
+    channel: appPreferencesOpenLoginItemsSettingsCapability.channel,
+    id: appPreferencesOpenLoginItemsSettingsCapability.id,
+    payloadClass: appPreferencesOpenLoginItemsSettingsCapability.payloadClass,
+    permission: appPreferencesOpenLoginItemsSettingsCapability.permission,
+    sessionAdmission: appPreferencesOpenLoginItemsSettingsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesOpenLoginItemsSettingsCapability.sessionAdmissionRationale,
+    transport: appPreferencesOpenLoginItemsSettingsCapability.transport,
+  },
+  {
     bridge: appPreferencesOpenNotificationSettingsCapability.bridge,
     channel: appPreferencesOpenNotificationSettingsCapability.channel,
     id: appPreferencesOpenNotificationSettingsCapability.id,
@@ -2387,6 +2617,18 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmissionRationale:
       appPreferencesOpenNotificationSettingsCapability.sessionAdmissionRationale,
     transport: appPreferencesOpenNotificationSettingsCapability.transport,
+  },
+  {
+    bridge: appPreferencesRequestNotificationAuthorizationCapability.bridge,
+    channel: appPreferencesRequestNotificationAuthorizationCapability.channel,
+    id: appPreferencesRequestNotificationAuthorizationCapability.id,
+    payloadClass: appPreferencesRequestNotificationAuthorizationCapability.payloadClass,
+    permission: appPreferencesRequestNotificationAuthorizationCapability.permission,
+    sessionAdmission:
+      appPreferencesRequestNotificationAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestNotificationAuthorizationCapability.sessionAdmissionRationale,
+    transport: appPreferencesRequestNotificationAuthorizationCapability.transport,
   },
   {
     bridge: appPreferencesUpdateCapability.bridge,
@@ -2614,6 +2856,47 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: windowsCloseCapability.sessionAdmission,
     sessionAdmissionRationale: windowsCloseCapability.sessionAdmissionRationale,
     transport: windowsCloseCapability.transport,
+  },
+  {
+    bridge: onboardingPresentWindowCapability.bridge,
+    channel: onboardingPresentWindowCapability.channel,
+    id: onboardingPresentWindowCapability.id,
+    payloadClass: onboardingPresentWindowCapability.payloadClass,
+    permission: onboardingPresentWindowCapability.permission,
+    sessionAdmission: onboardingPresentWindowCapability.sessionAdmission,
+    transport: onboardingPresentWindowCapability.transport,
+  },
+  {
+    bridge: onboardingCloseWindowCapability.bridge,
+    channel: onboardingCloseWindowCapability.channel,
+    id: onboardingCloseWindowCapability.id,
+    payloadClass: onboardingCloseWindowCapability.payloadClass,
+    permission: onboardingCloseWindowCapability.permission,
+    sessionAdmission: onboardingCloseWindowCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      onboardingCloseWindowCapability.sessionAdmissionRationale,
+    transport: onboardingCloseWindowCapability.transport,
+  },
+  {
+    bridge: onboardingOutputVolumeCapability.bridge,
+    channel: onboardingOutputVolumeCapability.channel,
+    id: onboardingOutputVolumeCapability.id,
+    payloadClass: onboardingOutputVolumeCapability.payloadClass,
+    permission: onboardingOutputVolumeCapability.permission,
+    sessionAdmission: onboardingOutputVolumeCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      onboardingOutputVolumeCapability.sessionAdmissionRationale,
+    transport: onboardingOutputVolumeCapability.transport,
+  },
+  {
+    bridge: onboardingWindowCapability.bridge,
+    channel: onboardingWindowCapability.channel,
+    id: onboardingWindowCapability.id,
+    payloadClass: onboardingWindowCapability.payloadClass,
+    permission: onboardingWindowCapability.permission,
+    sessionAdmission: onboardingWindowCapability.sessionAdmission,
+    sessionAdmissionRationale: onboardingWindowCapability.sessionAdmissionRationale,
+    transport: onboardingWindowCapability.transport,
   },
   {
     bridge: clipboardReadTextCapability.bridge,
@@ -3057,6 +3340,99 @@ export const generatedNativeCapabilityManifest = [
     transport: computeNodeRebuildCapability.transport,
   },
   {
+    bridge: localComputeOverviewCapability.bridge,
+    channel: localComputeOverviewCapability.channel,
+    id: localComputeOverviewCapability.id,
+    payloadClass: localComputeOverviewCapability.payloadClass,
+    permission: localComputeOverviewCapability.permission,
+    sessionAdmission: localComputeOverviewCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeOverviewCapability.sessionAdmissionRationale,
+    transport: localComputeOverviewCapability.transport,
+  },
+  {
+    bridge: localComputeDisposeCapability.bridge,
+    channel: localComputeDisposeCapability.channel,
+    id: localComputeDisposeCapability.id,
+    payloadClass: localComputeDisposeCapability.payloadClass,
+    permission: localComputeDisposeCapability.permission,
+    sessionAdmission: localComputeDisposeCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeDisposeCapability.sessionAdmissionRationale,
+    transport: localComputeDisposeCapability.transport,
+  },
+  {
+    bridge: localComputeResumeCapability.bridge,
+    channel: localComputeResumeCapability.channel,
+    id: localComputeResumeCapability.id,
+    payloadClass: localComputeResumeCapability.payloadClass,
+    permission: localComputeResumeCapability.permission,
+    sessionAdmission: localComputeResumeCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeResumeCapability.sessionAdmissionRationale,
+    transport: localComputeResumeCapability.transport,
+  },
+  {
+    bridge: hostMaintenanceStateCapability.bridge,
+    channel: hostMaintenanceStateCapability.channel,
+    id: hostMaintenanceStateCapability.id,
+    payloadClass: hostMaintenanceStateCapability.payloadClass,
+    permission: hostMaintenanceStateCapability.permission,
+    sessionAdmission: hostMaintenanceStateCapability.sessionAdmission,
+    sessionAdmissionRationale: hostMaintenanceStateCapability.sessionAdmissionRationale,
+    transport: hostMaintenanceStateCapability.transport,
+  },
+  {
+    bridge: maintainHostCapability.bridge,
+    channel: maintainHostCapability.channel,
+    id: maintainHostCapability.id,
+    payloadClass: maintainHostCapability.payloadClass,
+    permission: maintainHostCapability.permission,
+    sessionAdmission: maintainHostCapability.sessionAdmission,
+    sessionAdmissionRationale: maintainHostCapability.sessionAdmissionRationale,
+    transport: maintainHostCapability.transport,
+  },
+  {
+    bridge: resumeHostMaintenanceCapability.bridge,
+    channel: resumeHostMaintenanceCapability.channel,
+    id: resumeHostMaintenanceCapability.id,
+    payloadClass: resumeHostMaintenanceCapability.payloadClass,
+    permission: resumeHostMaintenanceCapability.permission,
+    sessionAdmission: resumeHostMaintenanceCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      resumeHostMaintenanceCapability.sessionAdmissionRationale,
+    transport: resumeHostMaintenanceCapability.transport,
+  },
+  {
+    bridge: computeRecoveryCandidatesCapability.bridge,
+    channel: computeRecoveryCandidatesCapability.channel,
+    id: computeRecoveryCandidatesCapability.id,
+    payloadClass: computeRecoveryCandidatesCapability.payloadClass,
+    permission: computeRecoveryCandidatesCapability.permission,
+    sessionAdmission: computeRecoveryCandidatesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeRecoveryCandidatesCapability.sessionAdmissionRationale,
+    transport: computeRecoveryCandidatesCapability.transport,
+  },
+  {
+    bridge: computeRecoverCapability.bridge,
+    channel: computeRecoverCapability.channel,
+    id: computeRecoverCapability.id,
+    payloadClass: computeRecoverCapability.payloadClass,
+    permission: computeRecoverCapability.permission,
+    sessionAdmission: computeRecoverCapability.sessionAdmission,
+    sessionAdmissionRationale: computeRecoverCapability.sessionAdmissionRationale,
+    transport: computeRecoverCapability.transport,
+  },
+  {
+    bridge: localComputeWorkloadsCapability.bridge,
+    channel: localComputeWorkloadsCapability.channel,
+    id: localComputeWorkloadsCapability.id,
+    payloadClass: localComputeWorkloadsCapability.payloadClass,
+    permission: localComputeWorkloadsCapability.permission,
+    sessionAdmission: localComputeWorkloadsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localComputeWorkloadsCapability.sessionAdmissionRationale,
+    transport: localComputeWorkloadsCapability.transport,
+  },
+  {
     bridge: computeNodeDrainCapability.bridge,
     channel: computeNodeDrainCapability.channel,
     id: computeNodeDrainCapability.id,
@@ -3075,6 +3451,16 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: computeNodeRemoveCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRemoveCapability.sessionAdmissionRationale,
     transport: computeNodeRemoveCapability.transport,
+  },
+  {
+    bridge: computeNodeAbandonCapability.bridge,
+    channel: computeNodeAbandonCapability.channel,
+    id: computeNodeAbandonCapability.id,
+    payloadClass: computeNodeAbandonCapability.payloadClass,
+    permission: computeNodeAbandonCapability.permission,
+    sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
+    sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
+    transport: computeNodeAbandonCapability.transport,
   },
   {
     bridge: sessionHistoryStateCapability.bridge,
@@ -4026,6 +4412,18 @@ export const generatedNativeEventManifest = [
     target: surfacesWindowFullScreenChangedEvent.target,
   },
   {
+    channel: onboardingWindowChangedEvent.channel,
+    id: onboardingWindowChangedEvent.id,
+    permission: onboardingWindowChangedEvent.permission,
+    target: onboardingWindowChangedEvent.target,
+  },
+  {
+    channel: onboardingHandoffEvent.channel,
+    id: onboardingHandoffEvent.id,
+    permission: onboardingHandoffEvent.permission,
+    target: onboardingHandoffEvent.target,
+  },
+  {
     channel: notchHostEvent.channel,
     id: notchHostEvent.id,
     permission: notchHostEvent.permission,
@@ -4210,6 +4608,24 @@ export const generatedNativeStateManifest = [
       id: surfacesWindowFullScreenStateLeaf.subscribe.id,
       permission: surfacesWindowFullScreenStateLeaf.subscribe.permission,
       target: surfacesWindowFullScreenStateLeaf.subscribe.target,
+    },
+  },
+  {
+    bridge: onboardingWindowStateLeaf.bridge,
+    get: {
+      channel: onboardingWindowStateLeaf.get.channel,
+      id: onboardingWindowStateLeaf.get.id,
+      permission: onboardingWindowStateLeaf.get.permission,
+      sessionAdmission: onboardingWindowStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale:
+        onboardingWindowStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: onboardingWindowStateLeaf.id,
+    subscribe: {
+      channel: onboardingWindowStateLeaf.subscribe.channel,
+      id: onboardingWindowStateLeaf.subscribe.id,
+      permission: onboardingWindowStateLeaf.subscribe.permission,
+      target: onboardingWindowStateLeaf.subscribe.target,
     },
   },
   {
@@ -4565,6 +4981,30 @@ export const generatedNativeCapabilityIndex = {
       appPreferencesInitializeClientSettingsCapability.sessionAdmissionRationale,
     transport: appPreferencesInitializeClientSettingsCapability.transport,
   },
+  "appPreferences.openLoginItemsSettings": {
+    artifacts: {
+      contract: "appPreferencesOpenLoginItemsSettingsContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["appPreferences.openLoginItemsSettings"]',
+      leaf: "appPreferencesOpenLoginItemsSettingsCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["appPreferences.openLoginItemsSettings"]',
+      mock: "appPreferencesOpenLoginItemsSettingsCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.appPreferences.openLoginItemsSettings",
+      webFallback: "generatedNativeWebFallbacks.appPreferencesOpenLoginItemsSettings",
+    },
+    bridge: appPreferencesOpenLoginItemsSettingsCapability.bridge,
+    channel: appPreferencesOpenLoginItemsSettingsCapability.channel,
+    handler: appPreferencesOpenLoginItemsSettingsCapability.handler,
+    id: appPreferencesOpenLoginItemsSettingsCapability.id,
+    payloadClass: appPreferencesOpenLoginItemsSettingsCapability.payloadClass,
+    permission: appPreferencesOpenLoginItemsSettingsCapability.permission,
+    sessionAdmission: appPreferencesOpenLoginItemsSettingsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesOpenLoginItemsSettingsCapability.sessionAdmissionRationale,
+    transport: appPreferencesOpenLoginItemsSettingsCapability.transport,
+  },
   "appPreferences.openNotificationSettings": {
     artifacts: {
       contract: "appPreferencesOpenNotificationSettingsContract",
@@ -4588,6 +5028,32 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale:
       appPreferencesOpenNotificationSettingsCapability.sessionAdmissionRationale,
     transport: appPreferencesOpenNotificationSettingsCapability.transport,
+  },
+  "appPreferences.requestNotificationAuthorization": {
+    artifacts: {
+      contract: "appPreferencesRequestNotificationAuthorizationContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["appPreferences.requestNotificationAuthorization"]',
+      leaf: "appPreferencesRequestNotificationAuthorizationCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["appPreferences.requestNotificationAuthorization"]',
+      mock: "appPreferencesRequestNotificationAuthorizationCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.appPreferences.requestNotificationAuthorization",
+      webFallback:
+        "generatedNativeWebFallbacks.appPreferencesRequestNotificationAuthorization",
+    },
+    bridge: appPreferencesRequestNotificationAuthorizationCapability.bridge,
+    channel: appPreferencesRequestNotificationAuthorizationCapability.channel,
+    handler: appPreferencesRequestNotificationAuthorizationCapability.handler,
+    id: appPreferencesRequestNotificationAuthorizationCapability.id,
+    payloadClass: appPreferencesRequestNotificationAuthorizationCapability.payloadClass,
+    permission: appPreferencesRequestNotificationAuthorizationCapability.permission,
+    sessionAdmission:
+      appPreferencesRequestNotificationAuthorizationCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRequestNotificationAuthorizationCapability.sessionAdmissionRationale,
+    transport: appPreferencesRequestNotificationAuthorizationCapability.transport,
   },
   "appPreferences.update": {
     artifacts: {
@@ -5038,6 +5504,87 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: windowsCloseCapability.sessionAdmission,
     sessionAdmissionRationale: windowsCloseCapability.sessionAdmissionRationale,
     transport: windowsCloseCapability.transport,
+  },
+  "onboarding.presentWindow": {
+    artifacts: {
+      contract: "onboardingPresentWindowContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["onboarding.presentWindow"]',
+      leaf: "onboardingPresentWindowCapability",
+      mainBinding: 'generatedNativeMainBindingsById["onboarding.presentWindow"]',
+      mock: "onboardingPresentWindowCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.onboarding.presentWindow",
+      webFallback: "generatedNativeWebFallbacks.onboardingPresentWindow",
+    },
+    bridge: onboardingPresentWindowCapability.bridge,
+    channel: onboardingPresentWindowCapability.channel,
+    handler: onboardingPresentWindowCapability.handler,
+    id: onboardingPresentWindowCapability.id,
+    payloadClass: onboardingPresentWindowCapability.payloadClass,
+    permission: onboardingPresentWindowCapability.permission,
+    sessionAdmission: onboardingPresentWindowCapability.sessionAdmission,
+    transport: onboardingPresentWindowCapability.transport,
+  },
+  "onboarding.closeWindow": {
+    artifacts: {
+      contract: "onboardingCloseWindowContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["onboarding.closeWindow"]',
+      leaf: "onboardingCloseWindowCapability",
+      mainBinding: 'generatedNativeMainBindingsById["onboarding.closeWindow"]',
+      mock: "onboardingCloseWindowCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.onboarding.closeWindow",
+      webFallback: "generatedNativeWebFallbacks.onboardingCloseWindow",
+    },
+    bridge: onboardingCloseWindowCapability.bridge,
+    channel: onboardingCloseWindowCapability.channel,
+    handler: onboardingCloseWindowCapability.handler,
+    id: onboardingCloseWindowCapability.id,
+    payloadClass: onboardingCloseWindowCapability.payloadClass,
+    permission: onboardingCloseWindowCapability.permission,
+    sessionAdmission: onboardingCloseWindowCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      onboardingCloseWindowCapability.sessionAdmissionRationale,
+    transport: onboardingCloseWindowCapability.transport,
+  },
+  "onboarding.outputVolume": {
+    artifacts: {
+      contract: "onboardingOutputVolumeContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["onboarding.outputVolume"]',
+      leaf: "onboardingOutputVolumeCapability",
+      mainBinding: 'generatedNativeMainBindingsById["onboarding.outputVolume"]',
+      mock: "onboardingOutputVolumeCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.onboarding.outputVolume",
+      webFallback: "generatedNativeWebFallbacks.onboardingOutputVolume",
+    },
+    bridge: onboardingOutputVolumeCapability.bridge,
+    channel: onboardingOutputVolumeCapability.channel,
+    handler: onboardingOutputVolumeCapability.handler,
+    id: onboardingOutputVolumeCapability.id,
+    payloadClass: onboardingOutputVolumeCapability.payloadClass,
+    permission: onboardingOutputVolumeCapability.permission,
+    sessionAdmission: onboardingOutputVolumeCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      onboardingOutputVolumeCapability.sessionAdmissionRationale,
+    transport: onboardingOutputVolumeCapability.transport,
+  },
+  "onboarding.window": {
+    artifacts: {
+      contract: "onboardingWindowContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["onboarding.window"]',
+      leaf: "onboardingWindowCapability",
+      mainBinding: 'generatedNativeMainBindingsById["onboarding.window"]',
+      mock: "onboardingWindowCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.onboarding.window",
+      webFallback: "generatedNativeWebFallbacks.onboardingWindow",
+    },
+    bridge: onboardingWindowCapability.bridge,
+    channel: onboardingWindowCapability.channel,
+    handler: onboardingWindowCapability.handler,
+    id: onboardingWindowCapability.id,
+    payloadClass: onboardingWindowCapability.payloadClass,
+    permission: onboardingWindowCapability.permission,
+    sessionAdmission: onboardingWindowCapability.sessionAdmission,
+    sessionAdmissionRationale: onboardingWindowCapability.sessionAdmissionRationale,
+    transport: onboardingWindowCapability.transport,
   },
   "clipboard.readText": {
     artifacts: {
@@ -5932,6 +6479,193 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: computeNodeRebuildCapability.sessionAdmissionRationale,
     transport: computeNodeRebuildCapability.transport,
   },
+  "computeNode.localOverview": {
+    artifacts: {
+      contract: "localComputeOverviewContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.localOverview"]',
+      leaf: "localComputeOverviewCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.localOverview"]',
+      mock: "localComputeOverviewCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.localOverview",
+      webFallback: "generatedNativeWebFallbacks.localComputeOverview",
+    },
+    bridge: localComputeOverviewCapability.bridge,
+    channel: localComputeOverviewCapability.channel,
+    handler: localComputeOverviewCapability.handler,
+    id: localComputeOverviewCapability.id,
+    payloadClass: localComputeOverviewCapability.payloadClass,
+    permission: localComputeOverviewCapability.permission,
+    sessionAdmission: localComputeOverviewCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeOverviewCapability.sessionAdmissionRationale,
+    transport: localComputeOverviewCapability.transport,
+  },
+  "computeNode.disposeLocal": {
+    artifacts: {
+      contract: "localComputeDisposeContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.disposeLocal"]',
+      leaf: "localComputeDisposeCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.disposeLocal"]',
+      mock: "localComputeDisposeCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.disposeLocal",
+      webFallback: "generatedNativeWebFallbacks.localComputeDispose",
+    },
+    bridge: localComputeDisposeCapability.bridge,
+    channel: localComputeDisposeCapability.channel,
+    handler: localComputeDisposeCapability.handler,
+    id: localComputeDisposeCapability.id,
+    payloadClass: localComputeDisposeCapability.payloadClass,
+    permission: localComputeDisposeCapability.permission,
+    sessionAdmission: localComputeDisposeCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeDisposeCapability.sessionAdmissionRationale,
+    transport: localComputeDisposeCapability.transport,
+  },
+  "computeNode.resumeLocalDisposal": {
+    artifacts: {
+      contract: "localComputeResumeContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.resumeLocalDisposal"]',
+      leaf: "localComputeResumeCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.resumeLocalDisposal"]',
+      mock: "localComputeResumeCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.resumeLocalDisposal",
+      webFallback: "generatedNativeWebFallbacks.localComputeResume",
+    },
+    bridge: localComputeResumeCapability.bridge,
+    channel: localComputeResumeCapability.channel,
+    handler: localComputeResumeCapability.handler,
+    id: localComputeResumeCapability.id,
+    payloadClass: localComputeResumeCapability.payloadClass,
+    permission: localComputeResumeCapability.permission,
+    sessionAdmission: localComputeResumeCapability.sessionAdmission,
+    sessionAdmissionRationale: localComputeResumeCapability.sessionAdmissionRationale,
+    transport: localComputeResumeCapability.transport,
+  },
+  "computeNode.hostMaintenanceState": {
+    artifacts: {
+      contract: "hostMaintenanceStateContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.hostMaintenanceState"]',
+      leaf: "hostMaintenanceStateCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["computeNode.hostMaintenanceState"]',
+      mock: "hostMaintenanceStateCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.hostMaintenanceState",
+      webFallback: "generatedNativeWebFallbacks.hostMaintenanceState",
+    },
+    bridge: hostMaintenanceStateCapability.bridge,
+    channel: hostMaintenanceStateCapability.channel,
+    handler: hostMaintenanceStateCapability.handler,
+    id: hostMaintenanceStateCapability.id,
+    payloadClass: hostMaintenanceStateCapability.payloadClass,
+    permission: hostMaintenanceStateCapability.permission,
+    sessionAdmission: hostMaintenanceStateCapability.sessionAdmission,
+    sessionAdmissionRationale: hostMaintenanceStateCapability.sessionAdmissionRationale,
+    transport: hostMaintenanceStateCapability.transport,
+  },
+  "computeNode.maintainHost": {
+    artifacts: {
+      contract: "maintainHostContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.maintainHost"]',
+      leaf: "maintainHostCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.maintainHost"]',
+      mock: "maintainHostCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.maintainHost",
+      webFallback: "generatedNativeWebFallbacks.maintainHost",
+    },
+    bridge: maintainHostCapability.bridge,
+    channel: maintainHostCapability.channel,
+    handler: maintainHostCapability.handler,
+    id: maintainHostCapability.id,
+    payloadClass: maintainHostCapability.payloadClass,
+    permission: maintainHostCapability.permission,
+    sessionAdmission: maintainHostCapability.sessionAdmission,
+    sessionAdmissionRationale: maintainHostCapability.sessionAdmissionRationale,
+    transport: maintainHostCapability.transport,
+  },
+  "computeNode.resumeHostMaintenance": {
+    artifacts: {
+      contract: "resumeHostMaintenanceContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["computeNode.resumeHostMaintenance"]',
+      leaf: "resumeHostMaintenanceCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["computeNode.resumeHostMaintenance"]',
+      mock: "resumeHostMaintenanceCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.computeNode.resumeHostMaintenance",
+      webFallback: "generatedNativeWebFallbacks.resumeHostMaintenance",
+    },
+    bridge: resumeHostMaintenanceCapability.bridge,
+    channel: resumeHostMaintenanceCapability.channel,
+    handler: resumeHostMaintenanceCapability.handler,
+    id: resumeHostMaintenanceCapability.id,
+    payloadClass: resumeHostMaintenanceCapability.payloadClass,
+    permission: resumeHostMaintenanceCapability.permission,
+    sessionAdmission: resumeHostMaintenanceCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      resumeHostMaintenanceCapability.sessionAdmissionRationale,
+    transport: resumeHostMaintenanceCapability.transport,
+  },
+  "computeNode.recoveryCandidates": {
+    artifacts: {
+      contract: "computeRecoveryCandidatesContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.recoveryCandidates"]',
+      leaf: "computeRecoveryCandidatesCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.recoveryCandidates"]',
+      mock: "computeRecoveryCandidatesCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.recoveryCandidates",
+      webFallback: "generatedNativeWebFallbacks.computeRecoveryCandidates",
+    },
+    bridge: computeRecoveryCandidatesCapability.bridge,
+    channel: computeRecoveryCandidatesCapability.channel,
+    handler: computeRecoveryCandidatesCapability.handler,
+    id: computeRecoveryCandidatesCapability.id,
+    payloadClass: computeRecoveryCandidatesCapability.payloadClass,
+    permission: computeRecoveryCandidatesCapability.permission,
+    sessionAdmission: computeRecoveryCandidatesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeRecoveryCandidatesCapability.sessionAdmissionRationale,
+    transport: computeRecoveryCandidatesCapability.transport,
+  },
+  "computeNode.recover": {
+    artifacts: {
+      contract: "computeRecoverContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.recover"]',
+      leaf: "computeRecoverCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.recover"]',
+      mock: "computeRecoverCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.recover",
+      webFallback: "generatedNativeWebFallbacks.computeRecover",
+    },
+    bridge: computeRecoverCapability.bridge,
+    channel: computeRecoverCapability.channel,
+    handler: computeRecoverCapability.handler,
+    id: computeRecoverCapability.id,
+    payloadClass: computeRecoverCapability.payloadClass,
+    permission: computeRecoverCapability.permission,
+    sessionAdmission: computeRecoverCapability.sessionAdmission,
+    sessionAdmissionRationale: computeRecoverCapability.sessionAdmissionRationale,
+    transport: computeRecoverCapability.transport,
+  },
+  "computeNode.localWorkloads": {
+    artifacts: {
+      contract: "localComputeWorkloadsContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.localWorkloads"]',
+      leaf: "localComputeWorkloadsCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.localWorkloads"]',
+      mock: "localComputeWorkloadsCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.localWorkloads",
+      webFallback: "generatedNativeWebFallbacks.localComputeWorkloads",
+    },
+    bridge: localComputeWorkloadsCapability.bridge,
+    channel: localComputeWorkloadsCapability.channel,
+    handler: localComputeWorkloadsCapability.handler,
+    id: localComputeWorkloadsCapability.id,
+    payloadClass: localComputeWorkloadsCapability.payloadClass,
+    permission: localComputeWorkloadsCapability.permission,
+    sessionAdmission: localComputeWorkloadsCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      localComputeWorkloadsCapability.sessionAdmissionRationale,
+    transport: localComputeWorkloadsCapability.transport,
+  },
   "computeNode.drain": {
     artifacts: {
       contract: "computeNodeDrainContract",
@@ -5971,6 +6705,26 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: computeNodeRemoveCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRemoveCapability.sessionAdmissionRationale,
     transport: computeNodeRemoveCapability.transport,
+  },
+  "computeNode.abandon": {
+    artifacts: {
+      contract: "computeNodeAbandonContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.abandon"]',
+      leaf: "computeNodeAbandonCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.abandon"]',
+      mock: "computeNodeAbandonCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.abandon",
+      webFallback: "generatedNativeWebFallbacks.computeNodeAbandon",
+    },
+    bridge: computeNodeAbandonCapability.bridge,
+    channel: computeNodeAbandonCapability.channel,
+    handler: computeNodeAbandonCapability.handler,
+    id: computeNodeAbandonCapability.id,
+    payloadClass: computeNodeAbandonCapability.payloadClass,
+    permission: computeNodeAbandonCapability.permission,
+    sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
+    sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
+    transport: computeNodeAbandonCapability.transport,
   },
   "sessionHistory.state": {
     artifacts: {
@@ -7861,6 +8615,26 @@ export const generatedNativeEventIndex = {
     permission: surfacesWindowFullScreenChangedEvent.permission,
     target: surfacesWindowFullScreenChangedEvent.target,
   },
+  "onboarding.window.changed": {
+    artifacts: {
+      leaf: "onboardingWindowChangedEvent",
+      mock: "onboardingWindowChangedEvent.mock",
+    },
+    channel: onboardingWindowChangedEvent.channel,
+    id: onboardingWindowChangedEvent.id,
+    permission: onboardingWindowChangedEvent.permission,
+    target: onboardingWindowChangedEvent.target,
+  },
+  "onboarding.handoff": {
+    artifacts: {
+      leaf: "onboardingHandoffEvent",
+      mock: "onboardingHandoffEvent.mock",
+    },
+    channel: onboardingHandoffEvent.channel,
+    id: onboardingHandoffEvent.id,
+    permission: onboardingHandoffEvent.permission,
+    target: onboardingHandoffEvent.target,
+  },
   "notch.event": {
     artifacts: {
       leaf: "notchHostEvent",
@@ -8145,6 +8919,31 @@ export const generatedNativeStateIndex = {
       id: surfacesWindowFullScreenStateLeaf.subscribe.id,
       permission: surfacesWindowFullScreenStateLeaf.subscribe.permission,
       target: surfacesWindowFullScreenStateLeaf.subscribe.target,
+    },
+  },
+  "onboarding.window": {
+    artifacts: {
+      get: "generatedNativeStateBindings.onboarding.window.get",
+      leaf: "onboardingWindowStateLeaf",
+      mock: "onboardingWindowStateLeaf.mock",
+      subscribe: "generatedNativeStateBindings.onboarding.window.subscribe",
+      webFallback: "onboardingWindowStateLeaf.webFallback",
+    },
+    bridge: onboardingWindowStateLeaf.bridge,
+    get: {
+      channel: onboardingWindowStateLeaf.get.channel,
+      id: onboardingWindowStateLeaf.get.id,
+      permission: onboardingWindowStateLeaf.get.permission,
+      sessionAdmission: onboardingWindowStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale:
+        onboardingWindowStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: onboardingWindowStateLeaf.id,
+    subscribe: {
+      channel: onboardingWindowStateLeaf.subscribe.channel,
+      id: onboardingWindowStateLeaf.subscribe.id,
+      permission: onboardingWindowStateLeaf.subscribe.permission,
+      target: onboardingWindowStateLeaf.subscribe.target,
     },
   },
   "session.state": {
@@ -8473,8 +9272,12 @@ export const nativeInfoContract = generatedNativeCapabilityContracts.nativeInfo;
 export const appPreferencesContract = generatedNativeCapabilityContracts.appPreferences;
 export const appPreferencesInitializeClientSettingsContract =
   generatedNativeCapabilityContracts.appPreferencesInitializeClientSettings;
+export const appPreferencesOpenLoginItemsSettingsContract =
+  generatedNativeCapabilityContracts.appPreferencesOpenLoginItemsSettings;
 export const appPreferencesOpenNotificationSettingsContract =
   generatedNativeCapabilityContracts.appPreferencesOpenNotificationSettings;
+export const appPreferencesRequestNotificationAuthorizationContract =
+  generatedNativeCapabilityContracts.appPreferencesRequestNotificationAuthorization;
 export const appPreferencesUpdateContract =
   generatedNativeCapabilityContracts.appPreferencesUpdate;
 export const connectorRuntimeStateContract =
@@ -8505,6 +9308,14 @@ export const surfacesWindowFullScreenContract =
 export const windowsCreateContract = generatedNativeCapabilityContracts.windowsCreate;
 export const windowsFocusContract = generatedNativeCapabilityContracts.windowsFocus;
 export const windowsCloseContract = generatedNativeCapabilityContracts.windowsClose;
+export const onboardingPresentWindowContract =
+  generatedNativeCapabilityContracts.onboardingPresentWindow;
+export const onboardingCloseWindowContract =
+  generatedNativeCapabilityContracts.onboardingCloseWindow;
+export const onboardingOutputVolumeContract =
+  generatedNativeCapabilityContracts.onboardingOutputVolume;
+export const onboardingWindowContract =
+  generatedNativeCapabilityContracts.onboardingWindow;
 export const clipboardReadTextContract =
   generatedNativeCapabilityContracts.clipboardReadText;
 export const clipboardReadImageContract =
@@ -8591,10 +9402,28 @@ export const computeNodeRepairContract =
   generatedNativeCapabilityContracts.computeNodeRepair;
 export const computeNodeRebuildContract =
   generatedNativeCapabilityContracts.computeNodeRebuild;
+export const localComputeOverviewContract =
+  generatedNativeCapabilityContracts.localComputeOverview;
+export const localComputeDisposeContract =
+  generatedNativeCapabilityContracts.localComputeDispose;
+export const localComputeResumeContract =
+  generatedNativeCapabilityContracts.localComputeResume;
+export const hostMaintenanceStateContract =
+  generatedNativeCapabilityContracts.hostMaintenanceState;
+export const maintainHostContract = generatedNativeCapabilityContracts.maintainHost;
+export const resumeHostMaintenanceContract =
+  generatedNativeCapabilityContracts.resumeHostMaintenance;
+export const computeRecoveryCandidatesContract =
+  generatedNativeCapabilityContracts.computeRecoveryCandidates;
+export const computeRecoverContract = generatedNativeCapabilityContracts.computeRecover;
+export const localComputeWorkloadsContract =
+  generatedNativeCapabilityContracts.localComputeWorkloads;
 export const computeNodeDrainContract =
   generatedNativeCapabilityContracts.computeNodeDrain;
 export const computeNodeRemoveContract =
   generatedNativeCapabilityContracts.computeNodeRemove;
+export const computeNodeAbandonContract =
+  generatedNativeCapabilityContracts.computeNodeAbandon;
 export const sessionHistoryStateContract =
   generatedNativeCapabilityContracts.sessionHistoryState;
 export const sessionHistoryLoadContract =
@@ -8768,7 +9597,9 @@ export type NativeCapabilityTypeMap = {
   "native.info": typeof nativeInfoCapability;
   "appPreferences.state": typeof appPreferencesCapability;
   "appPreferences.initializeClientSettings": typeof appPreferencesInitializeClientSettingsCapability;
+  "appPreferences.openLoginItemsSettings": typeof appPreferencesOpenLoginItemsSettingsCapability;
   "appPreferences.openNotificationSettings": typeof appPreferencesOpenNotificationSettingsCapability;
+  "appPreferences.requestNotificationAuthorization": typeof appPreferencesRequestNotificationAuthorizationCapability;
   "appPreferences.update": typeof appPreferencesUpdateCapability;
   "connectorRuntime.state": typeof connectorRuntimeStateCapability;
   "connectorRuntime.scope": typeof connectorRuntimeScopeCapability;
@@ -8791,6 +9622,10 @@ export type NativeCapabilityTypeMap = {
   "windows.create": typeof windowsCreateCapability;
   "windows.focus": typeof windowsFocusCapability;
   "windows.close": typeof windowsCloseCapability;
+  "onboarding.presentWindow": typeof onboardingPresentWindowCapability;
+  "onboarding.closeWindow": typeof onboardingCloseWindowCapability;
+  "onboarding.outputVolume": typeof onboardingOutputVolumeCapability;
+  "onboarding.window": typeof onboardingWindowCapability;
   "clipboard.readText": typeof clipboardReadTextCapability;
   "clipboard.readImage": typeof clipboardReadImageCapability;
   "clipboard.writeText": typeof clipboardWriteTextCapability;
@@ -8836,8 +9671,18 @@ export type NativeCapabilityTypeMap = {
   "computeNode.refresh": typeof computeNodeRefreshCapability;
   "computeNode.repair": typeof computeNodeRepairCapability;
   "computeNode.rebuild": typeof computeNodeRebuildCapability;
+  "computeNode.localOverview": typeof localComputeOverviewCapability;
+  "computeNode.disposeLocal": typeof localComputeDisposeCapability;
+  "computeNode.resumeLocalDisposal": typeof localComputeResumeCapability;
+  "computeNode.hostMaintenanceState": typeof hostMaintenanceStateCapability;
+  "computeNode.maintainHost": typeof maintainHostCapability;
+  "computeNode.resumeHostMaintenance": typeof resumeHostMaintenanceCapability;
+  "computeNode.recoveryCandidates": typeof computeRecoveryCandidatesCapability;
+  "computeNode.recover": typeof computeRecoverCapability;
+  "computeNode.localWorkloads": typeof localComputeWorkloadsCapability;
   "computeNode.drain": typeof computeNodeDrainCapability;
   "computeNode.remove": typeof computeNodeRemoveCapability;
+  "computeNode.abandon": typeof computeNodeAbandonCapability;
   "sessionHistory.state": typeof sessionHistoryStateCapability;
   "sessionHistory.load": typeof sessionHistoryLoadCapability;
   "sessionHistory.retain": typeof sessionHistoryRetainCapability;
@@ -8939,6 +9784,8 @@ export type NativeEventTypeMap = {
   "browserSidebar.openTabRequested": typeof browserSidebarOpenTabRequestedEvent;
   "surfaces.changed": typeof surfacesChangedEvent;
   "surfaces.windowFullScreen.changed": typeof surfacesWindowFullScreenChangedEvent;
+  "onboarding.window.changed": typeof onboardingWindowChangedEvent;
+  "onboarding.handoff": typeof onboardingHandoffEvent;
   "notch.event": typeof notchHostEvent;
   "session.state.changed": typeof sessionStateChangedEvent;
   "sessionHistory.state.changed": typeof sessionHistoryStateChangedEvent;
@@ -8963,6 +9810,7 @@ export type NativeStateTypeMap = {
   "connectorRuntime.state": typeof connectorRuntimeStateLeaf;
   "surfaces.state": typeof surfacesStateLeaf;
   "surfaces.windowFullScreen": typeof surfacesWindowFullScreenStateLeaf;
+  "onboarding.window": typeof onboardingWindowStateLeaf;
   "session.state": typeof sessionStateLeaf;
   "sessionHistory.state": typeof sessionHistoryStateLeaf;
   "productInbox.state": typeof productInboxStateLeaf;
@@ -9048,8 +9896,14 @@ export type GeneratedNativeBridge = {
     initializeClientSettings: GeneratedNativeCommandBridgeMethod<
       typeof appPreferencesInitializeClientSettingsCapability
     >;
+    openLoginItemsSettings: GeneratedNativeCommandBridgeMethod<
+      typeof appPreferencesOpenLoginItemsSettingsCapability
+    >;
     openNotificationSettings: GeneratedNativeCommandBridgeMethod<
       typeof appPreferencesOpenNotificationSettingsCapability
+    >;
+    requestNotificationAuthorization: GeneratedNativeCommandBridgeMethod<
+      typeof appPreferencesRequestNotificationAuthorizationCapability
     >;
     update: GeneratedNativeCommandBridgeMethod<typeof appPreferencesUpdateCapability>;
     state: GeneratedNativeStateBridgeMethod<typeof appPreferencesStateLeaf>;
@@ -9089,6 +9943,19 @@ export type GeneratedNativeBridge = {
     create: GeneratedNativeCommandBridgeMethod<typeof windowsCreateCapability>;
     focus: GeneratedNativeCommandBridgeMethod<typeof windowsFocusCapability>;
     close: GeneratedNativeCommandBridgeMethod<typeof windowsCloseCapability>;
+  };
+  onboarding: {
+    presentWindow: GeneratedNativeCommandBridgeMethod<
+      typeof onboardingPresentWindowCapability
+    >;
+    closeWindow: GeneratedNativeCommandBridgeMethod<
+      typeof onboardingCloseWindowCapability
+    >;
+    outputVolume: GeneratedNativeCommandBridgeMethod<
+      typeof onboardingOutputVolumeCapability
+    >;
+    window: GeneratedNativeStateBridgeMethod<typeof onboardingWindowStateLeaf>;
+    onHandoff: GeneratedNativeEventBridgeMethod<typeof onboardingHandoffEvent>;
   };
   clipboard: {
     readText: GeneratedNativeCommandBridgeMethod<typeof clipboardReadTextCapability>;
@@ -9210,8 +10077,32 @@ export type GeneratedNativeBridge = {
     refresh: GeneratedNativeCommandBridgeMethod<typeof computeNodeRefreshCapability>;
     repair: GeneratedNativeCommandBridgeMethod<typeof computeNodeRepairCapability>;
     rebuild: GeneratedNativeCommandBridgeMethod<typeof computeNodeRebuildCapability>;
+    localOverview: GeneratedNativeCommandBridgeMethod<
+      typeof localComputeOverviewCapability
+    >;
+    disposeLocal: GeneratedNativeCommandBridgeMethod<
+      typeof localComputeDisposeCapability
+    >;
+    resumeLocalDisposal: GeneratedNativeCommandBridgeMethod<
+      typeof localComputeResumeCapability
+    >;
+    hostMaintenanceState: GeneratedNativeCommandBridgeMethod<
+      typeof hostMaintenanceStateCapability
+    >;
+    maintainHost: GeneratedNativeCommandBridgeMethod<typeof maintainHostCapability>;
+    resumeHostMaintenance: GeneratedNativeCommandBridgeMethod<
+      typeof resumeHostMaintenanceCapability
+    >;
+    recoveryCandidates: GeneratedNativeCommandBridgeMethod<
+      typeof computeRecoveryCandidatesCapability
+    >;
+    recover: GeneratedNativeCommandBridgeMethod<typeof computeRecoverCapability>;
+    localWorkloads: GeneratedNativeCommandBridgeMethod<
+      typeof localComputeWorkloadsCapability
+    >;
     drain: GeneratedNativeCommandBridgeMethod<typeof computeNodeDrainCapability>;
     remove: GeneratedNativeCommandBridgeMethod<typeof computeNodeRemoveCapability>;
+    abandon: GeneratedNativeCommandBridgeMethod<typeof computeNodeAbandonCapability>;
     state: GeneratedNativeStateBridgeMethod<typeof computeNodeStateLeaf>;
   };
   sessionHistory: {
@@ -9502,9 +10393,19 @@ export function createGeneratedNativePreloadBridge(
           appPreferencesInitializeClientSettingsCapability.contract,
           input
         ),
+      openLoginItemsSettings: () =>
+        helpers.invoke(
+          appPreferencesOpenLoginItemsSettingsCapability.contract,
+          undefined
+        ),
       openNotificationSettings: () =>
         helpers.invoke(
           appPreferencesOpenNotificationSettingsCapability.contract,
+          undefined
+        ),
+      requestNotificationAuthorization: () =>
+        helpers.invoke(
+          appPreferencesRequestNotificationAuthorizationCapability.contract,
           undefined
         ),
       update: (
@@ -9562,6 +10463,21 @@ export function createGeneratedNativePreloadBridge(
         helpers.invoke(windowsFocusCapability.contract, input),
       close: (input: GeneratedNativeCommandInput<typeof windowsCloseCapability>) =>
         helpers.invoke(windowsCloseCapability.contract, input),
+    },
+    onboarding: {
+      presentWindow: (
+        input: GeneratedNativeCommandInput<typeof onboardingPresentWindowCapability>
+      ) => helpers.invoke(onboardingPresentWindowCapability.contract, input),
+      closeWindow: (
+        input: GeneratedNativeCommandInput<typeof onboardingCloseWindowCapability>
+      ) => helpers.invoke(onboardingCloseWindowCapability.contract, input),
+      outputVolume: () =>
+        helpers.invoke(onboardingOutputVolumeCapability.contract, undefined),
+      window: helpers.state({
+        get: onboardingWindowCapability.contract,
+        subscribe: onboardingWindowChangedEvent,
+      }),
+      onHandoff: (listener) => helpers.subscribe(onboardingHandoffEvent, listener),
     },
     clipboard: {
       readText: () => helpers.invoke(clipboardReadTextCapability.contract, undefined),
@@ -9725,11 +10641,39 @@ export function createGeneratedNativePreloadBridge(
       refresh: () => helpers.invoke(computeNodeRefreshCapability.contract, undefined),
       repair: () => helpers.invoke(computeNodeRepairCapability.contract, undefined),
       rebuild: () => helpers.invoke(computeNodeRebuildCapability.contract, undefined),
+      localOverview: (
+        input: GeneratedNativeCommandInput<typeof localComputeOverviewCapability>
+      ) => helpers.invoke(localComputeOverviewCapability.contract, input),
+      disposeLocal: (
+        input: GeneratedNativeCommandInput<typeof localComputeDisposeCapability>
+      ) => helpers.invoke(localComputeDisposeCapability.contract, input),
+      resumeLocalDisposal: (
+        input: GeneratedNativeCommandInput<typeof localComputeResumeCapability>
+      ) => helpers.invoke(localComputeResumeCapability.contract, input),
+      hostMaintenanceState: () =>
+        helpers.invoke(hostMaintenanceStateCapability.contract, undefined),
+      maintainHost: (
+        input: GeneratedNativeCommandInput<typeof maintainHostCapability>
+      ) => helpers.invoke(maintainHostCapability.contract, input),
+      resumeHostMaintenance: (
+        input: GeneratedNativeCommandInput<typeof resumeHostMaintenanceCapability>
+      ) => helpers.invoke(resumeHostMaintenanceCapability.contract, input),
+      recoveryCandidates: (
+        input: GeneratedNativeCommandInput<typeof computeRecoveryCandidatesCapability>
+      ) => helpers.invoke(computeRecoveryCandidatesCapability.contract, input),
+      recover: (input: GeneratedNativeCommandInput<typeof computeRecoverCapability>) =>
+        helpers.invoke(computeRecoverCapability.contract, input),
+      localWorkloads: (
+        input: GeneratedNativeCommandInput<typeof localComputeWorkloadsCapability>
+      ) => helpers.invoke(localComputeWorkloadsCapability.contract, input),
       drain: (input?: GeneratedNativeCommandInput<typeof computeNodeDrainCapability>) =>
         helpers.invoke(computeNodeDrainCapability.contract, input),
       remove: (
         input?: GeneratedNativeCommandInput<typeof computeNodeRemoveCapability>
       ) => helpers.invoke(computeNodeRemoveCapability.contract, input),
+      abandon: (
+        input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
+      ) => helpers.invoke(computeNodeAbandonCapability.contract, input),
       state: helpers.state({
         get: computeNodeStateCapability.contract,
         subscribe: computeNodeStateChangedEvent,
@@ -10055,8 +10999,12 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
           typeof appPreferencesInitializeClientSettingsCapability
         >
       ) => appPreferencesInitializeClientSettingsCapability.webFallback,
+      openLoginItemsSettings: async () =>
+        appPreferencesOpenLoginItemsSettingsCapability.webFallback,
       openNotificationSettings: async () =>
         appPreferencesOpenNotificationSettingsCapability.webFallback,
+      requestNotificationAuthorization: async () =>
+        appPreferencesRequestNotificationAuthorizationCapability.webFallback,
       update: async (
         _input: GeneratedNativeCommandInput<typeof appPreferencesUpdateCapability>
       ) => appPreferencesUpdateCapability.webFallback,
@@ -10116,6 +11064,20 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       close: async (
         _input: GeneratedNativeCommandInput<typeof windowsCloseCapability>
       ) => windowsCloseCapability.webFallback,
+    },
+    onboarding: {
+      presentWindow: async (
+        _input: GeneratedNativeCommandInput<typeof onboardingPresentWindowCapability>
+      ) => onboardingPresentWindowCapability.webFallback,
+      closeWindow: async (
+        _input: GeneratedNativeCommandInput<typeof onboardingCloseWindowCapability>
+      ) => onboardingCloseWindowCapability.webFallback,
+      outputVolume: async () => onboardingOutputVolumeCapability.webFallback,
+      window: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof onboardingWindowStateLeaf>,
+        GeneratedNativeStateGetInput<typeof onboardingWindowStateLeaf>
+      >((_input) => onboardingWindowStateLeaf.webFallback),
+      onHandoff: () => () => {},
     },
     clipboard: {
       readText: async () => clipboardReadTextCapability.webFallback,
@@ -10283,12 +11245,40 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       refresh: async () => computeNodeRefreshCapability.webFallback,
       repair: async () => computeNodeRepairCapability.webFallback,
       rebuild: async () => computeNodeRebuildCapability.webFallback,
+      localOverview: async (
+        _input: GeneratedNativeCommandInput<typeof localComputeOverviewCapability>
+      ) => localComputeOverviewCapability.webFallback,
+      disposeLocal: async (
+        _input: GeneratedNativeCommandInput<typeof localComputeDisposeCapability>
+      ) => localComputeDisposeCapability.webFallback,
+      resumeLocalDisposal: async (
+        _input: GeneratedNativeCommandInput<typeof localComputeResumeCapability>
+      ) => localComputeResumeCapability.webFallback,
+      hostMaintenanceState: async () => hostMaintenanceStateCapability.webFallback,
+      maintainHost: async (
+        _input: GeneratedNativeCommandInput<typeof maintainHostCapability>
+      ) => maintainHostCapability.webFallback,
+      resumeHostMaintenance: async (
+        _input: GeneratedNativeCommandInput<typeof resumeHostMaintenanceCapability>
+      ) => resumeHostMaintenanceCapability.webFallback,
+      recoveryCandidates: async (
+        _input: GeneratedNativeCommandInput<typeof computeRecoveryCandidatesCapability>
+      ) => computeRecoveryCandidatesCapability.webFallback,
+      recover: async (
+        _input: GeneratedNativeCommandInput<typeof computeRecoverCapability>
+      ) => computeRecoverCapability.webFallback,
+      localWorkloads: async (
+        _input: GeneratedNativeCommandInput<typeof localComputeWorkloadsCapability>
+      ) => localComputeWorkloadsCapability.webFallback,
       drain: async (
         _input?: GeneratedNativeCommandInput<typeof computeNodeDrainCapability>
       ) => computeNodeDrainCapability.webFallback,
       remove: async (
         _input?: GeneratedNativeCommandInput<typeof computeNodeRemoveCapability>
       ) => computeNodeRemoveCapability.webFallback,
+      abandon: async (
+        _input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
+      ) => computeNodeAbandonCapability.webFallback,
       state: createGeneratedWebStateBridge<
         GeneratedNativeStateSnapshot<typeof computeNodeStateLeaf>,
         GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>
@@ -10630,8 +11620,14 @@ export function createGeneratedNativeBridgeMock(
           >
         ) => appPreferencesInitializeClientSettingsCapability.mock
       ),
+      openLoginItemsSettings: helpers.command(
+        async () => appPreferencesOpenLoginItemsSettingsCapability.mock
+      ),
       openNotificationSettings: helpers.command(
         async () => appPreferencesOpenNotificationSettingsCapability.mock
+      ),
+      requestNotificationAuthorization: helpers.command(
+        async () => appPreferencesRequestNotificationAuthorizationCapability.mock
       ),
       update: helpers.command(
         async (
@@ -10711,6 +11707,24 @@ export function createGeneratedNativeBridgeMock(
         async (_input: GeneratedNativeCommandInput<typeof windowsCloseCapability>) =>
           windowsCloseCapability.mock
       ),
+    },
+    onboarding: {
+      presentWindow: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof onboardingPresentWindowCapability>
+        ) => onboardingPresentWindowCapability.mock
+      ),
+      closeWindow: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof onboardingCloseWindowCapability>
+        ) => onboardingCloseWindowCapability.mock
+      ),
+      outputVolume: helpers.command(async () => onboardingOutputVolumeCapability.mock),
+      window: helpers.state(
+        (_input: GeneratedNativeStateGetInput<typeof onboardingWindowStateLeaf>) =>
+          onboardingWindowStateLeaf.mock
+      ),
+      onHandoff: helpers.event((_listener) => () => {}),
     },
     clipboard: {
       readText: helpers.command(async () => clipboardReadTextCapability.mock),
@@ -10947,6 +11961,49 @@ export function createGeneratedNativeBridgeMock(
       refresh: helpers.command(async () => computeNodeRefreshCapability.mock),
       repair: helpers.command(async () => computeNodeRepairCapability.mock),
       rebuild: helpers.command(async () => computeNodeRebuildCapability.mock),
+      localOverview: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof localComputeOverviewCapability>
+        ) => localComputeOverviewCapability.mock
+      ),
+      disposeLocal: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof localComputeDisposeCapability>
+        ) => localComputeDisposeCapability.mock
+      ),
+      resumeLocalDisposal: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof localComputeResumeCapability>
+        ) => localComputeResumeCapability.mock
+      ),
+      hostMaintenanceState: helpers.command(
+        async () => hostMaintenanceStateCapability.mock
+      ),
+      maintainHost: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof maintainHostCapability>) =>
+          maintainHostCapability.mock
+      ),
+      resumeHostMaintenance: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof resumeHostMaintenanceCapability>
+        ) => resumeHostMaintenanceCapability.mock
+      ),
+      recoveryCandidates: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<
+            typeof computeRecoveryCandidatesCapability
+          >
+        ) => computeRecoveryCandidatesCapability.mock
+      ),
+      recover: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof computeRecoverCapability>) =>
+          computeRecoverCapability.mock
+      ),
+      localWorkloads: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof localComputeWorkloadsCapability>
+        ) => localComputeWorkloadsCapability.mock
+      ),
       drain: helpers.command(
         async (
           _input?: GeneratedNativeCommandInput<typeof computeNodeDrainCapability>
@@ -10956,6 +12013,11 @@ export function createGeneratedNativeBridgeMock(
         async (
           _input?: GeneratedNativeCommandInput<typeof computeNodeRemoveCapability>
         ) => computeNodeRemoveCapability.mock
+      ),
+      abandon: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
+        ) => computeNodeAbandonCapability.mock
       ),
       state: helpers.state(
         (_input: GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>) =>
@@ -11437,6 +12499,10 @@ export function mergeGeneratedNativeBridgeOverrides(
     windows: {
       ...bridge.windows,
       ...overrides.windows,
+    },
+    onboarding: {
+      ...bridge.onboarding,
+      ...overrides.onboarding,
     },
     clipboard: {
       ...bridge.clipboard,

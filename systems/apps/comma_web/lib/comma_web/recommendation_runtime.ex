@@ -11,9 +11,9 @@ defmodule CommaWeb.RecommendationRuntime do
   def read(ctx), do: read(%{}, ctx)
   def read(args, ctx), do: CommaWeb.ProactiveRoutine.read(args, ctx)
 
-  def ensure(user, session, workspace, timezone \\ nil, locale \\ nil, opts \\ []) do
+  def ensure(user, session, workspace, timezone \\ nil, opts \\ []) do
     with {:ok, envelope} <-
-           Recommendations.get(user, session, workspace["id"], timezone, locale, opts),
+           Recommendations.get(user, session, workspace["id"], timezone, opts),
          {:ok, profile} <- Recommendations.get_runtime_profile(workspace["id"], user["id"]),
          {:ok, _} <- Recommendations.enqueue_source_sync(profile.id),
          {:ok, _} <- enqueue_reconcile(profile.id) do
@@ -81,8 +81,8 @@ defmodule CommaWeb.RecommendationRuntime do
     end
   end
 
-  def prepare_refresh(user, session, workspace, timezone \\ nil, locale \\ nil) do
-    case ensure(user, session, workspace, timezone, locale) do
+  def prepare_refresh(user, session, workspace, timezone \\ nil) do
+    case ensure(user, session, workspace, timezone) do
       {:ok, _} -> :ok
       {:error, _} = error -> error
     end
@@ -123,6 +123,7 @@ defmodule CommaWeb.RecommendationRuntime do
              collection
              |> CommaWeb.RecommendationMailTasks.prepare(workspace)
              |> then(&if(member?(run), do: MemberSourceIngest.keep_mail(&1), else: &1)),
+           collection = alert_identity_failures(collection, run),
            :ok <- usable_sources(collection),
            {:ok, run} <-
              Recommendations.record_source_evidence(run_id, collection.facts, collection.failures),
@@ -142,25 +143,33 @@ defmodule CommaWeb.RecommendationRuntime do
                context,
                remaining
              ),
+           locale = Comma.Accounts.locale(profile.user_id),
            {:ok, snapshot} <-
-             RecommendationDraft.compile(draft, context, run, collection.failures,
-               locale: profile.locale
-             ),
+             RecommendationDraft.compile(draft, context, run, collection.failures, locale: locale),
            snapshot = CommaWeb.ProactiveRoutine.attach(snapshot, collection.facts),
            snapshot = CommaWeb.RecommendationMailTasks.project(snapshot, collection.facts),
            :ok <- Comma.RecommendationContract.validate(snapshot),
-           {:ok, _workspace} <- stage(authorized_workspace(profile), :workspace_unavailable),
+           {:ok, workspace} <- stage(authorized_workspace(profile), :workspace_unavailable),
            {:ok, {outcome, _}} <-
              Recommendations.publish(
                run_id,
                snapshot,
                generation_metrics(run, collection, context, metadata)
              ) do
+        # A scheduled briefing becomes a Router handoff; the Router decides
+        # whether the owner hears about it, also in their personal chats.
+        if outcome == :published,
+          do: CommaWeb.ProactiveBriefing.handoff(workspace, profile, run, snapshot)
+
+        # The owner's proactive notebook shows the latest briefing.
+        CommaWeb.ProactiveNotebook.enqueue(workspace["default_group_id"], profile.user_id)
+
         Logger.info(
           "routine_generation " <>
             Jason.encode!(
               Map.merge(metadata, %{
                 "runId" => run_id,
+                "locale" => locale,
                 "outcome" => to_string(outcome),
                 "durationMs" => System.monotonic_time(:millisecond) - started,
                 "sourceCount" => length(collection.facts),
@@ -303,6 +312,23 @@ defmodule CommaWeb.RecommendationRuntime do
     else
       _ -> {:error, :forbidden}
     end
+  end
+
+  # A missing member stamp is a system fault, not something the member can fix.
+  # The source is skipped and this line is the alert.
+  defp alert_identity_failures(%{failures: failures} = collection, run) do
+    for %{"class" => "identity"} = failure <- failures do
+      Logger.warning(
+        "routine_source_identity_missing " <>
+          Jason.encode!(%{
+            "runId" => run.id,
+            "appId" => failure["appId"],
+            "sourceId" => failure["sourceId"]
+          })
+      )
+    end
+
+    collection
   end
 
   defp usable_sources(%{facts: [], failures: [_ | _] = failures}) do

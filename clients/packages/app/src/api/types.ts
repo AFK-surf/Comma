@@ -4,7 +4,6 @@ export type {
   CommaApiErrorBody,
   SalixContentBlock,
   SalixBlobRef,
-  CommaChatSuggestion,
   CommaConnectorToken,
   CommaRouterApiKey,
   CommaRouterApiKeyCreated,

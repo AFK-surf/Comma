@@ -28,6 +28,10 @@ Change these bounds only with cardinality evidence and the matching consumer/con
 
 ## Diagnosis order
 
+### Android Google login
+
+Android attempts return 503 `google_not_configured` until `comma.google_auth.android_client_ids` is set. A token `azp` outside it returns 401.
+
 ### Desktop Google login
 
 Electron does not automatically retry Google login. Each click starts one attempt.

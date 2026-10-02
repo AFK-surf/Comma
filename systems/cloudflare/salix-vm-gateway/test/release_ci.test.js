@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +8,8 @@ import {
   containerApplicationDigest,
   containerApplicationId,
   optionalContainerApplicationId,
-  probeStopped,
-  recoverOwnedImageProbe,
+  businessContainerInstances,
+  probeImageContainer,
   connectorImageVersionFromHealthz,
   findVersionIdByTag,
   findUploadedVersionId,
@@ -54,10 +54,23 @@ describe("release CI helpers", () => {
       write("systems/connector/salix-connect/main_test.go", "package main\n");
       const docs = commit("docs and tests");
       expect(sameSandboxRuntimeSources(published, docs, root)).toBe(true);
+      let previous = docs;
+      for (const path of [
+        "systems/runtime-images/runtime-dependencies.lock.json",
+        "systems/cloudflare/salix-vm-gateway/scripts/install-harnesses.mjs",
+        "systems/cloudflare/salix-vm-gateway/scripts/build-connector.sh",
+      ]) {
+        write(path, "changed harness material\n");
+        const revision = commit("update harness material");
+        const sameSources = sameSandboxRuntimeSources(previous, revision, root);
+        expect(imageReleasePlan({ comma_source_revision: revision }, revision, {}, "release-1", sameSources)).toBe("publish");
+        expect(inferWorkerReleaseKind({ commits: [{ modified: [path] }] })).toBe("sandbox_image");
+        previous = revision;
+      }
       write("systems/cloudflare/salix-vm-gateway/src/index.ts", "export const worker = true;\n");
       write("systems/cloudflare/salix-vm-gateway/package.json", "{}\n");
       const worker = commit("Worker-only change");
-      expect(sameSandboxRuntimeSources(published, worker, root)).toBe(true);
+      expect(sameSandboxRuntimeSources(previous, worker, root)).toBe(true);
       write("systems/connector/salix-connect/main.go", "package main\n// runtime change\n");
       const runtime = commit("runtime change");
       expect(sameSandboxRuntimeSources(published, runtime, root)).toBe(false);
@@ -147,62 +160,137 @@ describe("release CI helpers", () => {
       .toThrow("no exact Durable Object owner");
   });
 
-  test("probe cleanup checks the exact application's Container state", () => {
-    const active = flattenContainerInstances([{
-      instances: [{ id: "running-probe", current_placement: { status: { container_status: "running" } } }],
-      durable_objects: [{ name: "owned-probe", deployment_id: "running-probe" }],
+  test("release drain waits only for Containers associated with business Workloads", () => {
+    const businessName = "image-probe-sandbox-image-123-staging-cf-standard-2";
+    const unrelated = ["image-probe-sandbox-image-36680743976-staging-cf-standard-2", "manual-test", "unknown-container"];
+    const inventory = flattenContainerInstances([{
+      instances: [businessName, ...unrelated].map((id) => ({
+        id, current_placement: { status: { container_status: "running" } },
+      })),
+      durable_objects: [businessName, ...unrelated].map((name) => ({ name, deployment_id: name })),
     }]);
-    expect(probeStopped(active, "owned-probe")).toBe(false);
-    expect(probeStopped(active, "another-probe")).toBe(true);
-
-    const stopped = flattenContainerInstances([{
-      instances: [{ id: "stopped-probe", current_placement: { status: { container_status: "stopped" } } }],
-      durable_objects: [{ name: "owned-probe", deployment_id: "stopped-probe" }],
-    }]);
-    expect(probeStopped(stopped, "owned-probe")).toBe(true);
+    const owner = { provider: "cloudflare", group_id: "business", resource_name: businessName };
+    const business = businessContainerInstances(inventory, [owner]);
+    expect(runningContainerOwners(business, [owner])).toEqual([owner]);
+    expect(() => requireInactiveContainerInstances(business, [owner])).toThrow("active or unknown");
+    expect(businessContainerInstances(inventory, [{ ...owner, provider: "sprites" }])).toEqual(business);
+    const orphanOnly = businessContainerInstances(inventory, []);
+    expect(runningContainerOwners(orphanOnly, [])).toEqual([]);
+    expect(() => requireInactiveContainerInstances(orphanOnly)).not.toThrow();
   });
 
-  test("a resumed release destroys only its running probe in the exact application", async () => {
-    const maintenanceId = "release-1";
-    const sandboxId = "image-probe-release-1-cf-standard-2";
-    const active = flattenContainerInstances([{
-      instances: [{ id: "probe-deployment", current_placement: { status: { container_status: "running" } } }],
-      durable_objects: [{ name: sandboxId, deployment_id: "probe-deployment" }],
-    }]);
-    const context = {
-      maintenanceId, applicationId: "app-standard-2", profileKey: "cf-standard-2",
-      baseUrl: "https://gateway.example.test", secret: "test-secret",
-    };
-    const calls = [];
-    const request = async (...args) => { calls.push(args); return { ok: true }; };
-    const wait = async (...args) => { calls.push(args); };
-    const release = {
-      enabled: true, reason: "sandbox_image_release", phase: "deploying",
-      maintenance_id: maintenanceId,
-    };
-
-    expect(() => runningContainerOwners(active, [])).toThrow("no Group Workload owner");
-    expect(await recoverOwnedImageProbe(release, active, context, request, wait)).toBe(true);
-    expect(calls).toEqual([
-      [context.baseUrl, context.secret, "POST", `/internal/v1/sandboxes/${sandboxId}/destroy`, {}],
-      [context.applicationId, sandboxId],
-    ]);
+  test("business Containers still need a recorded archive and an exact instance owner", () => {
+    const owner = { provider: "cloudflare", group_id: "business", resource_name: "salix-business" };
     const stopped = flattenContainerInstances([{
-      instances: [{ id: "probe-deployment", current_placement: { status: { container_status: "stopped" } } }],
-      durable_objects: [{ name: sandboxId, deployment_id: "probe-deployment" }],
+      instances: [{ id: "business", current_placement: { status: { container_status: "stopped" } } },
+        { id: "orphan", current_placement: { status: { container_status: "running" } } }],
+      durable_objects: [{ name: owner.resource_name, deployment_id: "business" }],
     }]);
-    expect(() => requireInactiveContainerInstances(stopped)).toThrow("2 active or unknown");
-    expect(() => requireInactiveContainerInstances(stopped, [], sandboxId)).not.toThrow();
-    expect(await recoverOwnedImageProbe(release, stopped, context, request, wait)).toBe(false);
-    calls.length = 0;
-    expect(await recoverOwnedImageProbe({ ...release, phase: "prepared" }, active,
-      context, request, wait)).toBe(false);
-    expect(await recoverOwnedImageProbe({ ...release, maintenance_id: "another" }, active,
-      context, request, wait)).toBe(false);
-    expect(await recoverOwnedImageProbe(release, active,
-      { ...context, profileKey: "cf-standard-1", applicationId: "app-standard-1" },
-      request, wait)).toBe(false);
-    expect(calls).toEqual([]);
+    const business = businessContainerInstances(stopped, [owner]);
+    expect(() => requireInactiveContainerInstances(business, [owner])).toThrow("active or unknown");
+    expect(() => requireInactiveContainerInstances(business, [{ ...owner, archive_recorded: true }])).not.toThrow();
+    const ambiguous = flattenContainerInstances([{
+      instances: [{ id: "shared", current_placement: { status: { container_status: "running" } } }],
+      durable_objects: [{ name: owner.resource_name, deployment_id: "shared" },
+        { name: "manual-test", deployment_id: "shared" }],
+    }]);
+    expect(() => runningContainerOwners(businessContainerInstances(ambiguous, [owner]), [owner]))
+      .toThrow("no exact Durable Object owner");
+    const unknown = flattenContainerInstances([{
+      instances: [], durable_objects: [{ name: owner.resource_name, deployment_id: "missing" }],
+    }]);
+    expect(() => requireInactiveContainerInstances(businessContainerInstances(unknown, [owner]), [owner]))
+      .toThrow("active or unknown");
+  });
+
+  test("the release drain command ignores an unassociated running Container", () => {
+    const root = mkdtempSync(join(tmpdir(), "comma-business-drain-"));
+    const preload = join(root, "provider.mjs");
+    writeFileSync(preload, `
+      globalThis.fetch = async (input, options = {}) => {
+        const url = new URL(input);
+        console.log(JSON.stringify({ path: url.pathname, method: options.method || "GET" }));
+        let payload;
+        if (url.pathname.endsWith("/image-release/status")) {
+          payload = { maintenance: { enabled: true, reason: "sandbox_image_release",
+            phase: "prepared", maintenance_id: "sandbox-image-123-staging" } };
+        } else if (url.pathname.endsWith("/image-release/workloads")) {
+          payload = { data: [], next_cursor: null };
+        } else if (url.pathname.endsWith("/applications/app-staging/instances")) {
+          payload = { success: true, result_info: { next_page_token: null }, result: {
+            instances: [{ id: "unrelated", current_placement: { status: { container_status: "running" } } }],
+            durable_objects: [{ name: "manual-test-with-no-business", deployment_id: "unrelated" }],
+          } };
+        } else {
+          throw new Error("Unexpected provider request: " + url.pathname);
+        }
+        return Response.json(payload);
+      };
+    `);
+    try {
+      const output = execFileSync(process.execPath, ["--import", preload,
+        new URL("../scripts/release-ci.mjs", import.meta.url).pathname,
+        "image-release-drain", "--maintenance-id", "sandbox-image-123-staging",
+        "--application-id", "app-staging", "--profile-key", "cf-standard-2",
+        "--deadline-ms", String(Date.now() + 75 * 60_000)], {
+        encoding: "utf8", timeout: 10_000,
+        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: "test-account", CLOUDFLARE_API_TOKEN: "test-token",
+          SALIX_VM_GATEWAY_BASE_URL: "https://gateway.test", SALIX_VM_GATEWAY_SECRET: "test-secret",
+          SALIX_CONFIG_JSON: JSON.stringify({ web: { api_base_url: "https://salix.test", api_token: "test-token" } }) },
+      });
+      const requests = output.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+      expect(requests).toEqual([
+        { path: "/v1/admin/vm/image-release/workloads", method: "GET" },
+        { path: "/client/v4/accounts/test-account/containers/dash/applications/app-staging/instances", method: "GET" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a verified image probe disables keepAlive and does not wait for cleanup", async () => {
+    const calls = [];
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await probeImageContainer({
+        baseUrl: "https://gateway.test", secret: "test-secret", profileKey: "cf-standard-2",
+        maintenanceId: "sandbox-image-123-staging", sourceRevision: "a".repeat(40),
+      }, async (...args) => {
+        calls.push(args);
+        const path = new URL(args[3], args[0]).pathname;
+        if (path.endsWith("/keepalive")) throw new Error("request timeout");
+        if (path.endsWith("/destroy")) return { ok: false, status: 500 };
+        return { ok: true, json: async () => ({ status: "ready", connector_build_revision: "a".repeat(40) }) };
+      });
+      const action = (call) => new URL(call[3], call[0]).pathname.split("/").pop();
+      expect(calls.map(action)).toEqual(["control", "ensure", "status", "readyz", "control", "keepalive", "destroy"]);
+      expect(calls[4][4].action).toBe("seal");
+      expect(calls[5][4]).toEqual({ keep_alive: false });
+      expect(calls.every((call) => JSON.parse(new URL(call[3], call[0]).searchParams.get("salix_control")).owner_id === "sandbox-image-123-staging")).toBe(true);
+      const failedRequest = vi.fn(async (...call) => action(call) === "ensure"
+        ? { ok: false, status: 401 } : { ok: true });
+      await expect(probeImageContainer({
+        baseUrl: "https://gateway.test", secret: "test-secret", profileKey: "cf-standard-2",
+        maintenanceId: "sandbox-image-456-staging", sourceRevision: "a".repeat(40),
+      }, failedRequest)).rejects.toThrow("Fresh Sandbox ensure returned HTTP 401");
+      expect(failedRequest.mock.calls.map(action))
+        .toEqual(["control", "ensure", "control", "keepalive", "destroy"]);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  test("an issued probe start waits for readiness after the first port refusal", async () => {
+    const calls = [];
+    await probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
+      profileKey: "cf-standard-1", maintenanceId: "release-cold-start", sourceRevision: "b".repeat(40) },
+      async (...call) => {
+        const action = new URL(call[3], call[0]).pathname.split("/").pop();
+        calls.push(action);
+        return action === "ensure" ? { ok: false, status: 503 } :
+          { ok: true, json: async () => ({ status: "ready", connector_build_revision: "b".repeat(40) }) };
+      });
+    expect(calls).toEqual(["control", "ensure", "status", "readyz", "control", "keepalive", "destroy"]);
   });
 
   test("release drain requires an owner for every running instance", () => {

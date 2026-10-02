@@ -115,7 +115,12 @@ describe("ConnectorService", () => {
     const executable = join(helperApp, "Contents", "MacOS", "CommaComputerUseDaemon");
     await mkdir(join(helperApp, "Contents", "MacOS"), { recursive: true });
     await writeFile(executable, "#!/bin/sh\n");
-    const runCommand = vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    const standaloneApp = join(tempDir, "installed", "Computer Use.app");
+    const runCommand = vi.fn(async (command: string, _args: string[]) => ({
+      code: 0,
+      stdout: command === executable ? standaloneApp : "",
+      stderr: "",
+    }));
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
       binaryPath,
@@ -127,7 +132,7 @@ describe("ConnectorService", () => {
     });
     expect(runCommand).toHaveBeenCalledWith("open", [
       "-n",
-      helperApp,
+      standaloneApp,
       "--args",
       "--permissions-ui",
     ]);
@@ -135,7 +140,8 @@ describe("ConnectorService", () => {
       accessibility: true,
       screenRecording: false,
     };
-    runCommand.mockImplementation(async (_command: string, args: string[]) => {
+    runCommand.mockImplementation(async (command: string, args: string[] = []) => {
+      if (command === executable) return { code: 0, stdout: standaloneApp, stderr: "" };
       await writeFile(
         args[args.indexOf("--stdout") + 1]!,
         JSON.stringify({
@@ -157,7 +163,7 @@ describe("ConnectorService", () => {
       expect.any(String),
       "--stderr",
       expect.any(String),
-      helperApp,
+      standaloneApp,
       "--args",
       "--permissions-status",
     ]);
@@ -165,7 +171,8 @@ describe("ConnectorService", () => {
     // Valid app output remains required, and unrelated launch errors fail.
     let launchError =
       "Unable to block on applications (initial call to kevent() failed: No such process)";
-    runCommand.mockImplementation(async (_command: string, args: string[]) => {
+    runCommand.mockImplementation(async (command: string, args: string[] = []) => {
+      if (command === executable) return { code: 0, stdout: standaloneApp, stderr: "" };
       await writeFile(
         args[args.indexOf("--stdout") + 1]!,
         JSON.stringify({ ok: true, permissions })

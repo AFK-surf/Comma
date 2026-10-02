@@ -8,7 +8,7 @@ export type { AnchoredTail } from "./turns/useAnchoredTails";
 export { partitionConversationTurns } from "./layout/conversationLayout";
 
 // Memoized: the parent ConversationView re-renders on every change to the
-// conversation's view state (connection, attachments, suggestions, ...), and
+// conversation's view state (connection, attachments, ...), and
 // this component's render is O(messages). With stable props — message array
 // identity, memoized slot elements, and identity-stable callbacks — a change
 // that leaves the transcript alone doesn't re-render it.

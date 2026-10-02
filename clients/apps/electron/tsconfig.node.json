@@ -15,6 +15,7 @@
     "forge.config.ts",
     "vite.*.config.ts",
     "scripts/**/*.ts",
+    "native/macos/SleepGuard/index.ts",
     "src/app-version.ts",
     "src/release-config.ts",
     "src/test-support/electron-window.ts",

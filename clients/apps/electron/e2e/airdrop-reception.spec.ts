@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { chatSmokeWorkspaceChat, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
@@ -55,6 +56,7 @@ test.skip(
 async function launchReceivingComma() {
   const api = await startChatSmokeStub();
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-airdrop-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [api.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],

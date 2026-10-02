@@ -953,12 +953,26 @@ func (p KubectlPlatform) waitForWriterAbsence(ctx context.Context) error {
 
 func (p KubectlPlatform) Apply(ctx context.Context, state State) (ApplyEvidence, error) {
 	partition := 1
-	if state.RequiresExclusiveDeployment() {
+	if state.RequiresExclusiveDeployment() || state.RepairFrom != "" {
 		partition = 0
+	}
+	if state.RepairFrom != "" {
+		timeout := p.Helm.Timeout
+		if timeout == 0 {
+			timeout = 20 * time.Minute
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	revision, err := p.helmUpgrade(ctx, state, false, partition)
 	if err != nil {
 		return ApplyEvidence{}, err
+	}
+	if state.RepairFrom != "" {
+		if err = p.repairUnreadyPods(ctx, state); err != nil {
+			return ApplyEvidence{}, err
+		}
 	}
 	manifest, err := p.Helm.GetManifest(ctx)
 	if err != nil {
@@ -2068,7 +2082,7 @@ func (p KubectlPlatform) helmUpgrade(ctx context.Context, state State, maintenan
 	adapter := p.Helm
 	adapter.ValuesPath = ""
 	adapter.ValuesJSON = body
-	return adapter.Upgrade(ctx, HelmUpgradeOptions{})
+	return adapter.Upgrade(ctx, HelmUpgradeOptions{DeferWait: state.RepairFrom != "" && !maintenance})
 }
 
 func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte, error) {
@@ -2232,6 +2246,17 @@ func LoadEnvironmentSpec(spec *EnvironmentSpec, getenv func(string) string) erro
 			return fmt.Errorf("release environment configuration %s is required", field.name)
 		}
 		*field.dst = value
+	}
+	return nil
+}
+
+func (p KubectlPlatform) CheckRepairInstallation(ctx context.Context) error {
+	status, err := p.Helm.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if status.Revision <= 0 || (status.Status != "failed" && status.Status != "deployed") {
+		return errors.New("repair requires an existing Helm release without a pending operation")
 	}
 	return nil
 }

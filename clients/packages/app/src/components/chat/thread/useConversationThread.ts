@@ -126,6 +126,7 @@ export function useConversationThread({
     replyChain,
     revealTurn,
     turnWindow,
+    variant,
   });
   const completeOutgoingAnimation = useOutgoingAnimationCompletion(
     onOutgoingAnimationComplete

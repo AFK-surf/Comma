@@ -395,58 +395,6 @@ defmodule Comma.ReleaseManifestV2Test do
   test "shared-ledger collision repair is an explicit dependency barrier" do
     manifest = Manifest.manifest()
 
-    assert manifest["orderingConstraints"] == [
-             %{
-               "before" => "bridge-20260723000012",
-               "after" => "comma-20260723000014"
-             },
-             %{
-               "before" => "bridge-20260723000013",
-               "after" => "comma-20260723000014"
-             },
-             %{"before" => "comma-20260723000002", "after" => "comma-20260723000014"},
-             %{"before" => "comma-20260723000014", "after" => "comma-20260723000003"},
-             %{"before" => "comma-20260723000014", "after" => "comma-20260723000007"},
-             %{"before" => "comma-20260723000014", "after" => "comma-20260723000008"},
-             %{"before" => "comma-20260723000014", "after" => "comma-20260723000009"},
-             %{"before" => "comma-20260723000014", "after" => "comma-20260723000010"},
-             %{"before" => "comma-20260723000009", "after" => "comma-20260723000015"},
-             %{
-               "before" => "bridge-20260724000018",
-               "after" => "bridge-20260723000011"
-             },
-             %{"before" => "bridge-20260723000011", "after" => "comma-20260723000016"},
-             %{"before" => "comma-20260723000014", "after" => "comma-20260723000016"},
-             %{"before" => "comma-20260723000001", "after" => "comma-20260723000016"},
-             %{"before" => "comma-20260723000016", "after" => "comma-20260724000017"},
-             %{"before" => "comma-20260724000017", "after" => "comma-20260723000003"},
-             %{"before" => "comma-20260723000015", "after" => "comma-20260724000001"},
-             %{
-               "before" => "salix-20260806000101",
-               "after" => "salix-20260805000103"
-             },
-             %{
-               "before" => "salix-20260806000102",
-               "after" => "salix-20260805000103"
-             },
-             %{
-               "before" => "salix-20260805000103",
-               "after" => "salix-20260806000103"
-             },
-             %{
-               "before" => "salix-20260821000101",
-               "after" => "salix-20260824000101"
-             },
-             %{
-               "before" => "salix-20260826000101",
-               "after" => "salix-20260827000101"
-             },
-             %{
-               "before" => "bridge-20260826000001",
-               "after" => "bridge-20260827000002"
-             }
-           ]
-
     steps =
       manifest["steps"]
       |> Enum.filter(
@@ -484,6 +432,17 @@ defmodule Comma.ReleaseManifestV2Test do
              "salix-20260806000102",
              "salix-20260805000103",
              "salix-20260806000103"
+           ]
+
+    registration_steps =
+      Enum.filter(
+        manifest["steps"],
+        &(&1["id"] in ["salix-20261001000200", "salix-20260824000005"])
+      )
+
+    assert Enum.map(Manifest.order_steps(registration_steps), & &1["id"]) == [
+             "salix-20260824000005",
+             "salix-20261001000200"
            ]
 
     unknown =

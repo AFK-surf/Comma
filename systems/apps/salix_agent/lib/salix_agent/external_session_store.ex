@@ -233,7 +233,7 @@ defmodule SalixAgent.ExternalSessionStore do
              tenant_id,
              agent["group_id"]
            ),
-         {:ok, resolved} <- resolve_compute_runtime_model(agent_id, resolved),
+         {:ok, resolved} <- resolve_compute_runtime_model(agent_id, agent, resolved),
          {:ok, state} <- clear_runtime_wait(agent_id, session_id, state),
          {:ok, capability, state} <-
            session_runtime_capability(agent, session_id, runtime, resolved, state) do
@@ -246,15 +246,43 @@ defmodule SalixAgent.ExternalSessionStore do
     end
   end
 
+  # Codex and Claude Code use their own login, so a role default model may be
+  # one they cannot run. Without a runtime choice for them they keep their own
+  # default model and effort. Pi has no such default and follows the role
+  # default.
   defp resolve_compute_runtime_model(
          agent_id,
+         agent,
          %{"kind" => "compute_workload", "runtime_spec" => runtime_spec} = resolved
        )
        when is_map(runtime_spec) do
-    if present?(runtime_spec["model"]) do
-      {:ok, resolved}
-    else
-      with {:ok, llm} <- SalixAgent.LlmResolver.resolve_runtime(agent_id) do
+    cond do
+      present?(runtime_spec["model"]) ->
+        {:ok, resolved}
+
+      runtime_spec["provider"] in ~w(codex claude) and not present?(agent["template_id"]) ->
+        {:ok, resolved}
+
+      true ->
+        compute_template_model(agent_id, resolved, runtime_spec)
+    end
+  end
+
+  defp resolve_compute_runtime_model(_agent_id, _agent, resolved), do: {:ok, resolved}
+
+  defp compute_template_model(agent_id, resolved, runtime_spec) do
+    with {:ok, llm} <- SalixAgent.LlmResolver.resolve_runtime(agent_id) do
+      chosen_for = value(llm, "runtime_provider")
+      provider = runtime_spec["provider"]
+
+      # Codex and Claude Code run only a runtime choice made for them; any
+      # other template (a copied creation default, an older catalog choice, a
+      # choice made for another runtime before a rebind) is not sent, and the
+      # runtime keeps its own default. Pi skips only another runtime's choice.
+      if (provider in ~w(codex claude) and chosen_for != provider) or
+           (present?(chosen_for) and chosen_for != provider) do
+        {:ok, resolved}
+      else
         defaults =
           %{}
           |> maybe_put("model", value(llm, "model"))
@@ -265,8 +293,6 @@ defmodule SalixAgent.ExternalSessionStore do
       end
     end
   end
-
-  defp resolve_compute_runtime_model(_agent_id, resolved), do: {:ok, resolved}
 
   # Freeze the complete request context on the selected, not-yet-adopted queue
   # prefix. A lost Connector ACK or actor restart must retry the same clock and
@@ -510,12 +536,64 @@ defmodule SalixAgent.ExternalSessionStore do
     end
   end
 
+  @doc false
+  # ExternalRuntime.LogLocalRefusal/ApplyLocalRefusal: durable refusal precedes
+  # exact-prefix removal; recovery must not dispatch that prefix again.
+  def recover_billing_rejection(_agent, _session, [], _records), do: :ok
+
+  def recover_billing_rejection(agent, session, [first | _] = queue, records) do
+    case ExternalSessionRecords.fetch(agent, session, records, first["id"]) do
+      {:ok, %{"billing_rejection" => rejection}} ->
+        ids = rejection["queue_ids"]
+        snapshot = Enum.take(queue, length(ids))
+
+        if Enum.map(snapshot, & &1["id"]) == ids do
+          reject_billing_input(agent, session, snapshot, rejection["error"], records)
+        else
+          {:error, :stale_external_runtime_session}
+        end
+
+      {:ok, _} ->
+        :ok
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @doc false
+  def reject_billing_input(agent, session, snapshot, error, records) do
+    if SalixAgent.BillingAvailability.denied?(error) and snapshot != [] do
+      rejection = %{"queue_ids" => Enum.map(snapshot, & &1["id"]), "error" => error}
+
+      fail_session(
+        agent,
+        session,
+        error["message"],
+        %{
+          "error_class" => error["error_class"],
+          "reason" => error["reason"],
+          "terminal" => true,
+          "rejected_queue" => snapshot,
+          "billing_rejection" => rejection
+        },
+        records
+      )
+    else
+      {:error, :invalid_billing_rejection}
+    end
+  end
+
   def fail_session(agent_id, session_id, reason, attrs, %SegmentLog{} = records) do
     event =
       %{
         "type" => "error",
         "message" => format_error(reason),
         "error_class" => value(attrs, "error_class"),
+        "reason" => value(attrs, "reason"),
         "dispatch_id" => value(attrs, "dispatch_id"),
         "terminal" => Map.get(attrs, "terminal", Map.get(attrs, :terminal)),
         "created_at" => now()
@@ -523,7 +601,9 @@ defmodule SalixAgent.ExternalSessionStore do
       |> compact()
 
     case commit_status_record(agent_id, session_id, event, records,
-           retire_triage: event["terminal"] != false
+           retire_triage: event["terminal"] != false,
+           rejected_queue: value(attrs, "rejected_queue"),
+           billing_rejection: value(attrs, "billing_rejection")
          ) do
       {:ok, state, record, records} ->
         projection =
@@ -544,7 +624,8 @@ defmodule SalixAgent.ExternalSessionStore do
                 agent_id,
                 session_id,
                 event["created_at"],
-                record["id"]
+                record["id"],
+                event
               )
           end
 
@@ -766,8 +847,9 @@ defmodule SalixAgent.ExternalSessionStore do
         record_floor,
         source_message_ids
       ) do
-    # FORMAL-SPEC: tla/salix/SlackRouterStatusScope.tla Activate. The dispatch
-    # identity and its source scope move in one CAS snapshot.
+    # FORMAL-SPEC: tla/salix/ExternalRuntime.tla BeginDispatch.
+    # The Session CAS admits the dispatch before the Actor sends its input.
+    # Status projection is a separate observation, not dispatch authority.
     with {:ok, _state} <-
            update_state(agent_id, session_id, fn current ->
              target = %{
@@ -784,17 +866,17 @@ defmodule SalixAgent.ExternalSessionStore do
                {:ok, Map.put(current, "status_projection_target", target)}
              end
            end) do
-      project_status_and_notify(
-        ExternalSessionStatus.dispatch_started(
+      {mode, projection} =
+        ExternalSessionStatus.dispatch_started_with_mode(
           agent_id,
           session_id,
           dispatch_id,
           connector_run_id,
           timestamp
-        ),
-        agent_id,
-        session_id
-      )
+        )
+
+      projection = project_status_and_notify(projection, agent_id, session_id)
+      {:ok, mode, projection}
     end
   end
 
@@ -2317,7 +2399,13 @@ defmodule SalixAgent.ExternalSessionStore do
   defp maybe_add_work_reason(reasons, false, _reason), do: reasons
 
   defp commit_status_record(agent_id, session_id, event, records, opts) do
+    snapshot = opts[:rejected_queue] || []
+
     with {:ok, state} <- get_session_record(agent_id, session_id),
+         :ok <- validate_snapshot(state["input_message_queue"], snapshot),
+         input_records = rejected_input_records(agent_id, session_id, state, snapshot, opts),
+         {:ok, records, _} <-
+           ExternalSessionRecords.append(agent_id, session_id, records, input_records),
          {event_records, _floor} <-
            event_records(agent_id, session_id, [event], record_floor(state, records)),
          [record] = event_records,
@@ -2325,19 +2413,41 @@ defmodule SalixAgent.ExternalSessionStore do
            ExternalSessionRecords.append(agent_id, session_id, records, event_records),
          {:ok, state} <-
            update_state(agent_id, session_id, fn current ->
-             next =
-               current
-               |> maybe_retire_triage_provenance(
-                 state,
-                 event,
-                 Keyword.get(opts, :retire_triage, false)
-               )
-               |> put_status_projection_target(record)
+             with :ok <- validate_snapshot(current["input_message_queue"], snapshot) do
+               next =
+                 current
+                 |> Map.put(
+                   "input_message_queue",
+                   Enum.drop(current["input_message_queue"], length(snapshot))
+                 )
+                 |> Map.update("message_count", length(snapshot), &(&1 + length(snapshot)))
+                 |> maybe_retire_triage_provenance(
+                   state,
+                   event,
+                   Keyword.get(opts, :retire_triage, false)
+                 )
+                 |> put_status_projection_target(record)
 
-             {:ok, next}
+               {:ok, next}
+             end
            end) do
       {:ok, state, record, records}
     end
+  end
+
+  defp rejected_input_records(_agent, _session, _state, [], _opts), do: []
+
+  defp rejected_input_records(agent, session, state, snapshot, opts) do
+    state["input_message_queue"]
+    |> Enum.take(length(snapshot))
+    |> Enum.with_index()
+    |> Enum.map(fn {message, index} ->
+      record = input_record(agent, session, message)
+
+      if index == 0,
+        do: Map.put(record, "billing_rejection", opts[:billing_rejection]),
+        else: record
+    end)
   end
 
   defp maybe_commit_events(_agent_id, _session_id, state, [], records),

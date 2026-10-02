@@ -42,12 +42,12 @@ defmodule SalixWeb.CloudVMTest do
         :block ->
           {:error,
            {:billing_unavailable,
-            %{
+            struct!(BillingCore.FeeControl.Decision,
               allowed?: false,
               reason: "insufficient_credits",
               decision_id: "decision_vm_test",
               balance_snapshot: 0
-            }}}
+            )}}
       end
     end
   end
@@ -167,6 +167,69 @@ defmodule SalixWeb.CloudVMTest do
     {:ok, agent} = SalixAgent.Control.create(attrs, tenant_id())
     _ = SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent)
     agent
+  end
+
+  test "management selection waits for a funded archived runtime to become ready" do
+    gateway = start_supervised!(MockCloudflareGateway)
+    configure_tenant_cloudflare(tenant_id(), gateway)
+    Application.put_env(:salix_web, :vm_authorization_mod, VMAuthorizationFake)
+    Application.put_env(:salix_web, :cloud_vm_auth_result, :allow)
+
+    assert {:ok, _} =
+             Salix.Control.Groups.update(group_id(), %{
+               "billing_owner" => %{
+                 "billing_account_id" => "funded-vm",
+                 "surface" => "comma",
+                 "vm_profile_key" => "cf-standard-1"
+               }
+             })
+
+    create_cloudflare_agent()
+    assert {:ok, _} = SalixWeb.ComputeProviders.Cloudflare.provision_once(group_id())
+    run = attach_fake_connector(group_id())
+    id = "archived-runtime-selection"
+    now = System.system_time(:second)
+
+    runtime = %{
+      "provider" => "codex",
+      "runtime_id" => "existing",
+      "device_runtime_id" => id,
+      "ready" => false,
+      "auth_ready" => true,
+      "native_server_startable" => true,
+      "version_detected" => true,
+      "readiness_checked_at" => now,
+      "readiness_valid_until" => now + 300
+    }
+
+    assert {:ok, _} = Registry.update_meta(run, &Map.put(&1, "agent_runtimes", [runtime]))
+
+    update_vm_record(
+      group_id(),
+      &Map.merge(&1, %{"status" => "archived", "runtime_connector" => true})
+    )
+
+    scope = %{tenant_id: tenant_id(), group_id: group_id()}
+
+    selected =
+      Task.async(fn ->
+        SalixWeb.CloudVM.RuntimeLifecycle.select_target(id, scope, timeout: 2_000)
+      end)
+
+    assert eventually(fn ->
+             {:ok, record} = GroupCompute.group_workload(group_id())
+             (record["runtime_selection_until"] || 0) > System.system_time(:millisecond)
+           end)
+
+    update_vm_record(group_id(), &Map.put(&1, "status", "ready"))
+
+    assert {:ok, _} =
+             Registry.update_meta(
+               run,
+               &Map.put(&1, "agent_runtimes", [Map.put(runtime, "ready", true)])
+             )
+
+    assert {:ok, _binding} = Task.await(selected, 3_000)
   end
 
   test "one async exec retains its call through first creation and archive wake" do
@@ -1420,7 +1483,7 @@ defmodule SalixWeb.CloudVMTest do
                SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
     end
 
-    test "interrupted wake resumes the same operation and clears its request" do
+    test "a connected wake settles despite an expired provider recovery budget" do
       gateway = start_supervised!(MockCloudflareGateway)
       configure_tenant_cloudflare(tenant_id(), gateway)
       agent = create_cloudflare_agent(%{"vm" => %{"enabled" => true, "provider" => "cloudflare"}})
@@ -1441,12 +1504,70 @@ defmodule SalixWeb.CloudVMTest do
       assert {:ok, %{"status" => "waking", "wake_operation_id" => operation}} =
                SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
 
+      assert {:ok, rec} = SalixStore.Compute.group_workload(group_id)
+      expired = DateTime.add(DateTime.utc_now(), -1, :second) |> DateTime.to_iso8601()
+      timestamp = DateTime.utc_now()
+
+      SalixStore.Repo.insert!(%SalixStore.Compute.ReconcilerClaim{
+        id: "cloudflare:" <> rec["workload_id"] <> ":1",
+        provider: "cloudflare",
+        workload_id: rec["workload_id"],
+        generation: 1,
+        claim_token: Ecto.UUID.generate(),
+        attempt_count: 1,
+        last_error: %{
+          "kind" => "action_required",
+          "code" => "group_provider_recovery_expired",
+          "provider_recovery_deadline" => expired
+        },
+        created_at: timestamp,
+        updated_at: timestamp
+      })
+
+      before = length(MockCloudflareGateway.calls(gateway))
+
+      assert {:ok, %{outcome: :group_reconciled}} =
+               SalixEnv.ComputeReconciler.reconcile_workload(rec["workload_id"], 1)
+
+      assert length(MockCloudflareGateway.calls(gateway)) == before
+
       assert {:ok, %{"status" => "ready"} = ready} =
-               SalixWeb.ComputeProviders.Cloudflare.wake_archived_vm(group_id)
+               SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
 
       refute ready["wake_operation_id"]
       refute ready["wake_requested_at"]
       assert is_binary(operation)
+    end
+
+    @tag :cloudvm_stale_device
+    test "an old connected Device cannot finish a replacement before archive restoration" do
+      gateway = start_supervised!(MockCloudflareGateway)
+      configure_tenant_cloudflare(tenant_id(), gateway)
+      agent = create_cloudflare_agent(%{"vm" => %{"enabled" => true, "provider" => "cloudflare"}})
+      group = agent["group_id"]
+
+      assert {:ok, :ready} =
+               SalixWeb.ComputeProviders.Cloudflare.provision_once(group, force: true)
+
+      assert {:ok, %{"status" => "archived"}} =
+               SalixWeb.ComputeProviders.Cloudflare.archive_idle_once(group, force: true)
+
+      assert_raise RuntimeError, "lost wake response", fn ->
+        SalixWeb.ComputeProviders.Cloudflare.wake_archived_vm(group,
+          before_cloudflare_ready: fn -> raise "lost wake response" end
+        )
+      end
+
+      {:ok, rec} = GroupCompute.group_workload(group)
+      workload = SalixStore.Repo.get!(GroupCompute.Workload, rec["workload_id"])
+
+      for stage <- ["recovery_rebuild", "recovery_restoring"] do
+        assert {:ok, _, _} =
+                 GroupCompute.update_group_workload(group, &Map.put(&1, "archive_reason", stage))
+
+        assert :continue = SalixWeb.ComputeProviders.Cloudflare.confirm_completed_wake(workload)
+        assert {:ok, %{"status" => "waking"}} = GroupCompute.group_workload(group)
+      end
     end
 
     test "waking record resumes before the archive import has a restored receipt" do
@@ -1800,6 +1921,261 @@ defmodule SalixWeb.CloudVMTest do
                SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
     end
 
+    @tag :cloudvm_open_retry
+    test "retry opens the saved permit when its first carrier open did not arrive" do
+      gateway = start_supervised!(MockCloudflareGateway)
+      configure_tenant_cloudflare(tenant_id(), gateway)
+      agent = create_cloudflare_agent(%{"vm" => %{"enabled" => true, "provider" => "cloudflare"}})
+      group = agent["group_id"]
+
+      assert {:ok, :ready} =
+               SalixWeb.ComputeProviders.Cloudflare.provision_once(group, force: true)
+
+      assert {:ok, rec} =
+               SalixWeb.ComputeProviders.Cloudflare.archive_idle_once(group, force: true)
+
+      resource = rec["provider_resource_name"]
+
+      assert {:ok, _, _} =
+               GroupCompute.update_group_workload(group, fn record ->
+                 record
+                 |> Map.put("status", "waking")
+                 |> Map.put("wake_operation_id", "retry-wake")
+                 |> Map.put("archive_reason", "recovery_rebuild")
+               end)
+
+      client =
+        SalixEnv.VM.Providers.Cloudflare.Client.new(
+          base_url: MockCloudflareGateway.base_url(gateway),
+          secret: "test-secret",
+          group_id: group
+        )
+
+      :ok = MockCloudflareGateway.lose_next_control_open_response(gateway)
+      assert {:error, _} = SalixEnv.VM.Providers.Cloudflare.Client.ensure(client, resource)
+      {:ok, attempted} = GroupCompute.group_workload(group)
+      assert attempted["archive_reason"] == "recovery_restoring"
+
+      assert {:ok, %{"status" => "ready"}} =
+               SalixEnv.VM.Providers.Cloudflare.Client.ensure(client, resource)
+
+      {:ok, retried} = GroupCompute.group_workload(group)
+      assert retried["cloudflare_control"] == attempted["cloudflare_control"]
+      assert retried["last_wake_at"] == attempted["last_wake_at"]
+      assert retried["wake_operation_id"] == "retry-wake"
+      assert {:ok, _} = SalixEnv.VM.Providers.Cloudflare.Client.seal_control(client, resource)
+      assert {:ok, %{"active_operation_count" => 0}} = GroupCompute.group_workload(group)
+    end
+
+    for {action, retry} <- [{"ensure", false}, {"ensure", true}, {"import", false}] do
+      @terminal_action action
+      @terminal_retry retry
+      @tag :cloudvm_terminal
+      test "#{action} #{if retry, do: "retry", else: "completion"} after caller loss settles its exact active claim" do
+        action = @terminal_action
+        retry = @terminal_retry
+        gateway = start_supervised!(MockCloudflareGateway)
+        configure_tenant_cloudflare(tenant_id(), gateway)
+
+        agent =
+          create_cloudflare_agent(%{"vm" => %{"enabled" => true, "provider" => "cloudflare"}})
+
+        group = agent["group_id"]
+
+        assert {:ok, :ready} =
+                 SalixWeb.ComputeProviders.Cloudflare.provision_once(group, force: true)
+
+        {:ok, rec} = SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+        resource = rec["provider_resource_name"]
+        target = "cf-standard-2:" <> resource
+        {:ok, control} = GroupCompute.prepare_cloudflare_control(group, target, :open)
+
+        client =
+          SalixEnv.VM.Providers.Cloudflare.Client.new(
+            base_url: MockCloudflareGateway.base_url(gateway),
+            secret: "test-secret",
+            group_id: group
+          )
+
+        if action == "ensure" do
+          :ok = MockCloudflareGateway.lose_next_ensure_response(gateway)
+          assert {:error, _} = SalixEnv.VM.Providers.Cloudflare.Client.ensure(client, resource)
+        else
+          :ok = MockCloudflareGateway.lose_next_import_finish_response(gateway)
+
+          assert {:error, _} =
+                   SalixEnv.VM.Providers.Cloudflare.Client.archive_import(client, resource, %{
+                     "action" => "finish",
+                     "operation" => "snapshot",
+                     "bytes" => 3,
+                     "sessions" => 0
+                   })
+        end
+
+        {:ok, outstanding} = GroupCompute.group_workload(group)
+        assert [{claim, claim_metadata}] = Map.to_list(outstanding["active_operations"])
+        assert claim_metadata["action"] == action
+
+        assert :ok =
+                 MockCloudflareGateway.set_terminal(
+                   gateway,
+                   resource,
+                   control,
+                   control
+                   |> Map.put("claim_id", claim)
+                   |> Map.put("action", action)
+                   |> Map.put("outcome", "completed")
+                   |> Map.put("status", if(retry, do: 503, else: 200))
+                 )
+
+        assert :ok =
+                 MockCloudflareGateway.set_import(gateway, resource, %{
+                   "phase" => "restored",
+                   "operation" => "snapshot",
+                   "next_offset" => 3,
+                   "sessions" => 0
+                 })
+
+        if action == "ensure" do
+          if retry do
+            assert {:ok, %{"status" => "ready"}} =
+                     SalixEnv.VM.Providers.Cloudflare.Client.ensure(client, resource)
+          else
+            assert {:ok, %{"status" => "ready"}} =
+                     SalixEnv.VM.Providers.Cloudflare.Client.status(client, resource)
+          end
+        else
+          assert {:ok, %{"phase" => "restored"}} =
+                   SalixEnv.VM.Providers.Cloudflare.Client.archive_import(client, resource, %{
+                     "action" => "status",
+                     "operation" => "snapshot"
+                   })
+        end
+
+        assert {:ok, %{"active_operation_count" => 0}} =
+                 SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+
+        assert {:ok, %{"status" => "archived"}} =
+                 SalixWeb.ComputeProviders.Cloudflare.archive_idle_once(group, force: true)
+      end
+    end
+
+    for admitted <- [false, true] do
+      @admitted admitted
+      @tag :cloudvm_rebuild
+      test "image release preserves the wake while rebuilding #{if admitted, do: "an admitted", else: "an unused"} target" do
+        admitted = @admitted
+
+        gateway =
+          start_supervised!(
+            {MockCloudflareGateway, managed_runtime: true, never_admitted: not admitted}
+          )
+
+        configure_tenant_cloudflare(tenant_id(), gateway)
+
+        agent =
+          create_cloudflare_agent(%{"vm" => %{"enabled" => true, "provider" => "cloudflare"}})
+
+        group = agent["group_id"]
+
+        assert {:ok, :ready} =
+                 SalixWeb.ComputeProviders.Cloudflare.provision_once(group, force: true)
+
+        {:ok, rec} = SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+        operation = "wake-image-recovery"
+
+        source = %{
+          "type" => "connector_tar_zst_chunks",
+          "storage" => "salix_s3",
+          "operation" => "archive-source",
+          "byte_size" => 3,
+          "chunk_size" => 4 * 1024 * 1024,
+          "chunk_count" => 1,
+          "sessions" => 0,
+          "scope" => "full"
+        }
+
+        assert {:ok, _} =
+                 SalixStore.S3.put(
+                   SalixWeb.CloudVM.DurableArchive.chunk_key(group, "archive-source", 0),
+                   "old"
+                 )
+
+        :ok =
+          MockCloudflareGateway.set_export(
+            gateway,
+            rec["provider_resource_name"],
+            operation,
+            "critical"
+          )
+
+        if admitted, do: configure_archive_r2()
+
+        update_vm_record(group, fn current ->
+          current
+          |> Map.put("status", "waking")
+          |> Map.put("wake_operation_id", operation)
+          |> Map.put("archive", source)
+          |> Map.put("connector_archive", Map.put(source, "archived_at", 1))
+        end)
+
+        maintenance = "recovery-release-#{admitted}"
+        assert {:ok, _} = SalixWeb.ComputeProviders.Cloudflare.prepare_image_release(maintenance)
+        on_exit(fn -> SalixWeb.ComputeProviders.Cloudflare.cancel_image_release(maintenance) end)
+
+        assert {:ok, "started"} =
+                 SalixWeb.ComputeProviders.Cloudflare.image_release_archive(
+                   maintenance,
+                   group,
+                   rec["provider_resource_name"],
+                   "cf-standard-2"
+                 )
+
+        eventually(
+          fn ->
+            {:ok, current} = SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+            current["archive_reason"] == "recovery_rebuild"
+          end,
+          300
+        )
+
+        {:ok, rebuilt} = SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+        assert rebuilt["status"] == "waking"
+        assert rebuilt["wake_operation_id"] == operation
+        assert rebuilt["active_operation_count"] == 0
+        assert Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
+
+        assert {:ok, %{data: records}} =
+                 SalixWeb.ComputeProviders.Cloudflare.image_release_workloads(maintenance,
+                   limit: 10
+                 )
+
+        assert Enum.find(records, &(&1["group_id"] == group))["archive_recorded"] == true
+
+        if admitted do
+          assert rebuilt["archive"]["scope"] == "recovery"
+          assert rebuilt["archive_previous"] == source
+          refute "archive-source" in (rebuilt["archive_gc_operations"] || [])
+        else
+          assert rebuilt["archive"] == source
+          refute Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :archive_export))
+        end
+
+        target = "cf-standard-2:" <> rec["provider_resource_name"]
+
+        assert {:error, {:vm_service_upgrading, _}} =
+                 GroupCompute.prepare_cloudflare_control(group, target, :open)
+
+        assert :ok = SalixWeb.ComputeProviders.Cloudflare.cancel_image_release(maintenance)
+        assert {:ok, next} = GroupCompute.prepare_cloudflare_control(group, target, :open)
+        assert next["revision"] > rebuilt["cloudflare_control"]["revision"]
+        assert {:ok, ^next} = GroupCompute.prepare_cloudflare_control(group, target, :open)
+        {:ok, restoring} = SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+        assert restoring["archive_reason"] == "recovery_restoring"
+        assert restoring["last_wake_at"] > 0
+      end
+    end
+
     test "image release reconnects a disconnected Device before archiving its running VM" do
       gateway = start_supervised!(MockCloudflareGateway)
       configure_tenant_cloudflare(tenant_id(), gateway)
@@ -1925,10 +2301,13 @@ defmodule SalixWeb.CloudVMTest do
         fn ->
           {:ok, rec} = SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
 
+          # The claim exists before the worker starts its attachment. Wait for
+          # the worker's timeout result before checking late attachment cleanup.
           rec["status"] == "archiving" and
             rec["last_error"] ==
-              "{:archive_resume_pending, :archive_attachment_unavailable}" and
-            rec["active_operation_count"] == 1
+              "{:image_release_archive_failed, :archive_attachment_unavailable}" and
+            rec["active_operation_count"] == 1 and
+            CloudflareAttachments.whereis(env_id) == nil
         end,
         1_500
       )
@@ -1942,6 +2321,7 @@ defmodule SalixWeb.CloudVMTest do
                SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
 
       assert [{_, %{"kind" => "cloudflare_gateway_attempt"}}] = Map.to_list(operations)
+      refute Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
     end
 
     test "a VM used by an unsettled agent does not use the initial idle fallback" do
@@ -2804,7 +3184,7 @@ defmodule SalixWeb.CloudVMTest do
 
       gateway = start_supervised!(MockCloudflareGateway)
       configure_tenant_cloudflare(tenant_id(), gateway)
-      agent = create_cloudflare_agent(%{"group_id" => group["group_id"]})
+      agent = create_cloudflare_agent(%{"group_id" => group["group_id"], "role" => "router"})
       assert agent["vm"]["provider"] == "cloudflare"
 
       assert_receive {:vm_authorize,
@@ -2817,6 +3197,48 @@ defmodule SalixWeb.CloudVMTest do
       assert {:ok, rec} = SalixWeb.ComputeProviders.Cloudflare.get_record(group["group_id"])
       assert rec["status"] == "billing_suspended"
       assert rec["billing_decision"]["reason"] == "insufficient_credits"
+
+      assert {:error,
+              %{
+                "error_class" => "billing_unavailable",
+                "reason" => "insufficient_credits",
+                "retryable" => false
+              }} =
+               SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent)
+
+      assert {:error, %{"reason" => "insufficient_credits"}} =
+               CloudVM.Runtimes.request(agent, %{
+                 "request_id" => "credit-refused",
+                 "provider" => "claude"
+               })
+
+      assert {:error, %{"reason" => "insufficient_credits"}} =
+               CloudVM.RuntimeLifecycle.wake(group["group_id"])
+
+      assert {:tool_failure, encoded, "billing_unavailable", "user_reportable", message, []} =
+               SalixAgent.Tools.CloudRuntime.call(
+                 %{"request_id" => "credit-refused", "provider" => "claude"},
+                 %{agent_id: agent["agent_id"]}
+               )
+
+      assert Jason.decode!(encoded)["reason"] == "insufficient_credits"
+      assert message =~ "credits"
+
+      command =
+        Task.async(fn ->
+          SalixWeb.EnvDispatch.exec(
+            agent["agent_id"],
+            cloud_target(agent["agent_id"], "cloud-vm"),
+            "true",
+            %{"wait_for_vm" => true}
+          )
+        end)
+
+      assert {:error, %{"reason" => "insufficient_credits"}} = Task.await(command, 2_000)
+      refute Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :archive_restore))
+
+      assert {:ok, current} = SalixWeb.ComputeProviders.Cloudflare.get_record(group["group_id"])
+      assert current["runtime_targets"] in [nil, %{}]
     end
 
     test "cloudflare VM authorization uses the VM record provider" do
@@ -3035,6 +3457,79 @@ defmodule SalixWeb.CloudVMTest do
       assert {:ok, %{"last_metered_at" => ^now}} =
                SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
     end
+  end
+
+  test "billing refusal fails queued installation and preserves an accepted install result" do
+    gateway = start_supervised!(MockCloudflareGateway)
+    configure_tenant_cloudflare(tenant_id(), gateway)
+    Application.put_env(:salix_web, :vm_authorization_mod, VMAuthorizationFake)
+    Application.put_env(:salix_web, :cloud_vm_auth_result, :allow)
+
+    assert {:ok, _} =
+             Salix.Control.Groups.update(group_id(), %{
+               "billing_owner" => %{
+                 "billing_account_id" => "install-account",
+                 "surface" => "comma",
+                 "vm_profile_key" => "cf-standard-1"
+               }
+             })
+
+    create_cloudflare_agent()
+    assert {:ok, _} = SalixWeb.ComputeProviders.Cloudflare.mark_ready(group_id())
+    transport = "blocked-installer-#{System.unique_integer([:positive])}"
+    attach_fake_connector_env(transport, group_id())
+    test_pid = self()
+
+    owner =
+      spawn_link(fn ->
+        :ok = SalixEnv.Bridge.register_owner(transport)
+        send(test_pid, :installer_ready)
+
+        receive do
+          {:env_rpc, ref, from, message} ->
+            send(test_pid, {:install_started, message})
+
+            receive do
+              :finish_install -> send(from, {:env_rpc_reply, ref, {:ok, %{"exit_code" => 0}}})
+            end
+        end
+      end)
+
+    on_exit(fn -> if Process.alive?(owner), do: Process.exit(owner, :kill) end)
+    assert_receive :installer_ready
+    requested_at = System.system_time(:millisecond)
+
+    rec =
+      update_vm_record(
+        group_id(),
+        &Map.put(&1, "runtime_targets", %{
+          "a-installing" => %{
+            "state" => "pending",
+            "provider" => "codex",
+            "requested_at" => requested_at
+          },
+          "b-queued" => %{
+            "state" => "pending",
+            "provider" => "claude",
+            "requested_at" => requested_at
+          }
+        })
+      )
+
+    install =
+      Task.async(fn -> CloudVM.Runtimes.reconcile(rec, runtime_install_timeout_ms: 2_000) end)
+
+    assert_receive {:install_started, %{"method" => "exec"}}, 2_000
+    Application.put_env(:salix_web, :cloud_vm_auth_result, :block)
+    SalixWeb.ComputeProviders.Cloudflare.reconcile_runtimes(group_id())
+    assert {:ok, queued} = CloudVM.Runtimes.get(tenant_id(), group_id(), "b-queued")
+    assert queued["state"] == "failed"
+    assert queued["error"]["reason"] == "insufficient_credits"
+    send(owner, :finish_install)
+    Task.await(install, 3_000)
+
+    assert {:ok, %{"state" => "installed"}} =
+             CloudVM.Runtimes.get(tenant_id(), group_id(), "a-installing")
   end
 
   test "cloud runtime requests are idempotent and keep installation ownership in the VM" do

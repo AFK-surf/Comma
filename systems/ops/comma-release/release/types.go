@@ -399,6 +399,7 @@ type State struct {
 	SchemaVersion         int                        `json:"schemaVersion"`
 	Environment           string                     `json:"environment"`
 	ReleaseID             string                     `json:"releaseId"`
+	RepairFrom            string                     `json:"repairFrom,omitempty"`
 	Image                 string                     `json:"image"`
 	Artifacts             ArtifactFacts              `json:"artifacts"`
 	Helm                  HelmFacts                  `json:"helm"`
@@ -439,6 +440,9 @@ func NewLegacyUpgradeState(environment, releaseID, image string, snapshotRevisio
 }
 
 func (s State) ValidatePlan(plan Plan) error {
+	if s.RepairFrom != "" && plan.RequiredMode != ModeOnline {
+		return errors.New("pre-cutover repair requires an online migration plan")
+	}
 	var err error
 	if s.RequiredMode == ModeBlockedLegacy {
 		err = plan.ValidateLegacyUpgrade()

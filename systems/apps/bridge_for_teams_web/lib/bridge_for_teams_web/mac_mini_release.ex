@@ -101,21 +101,6 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
 
   def component_versions_label(_capabilities), do: "—"
 
-  def observed_component_version(capabilities, component)
-      when is_map(capabilities) and is_binary(component) do
-    capabilities
-    |> Map.get("component_versions", %{})
-    |> case do
-      versions when is_map(versions) ->
-        versions |> Map.get(component) |> string() |> blank_to_nil()
-
-      _ ->
-        nil
-    end
-  end
-
-  def observed_component_version(_capabilities, _component), do: nil
-
   def updates(_conn, provisioner) do
     case provisioner_platform(provisioner) do
       nil -> disabled_updates("unsupported_platform")

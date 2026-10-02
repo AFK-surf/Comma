@@ -11,6 +11,7 @@ import {
 import { CommaAppearanceProvider } from "../components/commaAppearance";
 import { CommaWebClientSettingsProvider } from "../components/commaClientSettings";
 import { CommaSideChatShortcutProvider } from "../components/commaSideChatShortcut";
+import { RouterIdentityProvider } from "../components/router-identity/RouterIdentityProvider";
 import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShortcuts";
 import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation-mock/RecommendationMockDebugSettingsRoute";
 
@@ -50,15 +51,17 @@ const renderRoute = (audience?: string) =>
   render(
     <CommaWebClientSettingsProvider>
       <CommaAuthContext.Provider value={auth(audience)}>
-        <CommaAppearanceProvider>
-          <CommaSideChatShortcutProvider>
-            <CommaAppShortcutsProvider>
-              <CommaI18nProvider>
-                <RecommendationMockDebugSettingsRoute />
-              </CommaI18nProvider>
-            </CommaAppShortcutsProvider>
-          </CommaSideChatShortcutProvider>
-        </CommaAppearanceProvider>
+        <RouterIdentityProvider>
+          <CommaAppearanceProvider>
+            <CommaSideChatShortcutProvider>
+              <CommaAppShortcutsProvider>
+                <CommaI18nProvider>
+                  <RecommendationMockDebugSettingsRoute />
+                </CommaI18nProvider>
+              </CommaAppShortcutsProvider>
+            </CommaSideChatShortcutProvider>
+          </CommaAppearanceProvider>
+        </RouterIdentityProvider>
       </CommaAuthContext.Provider>
     </CommaWebClientSettingsProvider>
   );

@@ -424,3 +424,98 @@ test("warns above the composer at 50, 10 and 5 percent and remembers dismissed t
     await chat.close();
   }
 });
+
+for (const exhaustedBy of ["spending", "expiry"] as const) {
+  test(`shows exhausted credits after ${exhaustedBy} even when the low-credit warning was dismissed`, async ({
+    page,
+  }, testInfo) => {
+    const chat = await startChatSmokeStub();
+    let exhausted = false;
+    const plan = {
+      plan_key: "exhaustion-monthly",
+      package_code: "exhaustion-monthly",
+      package_version: "v1",
+      name: "Monthly",
+      mode: "subscription",
+      currency: "usd",
+      amount_minor: 100,
+      grant_credits: 1000,
+    };
+    try {
+      await installBrowserTestSession(page, {
+        apiBaseUrl: chat.baseUrl,
+        email: "credit-exhaustion@comma.local",
+        token: "comma_sess_credit_exhaustion",
+      });
+      await page.route(`${chat.baseUrl}/v1/comma/billing/plans`, (route) =>
+        route.fulfill({ json: { data: [plan] } })
+      );
+      await page.route(
+        `${chat.baseUrl}/v1/comma/workspaces/*/billing/summary`,
+        (route) =>
+          route.fulfill({
+            json: {
+              billing_account_id: "billing-exhaustion",
+              current_credits: exhausted ? 0 : 50,
+              active_grants:
+                exhausted && exhaustedBy === "expiry"
+                  ? []
+                  : [
+                      {
+                        id: "exhaustion-grant",
+                        package_code: plan.package_code,
+                        package_version: plan.package_version,
+                        remaining_credits: exhausted ? 0 : 50,
+                        valid_from: "2026-09-01T00:00:00Z",
+                        expires_at: null,
+                        source_type: "subscription_cycle",
+                        source_id: "exhaustion-cycle",
+                      },
+                    ],
+            },
+          })
+      );
+      await page.clock.install();
+      await page.goto("/");
+      const prompt = page
+        .getByRole("region", { name: "Content" })
+        .getByRole("textbox", { name: "AI prompt" });
+      const card = page.getByTestId("chat-credit-warning");
+      await expect(card).toContainText("5% of usage credits remaining");
+      await card.getByRole("button", { name: "Close" }).click();
+      await expect(card).toHaveCount(0);
+      await prompt.fill("Keep this draft while I add credits");
+
+      exhausted = true;
+      await page.clock.fastForward(60_000);
+      await expect(card).toContainText("Out of usage credits");
+      await expect(card).toContainText("Add credits or switch plans, then retry.");
+      await expect(prompt).toContainText("Keep this draft while I add credits");
+      const cardBox = await card.boundingBox();
+      const promptBox = await prompt.boundingBox();
+      expect(cardBox!.y + cardBox!.height).toBeLessThanOrEqual(promptBox!.y);
+      await page.clock.fastForward(60_000);
+      await expect(card).toContainText("Out of usage credits");
+      // Keep the same 8px separation as the low-credit notice, including error tone.
+      await expect
+        .poll(async () => {
+          const notice = await card.boundingBox();
+          const composer = await page.getByTestId("ai-input-shell").boundingBox();
+          return composer!.y - (notice!.y + notice!.height);
+        })
+        .toBeCloseTo(8, 0);
+      await page.getByRole("group", { name: "AI input", exact: true }).screenshot({
+        path: testInfo.outputPath(`credit-exhausted-${exhaustedBy}.png`),
+        animations: "disabled",
+      });
+      await page.screenshot({
+        path: testInfo.outputPath(`credit-exhausted-${exhaustedBy}-page.png`),
+        animations: "disabled",
+      });
+      await card.getByRole("button", { name: "Add credits", exact: true }).click();
+      await expect(page).toHaveURL(/settings\?category=usage-billing/);
+    } finally {
+      await chat.close();
+    }
+  });
+}

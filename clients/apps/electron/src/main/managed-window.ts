@@ -4,6 +4,7 @@ type ManagedWindowRole =
   | "meeting-recorder-window"
   | "dev-workbench"
   | "main-window"
+  | "onboarding-window"
   | "side-chat-test-window"
   | "side-chat-window";
 

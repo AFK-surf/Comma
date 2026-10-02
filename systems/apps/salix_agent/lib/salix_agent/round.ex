@@ -2581,7 +2581,7 @@ defmodule SalixAgent.Round do
   # the exhausted path's job (auto-compaction), not the retry loop's.
   defp retryable_llm_error?({:error, reason}), do: retryable_llm_error?(reason)
   defp retryable_llm_error?(%{"retryable" => false}), do: false
-  defp retryable_llm_error?(_reason), do: true
+  defp retryable_llm_error?(reason), do: not SalixAgent.BillingAvailability.denied?(reason)
 
   @doc "How many provider attempts one logical model request may make."
   @spec llm_request_max_attempts() :: pos_integer()

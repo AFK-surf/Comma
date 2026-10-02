@@ -92,20 +92,6 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginForm do
     end
   end
 
-  def definition_options(definitions, owner_scope) when is_list(definitions) do
-    definitions
-    |> Enum.filter(&(&1["owner_scope"] == owner_scope and &1["read_only"] != true))
-    |> Enum.map(fn definition ->
-      label =
-        case trim(definition["name"]) do
-          "" -> definition["plugin_id"]
-          name -> name
-        end
-
-      {label, definition["plugin_id"]}
-    end)
-  end
-
   defp decode_refs_json(value, true) do
     case trim(value) do
       "" -> {:ok, nil}

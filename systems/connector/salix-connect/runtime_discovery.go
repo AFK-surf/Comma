@@ -51,10 +51,15 @@ func portableRuntimeEntry(provider, path, protocol string, transports []string) 
 
 func portableRuntimeEntryWithClaudeIsolation(provider, path, protocol string, transports []string, isolateClaude bool) map[string]any {
 	checkedAt := time.Now()
-	version, versionErr := commandVersion(path)
+	version, versionErr := "", error(nil)
 	authReady, nativeServerStartable, probeErr := false, false, error(nil)
-	if versionErr == nil {
-		authReady, nativeServerStartable, probeErr = portableRuntimeProbeWithClaudeIsolation(provider, path, isolateClaude)
+	if strings.TrimSpace(os.Getenv("SALIX_MANAGED_RUNTIME_ROOT")) != "" && (provider == "claude" || provider == "pi") {
+		version, versionErr, authReady, nativeServerStartable, probeErr = managedPortableReadiness(provider, path, isolateClaude)
+	} else {
+		version, versionErr = commandVersion(path)
+		if versionErr == nil {
+			authReady, nativeServerStartable, probeErr = portableRuntimeProbeWithClaudeIsolation(provider, path, isolateClaude)
+		}
 	}
 	ready := versionErr == nil && probeErr == nil && authReady && nativeServerStartable
 	runtime := map[string]any{
@@ -101,6 +106,69 @@ func portableRuntimeEntryWithClaudeIsolation(provider, path, protocol string, tr
 		runtime["auth"] = auth
 	}
 	return runtime
+}
+
+// The request has twenty seconds plus at most one three-second cleanup tail.
+// Each native candidate has eight seconds; successful native startup is final.
+func managedPortableReadiness(provider, command string, isolateClaude bool) (string, error, bool, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	selected := command
+	authReady, startable, probeErr := false, false, error(nil)
+	for _, candidate := range harnessLaunchCommands(provider, command) {
+		selected = candidate
+		attempt, stop := context.WithTimeout(ctx, 8*time.Second)
+		if provider == "claude" {
+			authReady, startable, probeErr = probeClaudeRuntimeContext(attempt, candidate, isolateClaude)
+		} else {
+			authReady, startable, probeErr = probePiRuntimeContext(attempt, candidate)
+		}
+		stop()
+		if !canRetryHarnessStartup(ctx, probeErr) {
+			break
+		}
+	}
+	version, versionErr := readinessCommandVersion(ctx, selected)
+	return version, versionErr, authReady, startable, probeErr
+}
+
+func readinessCommandVersion(ctx context.Context, command string) (string, error) {
+	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := commandContextWithProcessGroup(probe, command, "--version")
+	cmd.Env, cmd.WaitDelay = execEnv(map[string]any{"PATH": runtimeCommandPath(command)}), claudeCloseTimeout
+	cmd.Cancel = func() error { killHarnessStartupGroup(cmd); return nil }
+	output := &harnessDiagnosticBuffer{}
+	cmd.Stdout, cmd.Stderr = output, output
+	err := cmd.Run()
+	killHarnessStartupGroup(cmd)
+	version := strings.TrimSpace(output.text())
+	if err != nil {
+		return "", errors.New("selected runtime version probe failed")
+	}
+	if version == "" {
+		return "", errors.New("selected runtime version probe returned empty output")
+	}
+	return version, nil
+}
+
+// Only ephemeral readiness subprocesses use this cleanup. Join pipe users
+// before Wait; a failed join never permits another candidate to start.
+func finishReadinessProcess(ctx context.Context, cmd *exec.Cmd, stdin io.Closer, stdout io.Closer, joins ...<-chan struct{}) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), claudeCloseTimeout)
+	defer cancel()
+	exited := make(chan struct{})
+	_ = stdin.Close()
+	killHarnessStartupGroup(cmd)
+	_ = stdout.Close()
+	go func() {
+		for _, joined := range joins {
+			<-joined
+		}
+		_ = cmd.Wait()
+		close(exited)
+	}()
+	return stopExternalRuntime(cleanup, func() {}, exited)
 }
 
 func portableRuntimeReadinessMessage(provider, issue string) string {
@@ -152,6 +220,10 @@ func probeClaudeRuntimeWithIsolation(path string, isolateProfile bool) (bool, bo
 func probeClaudeRuntimeWithIsolationAndTimeout(path string, isolateProfile bool, timeout time.Duration) (bool, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return probeClaudeRuntimeContext(ctx, path, isolateProfile)
+}
+
+func probeClaudeRuntimeContext(ctx context.Context, path string, isolateProfile bool) (bool, bool, error) {
 	profile, configuredBackend, configuredMethod, settingsErr := runtimeAuthClaudeProfileMethod()
 	var settings []string
 	if profile != "" {
@@ -166,17 +238,20 @@ func probeClaudeRuntimeWithIsolationAndTimeout(path string, isolateProfile bool,
 	isolateProfile = isolateProfile || len(settings) > 0
 	cmd.Env = runtimeAuthClaudeExecEnv(map[string]any{"PATH": runtimeCommandPath(path)}, isolateProfile)
 	cmd.WaitDelay = claudeCloseTimeout
-	cmd.Stderr = io.Discard
+	cmd.Cancel = func() error { killHarnessStartupGroup(cmd); return nil }
+	diagnostics := &harnessDiagnosticBuffer{}
+	cmd.Stderr = diagnostics
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return false, false, fmt.Errorf("%w: claude auth status could not capture stdout", errRuntimeProbeFailed)
 	}
 	if err := cmd.Start(); err != nil {
-		return false, false, fmt.Errorf("%w: claude auth status could not start", errRuntimeProbeFailed)
+		return false, false, &harnessStartupError{fmt.Errorf("%w: claude auth status could not start", errRuntimeProbeFailed)}
 	}
+	defer killHarnessStartupGroup(cmd)
 	stdout, readErr := io.ReadAll(io.LimitReader(stdoutPipe, claudeAuthStatusMaxBytes+1))
 	if len(stdout) > claudeAuthStatusMaxBytes {
-		killProcessGroup(cmd)
+		killHarnessStartupGroup(cmd)
 		_ = cmd.Wait()
 		return false, false, fmt.Errorf("%w: claude auth status exceeded the response bound", errRuntimeProbeFailed)
 	}
@@ -192,7 +267,13 @@ func probeClaudeRuntimeWithIsolationAndTimeout(path string, isolateProfile bool,
 		AuthMethod string `json:"authMethod"`
 	}
 	if json.Unmarshal(stdout, &status) != nil || status.LoggedIn == nil {
-		return false, false, fmt.Errorf("%w: claude auth status returned an invalid response", errRuntimeProbeFailed)
+		failure := fmt.Errorf("%w: claude auth status returned an invalid response", errRuntimeProbeFailed)
+		var exit *exec.ExitError
+		bootstrap := errors.As(err, &exit) && (exit.ExitCode() == 126 || exit.ExitCode() == 127 || strings.Contains(diagnostics.text(), "MODULE_NOT_FOUND") || strings.Contains(diagnostics.text(), "ERR_MODULE_NOT_FOUND"))
+		if bootstrap && diagnostics.permitsStartupRetry() {
+			return false, false, &harnessStartupError{failure}
+		}
+		return false, false, failure
 	}
 	if !*status.LoggedIn {
 		return false, true, fmt.Errorf("%w: claude has no authenticated account", errRuntimeAuthenticationRequired)
@@ -219,7 +300,7 @@ func probeClaudeRuntimeWithIsolationAndTimeout(path string, isolateProfile bool,
 	}
 	model, err := probeClaudeStreamJSON(ctx, path, settings, isolateProfile)
 	if err != nil {
-		return authReady, false, errors.Join(authErr, fmt.Errorf("%w: claude stream-json initialize failed", errNativeServerUnavailable))
+		return authReady, false, errors.Join(authErr, fmt.Errorf("%w: claude stream-json initialize failed: %w", errNativeServerUnavailable, err))
 	}
 	if !authReady {
 		if configuredBackend != "" {
@@ -241,7 +322,7 @@ func claudeBackendFromEnvironment(authMethod string) string {
 	return ""
 }
 
-func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, isolateProfile bool) (string, error) {
+func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, isolateProfile bool) (model string, probeErr error) {
 	nativeID, err := newClaudeSessionID()
 	if err != nil {
 		return "", err
@@ -267,7 +348,8 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 	cmd.Dir = workdir
 	cmd.Env = runtimeAuthClaudeExecEnv(map[string]any{"PATH": runtimeCommandPath(path)}, isolateProfile)
 	cmd.WaitDelay = claudeCloseTimeout
-	diagnostics := &claudeDiagnosticBuffer{}
+	cmd.Cancel = func() error { killHarnessStartupGroup(cmd); return nil }
+	diagnostics := &harnessDiagnosticBuffer{}
 	cmd.Stderr = diagnostics
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -278,19 +360,17 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 		return "", err
 	}
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return "", &harnessStartupError{errors.New("claude stream-json process could not start")}
 	}
-	processDone := make(chan error, 1)
-	go func() {
-		processDone <- cmd.Wait()
-		close(processDone)
-	}()
+	var joins []<-chan struct{}
 	defer func() {
-		_ = stdin.Close()
-		killProcessGroup(cmd)
-		select {
-		case <-processDone:
-		case <-time.After(externalRuntimeProbeTimeout):
+		if err := finishReadinessProcess(ctx, cmd, stdin, stdout, joins...); err != nil {
+			probeErr = err
+			return
+		}
+		var startup *harnessStartupError
+		if errors.As(probeErr, &startup) && !diagnostics.permitsStartupRetry() {
+			probeErr = startup.error
 		}
 	}()
 
@@ -303,19 +383,20 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 		return "", err
 	}
 	writeDone := make(chan error, 1)
+	writerExited := make(chan struct{})
+	joins = append(joins, writerExited)
 	go func() {
+		defer close(writerExited)
 		_, writeErr := stdin.Write(append(raw, '\n'))
 		writeDone <- writeErr
 	}()
 	select {
 	case err := <-writeDone:
 		if err != nil {
-			return "", errors.New("claude stream-json initialize write failed")
+			return "", &harnessStartupError{errors.New("claude stream-json initialize write failed")}
 		}
 	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-processDone:
-		return "", fmt.Errorf("claude process exited before initialize (%s)", diagnostics.category())
+		return "", &harnessStartupError{errors.New("claude stream-json initialize timed out")}
 	}
 
 	type initializeResult struct {
@@ -323,13 +404,24 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 		err   error
 	}
 	response := make(chan initializeResult, 1)
+	readerExited := make(chan struct{})
+	joins = append(joins, readerExited)
 	go func() {
+		defer close(readerExited)
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 64*1024), claudeReadinessMaxLineBytes)
 		for scanner.Scan() {
 			var message map[string]any
 			if json.Unmarshal(scanner.Bytes(), &message) != nil {
-				response <- initializeResult{err: errors.New("claude stream-json initialize returned invalid JSON")}
+				response <- initializeResult{err: &harnessStartupError{errors.New("claude stream-json initialize returned invalid JSON")}}
+				return
+			}
+			if native := stringParam(message, "session_id"); native != "" && native != nativeID {
+				response <- initializeResult{err: &nativeControlRejection{errors.New("claude readiness session identity mismatch")}}
+				return
+			}
+			if kind := stringParam(message, "type"); kind == "result" || kind == "error" {
+				response <- initializeResult{err: &nativeControlRejection{errors.New("claude stream-json startup was refused")}}
 				return
 			}
 			if stringParam(message, "type") != "control_response" {
@@ -340,7 +432,7 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 				continue
 			}
 			if stringParam(control, "subtype") != "success" {
-				response <- initializeResult{err: errors.New("claude stream-json initialize was rejected")}
+				response <- initializeResult{err: &nativeControlRejection{errors.New("claude stream-json initialize was rejected")}}
 				return
 			}
 			model := ""
@@ -359,34 +451,38 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 			return
 		}
 		if scanner.Err() != nil {
-			response <- initializeResult{err: errors.New("claude stream-json initialize exceeded its response bound")}
+			response <- initializeResult{err: &harnessStartupError{errors.New("claude stream-json initialize exceeded its response bound")}}
 		} else {
-			response <- initializeResult{err: errors.New("claude stream-json stdout closed before initialize")}
+			response <- initializeResult{err: &harnessStartupError{errors.New("claude stream-json stdout closed before initialize")}}
 		}
 	}()
 
 	select {
 	case result := <-response:
 		return result.model, result.err
-	case <-processDone:
-		return "", fmt.Errorf("claude process exited before initialize (%s)", diagnostics.category())
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return "", &harnessStartupError{errors.New("claude stream-json initialize timed out")}
 	}
 }
 
 func probePiRuntime(path string) (bool, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	return probePiRuntimeContext(ctx, path)
+}
+
+func probePiRuntimeContext(ctx context.Context, path string) (authReady, startable bool, probeErr error) {
 	sessionDir, err := os.MkdirTemp("", "salix-pi-readiness-")
 	if err != nil {
 		return false, false, err
 	}
 	defer os.RemoveAll(sessionDir)
-
-	cmd := exec.CommandContext(ctx, path, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--session-dir", sessionDir)
-	cmd.Dir = sessionDir
-	cmd.Env = execEnv(map[string]any{"PATH": runtimeCommandPath(path)})
+	cmd := commandContextWithProcessGroup(ctx, path, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--session-dir", sessionDir)
+	cmd.Dir, cmd.Env = sessionDir, execEnv(map[string]any{"PATH": runtimeCommandPath(path)})
+	cmd.WaitDelay = claudeCloseTimeout
+	cmd.Cancel = func() error { killHarnessStartupGroup(cmd); return nil }
+	diagnostics := &harnessDiagnosticBuffer{}
+	cmd.Stderr = diagnostics
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return false, false, err
@@ -395,62 +491,96 @@ func probePiRuntime(path string) (bool, bool, error) {
 	if err != nil {
 		return false, false, err
 	}
-	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		return false, false, fmt.Errorf("%w: %v", errNativeServerUnavailable, err)
+		return false, false, &harnessStartupError{fmt.Errorf("%w: pi process could not start", errNativeServerUnavailable)}
 	}
+	var joins []<-chan struct{}
 	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		if err := finishReadinessProcess(ctx, cmd, stdin, stdout, joins...); err != nil {
+			probeErr = err
+			return
+		}
+		var startup *harnessStartupError
+		if errors.As(probeErr, &startup) && !diagnostics.permitsStartupRetry() {
+			probeErr = startup.error
+		}
 	}()
-
-	encoder := json.NewEncoder(stdin)
-	if err := encoder.Encode(map[string]any{"id": "readiness-state", "type": "get_state"}); err != nil {
-		return false, false, fmt.Errorf("%w: %v", errRuntimeProbeFailed, err)
-	}
-	responses := make(chan map[string]any, 2)
-	decodeErr := make(chan error, 1)
+	replies := make(chan piReadinessReply, 1)
+	readerContext, stopReader := context.WithCancel(ctx)
+	defer stopReader()
+	readerExited := make(chan struct{})
+	joins = append(joins, readerExited)
 	go func() {
-		decoder := json.NewDecoder(stdout)
-		matched := 0
-		for matched < cap(responses) {
+		defer close(readerExited)
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 64*1024), claudeReadinessMaxLineBytes)
+		for scanner.Scan() {
 			var message map[string]any
-			if err := decoder.Decode(&message); err != nil {
-				decodeErr <- err
+			if json.Unmarshal(scanner.Bytes(), &message) != nil {
+				select {
+				case replies <- piReadinessReply{err: errors.New("pi returned invalid readiness JSON")}:
+				case <-readerContext.Done():
+				}
 				return
 			}
-			if id := stringParam(message, "id"); id == "readiness-state" || id == "readiness-models" {
-				responses <- message
-				matched++
+			select {
+			case replies <- piReadinessReply{message: message}:
+			case <-readerContext.Done():
+				return
 			}
-		}
-	}()
-
-	select {
-	case message := <-responses:
-		if message["success"] != true || stringParam(mapParam(message, "data"), "sessionId") == "" {
-			return false, true, fmt.Errorf("%w: pi state handshake was rejected", errRuntimeProbeFailed)
-		}
-		stateModel := mapParam(mapParam(message, "data"), "model")
-		if err := encoder.Encode(map[string]any{"id": "readiness-models", "type": "get_available_models"}); err != nil {
-			return false, true, fmt.Errorf("%w: %v", errRuntimeProbeFailed, err)
 		}
 		select {
-		case modelsMessage := <-responses:
-			if !piModelAvailable(stateModel, modelsMessage) {
-				return false, true, fmt.Errorf("%w: pi has no configured active model", errRuntimeAuthenticationRequired)
-			}
-			// The native model list is local configuration, not provider evidence.
-			return false, true, runtimeVerificationRequiredError{backend: stringParam(stateModel, "provider"), model: stringParam(stateModel, "id")}
-		case err := <-decodeErr:
-			return false, true, fmt.Errorf("%w: pi model handshake: %v", errRuntimeProbeFailed, err)
-		case <-ctx.Done():
-			return false, true, fmt.Errorf("%w: pi model handshake: %v", errRuntimeProbeFailed, ctx.Err())
+		case replies <- piReadinessReply{err: errors.New("pi readiness stream closed or exceeded its response bound")}:
+		case <-readerContext.Done():
 		}
-	case err := <-decodeErr:
-		return false, false, fmt.Errorf("%w: pi state handshake: %v", errRuntimeProbeFailed, err)
-	case <-ctx.Done():
-		return false, false, fmt.Errorf("%w: pi state handshake: %v", errRuntimeProbeFailed, ctx.Err())
+	}()
+	encoder := json.NewEncoder(stdin)
+	if err := encoder.Encode(map[string]any{"id": "readiness-state", "type": "get_state"}); err != nil {
+		return false, false, &harnessStartupError{fmt.Errorf("%w: pi state request failed", errRuntimeProbeFailed)}
+	}
+	state, err := readPiReadinessReply(ctx, replies, "readiness-state")
+	if err != nil {
+		return false, false, &harnessStartupError{fmt.Errorf("%w: pi state handshake failed", errRuntimeProbeFailed)}
+	}
+	if state["success"] == false {
+		return false, true, &nativeControlRejection{fmt.Errorf("%w: pi state handshake was rejected", errRuntimeProbeFailed)}
+	}
+	if state["success"] != true || stringParam(mapParam(state, "data"), "sessionId") == "" {
+		return false, false, &harnessStartupError{fmt.Errorf("%w: pi state handshake was invalid", errRuntimeProbeFailed)}
+	}
+	stateModel := mapParam(mapParam(state, "data"), "model")
+	if err := encoder.Encode(map[string]any{"id": "readiness-models", "type": "get_available_models"}); err != nil {
+		return false, true, fmt.Errorf("%w: pi model request failed", errRuntimeProbeFailed)
+	}
+	models, err := readPiReadinessReply(ctx, replies, "readiness-models")
+	if err != nil {
+		return false, true, fmt.Errorf("%w: pi model handshake failed", errRuntimeProbeFailed)
+	}
+	if !piModelAvailable(stateModel, models) {
+		return false, true, fmt.Errorf("%w: pi has no configured active model", errRuntimeAuthenticationRequired)
+	}
+	// Local configuration never proves provider authentication.
+	return false, true, runtimeVerificationRequiredError{backend: stringParam(stateModel, "provider"), model: stringParam(stateModel, "id")}
+}
+
+type piReadinessReply struct {
+	message map[string]any
+	err     error
+}
+
+func readPiReadinessReply(ctx context.Context, replies <-chan piReadinessReply, id string) (map[string]any, error) {
+	for {
+		select {
+		case reply := <-replies:
+			if reply.err != nil {
+				return nil, reply.err
+			}
+			if stringParam(reply.message, "id") == id {
+				return reply.message, nil
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 }
 

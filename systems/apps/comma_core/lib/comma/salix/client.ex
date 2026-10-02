@@ -22,6 +22,9 @@ defmodule Comma.Salix.Client do
             ) :: {:ok, map()} | {:error, term()}
 
   @callback update_workspace_vm(workspace :: map(), vm :: map()) :: :ok | {:error, term()}
+  @callback ensure_guest_tenant(tenant_id :: String.t(), dependency_max_children :: pos_integer()) ::
+              :ok | {:error, term()}
+  @optional_callbacks ensure_guest_tenant: 2
   @callback create_group_conversation(workspace :: map(), attrs :: map()) ::
               {:ok, map()} | {:error, term()}
   @callback enter_meeting_task(map(), String.t(), map()) :: {:ok, map()} | {:error, term()}
@@ -29,6 +32,8 @@ defmodule Comma.Salix.Client do
               {:ok, map()} | {:error, term()}
 
   @callback ensure_group_router_conversation(workspace :: map()) ::
+              {:ok, map()} | {:error, term()}
+  @callback ensure_group_router_conversation(workspace :: map(), opts :: keyword()) ::
               {:ok, map()} | {:error, term()}
   @callback append_group_router_conversation_message(workspace :: map(), attrs :: map()) ::
               {:ok, map()} | {:error, term()}
@@ -187,6 +192,7 @@ defmodule Comma.Salix.Client do
                       get_workspace_agent_models: 1,
                       update_workspace_agent_model: 3,
                       ensure_group_router_conversation: 1,
+                      ensure_group_router_conversation: 2,
                       append_group_router_conversation_message: 2,
                       reserve_group_conversation_message: 3,
                       list_group_conversations: 2,

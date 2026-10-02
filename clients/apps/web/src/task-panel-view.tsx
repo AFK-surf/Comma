@@ -21,6 +21,7 @@ export type TelegramApp = {
   colorScheme?: "light" | "dark";
   BackButton?: NonNullable<TaskPanelHost["backButton"]>;
   HapticFeedback?: { selectionChanged?: () => void };
+  close?: () => void;
   isVersionAtLeast?: (version: string) => boolean;
   onEvent?: (event: "themeChanged", callback: () => void) => void;
   setBackgroundColor?: (color: string) => void;
@@ -48,6 +49,8 @@ export function renderTaskPanel(
   const rootView = createRoot(root);
   const supports = (version: string) => telegram?.isVersionAtLeast?.(version) === true;
   let showingPanel = false;
+  // A Telegram launch can renew only by reopening; a Comma sign-in cannot.
+  let telegramSession = result === "signed_in";
   if (telegram) {
     syncTelegramChrome(telegram, supports("6.9"));
     // Re-rendering the same tree applies the new scheme without losing panel state.
@@ -65,6 +68,9 @@ export function renderTaskPanel(
           selectionChanged: supports("6.1")
             ? () => telegram.HapticFeedback?.selectionChanged?.()
             : undefined,
+          close: telegram.close ? () => telegram.close?.() : undefined,
+          reopen:
+            telegramSession && telegram.close ? () => telegram.close?.() : undefined,
         }
       : undefined;
     rootView.render(
@@ -110,7 +116,10 @@ export function renderTaskPanel(
         ) : (
           <button
             className="text-sm font-medium text-brand-primary"
-            onClick={renderPanel}
+            onClick={() => {
+              telegramSession = false;
+              renderPanel();
+            }}
             type="button"
           >
             {chinese ? "使用 Comma 登录" : "Sign in with Comma"}

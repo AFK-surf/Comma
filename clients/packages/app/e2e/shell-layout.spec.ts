@@ -1,6 +1,9 @@
 import { waitForSettledMotion } from "../../../e2e/helpers/motion";
 import { expect, test as baseTest, type Locator, type Page } from "@playwright/test";
-import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import {
+  dismissOnboarding,
+  installBrowserTestSession,
+} from "../../../e2e/helpers/browser-auth";
 import { startSessionProjectionStub } from "../../../e2e/helpers/session-fixture";
 import { parseCssColor, type CssRgbaColor } from "../../../e2e/helpers/css-color";
 import { openTaskDetails, taskDoneButton } from "../../../e2e/helpers/task-panel";
@@ -1258,6 +1261,9 @@ test("global chat sidebar animates, resizes, and keeps themed shell hover tokens
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
       email: "chat-sidebar-motion@comma.local",
+      // The legacy shortcut store below migrates only into absent client
+      // settings, so onboarding is closed in the app rather than recorded.
+      onboardingCompleted: false,
       token: "comma_sess_chat_sidebar_motion",
     });
     await page.addInitScript(() => {
@@ -1275,6 +1281,7 @@ test("global chat sidebar animates, resizes, and keeps themed shell hover tokens
       );
     });
     await page.goto("/");
+    await dismissOnboarding(page);
 
     const content = page.getByRole("region", { name: "Content" });
     const composer = page
@@ -1927,6 +1934,21 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
     await tablist.getByRole("tab").first().click({ button: "middle" });
     await expect(tablist.getByRole("tab")).toHaveCount(1);
 
+    await expect(sidebar).toHaveAttribute("data-open", "true");
+    await tablist.getByRole("tab").hover();
+    await tablist.getByRole("button", { name: /^Close / }).click();
+    await expect(sidebar).toHaveAttribute("data-open", "false");
+    await expect(page.getByTestId("chat-sidebar-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect.poll(async () => (await sidebar.boundingBox())?.width ?? 0).toBe(0);
+    await page.getByTestId("chat-sidebar-toggle").click();
+    await expect(sidebar).toHaveAttribute("data-open", "true");
+    await expect(sidebar.getByTestId("chat-sidebar-empty")).toBeVisible();
+    await sidebar.getByRole("button", { name: "New browser tab" }).click();
+    await expect(tablist.getByRole("tab", { name: "New tab" })).toHaveCount(1);
+
     // Past the minimum width the strip scrolls, keeps the selected tab in
     // view, and a vertical wheel scrolls it sideways.
     for (let index = 0; index < 6; index += 1) await newTab.click();
@@ -2012,7 +2034,7 @@ test("Task activity reserves running avatars and hides them on errors", async ({
       updated_at: 1,
     };
     stub.setTaskParticipants([router, worker]);
-    await expect(slot.getByRole("status")).toHaveText("Router and Worker are thinking");
+    await expect(slot.getByRole("status")).toHaveText("Comma and Worker are thinking");
     await expect(slot).not.toContainText("Default workspace");
     await expect(slot.locator(".comma-chat-activity-line")).toHaveCount(1);
     await expect(slot.locator(".comma-chat-activity-avatar")).toHaveCount(2);
@@ -2081,7 +2103,7 @@ test("Task activity reserves running avatars and hides them on errors", async ({
       { ...router, state: "stopped", status: "", updated_at: 2 },
       longStatusWorker,
     ]);
-    await expect(slot).not.toContainText("Router");
+    await expect(slot).not.toContainText("Comma");
     await expect(slot.getByRole("status")).toHaveText("Worker is thinking");
     // The runtime's status text never becomes copy, and the group never remounts.
     await expect(slot).toHaveAttribute("title", "Worker · Working");

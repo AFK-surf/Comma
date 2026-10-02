@@ -1,3 +1,4 @@
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { expect } from "../../../e2e/helpers/native-expect";
 import { closeElectronTestApp } from "./close-electron-test-app";
 import { _electron as electron, test, type Locator, type Page } from "@playwright/test";
@@ -157,12 +158,20 @@ test("persistent session probe failure stops recovery without exposing product d
   });
   try {
     const window = await mainProductWindow(launched.app);
+    // Reload with a controlled renderer clock before recovery schedules its
+    // backoff. Main and the HTTP stub remain real; only the timer waits advance.
+    await window.clock.install();
+    const probesBeforeReload = stub.requests.length;
+    await window.reload();
     await expect(
       window.getByRole("status", { name: "Connecting to Comma…" })
     ).toBeVisible();
-    await expect(window.getByText("Comma is temporarily unavailable")).toBeVisible({
-      timeout: 55_000,
-    });
+    await expect
+      .poll(async () => {
+        await window.clock.fastForward(30_000);
+        return window.getByText("Comma is temporarily unavailable").isVisible();
+      })
+      .toBe(true);
     expect(await sessionState(window)).toMatchObject({
       phase: "indeterminate",
       signedIn: false,
@@ -170,8 +179,10 @@ test("persistent session probe failure stops recovery without exposing product d
     expect(
       stub.requests.every((request) => request.path === "/v1/comma/auth/session")
     ).toBe(true);
-    // Main's startup plus five attempts for each of the two renderer gates.
-    expect(stub.requests.length).toBeLessThanOrEqual(11);
+    // Five attempts for each of the two renderer gates after the reload.
+    const recoveryProbes = stub.requests.length - probesBeforeReload;
+    expect(recoveryProbes).toBeGreaterThanOrEqual(5);
+    expect(recoveryProbes).toBeLessThanOrEqual(10);
   } finally {
     await launched.app.close().catch(() => {});
     await stub.close();
@@ -4217,6 +4228,11 @@ async function launchRuntimeApp({
   const userDataDir =
     requestedUserDataDir ??
     (await mkdtemp(join(await realpath(tmpdir()), "comma-chat-runtime-e2e-")));
+  // Either stub account may sign in, now or later in the test.
+  recordElectronOnboardingCompleted(userDataDir, [
+    runtimeAccountA.userId,
+    runtimeAccountB.userId,
+  ]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...env } = process.env;
   const app = await electron.launch({
     args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataDir}`],

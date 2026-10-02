@@ -12,7 +12,6 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
   alias BridgeForTeams.{
     Accounts,
     Agents,
-    AssistantChats,
     Memberships,
     Orgs,
     Projects,
@@ -142,8 +141,11 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
                comma_workspace["default_group_id"]
              )
 
-    assert {:ok, %{binding: bft_chat}} =
-             AssistantChats.ensure_chat(bft_user.id, bft_org.id, bft_project)
+    assert {:ok, %{"conversation_id" => bft_chat_id}} =
+             BftConversations.create_project_conversation(bft_project, bft_router, %{
+               "title" => "BFT chat",
+               "kind" => "user_chat"
+             })
 
     assert comma_chat["kind"] == "user_chat"
 
@@ -161,12 +163,12 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
            end)
 
     assert {:ok, %{"kind" => "user_chat"}} =
-             BftConversations.get_project_conversation(bft_project, bft_chat.conversation_id)
+             BftConversations.get_project_conversation(bft_project, bft_chat_id)
 
     assert {:ok, %{"participants" => bft_chat_participants}} =
              SalixConversations.list_group_conversation_participants(
                bft_project.salix_group_id,
-               bft_chat.conversation_id
+               bft_chat_id
              )
 
     assert Enum.any?(bft_chat_participants, fn participant ->
@@ -193,7 +195,7 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
     assert {:ok, _bft_chat_message} =
              BftConversations.send_project_conversation_message(
                bft_project,
-               bft_chat.conversation_id,
+               bft_chat_id,
                "BFT-only chat message",
                actor_user_id: bft_user.id,
                request_id: "bft-shared-chat-message"
@@ -365,7 +367,7 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
     assert {:ok, %{"messages" => restored_bft_chat_messages}} =
              SalixConversations.get_group_conversation_with_messages(
                bft_project.salix_group_id,
-               bft_chat.conversation_id
+               bft_chat_id
              )
 
     assert Enum.any?(restored_bft_chat_messages, fn message ->

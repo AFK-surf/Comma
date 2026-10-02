@@ -41,6 +41,8 @@ def activityIssue (state : Term) : KernelM Term := do
   if ← runawayExhausted state then return b "runaway_guard_parked"
   if ← repeatedExhausted state then return b "repeated_tool_result_parked"
   if ← roundBudgetExhausted state then return b "input_round_budget_parked"
+  let billing ← billingFailureReason state
+  if billing.isBinary then return billing
   if ← terminalFailure state then return b "model_connection_failed"
   return nil
 
@@ -101,7 +103,7 @@ def asyncWorkReasons (state : Term) : KernelM (List Term) := do
 def workReasons (state : Term) : KernelM Term := do
   let parked ← do
     if (← retryAt state).isInteger then pure true
-    else if (← failuresExhausted state) || (← modelNotificationParked state) then pure true
+    else if (← billingFailureReason state).isBinary || (← failuresExhausted state) || (← modelNotificationParked state) then pure true
     else if ← repairExhausted state then pure true
     else modelGuardExhausted state
   let flag (name : String) (condition : Bool) : List Term := if condition then [b name] else []

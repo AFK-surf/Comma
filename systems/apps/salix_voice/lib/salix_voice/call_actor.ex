@@ -198,7 +198,9 @@ defmodule SalixVoice.CallActor do
 
     state = %{state | model_settings: nil}
 
-    case safe_start_model(state.model_mod, opts) do
+    result = with :ok <- SalixVoice.authorize(state), do: safe_start_model(state.model_mod, opts)
+
+    case result do
       {:ok, pid} ->
         schedule(
           %{state | model_pid: pid},
@@ -206,6 +208,9 @@ defmodule SalixVoice.CallActor do
           state.timers.model_start_ms,
           :model_start_timeout
         )
+
+      {:error, %{"error_class" => "billing_unavailable"}} ->
+        end_call(state, :billing_unavailable)
 
       {:error, reason} ->
         Logger.warning("voice model start failed call=#{state.call_id} reason=#{inspect(reason)}")

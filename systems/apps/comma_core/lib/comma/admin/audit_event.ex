@@ -32,6 +32,8 @@ defmodule Comma.Admin.AuditEvent do
     revoke_compute_environment
     create_shell_workload
     update_workspace_agent_model
+    update_guest_policy
+    create_guest_tenant
   )
 
   @primary_key {:id, :binary_id, autogenerate: true}

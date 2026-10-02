@@ -32,6 +32,10 @@ defmodule SalixAgent.Tools.CloudRuntime do
          {:ok, result} <- SalixAgent.CloudVM.ensure_runtime(caller, args) do
       Jason.encode!(result)
     else
+      {:error, %{"error_class" => "billing_unavailable"} = error} ->
+        {:tool_failure, Jason.encode!(error), "billing_unavailable", "user_reportable",
+         error["message"], []}
+
       {:error, reason}
       when reason in [
              :cloud_vm_runtime_capacity,

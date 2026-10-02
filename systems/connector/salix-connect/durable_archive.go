@@ -34,6 +34,7 @@ type archiveDiagnostics struct {
 }
 
 type durableArchiveExport struct {
+	Scope         string              `json:"scope,omitempty"`
 	Diagnostics   *archiveDiagnostics `json:"diagnostics,omitempty"`
 	Operation     string              `json:"operation"`
 	Format        string              `json:"format,omitempty"`
@@ -50,8 +51,15 @@ func (s durableArchiveExport) response() map[string]any {
 	return map[string]any{
 		"operation": s.Operation, "phase": s.Phase, "bytes": s.Bytes,
 		"packed_bytes": s.PackedBytes, "uploaded_bytes": s.UploadedBytes, "progress_at": s.ProgressAt,
-		"sessions": s.Sessions, "format": s.format(), "diagnostics": s.Diagnostics,
+		"sessions": s.Sessions, "format": s.format(), "diagnostics": s.Diagnostics, "scope": s.scope(),
 	}
+}
+
+func (s durableArchiveExport) scope() string {
+	if s.Scope == "recovery" {
+		return "recovery"
+	}
+	return "full"
 }
 
 func (s durableArchiveExport) format() string {
@@ -92,6 +100,14 @@ func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Re
 		http.Error(w, "invalid archive format", http.StatusBadRequest)
 		return
 	}
+	requestedScope := r.URL.Query().Get("scope")
+	if requestedScope == "" {
+		requestedScope = "full"
+	}
+	if requestedScope != "full" && requestedScope != "recovery" {
+		http.Error(w, "invalid archive scope", 400)
+		return
+	}
 	archivePath := durableArchivePath(dir, requestedFormat)
 	cancelPath := filepath.Join(dir, "cancel-"+operation)
 	if r.Method == http.MethodPost {
@@ -112,7 +128,7 @@ func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Re
 			return
 		}
 		if state.Operation == operation && (state.Phase == "preparing" || state.Phase == "exported") {
-			if state.format() != requestedFormat {
+			if state.format() != requestedFormat || state.scope() != requestedScope {
 				http.Error(w, "archive format changed", http.StatusConflict)
 				return
 			}
@@ -148,7 +164,11 @@ func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Re
 				return
 			}
 		}
-		state = durableArchiveExport{Operation: operation, Format: requestedFormat, Phase: "preparing", StartedAt: time.Now().UnixMilli()}
+		if requestedScope == "recovery" && (c.cloudRuntimeControl == nil || !c.cloudRuntimeControl.Sealed || c.cloudRuntimeControl.OperationID != operation || !c.cloudRuntimeControl.RecoveryValidated) {
+			http.Error(w, "recovery checkpoint requires an exact validated seal", 409)
+			return
+		}
+		state = durableArchiveExport{Operation: operation, Format: requestedFormat, Scope: requestedScope, Phase: "preparing", StartedAt: time.Now().UnixMilli()}
 		if err := writeDurableArchiveExport(statePath, state); err != nil {
 			http.Error(w, "archive export state unavailable", 500)
 			return
@@ -459,7 +479,7 @@ func (c *connector) buildDurableArchive(statePath, archivePath string, state dur
 		state.Sessions = len(c.externalRuntimeState.identities)
 		c.externalRuntimeState.mu.Unlock()
 		packStart := time.Now()
-		err = writeTarZstTrees(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit)
+		err = writeTarTreesScope(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit, "zstd", state.scope())
 		packDuration := time.Since(packStart)
 		state.Diagnostics.PackMS = packDuration.Milliseconds()
 		if err == nil {
@@ -511,9 +531,9 @@ func (c *connector) buildDurableArchive(statePath, archivePath string, state dur
 		}
 	}}
 	if state.format() == "tar_zst" {
-		err = writeTarZstTrees(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit)
+		err = writeTarTreesScope(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit, "zstd", state.scope())
 	} else {
-		err = writeTarGzTrees(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit)
+		err = writeTarTreesScope(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit, "gzip", state.scope())
 	}
 	packDuration := time.Since(startedAt)
 	state.Diagnostics.PackMS = packDuration.Milliseconds()

@@ -41,8 +41,6 @@ defmodule BridgeForTeams.ProviderScopes do
     "inbox.draft_replies" => [@gmail_drafts_create, @gmail_read],
     "inbox.decline_cold_outreach" => [@gmail_drafts_create, @gmail_read],
     "inbox.assist_scheduling" => [@gmail_read, @calendar_read],
-    "informed.morning_briefing" => [@gmail_read, @calendar_read],
-    "informed.newsletter_digest" => [@gmail_read],
     "meetings.meeting_briefing" => [@calendar_read],
     "meetings.contact_dossier" => [@calendar_read, @contacts_read],
     "calendar.schedule_optimizer" => [@calendar_events]

@@ -22,6 +22,11 @@ export {
   mediaControlShortcuts,
   resolveMediaFullWindowShortcut,
 } from "./ChatPanelMediaPlayer";
+export { isMediaMuteShortcut, MediaVolumeControl } from "./MediaVolumeControl";
+export type {
+  MediaVolumeControlLabels,
+  MediaVolumeControlProps,
+} from "./MediaVolumeControl";
 export {
   ChatPanelVideoPictureInPictureProvider,
   ChatPanelVideoSurfaceProvider,

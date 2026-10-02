@@ -144,15 +144,11 @@ Configure the Electron main process before launch:
 | `COMMA_VMM_DOWNLOAD_URL` | Public HTTPS archive URL. The default comes from `.github/agent-vmm-host.json`. |
 | `COMMA_VMM_SOURCE_PATH` | Dev-only VMM checkout. An omitted value selects the shared download. |
 
-An explicit source checkout selects a locally built Host bundle.
-Build files are grouped by the checkout's canonical path.
-The path digest is a local directory key, not an integrity or authorization check.
-Local bundles still use the same VMM service and runtime data.
-They are not isolated runtime instances.
-Selecting a local bundle repairs the shared service to use that bundle before enrollment.
-Switching its binary can interrupt work in other registrations.
-Settings show the source, preparation stage, and failures.
-A configured source path never falls back to a download after a build error.
+An explicit source checkout builds a local Host bundle, keyed by its canonical path.
+The path digest identifies a directory; it grants no integrity or authorization.
+Before enrollment, Comma repairs the shared VMM service to use that bundle.
+It shares runtime data and can interrupt other registrations.
+Settings show the source, stage, and errors. A failed source build never falls back to a download.
 The local backend requires [Gateway startup and enrollment configuration](#local-vmm-gateway).
 The current published VMM requires a trusted HTTPS exchange endpoint.
 The local VMM source change also permits HTTP exchange on localhost, 127.0.0.1, or ::1.
@@ -162,7 +158,7 @@ Source builds run the VMM Guest script in a temporary Linux arm64 Docker contain
 They run `make headless-release` on macOS for the Host, with development signing.
 The checkout includes uncommitted source changes.
 Comma does not install host development tools or clone source repositories.
-The temporary Guest builder does not retain its container cache.
+The temporary Guest builder discards its container cache.
 
 Preparation starts only after an explicit action.
 A preparation error does not trigger an automatic retry.
@@ -174,9 +170,11 @@ Comma retains its update arguments after interruption.
 An explicit retry resumes that update before it builds another version.
 VMM owns runtime replacement and its recovery records.
 A whole-Host restart interrupts running work across that Host's registrations.
-Disabling one registration retires its allocations and can stop their work.
+Disabling one registration stops admission and requests its workload drain.
+Normal removal revokes that registration and stops its environments into Retained.
+Normal removal preserves private files and volumes.
+Local force disposal requires a separate confirmation and deletes the selected private scope.
 It does not wait for business tasks to finish or delete the shared Host.
-
 
 ## Local VMM Gateway
 
@@ -184,7 +182,7 @@ Local Compute Node use requires Salix, the VMM Gateway, and the VMM Host.
 The Connector opens a connection from the Host to the Gateway.
 The Gateway forwards observations and command results to Salix.
 Comma App startup does not start the Gateway.
-The current dev-container does not start it either. Keep it in a separate terminal or a local process supervisor.
+The dev-container does not start it. Use a separate terminal or process supervisor.
 
 ### Configuration
 

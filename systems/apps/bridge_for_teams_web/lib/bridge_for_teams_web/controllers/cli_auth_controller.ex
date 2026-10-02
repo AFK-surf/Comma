@@ -2,14 +2,13 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
   @moduledoc """
   Dashboard-to-CLI login handoff endpoints.
 
-  The CLI starts device login, the dashboard approves or cancels it, and the CLI
-  receives a separate bearer session used by the `/v1/cli/*` API wrapper
-  endpoints.
+  The CLI starts device login, the dashboard approves or cancels it (see
+  `BridgeForTeamsWeb.DashboardCLILogin`), and the CLI receives a separate bearer
+  session used by the `/v1/cli/*` API wrapper endpoints.
   """
   use BridgeForTeamsWeb.Dashboard, :controller
 
   alias BridgeForTeams.CLI.Login, as: CLILogin
-  alias BridgeForTeams.{Memberships, Orgs}
   alias BridgeForTeamsWeb.{JSON, ProjectScope}
 
   def start_device_authorization(conn, params) do
@@ -205,69 +204,6 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
     })
   end
 
-  def device_authorization(conn, %{"user_code" => user_code}) do
-    with :ok <- require_cli_login_manager(conn),
-         {:ok, authorization} <- CLILogin.get_device_authorization(user_code) do
-      send_ok(conn, %{
-        "mode" => "auth_device_authorization",
-        "authorization" => authorization_json(authorization)
-      })
-    else
-      {:error, :forbidden} ->
-        send_error(conn, 403, "forbidden", "You cannot manage CLI login requests.", %{})
-
-      {:error, :not_found} ->
-        send_error(
-          conn,
-          404,
-          "cli_device_authorization_not_found",
-          "CLI login request not found.",
-          %{}
-        )
-    end
-  end
-
-  def approve_device_authorization(conn, %{"user_code" => user_code} = params) do
-    user = Map.fetch!(conn.assigns, :current_user)
-
-    org_ids = selected_org_ids(params, user)
-
-    with :ok <- require_cli_login_manager(conn),
-         {:ok, authorization} <- CLILogin.approve_device_authorization(user_code, user, org_ids) do
-      send_ok(conn, %{
-        "mode" => "auth_device_approve",
-        "authorization" => authorization_json(authorization)
-      })
-    else
-      {:error, :forbidden} ->
-        send_error(conn, 403, "forbidden", "You cannot manage CLI login requests.", %{})
-
-      {:error, :missing_org_grants} ->
-        send_error(conn, 400, "missing_org_grants", "Select at least one organization.", %{})
-
-      {:error, reason} ->
-        send_device_authorization_error(conn, reason)
-    end
-  end
-
-  def cancel_device_authorization(conn, %{"user_code" => user_code}) do
-    user = Map.fetch!(conn.assigns, :current_user)
-
-    with :ok <- require_cli_login_manager(conn),
-         {:ok, authorization} <- CLILogin.cancel_device_authorization(user_code, user) do
-      send_ok(conn, %{
-        "mode" => "auth_device_cancel",
-        "authorization" => authorization_json(authorization)
-      })
-    else
-      {:error, :forbidden} ->
-        send_error(conn, 403, "forbidden", "You cannot manage CLI login requests.", %{})
-
-      {:error, reason} ->
-        send_device_authorization_error(conn, reason)
-    end
-  end
-
   def revoke_session(conn, %{"session_id" => session_id}) do
     user = Map.fetch!(conn.assigns, :current_user)
     :ok = CLILogin.revoke_cli_session_for_user(user, session_id)
@@ -281,16 +217,6 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
 
   def revoke_session(conn, _params) do
     send_error(conn, 400, "missing_session_id", "Pass a CLI session id.", %{})
-  end
-
-  defp require_cli_login_manager(conn) do
-    user = Map.fetch!(conn.assigns, :current_user)
-
-    if Memberships.manages_any_org?(user.id) do
-      :ok
-    else
-      {:error, :forbidden}
-    end
   end
 
   defp send_ok(conn, data) do
@@ -324,29 +250,6 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
     }
   end
 
-  defp authorization_json(authorization) do
-    %{
-      "id" => authorization.id,
-      "user_code" => authorization.user_code,
-      "status" => authorization.status,
-      "client_name" => authorization.client_name,
-      "expires_at" => DateTime.to_iso8601(authorization.expires_at),
-      "created_at" => DateTime.to_iso8601(authorization.created_at),
-      "approved_at" => iso8601_or_nil(authorization.approved_at),
-      "cancelled_at" => iso8601_or_nil(authorization.cancelled_at),
-      "consumed_at" => iso8601_or_nil(authorization.consumed_at),
-      "last_polled_at" => iso8601_or_nil(authorization.last_polled_at),
-      "org_grants" => authorization_org_grants_json(Map.get(authorization, :org_grants, []))
-    }
-  end
-
-  defp selected_org_ids(params, user) do
-    case params["org_ids"] || params[:org_ids] do
-      ids when is_list(ids) -> ids
-      _ -> user.id |> Orgs.list_manageable_orgs_for_user() |> Enum.map(& &1.id)
-    end
-  end
-
   defp orgs_json(orgs), do: Enum.map(orgs, &org_json/1)
 
   defp org_json(org) do
@@ -356,17 +259,6 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
       "name" => org.name
     }
   end
-
-  defp authorization_org_grants_json(grants) when is_list(grants) do
-    Enum.map(grants, fn grant ->
-      %{
-        "org" => org_json(grant.org),
-        "created_at" => DateTime.to_iso8601(grant.created_at)
-      }
-    end)
-  end
-
-  defp authorization_org_grants_json(_), do: []
 
   defp session_org_grants_json(grants) when is_list(grants) do
     Enum.map(grants, fn grant ->
@@ -379,37 +271,6 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
   end
 
   defp session_org_grants_json(_), do: []
-
-  defp send_device_authorization_error(conn, :not_found) do
-    send_error(
-      conn,
-      404,
-      "cli_device_authorization_not_found",
-      "CLI login request not found.",
-      %{}
-    )
-  end
-
-  defp send_device_authorization_error(conn, reason)
-       when reason in ["cancelled", "consumed", "expired"] do
-    send_error(
-      conn,
-      409,
-      "cli_device_authorization_#{reason}",
-      "CLI login request is #{reason}.",
-      %{}
-    )
-  end
-
-  defp send_device_authorization_error(conn, _reason) do
-    send_error(
-      conn,
-      409,
-      "cli_device_authorization_not_pending",
-      "CLI login request is not pending.",
-      %{}
-    )
-  end
 
   defp iso8601_or_nil(nil), do: nil
   defp iso8601_or_nil(value), do: DateTime.to_iso8601(value)

@@ -10,6 +10,7 @@ import type { useStickToBottom } from "../scroll/useStickToBottom";
 import { conversationMessageTurnKey as messageTurnKey } from "../../model/visibleReplyPresentation";
 import {
   appendAssistantDraft,
+  assistantDraftTurnIndex,
   type ConversationLayout,
 } from "../layout/conversationLayout";
 import type { OutgoingPresentations } from "../outgoing/useOutgoingPresentations";
@@ -141,15 +142,20 @@ export function useThreadTurnWindow({
   const visibleTurns = useMemo(() => {
     if (!assistantDraft) return visibleCanonicalTurns;
     const hiddenTurnCount = canonicalLayout.turns.length - visibleCanonicalTurns.length;
-    const tailTurnIndex = canonicalLayout.tailTurnIndex - hiddenTurnCount;
+    const ownerTurnIndex = assistantDraftTurnIndex(canonicalLayout, assistantDraft);
+    const visibleOwnerTurnIndex = ownerTurnIndex - hiddenTurnCount;
     // The owning turn is above the mount window, so the draft is not mounted.
-    if (canonicalLayout.tailTurnIndex >= 0 && tailTurnIndex < 0) {
+    if (ownerTurnIndex >= 0 && visibleOwnerTurnIndex < 0) {
       return visibleCanonicalTurns;
     }
     return appendAssistantDraft(
-      { turns: visibleCanonicalTurns, tailTurnIndex },
+      {
+        turns: visibleCanonicalTurns,
+        tailTurnIndex: canonicalLayout.tailTurnIndex - hiddenTurnCount,
+      },
       assistantDraft,
-      assistantResponseSlotId
+      assistantResponseSlotId,
+      visibleOwnerTurnIndex
     ).turns;
   }, [assistantDraft, assistantResponseSlotId, canonicalLayout, visibleCanonicalTurns]);
   return {

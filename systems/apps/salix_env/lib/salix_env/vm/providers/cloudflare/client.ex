@@ -12,6 +12,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
             secret: nil,
             profile_key: "cf-standard-2",
             group_id: nil,
+            control: nil,
             worker_name: nil,
             worker_version_id: nil,
             max_retries: 2,
@@ -57,6 +58,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
       secret: secret,
       profile_key: Keyword.get(merged, :profile_key, "cf-standard-2"),
       group_id: Keyword.get(merged, :group_id),
+      control: Keyword.get(merged, :control),
       worker_name: Keyword.get(merged, :worker_name),
       worker_version_id: Keyword.get(merged, :worker_version_id),
       max_retries: Keyword.get(merged, :max_retries, 2),
@@ -71,7 +73,10 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
       %{"sandbox_id" => sandbox_id}
       |> maybe_put("keep_alive", Keyword.get(opts, :keep_alive))
 
-    case request_json(client, :post, sandbox_collection_path(client), body, sandbox_id) do
+    with {:ok, observation} <- open_control(client, sandbox_id),
+         {:ok, result} <- ensure_controlled(client, sandbox_id, body, observation) do
+      {:ok, result}
+    else
       # The Gateway answers 404 on the sandbox collection only when it does not
       # serve this profile: a pre-profile Worker or a profile it does not know.
       # The caller fails closed instead of retrying until its provisioning budget ends.
@@ -87,21 +92,332 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   end
 
   @spec status(t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def status(%__MODULE__{} = client, sandbox_id),
-    do: request_json(client, :get, sandbox_path(client, sandbox_id, "status"), nil, sandbox_id)
+  def status(%__MODULE__{} = client, sandbox_id) do
+    with {:ok, result} <-
+           request_json(client, :get, sandbox_path(client, sandbox_id, "status"), nil, sandbox_id),
+         :ok <- confirm_control_terminal(client, sandbox_id),
+         do: {:ok, result}
+  end
+
+  defp confirm_control_terminal(%{group_id: nil}, _id), do: :ok
+
+  defp confirm_control_terminal(client, id) do
+    case owner_control(client) do
+      nil ->
+        :ok
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        with {:ok, observation} <- control_observation(client, id),
+             do:
+               SalixStore.Compute.settle_cloudflare_terminal(
+                 client.group_id,
+                 location_key(client, id),
+                 observation
+               )
+    end
+  end
+
+  @doc "Observe DO storage without starting or connecting to its Container."
+  def control_observation(client, sandbox_id) do
+    path = sandbox_path(client, sandbox_id, "control")
+
+    case Req.request(
+           [
+             method: :get,
+             url: client.base_url <> path,
+             headers: request_headers(client, :get, path, "", sandbox_id),
+             retry: false
+           ] ++ client.req_options
+         ) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+        {:ok, normalize_body(body)}
+
+      {:ok, %Req.Response{status: 404}} ->
+        {:error, {:gateway_control_unsupported, client.profile_key}}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, error_reason(status, body)}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp open_control(%{group_id: nil, control: nil}, _id), do: {:ok, %{}}
+
+  defp open_control(client, id) do
+    with {:ok, observation} <- control_observation(client, id),
+         :ok <- settle_terminal_observation(client, id, observation),
+         {:ok, control} <- prepare_owner_control(client, id, :open),
+         {:ok, result} <-
+           request_json(
+             client,
+             :post,
+             sandbox_path(client, id, "control"),
+             %{"action" => "open", "control" => Map.put(control, "claim_id", "control-open")},
+             id
+           ) do
+      {:ok, Map.merge(observation, result)}
+    end
+  end
+
+  defp settle_terminal_observation(%{group_id: nil}, _id, _observation), do: :ok
+
+  defp settle_terminal_observation(client, id, %{"control" => control} = observation)
+       when is_map(control) do
+    SalixStore.Compute.settle_cloudflare_terminal(
+      client.group_id,
+      location_key(client, id),
+      observation
+    )
+  end
+
+  defp settle_terminal_observation(_client, _id, _observation), do: :ok
+
+  defp ensure_controlled(client, id, body, observation) do
+    case get_in(observation, ["control", "pending", "action"]) do
+      "ensure" ->
+        case status(client, id) do
+          {:ok, %{"status" => "ready"} = result} -> {:ok, result}
+          _ -> {:error, :container_start_unsettled}
+        end
+
+      nil ->
+        request_json(client, :post, sandbox_collection_path(client), body, id)
+
+      _ ->
+        {:error, :cloudflare_control_unsettled}
+    end
+  end
+
+  def seal_control(client, id) do
+    case owner_control(client) do
+      {:error, _} = error ->
+        error
+
+      nil ->
+        {:ok, %{"legacy" => true}}
+
+      _ ->
+        with {:ok, control} <- prepare_owner_control(client, id, :seal),
+             {:ok, observation} <-
+               request_json(
+                 client,
+                 :post,
+                 sandbox_path(client, id, "control"),
+                 %{"action" => "seal", "control" => Map.put(control, "claim_id", "control-seal")},
+                 id,
+                 :archive
+               ),
+             :ok <- settle_control(client, id, observation) do
+          {:ok, observation}
+        end
+    end
+  end
+
+  def connector_control(client, id, action, scope \\ "full") when action in ["open", "seal"] do
+    with control when is_map(control) <- owner_control(client),
+         {:ok, %Req.Response{status: status, body: body}} <-
+           proxy(client, id, "/control",
+             method: :post,
+             purpose: if(action == "seal", do: :archive, else: :normal),
+             req_options: [receive_timeout: 100_000],
+             body: %{"action" => action, "control" => control, "scope" => scope}
+           ) do
+      if status in 200..299,
+        do: {:ok, normalize_body(body)},
+        else: {:error, error_reason(status, body)}
+    else
+      nil -> {:error, :cloudflare_control_unbound}
+      {:error, _} = error -> error
+    end
+  end
+
+  def open_connector(%{group_id: nil, control: nil}, _id), do: :ok
+
+  def open_connector(client, id) do
+    case connector_control(client, id, "open") do
+      {:ok, _} -> :ok
+      {:error, {:api_error, 404, _}} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  def resume_control(client, id) do
+    case owner_control(client) do
+      {:error, _} = error ->
+        error
+
+      nil ->
+        {:ok, :legacy}
+
+      _ ->
+        with {:ok, observation} <- control_observation(client, id),
+             :ok <- settle_control(client, id, observation),
+             {:ok, control} <- prepare_owner_control(client, id, :resume),
+             {:ok, _} <-
+               request_json(
+                 client,
+                 :post,
+                 sandbox_path(client, id, "control"),
+                 %{
+                   "action" => "open",
+                   "control" => Map.put(control, "claim_id", "control-resume")
+                 },
+                 id,
+                 :archive
+               ),
+             {:ok, response} <-
+               proxy(client, id, "/control",
+                 method: :post,
+                 purpose: :archive,
+                 body: %{"action" => "open", "control" => control}
+               ) do
+          case response.status do
+            status when status in 200..299 -> {:ok, :managed}
+            404 -> {:ok, :legacy}
+            status -> {:error, error_reason(status, response.body)}
+          end
+        end
+    end
+  end
+
+  defp prepare_owner_control(%{group_id: nil, control: control}, _id, action)
+       when is_map(control),
+       do: {:ok, Map.put(control, "sealed", action == :seal)}
+
+  defp prepare_owner_control(client, id, action),
+    do:
+      SalixStore.Compute.prepare_cloudflare_control(
+        client.group_id,
+        location_key(client, id),
+        action
+      )
+
+  defp owner_control(%{group_id: nil, control: control}), do: control
+
+  defp owner_control(client) do
+    case SalixStore.Compute.cloudflare_control(client.group_id) do
+      {:ok, control} -> control
+      {:error, :cloudflare_control_unbound} -> nil
+      {:error, _} = error -> error
+    end
+  end
+
+  defp control_permit(client, claim) do
+    control =
+      if is_binary(client.group_id) and is_binary(claim) do
+        with {:ok, record} <- SalixStore.Compute.group_workload(client.group_id),
+             operation when is_map(operation) <- get_in(record, ["active_operations", claim]) do
+          cond do
+            is_integer(operation["control_revision"]) ->
+              %{
+                "owner_id" => record["workload_id"],
+                "operation_id" => operation["owner_operation"],
+                "generation" => operation["generation"],
+                "revision" => operation["control_revision"]
+              }
+
+            is_nil(record["cloudflare_control"]) ->
+              nil
+
+            true ->
+              {:error, :gateway_attempt_unqualified}
+          end
+        else
+          {:error, _} = error -> error
+          nil -> {:error, :gateway_attempt_unavailable}
+          _ -> nil
+        end
+      else
+        owner_control(client)
+      end
+
+    case control do
+      {:error, _} = error ->
+        error
+
+      nil ->
+        nil
+
+      control ->
+        control
+        |> Map.take(~w(owner_id operation_id generation revision))
+        |> Map.put("claim_id", claim || "direct-" <> random_hex(12))
+    end
+  end
+
+  defp attempt_metadata(client, action) do
+    case owner_control(client) do
+      {:error, _} = error ->
+        error
+
+      nil ->
+        %{}
+
+      control ->
+        %{
+          "action" => action,
+          "owner_operation" => control["operation_id"],
+          "generation" => control["generation"],
+          "control_revision" => control["revision"]
+        }
+    end
+  end
+
+  defp settle_control(%{group_id: nil}, _id, _observation), do: :ok
+
+  defp settle_control(client, id, observation),
+    do:
+      SalixStore.Compute.settle_cloudflare_control(
+        client.group_id,
+        location_key(client, id),
+        observation
+      )
+
+  defp controlled_path(path, nil), do: path
+
+  defp controlled_path(path, permit),
+    do:
+      path <>
+        if(String.contains?(path, "?"), do: "&", else: "?") <>
+        URI.encode_query(%{"salix_control" => Jason.encode!(permit)})
+
+  defp request_action(path) do
+    cond do
+      String.ends_with?(path, "/sandboxes") -> "ensure"
+      String.ends_with?(path, "/control") -> "seal"
+      String.ends_with?(path, "/status") or String.contains?(path, "/receipt?") -> "observe"
+      true -> List.last(String.split(path, "/"))
+    end
+  end
+
+  defp proxy_action("/control", :post, _), do: "connector_control"
+  defp proxy_action("/archive", :post, %{"action" => "status"}), do: "observe"
+  defp proxy_action("/archive", _, _), do: "import"
+
+  defp proxy_action("/archive/export" <> _, method, _) when method in [:post, :put, :delete],
+    do: "export"
+
+  defp proxy_action(_, _, _), do: "observe"
 
   @spec destroy(t(), String.t()) :: :ok | {:error, term()}
   def destroy(%__MODULE__{} = client, sandbox_id, opts \\ []) do
-    case request_json(
-           client,
-           :post,
-           sandbox_path(client, sandbox_id, "destroy"),
-           %{},
-           sandbox_id,
-           Keyword.get(opts, :purpose, :normal)
-         ) do
-      {:ok, _} -> :ok
-      {:error, _} = err -> err
+    with {:ok, _} <- seal_control(client, sandbox_id) do
+      case request_json(
+             client,
+             :post,
+             sandbox_path(client, sandbox_id, "destroy"),
+             %{},
+             sandbox_id,
+             Keyword.get(opts, :purpose, :normal)
+           ) do
+        {:ok, _} -> :ok
+        {:error, _} = err -> err
+      end
     end
   end
 
@@ -170,29 +486,37 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
     body = Keyword.get(opts, :body)
     encoded_body = encode_body(body)
 
-    with_gateway_attempt(client, Keyword.get(opts, :purpose, :normal), sandbox_id, fn ->
-      case Req.request(
-             [
-               method: method,
-               url: client.base_url <> proxy_path,
-               headers: request_headers(client, method, proxy_path, encoded_body, sandbox_id),
-               body: encoded_body,
-               retry: false
-             ] ++ client.req_options ++ Keyword.get(opts, :req_options, [])
-           ) do
-        {:ok, %Req.Response{status: status}} = result when status in 200..299 ->
-          {:settled, result}
+    with_gateway_attempt(
+      client,
+      Keyword.get(opts, :purpose, :normal),
+      sandbox_id,
+      proxy_action(path, method, body),
+      fn permit ->
+        proxy_path = controlled_path(proxy_path, permit)
 
-        {:ok, %Req.Response{} = response} = result ->
-          if Req.Response.get_header(response, "x-salix-container-response") == ["1"] or
-               (response.status in 400..499 and response.status not in [408, 429]),
-             do: {:settled, result},
-             else: {:uncertain, result}
+        case Req.request(
+               [
+                 method: method,
+                 url: client.base_url <> proxy_path,
+                 headers: request_headers(client, method, proxy_path, encoded_body, sandbox_id),
+                 body: encoded_body,
+                 retry: false
+               ] ++ client.req_options ++ Keyword.get(opts, :req_options, [])
+             ) do
+          {:ok, %Req.Response{status: status}} = result when status in 200..299 ->
+            {:settled, result}
 
-        {:error, _} = result ->
-          {:uncertain, result}
+          {:ok, %Req.Response{} = response} = result ->
+            if Req.Response.get_header(response, "x-salix-container-response") == ["1"] or
+                 (response.status in 400..499 and response.status not in [408, 429]),
+               do: {:settled, result},
+               else: {:uncertain, result}
+
+          {:error, _} = result ->
+            {:uncertain, result}
+        end
       end
-    end)
+    )
   end
 
   @spec archive_get(t(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -224,12 +548,13 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
         operation,
         method \\ :get,
         format \\ nil,
-        transfers \\ nil
+        transfers \\ nil,
+        scope \\ "full"
       )
       when method in [:get, :post, :delete] do
     query =
       if method == :post and is_binary(format),
-        do: %{"operation" => operation, "format" => format},
+        do: %{"operation" => operation, "format" => format, "scope" => scope},
         else: %{"operation" => operation}
 
     path = "/archive/export?" <> URI.encode_query(query)
@@ -294,7 +619,25 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   def archive_import(%__MODULE__{} = client, sandbox_id, body) when is_map(body) do
     options = if body["action"] == "stream", do: [receive_timeout: 900_000], else: []
 
-    case proxy(client, sandbox_id, "/archive", method: :post, body: body, req_options: options) do
+    result =
+      if body["action"] == "status" and is_map(owner_control(client)),
+        do:
+          request_json(
+            client,
+            :get,
+            sandbox_path(client, sandbox_id, "receipt") <>
+              "?" <> URI.encode_query(%{"operation" => body["operation"]}),
+            nil,
+            sandbox_id,
+            :archive
+          ),
+        else:
+          proxy(client, sandbox_id, "/archive", method: :post, body: body, req_options: options)
+
+    case result do
+      {:ok, result} when is_map(result) and not is_struct(result) ->
+        with :ok <- confirm_control_terminal(client, sandbox_id), do: {:ok, result}
+
       {:ok, %Req.Response{status: status, body: result}}
       when status in 200..299 and is_map(result) ->
         {:ok, result}
@@ -339,8 +682,13 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   end
 
   @spec connect_request(t(), String.t()) :: signed_request()
-  def connect_request(%__MODULE__{} = client, sandbox_id) do
+  def connect_request(%__MODULE__{} = client, sandbox_id, opts \\ []) do
     path = sandbox_path(client, sandbox_id, "connect")
+
+    path =
+      if Keyword.get(opts, :archive_repair, false), do: path <> "?archive_repair=true", else: path
+
+    path = controlled_path(path, control_permit(client, Keyword.get(opts, :claim_id)))
 
     %{
       url: ws_url(client.base_url <> path),
@@ -351,35 +699,60 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   defp request_json(client, method, path, body, sandbox_id, purpose \\ :normal) do
     encoded_body = encode_body(body)
 
-    with_gateway_attempt(client, purpose, sandbox_id || sandbox_id_from_path(path), fn ->
-      attempt(
-        client,
-        method,
-        path,
-        encoded_body,
-        sandbox_id || sandbox_id_from_path(path),
-        0,
-        client.backoff_ms
-      )
-    end)
-  end
-
-  @doc "Claim a managed Gateway network attempt until its response settles."
-  def begin_gateway_attempt(client, purpose \\ :normal, target_resource \\ nil)
-
-  def begin_gateway_attempt(%__MODULE__{group_id: group_id} = client, purpose, target_resource)
-      when is_binary(group_id) do
-    operation_id = "gateway-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
-
-    SalixStore.Compute.begin_cloudflare_gateway_attempt(
-      group_id,
-      operation_id,
+    with_gateway_attempt(
+      client,
       purpose,
-      location_key(client, target_resource)
+      sandbox_id || sandbox_id_from_path(path),
+      request_action(path),
+      fn permit ->
+        path = controlled_path(path, permit)
+
+        attempt(
+          client,
+          method,
+          path,
+          encoded_body,
+          sandbox_id || sandbox_id_from_path(path),
+          0,
+          client.backoff_ms
+        )
+      end
     )
   end
 
-  def begin_gateway_attempt(%__MODULE__{group_id: nil}, _purpose, _target_resource),
+  @doc "Claim a managed Gateway network attempt until its response settles."
+  def begin_gateway_attempt(
+        client,
+        purpose \\ :normal,
+        target_resource \\ nil,
+        action \\ "connect"
+      )
+
+  def begin_gateway_attempt(
+        %__MODULE__{group_id: group_id} = client,
+        purpose,
+        target_resource,
+        action
+      )
+      when is_binary(group_id) do
+    operation_id = "gateway-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+
+    case attempt_metadata(client, action) do
+      {:error, _} = error ->
+        error
+
+      metadata ->
+        SalixStore.Compute.begin_cloudflare_gateway_attempt(
+          group_id,
+          operation_id,
+          purpose,
+          location_key(client, target_resource),
+          metadata
+        )
+    end
+  end
+
+  def begin_gateway_attempt(%__MODULE__{group_id: nil}, _purpose, _target_resource, _action),
     do: {:ok, nil}
 
   def finish_gateway_attempt(%__MODULE__{group_id: group_id}, operation_id)
@@ -389,29 +762,53 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
 
   def finish_gateway_attempt(%__MODULE__{}, nil), do: :ok
 
-  defp with_gateway_attempt(client, purpose, target_resource, fun) do
-    case begin_gateway_attempt(client, purpose, target_resource) do
+  @doc "Retain one uncertain start for the exact Sandbox and Container profile."
+  def mark_gateway_starting(%__MODULE__{group_id: nil}, _operation_id, _sandbox_id), do: :ok
+
+  def mark_gateway_starting(%__MODULE__{group_id: group_id} = client, operation_id, sandbox_id) do
+    case location_key(client, sandbox_id) do
+      target when is_binary(target) ->
+        SalixStore.Compute.mark_cloudflare_gateway_starting(group_id, operation_id, target)
+
+      _ ->
+        {:error, :gateway_target_unresolved}
+    end
+  end
+
+  @doc "A ready response or connected WebSocket settles prior starts for this Sandbox."
+  def finish_gateway_starting(%__MODULE__{group_id: nil}, _sandbox_id), do: :ok
+
+  def finish_gateway_starting(%__MODULE__{group_id: group_id} = client, sandbox_id) do
+    case location_key(client, sandbox_id) do
+      target when is_binary(target) ->
+        case owner_control(client) do
+          {:error, _} = error ->
+            error
+
+          control ->
+            SalixStore.Compute.finish_cloudflare_gateway_starting(
+              group_id,
+              target,
+              if(is_map(control), do: control["revision"])
+            )
+        end
+
+      _ ->
+        {:error, :gateway_target_unresolved}
+    end
+  end
+
+  defp with_gateway_attempt(client, purpose, target_resource, action, fun) do
+    case begin_gateway_attempt(client, purpose, target_resource, action) do
       {:ok, operation_id} ->
-        case fun.() do
-          {:settled, result} ->
-            case finish_gateway_attempt(client, operation_id) do
-              :ok ->
-                :ok
+        permit = control_permit(client, operation_id)
 
-              {:error, reason} ->
-                require Logger
-
-                Logger.error(
-                  "Cloudflare Gateway attempt claim did not settle: #{inspect(reason)}"
-                )
-            end
-
-            if match?({:ok, %{"status" => "ready"}}, result) and
-                 is_binary(client.group_id) and is_binary(target_resource) do
-              case SalixStore.Compute.finish_cloudflare_gateway_starting(
-                     client.group_id,
-                     location_key(client, target_resource)
-                   ) do
+        if match?({:error, _}, permit) do
+          permit
+        else
+          case fun.(permit) do
+            {:settled, result} ->
+              case finish_gateway_attempt(client, operation_id) do
                 :ok ->
                   :ok
 
@@ -419,36 +816,47 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
                   require Logger
 
                   Logger.error(
-                    "Cloudflare Gateway pending start did not settle: #{inspect(reason)}"
+                    "Cloudflare Gateway attempt claim did not settle: #{inspect(reason)}"
                   )
               end
-            end
 
-            result
+              if match?({:ok, %{"status" => "ready"}}, result) and
+                   is_binary(client.group_id) and is_binary(target_resource) do
+                case finish_gateway_starting(client, target_resource) do
+                  :ok ->
+                    :ok
 
-          {:uncertain, {:ok, %{"status" => "starting"}} = result} ->
-            if is_binary(client.group_id) and is_binary(target_resource) do
-              case SalixStore.Compute.mark_cloudflare_gateway_starting(
-                     client.group_id,
-                     operation_id,
-                     location_key(client, target_resource)
-                   ) do
-                :ok ->
-                  :ok
+                  {:error, reason} ->
+                    require Logger
 
-                {:error, reason} ->
-                  require Logger
-
-                  Logger.error(
-                    "Cloudflare Gateway starting claim did not persist: #{inspect(reason)}"
-                  )
+                    Logger.error(
+                      "Cloudflare Gateway pending start did not settle: #{inspect(reason)}"
+                    )
+                end
               end
-            end
 
-            result
+              result
 
-          {:uncertain, result} ->
-            result
+            {:uncertain, {:ok, %{"status" => "starting"}} = result} ->
+              if is_binary(client.group_id) and is_binary(target_resource) do
+                case mark_gateway_starting(client, operation_id, target_resource) do
+                  :ok ->
+                    :ok
+
+                  {:error, reason} ->
+                    require Logger
+
+                    Logger.error(
+                      "Cloudflare Gateway starting claim did not persist: #{inspect(reason)}"
+                    )
+                end
+              end
+
+              result
+
+            {:uncertain, result} ->
+              result
+          end
         end
 
       {:error, _} = error ->
@@ -477,7 +885,8 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
         end
 
       {:ok, %Req.Response{status: status, body: body}} ->
-        if retryable?(status) and n < client.max_retries do
+        if retryable?(status) and n < client.max_retries and
+             not String.contains?(path, "salix_control=") do
           Process.sleep(backoff)
           attempt(client, method, path, encoded_body, sandbox_id, n + 1, backoff * 2)
         else

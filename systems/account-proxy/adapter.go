@@ -1,14 +1,15 @@
 package accountproxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"slices"
 	"time"
 
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/oauth"
@@ -39,36 +40,30 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 	switch op {
 	case "/subscription/seal":
 		return sealSubscription(body, emit)
-	case "/v1/responses", "/v1/responses/compact", "/v1/messages", "/v1/images/generations", "/v1/images/edits":
+	case "/v1/responses", "/v1/responses/compact", "/v1/messages", "/v1/chat/completions", "/v1/images/generations", "/v1/images/edits":
 		return inference(ctx, credential, op, body, emit)
 	case "/oauth/device/begin":
-		id, code, interval, err := sdkauth.BeginCodexDeviceAuthorization(ctx, &config.Config{})
-		if err != nil {
-			return &operationError{502, "device_authorization_failed"}
-		}
-		if interval > 900 {
-			return &operationError{502, "device_authorization_failed"}
-		}
-		if interval < 5 {
-			interval = 5
-		}
-		return emitJSON(emit, map[string]any{"provider": "codex", "mode": "device", "device_auth_id": id, "user_code": code, "interval": interval, "url": "https://auth.openai.com/codex/device"})
-	case "/oauth/device/poll":
 		var in struct {
-			DeviceAuthID string `json:"device_auth_id"`
-			UserCode     string `json:"user_code"`
+			Provider string `json:"provider"`
 		}
+		if len(body) > 0 && json.Unmarshal(body, &in) != nil {
+			return &operationError{400, "invalid_request"}
+		}
+		attempt, err := beginDevice(ctx, in.Provider)
+		if err != nil {
+			return err
+		}
+		return emitJSON(emit, attempt)
+	case "/oauth/device/poll":
+		var in deviceAttempt
 		if json.Unmarshal(body, &in) != nil || in.DeviceAuthID == "" || in.UserCode == "" {
 			return &operationError{400, "invalid_request"}
 		}
-		metadata, pending, err := sdkauth.PollCodexDeviceAuthorization(ctx, &config.Config{}, in.DeviceAuthID, in.UserCode)
+		result, err := pollDevice(ctx, in)
 		if err != nil {
-			return &operationError{502, "device_authorization_failed"}
+			return err
 		}
-		if pending {
-			return emitJSON(emit, map[string]any{"status": "pending"})
-		}
-		return emitJSON(emit, map[string]any{"credentials": metadata, "email": accountEmail(metadata)})
+		return emitJSON(emit, result)
 	case "/oauth/begin":
 		var in struct {
 			Provider string `json:"provider"`
@@ -77,19 +72,25 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 		if json.Unmarshal(body, &in) != nil {
 			return &operationError{400, "invalid_request"}
 		}
-		a, err := oauth.Begin(&config.Config{}, in.Provider, in.State)
+		if !slices.Contains(callbackProviders, in.Provider) {
+			return &operationError{400, "invalid_provider"}
+		}
+		a, err := oauth.Begin(&config.Config{}, executorIDs[in.Provider], in.State)
 		if err != nil {
 			return &operationError{400, "invalid_provider"}
 		}
+		// The host stores this attempt and later saves its credentials under the Salix provider ID.
+		a.Provider = in.Provider
 		return emitJSON(emit, a)
 	case "/oauth/exchange":
 		var in struct {
 			Attempt oauth.Attempt `json:"attempt"`
 			Code    string        `json:"code"`
 		}
-		if json.Unmarshal(body, &in) != nil {
+		if json.Unmarshal(body, &in) != nil || !slices.Contains(callbackProviders, in.Attempt.Provider) {
 			return &operationError{400, "invalid_request"}
 		}
+		in.Attempt.Provider = executorIDs[in.Attempt.Provider]
 		metadata, err := oauth.Exchange(ctx, &config.Config{}, in.Attempt, in.Code)
 		if err != nil {
 			return &operationError{502, "exchange_failed"}
@@ -104,14 +105,14 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 		if err != nil {
 			return &operationError{400, "invalid_credential"}
 		}
-		a := &auth.Auth{Provider: c.Provider, Metadata: metadata}
-		e, err := cliproxy.NewSubscriptionExecutor(c.Provider)
+		a := newAuth(c.Provider, metadata)
+		e, err := newExecutor(c.Provider)
 		if err != nil {
 			return &operationError{400, "invalid_provider"}
 		}
 		switch op {
 		case "/prepare":
-			if c.ForceRefresh || needsRefresh(a) {
+			if c.ForceRefresh || needsRefresh(a, refreshLead(c.Provider)) {
 				a, err = e.Refresh(ctx, a)
 			}
 			if err == nil && a != nil {
@@ -144,37 +145,75 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 			}
 			return emitJSON(emit, result)
 		case "/quota":
-			q, err := queryQuota(ctx, e, a)
+			q, err := queryQuota(ctx, c.Provider, e, a)
 			if err != nil {
 				return &operationError{502, "quota_unavailable"}
 			}
 			return emitJSON(emit, q)
+		}
+		if op == "/normalize" && c.Provider == "github-copilot" {
+			// An imported Copilot credential gets the same identity as a
+			// sign-in, so a later sign-in or import finds the same account.
+			github, _ := a.Metadata["refresh_token"].(string)
+			identity, err := copilotIdentity(ctx, github)
+			if err != nil {
+				return &operationError{400, "invalid_credential"}
+			}
+			a.Metadata["email"] = identity
 		}
 		return emitJSON(emit, map[string]any{"credentials": a.Metadata, "email": accountEmail(a.Metadata)})
 	default:
 		return &operationError{404, "not_found"}
 	}
 }
-func needsRefresh(a *auth.Auth) bool {
+func needsRefresh(a *auth.Auth, lead time.Duration) bool {
 	token, _ := a.Metadata["refresh_token"].(string)
 	raw, _ := a.Metadata["expired"].(string)
 	expiry, err := time.Parse(time.RFC3339, raw)
-	return token != "" && (err != nil || time.Until(expiry) < 30*time.Second)
+	return token != "" && (err != nil || time.Until(expiry) < lead)
 }
-func queryQuota(ctx context.Context, e auth.ProviderExecutor, a *auth.Auth) (Snapshot, error) {
-	endpoint := "https://chatgpt.com/backend-api/wham/usage"
-	if a.Provider == "claude" {
-		endpoint = "https://api.anthropic.com/api/oauth/usage"
+func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a *auth.Auth) (Snapshot, error) {
+	if provider == "github-copilot" {
+		return copilotQuota(ctx, a, time.Now())
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	method, endpoint, decode := "GET", "", func(r io.Reader, now time.Time) (Snapshot, error) { return decodeQuota(provider, r, now) }
+	var body io.Reader
+	switch provider {
+	case "codex":
+		endpoint = "https://chatgpt.com/backend-api/wham/usage"
+	case "claude":
+		endpoint = "https://api.anthropic.com/api/oauth/usage"
+	case "gemini":
+		project, _ := a.Metadata["project_id"].(string)
+		data, _ := json.Marshal(map[string]string{"project": project})
+		method, endpoint, decode, body = "POST", "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", decodeGeminiQuota, bytes.NewReader(data)
+	case "grok":
+		endpoint, decode = "https://cli-chat-proxy.grok.com/v1/billing?format=credits", decodeGrokQuota
+	case "kimi-code":
+		endpoint, decode = "https://api.kimi.com/coding/v1/usages", decodeKimiQuota
+	default:
+		return Snapshot{}, fmt.Errorf("quota unsupported")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if a.Provider == "claude" {
+	switch provider {
+	case "claude":
 		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	}
-	if id, ok := a.Metadata["account_id"].(string); ok && a.Provider == "codex" {
-		req.Header.Set("Chatgpt-Account-Id", id)
+	case "codex":
+		if id, ok := a.Metadata["account_id"].(string); ok {
+			req.Header.Set("Chatgpt-Account-Id", id)
+		}
+	case "gemini":
+		req.Header.Set("Content-Type", "application/json")
+	case "grok":
+		// Grok Build CLI headers for its billing endpoint.
+		req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
+		req.Header.Set("x-grok-client-version", "0.2.120")
+		if sub, ok := a.Metadata["sub"].(string); ok && sub != "" {
+			req.Header.Set("x-userid", sub)
+		}
 	}
 	resp, err := e.HttpRequest(ctx, a, req)
 	if err != nil {
@@ -184,5 +223,5 @@ func queryQuota(ctx context.Context, e auth.ProviderExecutor, a *auth.Auth) (Sna
 	if resp.StatusCode != 200 {
 		return Snapshot{}, fmt.Errorf("quota HTTP %d", resp.StatusCode)
 	}
-	return decodeQuota(a.Provider, resp.Body, time.Now())
+	return decode(resp.Body, time.Now())
 }

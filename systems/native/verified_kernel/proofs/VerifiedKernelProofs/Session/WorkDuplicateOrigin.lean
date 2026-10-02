@@ -132,15 +132,15 @@ theorem input_initial_duplicate_alias {context : Context} {entry born checkpoint
   · rw [duplicate] at call issued
     exact ⟨Option.some.inj (congrArg Prod.fst issued), input_duplicate_alias sourceValue call⟩
   · rw [saturated] at issued
-    simp [Command.finish, issue, a] at issued
+    simp [issue_finish, a] at issued
   · rw [invalidInput] at issued
-    simp [Command.finish, issue, a] at issued
+    simp [issue_finish, a] at issued
   · have fixed := input_write_unchanged (continuation := inputWriteContinuation batch) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_input_write, fixed] at issued
       simp [preparedWrite, a] at issued
     · rw [workspaceStart] at issued
-      simp [Command.perform, issue, a] at issued
+      simp [issue_workspace, a] at issued
 
 theorem input_raw_duplicate_alias {context : Context} {entry born checkpoint saved source : Term}
     {observations : List Term} (sourceValue : RoundQuery.atomFirst entry "source_message_id" = source)
@@ -173,8 +173,8 @@ theorem input_raw_duplicate_alias {context : Context} {entry born checkpoint sav
       | error reason =>
         rw [effect_captured _ _ _ _ (by rfl)] at tail
         change AdmissionTrace (issue context (Command.finish (.tuple [a "error", reason]))) _ at tail
-        have impossible := tail.fixed (by simp [Command.finish, issue, a])
-        simp [Command.finish, issue, a] at impossible
+        have impossible := tail.fixed (by simp [issue_finish, a])
+        simp [issue_finish, a] at impossible
 
 theorem input_initial_duplicate {context : Context} {entry born checkpoint saved : Term} {source : ByteArray}
     {observations : List Term} (sourceValue : RoundQuery.atomFirst entry "source_message_id" = .binary source)

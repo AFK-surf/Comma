@@ -133,6 +133,77 @@ describe("ConversationChannel", () => {
     ).toBeUndefined();
   });
 
+  it("shows platform inputs and delivered replies without their private prompt envelopes", () => {
+    const incoming: SalixMessage = {
+      message_id: "wechat-input",
+      actor_type: "system",
+      kind: "message",
+      content: [{ type: "text", text: "Private routing instructions" }],
+      agent_input: { role: "user", content: "Private routing instructions" },
+      platform_message: {
+        provider: "wechat",
+        role: "user",
+        content: [{ type: "text", text: "[[comma-context]] is part of my question" }],
+      },
+    };
+    const outgoing: SalixMessage = {
+      message_id: "telegram-output",
+      actor_type: "system",
+      kind: "app_event",
+      content: [],
+      metadata: { event_type: "provider.message" },
+      platform_message: {
+        provider: "telegram",
+        role: "assistant",
+        content: [{ type: "text", text: "Sent to Telegram." }],
+      },
+    };
+    const projected = normalizeServerMessages([incoming, outgoing], [], "user_chat");
+    expect(projected).toMatchObject([
+      {
+        messageId: "wechat-input",
+        role: "user",
+        platformSource: "wechat",
+        text: "[[comma-context]] is part of my question",
+      },
+      {
+        messageId: "telegram-output",
+        role: "assistant",
+        platformSource: "telegram",
+        text: "Sent to Telegram.",
+      },
+    ]);
+    expect(projected[0]?.parts).toEqual([
+      { kind: "markdown", text: "[[comma-context]] is part of my question" },
+    ]);
+    expect(normalizeServerMessages([incoming, outgoing], projected, "user_chat")).toBe(
+      projected
+    );
+    const corrected = normalizeServerMessages(
+      [
+        {
+          ...outgoing,
+          platform_message: { ...outgoing.platform_message!, provider: "signal" },
+        },
+      ],
+      projected,
+      "user_chat"
+    );
+    expect(corrected).toHaveLength(2);
+    expect(corrected[1]?.platformSource).toBe("signal");
+  });
+
+  it("hides platform sends whose presentation the server withheld", () => {
+    const withheld: SalixMessage = {
+      message_id: "withheld-output",
+      actor_type: "system",
+      kind: "app_event",
+      content: [],
+      metadata: { event_type: "provider.message" },
+    };
+    expect(normalizeServerMessages([withheld], [], "user_chat")).toEqual([]);
+  });
+
   it.each([
     ["no blob", { file_name: "report.pdf" }, undefined],
     [
@@ -2472,6 +2543,38 @@ describe("ConversationChannel", () => {
 
     api.emit(
       0,
+      {
+        type: "snapshot",
+        activity_status: "idle",
+        messages: [
+          message(
+            "msg_local_idle_user",
+            "user",
+            "keep the activity surface continuous",
+            "req_local_idle"
+          ),
+          {
+            message_id: "telegram-reply",
+            kind: "app_event",
+            actor_type: "system",
+            content: [],
+            platform_message: {
+              provider: "telegram",
+              role: "assistant",
+              content: [{ type: "text", text: "A reply in a different channel." }],
+            },
+          },
+        ],
+      } as CommaConversationEvent,
+      "snapshot"
+    );
+    expect(channel.getSnapshot()).toMatchObject({
+      awaitingReply: true,
+      locallyAwaitingReply: true,
+    });
+
+    api.emit(
+      0,
       draftEvent("message_draft_started", {
         draft_id: "draft_local_idle",
         source_message_ids: ["msg_local_idle_user"],
@@ -4349,6 +4452,51 @@ describe("ConversationChannel", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(api.streams).toHaveLength(9);
     vi.useRealTimers();
+  });
+
+  it("warns that the transcript is stale only after the short reconnect retries fail", async () => {
+    vi.useFakeTimers();
+    const api = createConversationApi();
+    const channel = createChannel(api, { initialKind: "agent_task" });
+    try {
+      channel.start();
+      api.resolvePoll(0, {
+        conversation: conversation({ kind: "agent_task", status: "active" }),
+        notModified: false,
+      });
+      await flushMicrotasks();
+
+      // Waking from sleep drops the stream before Wi-Fi rejoins.
+      for (const [index, waitMs] of [0, 1_000, 2_000].entries()) {
+        await vi.advanceTimersByTimeAsync(waitMs);
+        api.taskStreams[index]!.reject(new TypeError("Failed to fetch"));
+        await flushMicrotasks();
+        expect(channel.getSnapshot()).toMatchObject({
+          connection: "reconnecting",
+          syncWarning: undefined,
+        });
+      }
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      api.taskStreams[3]!.reject(new TypeError("Failed to fetch"));
+      await flushMicrotasks();
+      expect(channel.getSnapshot()).toMatchObject({
+        lastBackoffMs: 8_000,
+        status: "ready",
+        syncWarning: "stale",
+      });
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      api.taskStreams[4]!.resolve();
+      await flushMicrotasks();
+      expect(channel.getSnapshot()).toMatchObject({
+        lastBackoffMs: 0,
+        syncWarning: undefined,
+      });
+    } finally {
+      channel.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("marks a healthy open stream live as soon as its first canonical frame arrives", () => {

@@ -1,23 +1,7 @@
 defmodule BridgeForTeams.MeetingPreparation do
   @moduledoc "Organization-admin boundary for Group-owned meeting preparation settings."
-  import Ecto.Query
-  alias BridgeForTeams.{Memberships, Projects, Repo}
-  alias BridgeForTeams.Schema.Project
+  alias BridgeForTeams.{Memberships, Projects}
   alias BridgeForTeams.Salix.Client
-
-  def projects(org, user) do
-    with :ok <- authorize(org, user) do
-      projects =
-        Repo.all(
-          from p in Project,
-            where: p.org_id == ^org.id and is_nil(p.archived_at),
-            order_by: [asc: p.name, asc: p.id],
-            limit: 51
-        )
-
-      {:ok, %{projects: Enum.take(projects, 50), truncated: length(projects) > 50}}
-    end
-  end
 
   def run(org, user, project_id, action, attrs \\ %{}) do
     with :ok <- authorize(org, user),

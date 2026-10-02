@@ -15,7 +15,7 @@ defmodule SalixAgent.ExternalSessionStatus do
   @wait_projection_cas_retries 3
   @work_states ~w(running settled failed)
   @statuses ~w(idle starting running waiting failed unknown)
-  @terminal_issues ~w(quota_exhausted rate_limited authentication_required model_unavailable recovery_exhausted runtime_failed)
+  @terminal_issues ~w(quota_exhausted rate_limited authentication_required model_unavailable recovery_exhausted runtime_failed insufficient_credits account_inactive missing_account)
 
   @doc false
   def schema_version, do: @schema_version
@@ -40,11 +40,33 @@ defmodule SalixAgent.ExternalSessionStatus do
   end
 
   def dispatch_started(agent_id, session_id, dispatch_id, connector_run_id, timestamp) do
-    update(
-      agent_id,
-      session_id,
-      &start_dispatch(&1, dispatch_id, connector_run_id, timestamp)
-    )
+    {_mode, result} =
+      dispatch_started_with_mode(agent_id, session_id, dispatch_id, connector_run_id, timestamp)
+
+    result
+  end
+
+  # The observed mode survives a failed projection write. A failed read leaves it unknown.
+  def dispatch_started_with_mode(agent_id, session_id, dispatch_id, connector_run_id, timestamp) do
+    path = key(agent_id, session_id)
+
+    with {:ok, current, etag} <- current(path, session_id),
+         next <-
+           current
+           |> expire_starting(now())
+           |> start_dispatch(dispatch_id, connector_run_id, timestamp)
+           |> then(&put_activity_revision(current, &1)),
+         :ok <- validate(next, session_id) do
+      result =
+        case S3.put(path, Jason.encode!(next), if_match: etag) do
+          {:ok, _} -> {:ok, next}
+          {:error, _} = error -> error
+        end
+
+      {next["status"] == "running", result}
+    else
+      {:error, _} = error -> {:unknown, error}
+    end
   end
 
   def dispatch_accepted(agent_id, session_id, dispatch_id, execution_id, timestamp) do
@@ -244,16 +266,35 @@ defmodule SalixAgent.ExternalSessionStatus do
   def complete(agent_id, session_id, timestamp, watermark \\ nil),
     do: set_terminal(agent_id, session_id, "idle", nil, timestamp, watermark)
 
-  def fail(agent_id, session_id, timestamp, watermark \\ nil) do
+  def fail(agent_id, session_id, timestamp, watermark \\ nil, error \\ nil) do
     update_with_observation(agent_id, session_id, fn current ->
+      financial? = SalixAgent.BillingAvailability.denied?(error)
+
+      active? =
+        present?(current["dispatch_id"]) and
+          (current["work_status"] == "starting" or
+             (current["work_status"] == "running" and present?(current["execution_id"])))
+
       next =
-        current
-        |> set_work_status("failed", timestamp, "runtime_failed")
-        |> put_lifecycle_record(watermark)
+        cond do
+          financial? and active? ->
+            put_projection_record(current, watermark)
+
+          financial? ->
+            current
+            |> set_work_status("failed", timestamp, error["reason"])
+            |> put_message(error["message"])
+            |> put_projection_record(watermark)
+
+          true ->
+            current
+            |> set_work_status("failed", timestamp, "runtime_failed")
+            |> put_lifecycle_record(watermark)
+        end
 
       observation = %{
         source: "server_dispatch_failure",
-        mapping: "applied",
+        mapping: if(financial? and active?, do: "preserved_active_execution", else: "applied"),
         agent_id: agent_id,
         session_id: session_id,
         connector_run_id: next["connector_run_id"],

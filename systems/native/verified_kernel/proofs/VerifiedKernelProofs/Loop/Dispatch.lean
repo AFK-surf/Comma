@@ -52,6 +52,9 @@ open Data WorkConservation
 
 set_option Elab.async false
 set_option maxHeartbeats 1000000
+-- The old `split` also simplifies every nested `if` of a split hypothesis. On these large
+-- executions that costs about a third of the file, and no proof here needs it.
+set_option backward.split false
 set_option linter.unusedSimpArgs false
 
 /-! ## The next message id never decreases -/
@@ -293,7 +296,18 @@ nmi_rule storedResult (state event)
 nmi_rule transcriptToolResult (state event)
 nmi_rule transcriptAssistant (state event)
 nmi_rule transcriptLog (state event)
-nmi_rule runtimeAppend (state event)
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). This is much
+cheaper than a walk over every branch of `runtimeAppend`. -/
+theorem runtimeAppend_nmi {state event next : Term} {journal rest : List Term}
+    (call : runtimeAppend state event journal = .ok (next, rest)) : NmiStep state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
+  exact nmi_trans (appendFields_nmi appended) (nmi_trans (write_nmi_frame written rfl)
+    (nmi_trans (bumpHwm_nmi bumped) (resetFresh_nmi reset)))
+
+theorem runtimeAppend_nmi_step {state event next : Term} {journal rest : List Term} :
+    runtimeAppend state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = runtimeAppend state event journal ∧ NmiStep state next :=
+  step_iff runtimeAppend_nmi
 nmi_rule transcriptRuntime (state event)
 /-- The seed fold keeps the running message id at or above `m`. -/
 def SeedNext (m : Int) (acc : List Term × Term × Term × Bool × Term) : Prop :=
@@ -379,11 +393,32 @@ theorem transcriptSeed_nmi_step {s e t : Term} {j r : List Term} :
     transcriptSeed s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptSeed s e j ∧ NmiStep s t :=
   step_iff transcriptSeed_nmi
 
-nmi_rule transcriptDelivery (state event)
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). This is
+much cheaper than a walk over every branch of `transcriptDelivery`. -/
+theorem transcriptDelivery_nmi {state event next : Term} {journal rest : List Term}
+    (call : transcriptDelivery state event journal = .ok (next, rest)) : NmiStep state next := by
+  rcases transcriptDelivery_ops call with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
+  · exact nmi_refl _
+  · exact nmi_trans (appendFields_nmi appended) (nmi_trans (write_nmi_frame written rfl)
+      (nmi_trans (addObligation_nmi obligated) (nmi_trans (bumpHwm_nmi bumped) (resetFresh_nmi reset))))
+
+theorem transcriptDelivery_nmi_step {state event next : Term} {journal rest : List Term} :
+    transcriptDelivery state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = transcriptDelivery state event journal ∧ NmiStep state next :=
+  step_iff transcriptDelivery_nmi
 nmi_rule queueAppend (state event)
 nmi_rule queueAck (state event)
 nmi_rule queueConsume (state event)
-nmi_rule sessionEvent (state event)
+/-- `sessionEvent` writes only `sessionEventWrittenKeys`. This frame is much cheaper than a
+walk over every branch of `sessionEvent`. -/
+theorem sessionEvent_nmi {state event next : Term} {journal rest : List Term}
+    (call : sessionEvent state event journal = .ok (next, rest)) : NmiStep state next :=
+  nmi_of_frame ((sessionEvent_fields call).2 "next_message_id" rfl)
+
+theorem sessionEvent_nmi_step {state event next : Term} {journal rest : List Term} :
+    sessionEvent state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = sessionEvent state event journal ∧ NmiStep state next :=
+  step_iff sessionEvent_nmi
 
 theorem mergePredicate_nmi {s kind through replacement extra t : Term} {j r : List Term}
     (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : NmiStep s t := by
@@ -473,9 +508,14 @@ theorem bumpEvent_keys (hwm : Term) : BinaryKeys (bumpEvent hwm) := by
 
 theorem inner_bump {s next : Term} {n : Int} {j r : List Term} (nonneg : 0 ≤ n) (start : NmiAtLeast s 0)
     (h : inner s (bumpEvent (.integer n)) j = .ok (next, r)) : NmiAtLeast next (n + 1) := by
+  -- Rewrite the event kind once. Deciding each branch of `inner` over the unreduced lookup
+  -- checks the type of every `if` motive against the whole lookup term.
+  have kind : (bumpEvent (.integer n)).get (b "type") = b "bump_hwm" := by
+    simp (config := { decide := true }) only [bumpEvent, Term.get, List.find?, binary_key_beq]
+    rfl
   unfold inner at h
-  simp only [bumpEvent, Term.get, List.find?, binary_key_beq] at h
-  simp (config := { decide := true }) only [Option.map, Option.getD] at h
+  simp only [kind, binary_key_beq, String.reduceBEq, Bool.false_and, Bool.false_or, Bool.or_false,
+    Bool.false_eq_true, ↓reduceIte] at h
   unfold bumpHwmEvent at h
   obtain ⟨hwm, _, read, h⟩ := bind_ok h
   simp only [Data.event, access] at read
@@ -606,10 +646,7 @@ theorem get_put_text (v x : Term) (key : String) : (v.put (b key) x).get (b key)
 open Lean Elab Tactic in
 /-- `dunfold_at "Full.Private.Name" h` unfolds a private runtime helper in `h`. -/
 elab "dunfold_at " requested:str h:ident : tactic => do
-  let candidates := (← getEnv).constants.toList.filter fun (name, _) =>
-    (privateToUserName name).toString == requested.getString
-  let [(name, _)] := candidates | throwError "expected one native declaration for {requested}"
-  let id := mkIdent name
+  let id := mkIdent (← WorkConservation.nativeDecl requested.getString)
   evalTactic (← `(tactic| unfold $id:ident at $h:ident))
 
 /-- `loop_private% name`: the runtime helper `VerifiedKernel.Session.Loop.name`, private or not. -/
@@ -631,7 +668,7 @@ macro_rules
     let h := Lean.mkIdent `h
     `(tactic|
     (repeat' first
-      | exact (fail_ok $h).elim
+      | (head_is $h [VerifiedKernel.fail, argumentError, inspectedError]; exact (fail_ok $h).elim)
       | (execution_head_is $h "Pure.pure"
          have returned := pure_ok $h
          clear $h
@@ -769,7 +806,7 @@ theorem guardNotice_facts {ask : Loop.Ask} {state machine out : Term} {j j' : Li
        simp only [Term.tuple.injEq, List.cons.injEq, list, Term.list.injEq, and_true] at same
        obtain ⟨same₁, same₂⟩ := same
        subst same₁ same₂
-       refine ⟨fun _ => ⟨Or.inl ⟨_, _, _, _, List.mem_cons_self, ⟨_, _, ‹field state "next_message_id" _ = _›⟩,
+       refine ⟨fun _ => ⟨Or.inl ⟨_, _, _, _, List.mem_cons_self, ⟨_, _, (hyp% field state "next_message_id" _ = _)⟩,
          ?_, List.mem_cons_self, ?_⟩, ?_⟩, ?_⟩
        · simp (config := { decide := true }) only [mkey_put_self, mkey_put_skip]
        · simp (config := { decide := true }) only [mkey_put_self, mkey_put_skip]
@@ -874,7 +911,7 @@ theorem outputCommitted_facts {ask : Loop.Ask} {state machine out : Term} {j j' 
   dsplit
   all_goals first
     | facts_close
-    | (obtain ⟨phase, effs, rfl, last⟩ := park_out ‹(loop_private% park) _ _ _ _ = _›
+    | (obtain ⟨phase, effs, rfl, last⟩ := park_out (hyp% (loop_private% park) _ _ _ _ = _)
        simp only [result_eq, wrap]
        exact facts_of_park phase last)
 
@@ -909,7 +946,7 @@ theorem continuation_facts {ask : Loop.Ask} {state machine out : Term} {j j' : L
   dsplit
   all_goals first
     | facts_close
-    | (obtain ⟨phase, effs, rfl, last⟩ := park_out ‹(loop_private% park) _ _ _ _ = _›
+    | (obtain ⟨phase, effs, rfl, last⟩ := park_out (hyp% (loop_private% park) _ _ _ _ = _)
        simp only [result_eq, wrap]
        exact facts_of_park phase last)
 
@@ -1035,23 +1072,40 @@ theorem step_facts {ask : Loop.Ask} {state machine event out : Term} {j j' : Lis
   all_goals try (simp only [ite_ok_iff] at h)
   all_goals repeat' (obtain ⟨_, h⟩ | ⟨_, h⟩ := h)
   all_goals try dsplit
+  -- Select the helper lemma by the execution head. A failed `exact` against another helper
+  -- unfolds both helper bodies before it fails.
   all_goals first
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardNotice"
+       exact facts_lift (guardNotice_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailure"
+       exact facts_lift (modelFailure_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.finalRecord"
+       exact facts_lift (finalRecord_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.intentRecord"
+       exact facts_lift (intentRecord_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.toolsDone"
+       exact facts_lift (toolsDone_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.resultsStored"
+       exact facts_lift (resultsStored_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       exact facts_lift (activation_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.timeoutEntry"
+       exact facts_lift (timeoutEntry_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.expire"
+       exact facts_lift (expire_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.classify"
+       exact facts_lift (classify_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.outputCommitted"
+       exact facts_lift (outputCommitted_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailed"
+       exact facts_lift (modelFailed_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.noticeCleanup"
+       exact facts_lift (noticeCleanup_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardOutcome"
+       exact facts_lift (guardOutcome_facts h) (by lift_same))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.continuation"
+       exact facts_lift (continuation_facts h) (by lift_same))
     | facts_close
-    | exact facts_lift (guardNotice_facts h) (by lift_same)
-    | exact facts_lift (modelFailure_facts h) (by lift_same)
-    | exact facts_lift (finalRecord_facts h) (by lift_same)
-    | exact facts_lift (intentRecord_facts h) (by lift_same)
-    | exact facts_lift (toolsDone_facts h) (by lift_same)
-    | exact facts_lift (resultsStored_facts h) (by lift_same)
-    | exact facts_lift (activation_facts h) (by lift_same)
-    | exact facts_lift (timeoutEntry_facts h) (by lift_same)
-    | exact facts_lift (expire_facts h) (by lift_same)
-    | exact facts_lift (classify_facts h) (by lift_same)
-    | exact facts_lift (outputCommitted_facts h) (by lift_same)
-    | exact facts_lift (modelFailed_facts h) (by lift_same)
-    | exact facts_lift (noticeCleanup_facts h) (by lift_same)
-    | exact facts_lift (guardOutcome_facts h) (by lift_same)
-    | exact facts_lift (continuation_facts h) (by lift_same)
 
 /-! ## Step sources
 
@@ -2329,7 +2383,7 @@ theorem outputCommitted_round {ask : Loop.Ask} {state machine out : Term} {j j' 
   all_goals first
     | round_close
     | (simp only [result_eq]
-       exact round_of_same (park_same ‹(loop_private% park) _ _ _ _ = _›))
+       exact round_of_same (park_same (hyp% (loop_private% park) _ _ _ _ = _)))
 
 theorem intentRecord_round {state machine record out : Term} {j j' : List Term}
     (h : (loop_private% intentRecord) state machine record j = .ok (out, j')) : RoundFacts machine out := by
@@ -2337,8 +2391,8 @@ theorem intentRecord_round {state machine record out : Term} {j j' : List Term}
   dsplit
   all_goals first
     | exact toolTurn_round h
-    | (obtain ⟨_, r1⟩ := roundOf_advance ‹(loop_private% advance) machine _ _ _ = _›
-       obtain ⟨_, r2⟩ := roundOf_advance ‹(loop_private% advance) _ _ _ _ = _›
+    | (obtain ⟨_, r1⟩ := roundOf_advance (hyp% (loop_private% advance) machine _ _ _ = _)
+       obtain ⟨_, r2⟩ := roundOf_advance (hyp% (loop_private% advance) _ _ _ _ = _)
        simp only [result_eq]
        intro m' effs eq nr
        simp only [Term.tuple.injEq, List.cons.injEq, list, Term.list.injEq, and_true] at eq
@@ -2353,7 +2407,7 @@ theorem toolsDone_round {ask : Loop.Ask} {state machine results async out : Term
   dunfold toolsDone
   dsplit
   all_goals
-    obtain ⟨_, r1⟩ := roundOf_advance ‹(loop_private% advance) machine _ _ _ = _›
+    obtain ⟨_, r1⟩ := roundOf_advance (hyp% (loop_private% advance) machine _ _ _ = _)
     simp only [result_eq]
     intro m' effs eq nr
     simp only [Term.tuple.injEq, List.cons.injEq, list, Term.list.injEq, and_true] at eq
@@ -2375,14 +2429,14 @@ theorem continuation_round {ask : Loop.Ask} {state machine out : Term} {j j' : L
   dunfold continuation
   dsplit
   all_goals
-    obtain ⟨_, r1⟩ := roundOf_advance ‹(loop_private% advance) machine _ _ _ = _›
+    obtain ⟨_, r1⟩ := roundOf_advance (hyp% (loop_private% advance) machine _ _ _ = _)
   all_goals first
     | (simp only [result_eq]
        intro m' effs eq nr
        simp only [Term.tuple.injEq, List.cons.injEq, list, Term.list.injEq, and_true] at eq
        obtain ⟨rfl, -⟩ := eq
        first
-         | (rw [park_same ‹(loop_private% park) _ _ _ _ = _›, r1]; exact step_not_ready _ nr)
+         | (rw [park_same (hyp% (loop_private% park) _ _ _ _ = _), r1]; exact step_not_ready _ nr)
          | (simp (config := { decide := true }) only [phase_eq, round_of_put]
             rw [r1]
             exact step_not_ready _ nr))
@@ -2453,39 +2507,70 @@ theorem step_round {ask : Loop.Ask} {state machine event out : Term} {j j' : Lis
   all_goals try (simp only [ite_ok_iff] at h)
   all_goals repeat' (obtain ⟨_, h⟩ | ⟨_, h⟩ := h)
   all_goals try dsplit
+  -- Select the helper lemma by the execution head, as in `step_facts`.
   all_goals first
     | (exfalso; rcases answer with h' | ⟨_, h'⟩ | ⟨_, _, h'⟩ | ⟨_, _, _, _, h'⟩ | ⟨_, h'⟩ <;> simp at h'; done)
     | round_close
-    | exact round_lift (guardNotice_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (modelFailure_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (finalRecord_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (intentRecord_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (toolsDone_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (resultsStored_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (activation_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (timeoutEntry_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (expire_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (classify_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (outputCommitted_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (modelFailed_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (noticeCleanup_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (guardOutcome_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (continuation_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
-    | exact round_lift (guardNotice_round h) rfl
-    | exact round_lift (modelFailure_round h) rfl
-    | exact round_lift (finalRecord_round h) rfl
-    | exact round_lift (intentRecord_round h) rfl
-    | exact round_lift (toolsDone_round h) rfl
-    | exact round_lift (resultsStored_round h) rfl
-    | exact round_lift (activation_round h) rfl
-    | exact round_lift (timeoutEntry_round h) rfl
-    | exact round_lift (expire_round h) rfl
-    | exact round_lift (classify_round h) rfl
-    | exact round_lift (outputCommitted_round h) rfl
-    | exact round_lift (modelFailed_round h) rfl
-    | exact round_lift (noticeCleanup_round h) rfl
-    | exact round_lift (guardOutcome_round h) rfl
-    | exact round_lift (continuation_round h) rfl
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardNotice"
+       first
+         | exact round_lift (guardNotice_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (guardNotice_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailure"
+       first
+         | exact round_lift (modelFailure_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (modelFailure_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.finalRecord"
+       first
+         | exact round_lift (finalRecord_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (finalRecord_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.intentRecord"
+       first
+         | exact round_lift (intentRecord_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (intentRecord_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.toolsDone"
+       first
+         | exact round_lift (toolsDone_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (toolsDone_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.resultsStored"
+       first
+         | exact round_lift (resultsStored_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (resultsStored_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       first
+         | exact round_lift (activation_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (activation_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.timeoutEntry"
+       first
+         | exact round_lift (timeoutEntry_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (timeoutEntry_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.expire"
+       first
+         | exact round_lift (expire_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (expire_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.classify"
+       first
+         | exact round_lift (classify_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (classify_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.outputCommitted"
+       first
+         | exact round_lift (outputCommitted_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (outputCommitted_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailed"
+       first
+         | exact round_lift (modelFailed_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (modelFailed_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.noticeCleanup"
+       first
+         | exact round_lift (noticeCleanup_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (noticeCleanup_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardOutcome"
+       first
+         | exact round_lift (guardOutcome_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (guardOutcome_round h) rfl)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.continuation"
+       first
+         | exact round_lift (continuation_round h) (by simp (config := { decide := true }) only [phase_eq, round_of_put])
+         | exact round_lift (continuation_round h) rfl)
 
 theorem toolTurn_no_commit {machine outcome out m' opts mode : Term} {effs events : List Term}
     {j j' : List Term} (h : (loop_private% toolTurn) machine outcome j = .ok (out, j'))
@@ -2504,8 +2589,8 @@ theorem intentRecord_commit_round {state machine record out m' opts mode : Term}
   dsplit
   all_goals first
     | exact (toolTurn_no_commit h same mem).elim
-    | (obtain ⟨c1, r1⟩ := roundOf_advance ‹(loop_private% advance) machine _ _ _ = _›
-       obtain ⟨c2, r2⟩ := roundOf_advance ‹(loop_private% advance) _ _ _ _ = _›
+    | (obtain ⟨c1, r1⟩ := roundOf_advance (hyp% (loop_private% advance) machine _ _ _ = _)
+       obtain ⟨c2, r2⟩ := roundOf_advance (hyp% (loop_private% advance) _ _ _ _ = _)
        simp only [result_eq, Term.tuple.injEq, List.cons.injEq, list, Term.list.injEq, and_true] at same
        obtain ⟨rfl, -⟩ := same
        simp (config := { decide := true }) only [phase_eq, round_of_put]
@@ -2536,7 +2621,7 @@ theorem step_intent_round {s m ev m' opts mode : Term} {effs events : List Term}
            subst hv
            exact intentRecord_commit_round h rfl mem)
         | (exfalso
-           have other := WorkConservation.binary_beq_true ‹(_ == b "final_record") = true›
+           have other := WorkConservation.binary_beq_true (hyp% (_ == b "final_record") = true)
            exact binary_ne (by decide) (phase.symm.trans other))
   | _ => simp [nil, Term.isMap] at map
 

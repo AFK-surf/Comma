@@ -44,14 +44,32 @@ defmodule SalixWeb.CloudVM.RuntimeInstall do
     command -v npm >/dev/null 2>&1 || exit 65
     node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' || exit 65
     package_dir="$base/packages/#{provider}-#{version}"
-    if [ ! -x "$package_dir/node_modules/.bin/#{command}" ]; then
-      staging=$(mktemp -d "$base/packages/install.XXXXXXXX")
-      trap 'rm -rf "$staging"' EXIT
-      DISABLE_AUTOUPDATER=1 npm install --prefix "$staging" --no-audit --no-fund -- '#{package}@#{version}' >&2
-      #{if provider == "claude", do: "node \"$staging/node_modules/@anthropic-ai/claude-code/install.cjs\" >&2", else: ""}
-      "$staging/node_modules/.bin/#{command}" --version >&2
-      mv "$staging" "$package_dir"
-      trap - EXIT
+    cache="$base/packages/#{provider}-#{version}.current"
+    usable_package() {
+      [ -x "$1/node_modules/.bin/#{command}" ] && "$1/node_modules/.bin/#{command}" --version >&2
+    }
+    if ! usable_package "$package_dir"; then
+      cached=$(node -e 'try { process.stdout.write(require("fs").realpathSync(process.argv[1])) } catch (_) {}' "$cache")
+      if [ -n "$cached" ] && usable_package "$cached"; then
+        package_dir="$cached"
+      else
+        staging=$(mktemp -d "$base/packages/#{provider}-#{version}.XXXXXXXX")
+        cache_link=""
+        trap 'rm -rf "$staging"; if [ -n "$cache_link" ]; then rm -f "$cache_link"; fi' EXIT
+        DISABLE_AUTOUPDATER=1 npm install --prefix "$staging" --no-audit --no-fund -- '#{package}@#{version}' >&2
+        #{if provider == "claude", do: "node \"$staging/node_modules/@anthropic-ai/claude-code/install.cjs\" >&2", else: ""}
+        "$staging/node_modules/.bin/#{command}" --version >&2
+        # Keep old paths available to independently running native processes.
+        # The cache points to a package. Each wrapper retains its exact path.
+        cache_link=$(mktemp "$base/packages/.current.XXXXXXXX")
+        rm -f "$cache_link"
+        ln -s "$staging" "$cache_link"
+        # A published package must survive any later wrapper failure.
+        trap 'rm -f "$cache_link"' EXIT
+        node -e 'require("fs").renameSync(process.argv[1], process.argv[2])' "$cache_link" "$cache"
+        package_dir="$staging"
+        trap - EXIT
+      fi
     fi
     target="$base/runtimes/#{id}"
     mkdir -p "$target/bin"
@@ -61,7 +79,7 @@ defmodule SalixWeb.CloudVM.RuntimeInstall do
     exec "$package_dir/node_modules/.bin/#{command}" "\\$@"
     EOF
     chmod 700 "$target/bin/#{command}.new"
-    mv "$target/bin/#{command}.new" "$target/bin/#{command}"
+    node -e 'require("fs").renameSync(process.argv[1], process.argv[2])' "$target/bin/#{command}.new" "$target/bin/#{command}"
     """
   end
 

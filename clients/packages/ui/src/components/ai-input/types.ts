@@ -88,8 +88,11 @@ export type AiInputProps = AiInputNativeAttributes & {
   /** Overlay title while files are dragged over; defaults to `ui_ai_drop_anything_here`. */
   dropPlaceholder?: string;
   onAccessPress?: () => void;
-  /** May return a promise; rejection aborts the recording UI. */
-  onVoicePress?: () => void | Promise<unknown>;
+  /**
+   * May return a promise; rejection aborts the recording UI. Returning `false`
+   * means no recording starts here, and the recording UI never shows.
+   */
+  onVoicePress?: () => void | false | Promise<unknown>;
   onVoiceCancel?: () => void;
   onVoiceConfirm?: (durationSeconds: number) => void;
   accessLabel?: string;

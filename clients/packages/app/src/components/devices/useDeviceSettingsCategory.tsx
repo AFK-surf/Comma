@@ -18,8 +18,10 @@ import { useCommaConnectorScope } from "../useCommaConnectorScope";
 import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
 import { useOptionalChatActionRegistry } from "../chat/ChatProvider";
 import { resolveWorkspaceChat } from "../chat/useWorkspaceChat";
+import { needsDesktopApp, requestDesktopApp } from "../DesktopAppPrompt";
 import { useCommaSettingsOverlay } from "../settingsOverlay";
 import { prefillDeviceDraft } from "./routerDeviceDraft";
+import { useDeviceRuntimeChecks } from "./useDeviceRuntimeChecks";
 
 export function useDeviceSettingsCategory(
   api: CommaApiClient,
@@ -55,17 +57,37 @@ export function useDeviceSettingsCategory(
   const [now, setNow] = useState(Date.now);
   const [accessError, setAccessError] = useState(false);
   const request = useRef<AbortController | undefined>(undefined);
+  const restartPendingLoad = useRef<(() => void) | undefined>(undefined);
   const action = useRef<AbortController | undefined>(undefined);
   const refreshing = useRef(false);
+  const onChecked = useCallback((device: CommaDevice) => {
+    setDevices((previous) =>
+      previous.map((row) => (row.device_id === device.device_id ? device : row))
+    );
+    setNow(Date.now());
+    // A pending read can carry readiness from before this check. Re-read the
+    // same page so it cannot overwrite fresh results or lose requested devices.
+    restartPendingLoad.current?.();
+  }, []);
+  const { checks, check, checkExpiredOnEntry } = useDeviceRuntimeChecks(
+    api,
+    workspaceId,
+    enabled,
+    onChecked
+  );
 
   const load = useCallback(
-    async (after?: string, background = false) => {
+    async (after?: string, background = false): Promise<void> => {
       if (!workspaceId || !enabled) return;
       if (background && refreshing.current) return;
       request.current?.abort();
       const controller = new AbortController();
       request.current = controller;
       refreshing.current = true;
+      restartPendingLoad.current = () => {
+        refreshing.current = false;
+        void load(after, background);
+      };
       if (!background) setLoading(true);
       // A refresh re-reads the first page and replaces what it covers, so a
       // computer deleted from another client stops being listed here. Pages
@@ -105,16 +127,19 @@ export function useDeviceSettingsCategory(
         setCursor(listed.next_cursor);
         setFailed(false);
         setNow(Date.now());
+        checkExpiredOnEntry(listed.devices, current);
       } catch {
         if (!controller.signal.aborted) setFailed(true);
       } finally {
         if (request.current === controller) {
+          request.current = undefined;
+          restartPendingLoad.current = undefined;
           refreshing.current = false;
           setLoading(false);
         }
       }
     },
-    [api, enabled, local.deviceId, workspaceId]
+    [api, enabled, local.deviceId, workspaceId, checkExpiredOnEntry]
   );
 
   useEffect(() => {
@@ -351,6 +376,21 @@ export function useDeviceSettingsCategory(
           </MenuPopover>
         </MenuTrigger>
       ) : undefined,
+      runtimeCheck: device
+        ? {
+            label:
+              checks[device.device_id] === "pending"
+                ? m.settings_devices_checking()
+                : m.settings_devices_check_again(),
+            pending: checks[device.device_id] === "pending",
+            disabled: !connected || !permits,
+            error:
+              checks[device.device_id] === "failed"
+                ? m.settings_devices_check_failed()
+                : undefined,
+            onCheck: () => check(device.device_id),
+          }
+        : undefined,
       agents: (device?.device_runtimes ?? [])
         .filter((runtime) =>
           ["codex", "claude", "pi", "kimi"].includes(runtime.provider)
@@ -537,6 +577,10 @@ export function useDeviceSettingsCategory(
           addDisabled={pending || !registry || !workspaceId}
           manualDisabled={pending}
           onManual={() => {
+            if (needsDesktopApp()) {
+              requestDesktopApp("device-connect");
+              return;
+            }
             setDialog("manual");
             setActionError(undefined);
             setCopied(false);
@@ -641,8 +685,7 @@ export function useDeviceSettingsCategory(
                 label: copied ? m.common_copied() : m.common_copy(),
                 hierarchy: "primary",
                 shortcut: false,
-                disabled:
-                  pending || copied || !workspaceId || bridge.platform !== "electron",
+                disabled: pending || copied || !workspaceId,
                 onPress: () => {
                   void copyCommand();
                 },

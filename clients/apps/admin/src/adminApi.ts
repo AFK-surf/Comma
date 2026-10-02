@@ -56,13 +56,17 @@ const adminUserPageSchema = z
 
 const adminSessionSchema = z.strictObject({
   id: z.string(),
-  auth_method: z.enum(["email_otp", "google", "ssh_public_key"]).nullable(),
+  auth_method: z
+    .enum(["email_otp", "google", "apple", "watch_pairing", "ssh_public_key"])
+    .nullable(),
   session_source: z.enum(["user_login", "ops_api"]),
   authenticated_at: z.number().nullable(),
   expires_at: z.number(),
   last_seen_at: z.number().nullable(),
   revoked_at: z.number().nullable(),
-  client_kind: z.enum(["web", "electron", "api", "ssh"]).nullable(),
+  client_kind: z
+    .enum(["web", "electron", "android", "ios", "watch", "api", "ssh"])
+    .nullable(),
   device_label: z.string().nullable(),
   restricted: z.boolean(),
 });
@@ -150,7 +154,8 @@ const adminWorkspaceAgentModelSchema = z.object({
   model_display_name: z.string().nullable().optional(),
   model_vendor: z.string().nullable().optional(),
   model_icon: z.string().nullable().optional(),
-  account_pool: z.enum(["codex", "claude"]).nullable().optional(),
+  // Any subscription plan the backend pools, such as `codex` or `gemini`.
+  account_pool: z.string().nullable().optional(),
   reasoning_effort: z.string().nullable().optional(),
   provider: z.string(),
 });
@@ -162,7 +167,8 @@ const adminWorkspaceModelOptionSchema = z.object({
   model_display_name: z.string().nullable().optional(),
   model_vendor: z.string().nullable().optional(),
   model_icon: z.string().nullable().optional(),
-  account_pool: z.enum(["codex", "claude"]).nullable().optional(),
+  // Any subscription plan the backend pools, such as `codex` or `gemini`.
+  account_pool: z.string().nullable().optional(),
   reasoning_effort: z.string().nullable().optional(),
   provider: z.string(),
   scope: z.enum(["global", "tenant"]),
@@ -599,6 +605,27 @@ const modelSelectionPolicySchema = z.object({
 });
 export type ModelSelectionPolicy = z.infer<typeof modelSelectionPolicySchema>;
 
+const guestModePolicySchema = z.object({
+  enabled: z.boolean(),
+  salix_tenant_id: z.string().nullable(),
+  daily_creation_limit: z.number().int().nonnegative(),
+  tenant_concurrency: z.number().int().positive(),
+  session_ttl_seconds: z.number().int().positive(),
+  pow_difficulty: z.number().int().positive(),
+  revision: z.number().int().nonnegative(),
+  created_today: z.number().int().nonnegative(),
+});
+export type GuestModePolicy = z.infer<typeof guestModePolicySchema>;
+export type GuestModeSettings = Pick<
+  GuestModePolicy,
+  | "enabled"
+  | "daily_creation_limit"
+  | "tenant_concurrency"
+  | "session_ttl_seconds"
+  | "pow_difficulty"
+  | "revision"
+>;
+
 const platformTemplateSchema = z.object({
   template_id: z.string(),
   name: z.string(),
@@ -621,6 +648,15 @@ export interface AdminApi {
     policy: FreeRouterPolicy,
     metadata: AdminCommandMetadata
   ): Promise<FreeRouterPolicy>;
+  getGuestMode(options?: RequestOptions): Promise<GuestModePolicy>;
+  updateGuestMode(
+    settings: GuestModeSettings,
+    metadata: AdminCommandMetadata
+  ): Promise<GuestModePolicy>;
+  createGuestTenant(
+    revision: number,
+    metadata: AdminCommandMetadata
+  ): Promise<GuestModePolicy>;
   executeAgentVmmCommand(
     tenantId: string,
     action: AgentVmmAction,
@@ -1157,6 +1193,29 @@ export function createAdminApi({
           body: { ...policy, ...commandBody(metadata) },
         }
       );
+    },
+    getGuestMode(options = {}) {
+      return request("/v1/comma/admin/guest-mode", guestModePolicySchema, options);
+    },
+    updateGuestMode(settings, metadata) {
+      return request("/v1/comma/admin/guest-mode", guestModePolicySchema, {
+        method: "PUT",
+        body: {
+          enabled: settings.enabled,
+          daily_creation_limit: settings.daily_creation_limit,
+          tenant_concurrency: settings.tenant_concurrency,
+          session_ttl_seconds: settings.session_ttl_seconds,
+          pow_difficulty: settings.pow_difficulty,
+          revision: settings.revision,
+          ...commandBody(metadata),
+        },
+      });
+    },
+    createGuestTenant(revision, metadata) {
+      return request("/v1/comma/admin/guest-mode/tenant", guestModePolicySchema, {
+        method: "POST",
+        body: { revision, ...commandBody(metadata) },
+      });
     },
 
     async listPackageVersions(options = {}) {

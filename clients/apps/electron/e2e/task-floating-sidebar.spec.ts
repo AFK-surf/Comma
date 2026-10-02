@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import {
   chatSmokeTaskConversation,
   chatSmokeWorkspace,
@@ -31,6 +32,7 @@ test("real task sidebar keeps the pair centered and resizes without rebuilding o
       ),
   });
   const userData = await mkdtemp(join(tmpdir(), "comma-task-floating-"));
+  recordElectronOnboardingCompleted(userData, [api.userId]);
   const { ELECTRON_RUN_AS_NODE: _, ...env } = process.env;
   const app = await electron.launch({
     args: [resolve("apps/electron/.vite/build/main.js"), `--user-data-dir=${userData}`],

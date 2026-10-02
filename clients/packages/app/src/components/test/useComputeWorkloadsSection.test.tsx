@@ -30,6 +30,7 @@ it("bounds visible observation rounds and stops reads when the panel or document
         kind: "shell",
         desired_state: "ready",
         observed_state: "pending",
+        phase: "waiting_connection",
       },
     ],
   };

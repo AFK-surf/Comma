@@ -151,16 +151,23 @@ defmodule SalixIM.IFC.Admin do
          {:ok, labels} <- Store.list_scope_labels(tenant_id, group_id, connect_id),
          {:ok, clearances} <- Store.list_tag_clearances(tenant_id, group_id, connect_id),
          {:ok, principals} <- Store.list_principal_facts(tenant_id, group_id, connect_id) do
+      # Each list is bounded at the store; one read past the bound flags it.
+      rows = Store.dashboard_rows()
+      {scopes, scopes_truncated} = merge_scopes(facts, labels, rows)
+
       Map.merge(base, %{
         "available" => true,
-        "scopes" => merge_scopes(facts, labels),
-        "clearances" => group_clearances(clearances),
-        "principals" => principals
+        "truncated" =>
+          scopes_truncated or Enum.any?([clearances, principals], &(length(&1) > rows)),
+        "scopes" => scopes,
+        "clearances" => group_clearances(Enum.take(clearances, rows)),
+        "principals" => Enum.take(principals, rows)
       })
     else
       _unavailable ->
         Map.merge(base, %{
           "available" => false,
+          "truncated" => false,
           "scopes" => [],
           "clearances" => [],
           "principals" => []
@@ -169,12 +176,29 @@ defmodule SalixIM.IFC.Admin do
   end
 
   # One row per conversation, whether it was observed, classified, or both.
-  defp merge_scopes(facts, labels) do
-    by_id = Map.new(labels, &{&1["scope_id"], &1})
+  #
+  # Facts and labels are two bounded reads in `scope_id` byte order. A list that
+  # came back longer than `rows` says nothing about ids past its last row, so
+  # a row is shown only up to the smallest such last id: there both halves are
+  # known, and a missing fact or label means there is none. Cutting each list
+  # on its own would show an observed conversation as never seen, or a
+  # classified one as default — which a save would then write back.
+  defp merge_scopes(facts, labels, rows) do
+    known_through =
+      [facts, labels]
+      |> Enum.filter(&(length(&1) > rows))
+      |> Enum.map(&List.last(&1)["scope_id"])
+      |> Enum.min(fn -> nil end)
+
+    known? = &(known_through == nil or &1["scope_id"] <= known_through)
+    facts = Enum.filter(facts, known?)
+    labels = Enum.filter(labels, known?)
+    labels_by_id = Map.new(labels, &{&1["scope_id"], &1})
+    observed_ids = MapSet.new(facts, & &1["scope_id"])
 
     observed =
       Enum.map(facts, fn fact ->
-        label = Map.get(by_id, fact["scope_id"], %{})
+        label = Map.get(labels_by_id, fact["scope_id"], %{})
 
         fact
         |> Map.merge(%{
@@ -187,7 +211,7 @@ defmodule SalixIM.IFC.Admin do
 
     classified_only =
       labels
-      |> Enum.reject(fn label -> Enum.any?(facts, &(&1["scope_id"] == label["scope_id"])) end)
+      |> Enum.reject(&MapSet.member?(observed_ids, &1["scope_id"]))
       |> Enum.map(fn label ->
         %{
           "scope_id" => label["scope_id"],
@@ -202,7 +226,8 @@ defmodule SalixIM.IFC.Admin do
         }
       end)
 
-    Enum.sort_by(observed ++ classified_only, & &1["scope_id"])
+    merged = Enum.sort_by(observed ++ classified_only, & &1["scope_id"])
+    {Enum.take(merged, rows), known_through != nil or length(merged) > rows}
   end
 
   defp group_clearances(rows) do

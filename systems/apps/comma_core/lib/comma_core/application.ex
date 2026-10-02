@@ -17,7 +17,13 @@ defmodule CommaCore.Application do
         auth_redis_children() ++
         oauth_idp_rate_limit_children() ++
         task_share_rate_limit_children() ++
-        google_oidc_children() ++ profile_avatar_children()
+        google_oidc_children() ++
+        apple_auth_children() ++
+        profile_avatar_children() ++
+        [
+          Comma.Notifications.APNs.Transport.finch_child_spec(),
+          Comma.Notifications.APNs.ProviderToken
+        ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: CommaCore.Supervisor)
   end
@@ -26,7 +32,8 @@ defmodule CommaCore.Application do
     if Application.get_env(:comma_core, :start_oban, true) do
       :ok = Comma.ObanTelemetry.attach()
 
-      [{Comma.ObanBootstrap, Application.fetch_env!(:comma_core, Oban)}] ++ backlog_sampler_children()
+      [{Comma.ObanBootstrap, Application.fetch_env!(:comma_core, Oban)}] ++
+        backlog_sampler_children()
     else
       []
     end
@@ -76,6 +83,13 @@ defmodule CommaCore.Application do
       [Comma.TaskShares.RateLimit]
     else
       []
+    end
+  end
+
+  defp apple_auth_children do
+    case Application.get_env(:comma_core, :apple_auth, [])[:client_id] do
+      id when is_binary(id) and id != "" -> [Comma.Auth.AppleKeys]
+      _ -> []
     end
   end
 

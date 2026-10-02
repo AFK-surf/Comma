@@ -216,6 +216,11 @@
           },
           "type": "array"
         },
+        "platformSource": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
         "refs": {
           "items": {
             "properties": {
@@ -1027,6 +1032,29 @@
             "screenFrame",
             "windowFrame"
           ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "status-menu.select",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["id", "kind", "protocolVersion", "requestId"],
           "type": "object"
         },
         {
@@ -1916,6 +1944,113 @@
         },
         {
           "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "side-chat.enabled",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["enabled", "kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "iconPath": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "const": "status-menu.show",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "rows": {
+              "items": {
+                "properties": {
+                  "id": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["header", "item", "separator"],
+                    "type": "string"
+                  },
+                  "shortcut": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "title": {
+                    "maxLength": 1024,
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "toolTip": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "width": {
+              "maximum": 1200,
+              "minimum": 120,
+              "type": "number"
+            }
+          },
+          "required": [
+            "iconPath",
+            "kind",
+            "rows",
+            "toolTip",
+            "width",
+            "protocolVersion",
+            "requestId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "status-menu.hide",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
             "error": {
               "type": "string"
             },
@@ -2256,6 +2391,27 @@
             }
           },
           "required": ["kind", "protocolVersion", "requestId"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "side-chat.enabled",
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 3,
+              "type": "number"
+            },
+            "requestId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["enabled", "kind", "protocolVersion", "requestId"],
           "type": "object"
         }
       ]

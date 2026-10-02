@@ -38,6 +38,12 @@ function issueLabel(messages: CommaMessages, issue: string | undefined): string 
       return messages.chat_issue_sign_in();
     case "model_unavailable":
       return messages.chat_issue_model_unavailable();
+    case "insufficient_credits":
+      return messages.chat_insufficient_credits();
+    case "account_inactive":
+      return messages.chat_billing_account_inactive();
+    case "missing_account":
+      return messages.chat_billing_account_missing();
     default:
       return messages.chat_issue_unknown();
   }

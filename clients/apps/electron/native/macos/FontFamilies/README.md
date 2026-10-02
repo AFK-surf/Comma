@@ -1,9 +1,7 @@
 # Font families
 
-This macOS-only Node-API addon gives Electron Main two CoreText answers. It
-lists the font families installed on this Mac, which Settings > Appearance >
-Font shows. It also measures text in the menu-item font, which the menu-bar
-menu uses to cut long Task titles.
+This macOS-only Node-API addon gives Electron Main the names of the font
+families installed on this Mac. Settings > Appearance > Font lists them.
 
 ## Why Main asks CoreText
 
@@ -18,27 +16,12 @@ matching accepts them. CoreText is thread-safe. The query runs on a libuv
 worker, so the JS thread of Main does not wait for it. The addon does not start
 a process or read font files.
 
-## Menu text width
-
-`menuTextWidth(text)` returns the width in points of `text` in the font AppKit
-draws menu item titles with. The menu-bar menu uses it to cut long Task titles
-so that they end at one edge.
-
-CoreText's menu-item UI font (`kCTFontUIFontMenuItem`) is the same face and
-size as `NSFont.menuFont`. Its widths equal AppKit's, including the per-glyph
-fallback for CJK text and emoji. The call is synchronous: one short line layout
-takes about 20 µs. It reads the font on each call, so it follows a change to the
-system text settings. The result is `null` on other platforms and for a binary
-built before this function existed.
-
 ## Main-process API
 
 ```ts
 const addon = loadFontFamiliesAddon({ isPackaged: app.isPackaged, logger });
 await addon.familyNames();
 // ["Academy Engraved LET", "American Typewriter", …], or null
-addon.menuTextWidth("Open Comma");
-// 82.7, or null
 ```
 
 The result is `null` when the addon cannot answer: on other platforms, or when

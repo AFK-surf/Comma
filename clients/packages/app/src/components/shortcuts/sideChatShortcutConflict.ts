@@ -9,9 +9,11 @@ import {
 const sideChatKeyCode = (shortcut: SideChatShortcut): AppKeyCode | "Space" =>
   shortcut.key === "space"
     ? "Space"
-    : /^[0-9]$/.test(shortcut.key)
-      ? (`Digit${shortcut.key}` as AppKeyCode)
-      : (`Key${shortcut.key.toLocaleUpperCase()}` as AppKeyCode);
+    : shortcut.key === "comma"
+      ? "Comma"
+      : /^[0-9]$/.test(shortcut.key)
+        ? (`Digit${shortcut.key}` as AppKeyCode)
+        : (`Key${shortcut.key.toLocaleUpperCase()}` as AppKeyCode);
 
 export const appBindingConflictsWithSideChatShortcut = (
   binding: AppKeybinding | null,

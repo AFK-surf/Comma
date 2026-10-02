@@ -58,7 +58,7 @@ function Row({
   id: string;
   title: string;
   description: string;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <li className="flex flex-wrap items-center gap-md" data-setting-id={id}>
@@ -366,26 +366,7 @@ export function useSignalIntegration(
           }
           id="signal.number"
           title={m.settings_signal_number_row()}
-        >
-          {own ? (
-            <Button
-              disabled={busy}
-              hierarchy="tertiary-gray"
-              onPress={() => saveNumber("", false)}
-              size="sm"
-            >
-              {m.settings_signal_use_platform()}
-            </Button>
-          ) : null}
-          <Button
-            disabled={busy}
-            hierarchy="secondary-gray"
-            onPress={() => openDialog({ kind: "number", current: own ?? "" })}
-            size="sm"
-          >
-            {m.settings_signal_change_number()}
-          </Button>
-        </Row>
+        />
       </ul>
     </div>
   ) : undefined;
@@ -402,7 +383,6 @@ export function useSignalIntegration(
         "Signal",
         "信号",
         m.settings_signal_new_code(),
-        m.settings_signal_change_number(),
         m.settings_signal_disconnect(),
       ],
       integration: {

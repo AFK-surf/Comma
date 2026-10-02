@@ -56,11 +56,15 @@ defmodule SalixAgent.ModelDiscovery do
 
   def connection(attrs) when is_map(attrs) do
     base = attrs["base_url"]
-    key = attrs["api_key"]
+    # A keyless endpoint (Ollama, a self-hosted gateway) lists its models with
+    # no key; a key that is given must be usable.
+    key = if attrs["api_key"] in [nil, ""], do: nil, else: attrs["api_key"]
 
     with true <- Enum.all?(Map.keys(attrs), &(&1 in ~w(base_url api_key protocol))),
          true <- endpoint?(base),
-         true <- is_binary(key) and byte_size(key) in 1..8192 and String.trim(key) != "" do
+         true <-
+           is_nil(key) or
+             (is_binary(key) and byte_size(key) in 1..8192 and String.trim(key) != "") do
       uri = URI.parse(String.trim(base))
 
       inferred =
@@ -117,10 +121,15 @@ defmodule SalixAgent.ModelDiscovery do
     anthropic = connection["protocol"] == "anthropic"
     url = connection["base_url"] <> if(anthropic, do: "/v1/models", else: "/models")
 
+    key = connection["api_key"]
+
     headers =
-      if anthropic,
-        do: [{"x-api-key", connection["api_key"]}, {"anthropic-version", "2023-06-01"}],
-        else: [{"authorization", "Bearer " <> connection["api_key"]}]
+      cond do
+        anthropic and is_binary(key) -> [{"x-api-key", key}, {"anthropic-version", "2023-06-01"}]
+        anthropic -> [{"anthropic-version", "2023-06-01"}]
+        is_binary(key) -> [{"authorization", "Bearer " <> key}]
+        true -> []
+      end
 
     params =
       if anthropic,

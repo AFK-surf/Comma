@@ -102,12 +102,16 @@ def endpoint (protocol : String) (cfg : Term) (mode : String) (extra : List Term
   let path := if protocol == "anthropic" then "/v1/messages" else if protocol == "responses" then
     (if mode == "compact" then "/responses/compact" else "/responses") else "/chat/completions"
   let mut headers := []
+  -- No credential sends no auth header: a keyless endpoint (a local or
+  -- self-hosted gateway) must not see an empty Bearer or x-api-key.
   if protocol == "anthropic" then
     if nonempty (cfg.get (a "auth_token")) then
       headers := [.tuple [b "authorization", ← cat [b "Bearer ", cfg.get (a "auth_token")]]]
-    else headers := [.tuple [b "x-api-key", coalesce [cfg.get (a "api_key"), b ""]]]
+    else if nonempty (cfg.get (a "api_key")) then
+      headers := [.tuple [b "x-api-key", cfg.get (a "api_key")]]
     headers := headers ++ [.tuple [b "anthropic-version", b "2023-06-01"]]
-  else headers := [.tuple [b "authorization", ← cat [b "Bearer ", cfg.get (a "api_key")]]]
+  else if nonempty (cfg.get (a "api_key")) then
+    headers := [.tuple [b "authorization", ← cat [b "Bearer ", cfg.get (a "api_key")]]]
   headers := headers ++ [.tuple [b "content-type", b "application/json"]]
   if protocol != "anthropic" || mode == "stream" then
     headers := headers ++ [.tuple [b "accept-encoding", b "identity"]]

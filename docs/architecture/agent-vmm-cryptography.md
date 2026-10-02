@@ -115,3 +115,28 @@ an intermediate version serving. Production follows staging proof and promotion.
 
 TLS and protocol choices follow RFC 8446, RFC 9382 and RFC 8439; P-256
 signatures follow FIPS 186-5/SP 800-186.
+
+## Comma installation recovery proof
+
+The existing Host root proves possession when the original User logs in with a new Session.
+The independent expected value is the Host identity digest saved during the original installation exchange.
+The installation owner verifies that identity and its P-256 SHA-256 low-S signature before moving the delivery target.
+A cloud workspace owner alone cannot adopt another subject's installation. A root mismatch, revoked registration, or stale challenge fails closed.
+Local disposal also disables this proof for that exact registration. It does not revoke PersonalMesh membership or replace the root.
+
+The purpose is `agent-vmm/comma-recovery/1`. This endpoint cannot sign arbitrary payloads.
+The server stores one 32-byte random nonce, authorization revision, new Session, original subject, and exact installation scope for 120 seconds.
+The canonical wire has newline-delimited purpose, then unpadded base64url UTF-8 values in this order:
+`audience`, `subject`, `session_id`, `tenant_id`, `group_id`, `scope_key`, `environment_id`, `operation_id`, `registration_id`, `nonce`.
+Canonical decimal revision and Unix expiry follow, with a final newline.
+Signature bytes are fixed 64-byte `r || s`, as in the device suite above.
+Preview grants no authority. Consumption rechecks the active original subject and Workspace owner, scope, revision, and nonce under the installation row lock.
+The same lock protects ordinary configure, retry, revoke, and initialization against a validated old Session continuing after recovery.
+A lost consume response is resolved by an authenticated read of that exact original binding, without replaying a consumed challenge.
+Before exchange, the original subject can resolve a lost authorize response through its saved request ID.
+This indexed lookup requires the current active Workspace owner and returns only the original operation, registration, scope, and authorization status.
+It neither rotates the ticket nor moves the delivery target. The user can explicitly close that unexchanged request before creating a new one.
+
+Go standard-library crypto and Erlang OTP crypto implement P-256 and SHA-256. The small wire adapter binds this product purpose and scope.
+No library defines this installation-owner transcript. Both implementations check the same canonical UTF-8 vector and their runtime signature boundaries.
+The nonce/revision is an existing authorization fence. It is not a release, artifact, or availability gate.

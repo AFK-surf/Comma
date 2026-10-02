@@ -134,11 +134,11 @@ theorem stableWork_guards {s : Term} :
   all_goals first
     | (intro h; cases h; done)
     | (intro _
-       exact ⟨fails_or ‹StateQuery.failuresExhausted s _ = _› ‹_›,
-         fails_not ‹StateQuery.modelGuardExhausted s _ = _› ‹_›⟩)
+       exact ⟨fails_or (hyp% StateQuery.failuresExhausted s _ = _) ‹_›,
+         fails_not (hyp% StateQuery.modelGuardExhausted s _ = _) ‹_›⟩)
     | (refine SatA.const (fun _ _ => ?_)
-       exact ⟨fails_or ‹StateQuery.failuresExhausted s _ = _› ‹_›,
-         fails_not ‹StateQuery.modelGuardExhausted s _ = _› ‹_›⟩)
+       exact ⟨fails_or (hyp% StateQuery.failuresExhausted s _ = _) ‹_›,
+         fails_not (hyp% StateQuery.modelGuardExhausted s _ = _) ‹_›⟩)
 
 theorem continuationRunnable_guards {s : Term} :
     SatA (fun v => v = true → Fails (StateQuery.failuresExhausted s) ∧ Fails (StateQuery.modelGuardExhausted s))
@@ -148,8 +148,8 @@ theorem continuationRunnable_guards {s : Term} :
   all_goals first
     | (intro h; cases h; done)
     | (intro _
-       exact ⟨fails_or ‹StateQuery.failuresExhausted s _ = _› ‹_›,
-         fails_not ‹StateQuery.modelGuardExhausted s _ = _› ‹_›⟩)
+       exact ⟨fails_or (hyp% StateQuery.failuresExhausted s _ = _) ‹_›,
+         fails_not (hyp% StateQuery.modelGuardExhausted s _ = _) ‹_›⟩)
 
 /-- `needs_transcript_continuation?` answers `true` only through
 `continuation_runnable?`, which reads the failure cap and the model guards. -/
@@ -169,7 +169,7 @@ theorem retryAt_guard {s : Term} :
   sata_walk
   all_goals first
     | (intro h; simp [nil, Term.isInteger] at h; done)
-    | (intro _; exact fails_or ‹StateQuery.failuresExhausted s _ = _› ‹_›)
+    | (intro _; exact fails_or (hyp% StateQuery.failuresExhausted s _ = _) ‹_›)
 
 /-! ## The activation decision -/
 
@@ -191,9 +191,9 @@ theorem activationNext_gate {s r : Term} : SatA (GateOut s) (Budget.activationNe
     refine ⟨fun h => ?_, fun h => ?_⟩
   all_goals first
     | (simp [a] at h; done)
-    | exact ⟨_, _, ‹StateQuery.hasUnprocessedStableWork s _ = _›⟩
-    | exact Or.inr ⟨_, _, ‹StateQuery.needsContinuation s _ = _›⟩
-    | exact Or.inl ⟨_, _, _, ‹StateQuery.retryAt s _ = _›, ‹_›⟩
+    | exact ⟨_, _, (hyp% StateQuery.hasUnprocessedStableWork s _ = _)⟩
+    | exact Or.inr ⟨_, _, (hyp% StateQuery.needsContinuation s _ = _)⟩
+    | exact Or.inl ⟨_, _, _, (hyp% StateQuery.retryAt s _ = _), ‹_›⟩
 
 /-! ## The loop's activation helper -/
 

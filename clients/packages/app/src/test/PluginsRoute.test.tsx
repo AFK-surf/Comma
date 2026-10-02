@@ -11,8 +11,11 @@ import {
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { Toaster } from "@comma/ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient, CommaPlugin } from "../api";
+import type { OnboardingHandoff } from "@comma/native-bridge";
+import { CommaApiError, type CommaApiClient, type CommaPlugin } from "../api";
 import type { ReactNode } from "react";
+import { OnboardingPluginHandoff } from "../components/onboarding/OnboardingPluginHandoff";
+import { useOnboardingPlugins } from "../components/onboarding/useOnboardingPlugins";
 import { PluginInstallProvider } from "../components/plugins/PluginInstallProvider";
 import { PluginsRoute } from "../components/plugins/PluginsRoute";
 import { resetWorkspaceSkillsCacheForTest } from "../components/chat/useWorkspaceSkills";
@@ -82,6 +85,19 @@ function render(ui: ReactNode) {
     <PluginInstallProvider api={harness.api as unknown as CommaApiClient}>
       {ui}
     </PluginInstallProvider>
+  );
+}
+
+/** The onboarding's apps card, down to its Connect for Linear. */
+function OnboardingConnectLinear() {
+  const { connect } = useOnboardingPlugins({
+    api: harness.api as unknown as CommaApiClient,
+    workspace: { status: "ready", workspaceId: "wsp_1" },
+  });
+  return (
+    <button onClick={() => connect("linear")} type="button">
+      Connect Linear
+    </button>
   );
 }
 
@@ -426,6 +442,147 @@ describe("PluginsRoute", () => {
     expect(
       screen.getByRole("button", { name: "View Linear plugin details" })
     ).toBeVisible();
+  });
+
+  it("installs an app the onboarding window left authorizing once the user finishes in the browser", async () => {
+    let handoff: ((payload: OnboardingHandoff) => void) | undefined;
+    installNativeBridgeMock({
+      onboarding: {
+        onHandoff: (listener: (payload: OnboardingHandoff) => void) => {
+          handoff = listener;
+          return () => {
+            handoff = undefined;
+          };
+        },
+      },
+    });
+    harness.installWorkspacePlugin.mockResolvedValueOnce({
+      authorization: null,
+      plugin: { ...linearPlugin, installed: true },
+    });
+    render(
+      <>
+        <OnboardingPluginHandoff />
+        <PluginsRoute />
+      </>
+    );
+    expect(await screen.findByRole("button", { name: "Add Linear" })).toBeEnabled();
+
+    // The onboarding window closed with Linear's consent still open in the
+    // browser; the user then finishes it there and comes back.
+    act(() =>
+      handoff?.({
+        pluginAuthorization: {
+          authorizationState: "onboarding-state",
+          expiresAt: Date.now() + 60_000,
+          pluginId: "linear",
+          workspaceId: "wsp_1",
+        },
+      })
+    );
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull()
+    );
+    expect(harness.installWorkspacePlugin).toHaveBeenCalledExactlyOnceWith(
+      "wsp_1",
+      "linear",
+      {
+        authorizationState: "onboarding-state",
+        verifyOnly: true,
+        signal: expect.any(AbortSignal),
+      }
+    );
+    expect(harness.openNativePlatformExternalUrl).not.toHaveBeenCalled();
+  });
+
+  it("says why an install failed in the reader's words, never the server's code", async () => {
+    const user = userEvent.setup();
+    harness.installWorkspacePlugin
+      .mockRejectedValueOnce(
+        new CommaApiError(503, "upstream_unavailable", {
+          error: "upstream_unavailable",
+        })
+      )
+      .mockRejectedValueOnce(
+        new CommaApiError(500, "internal_error", { error: "internal_error" })
+      );
+    render(
+      <>
+        <PluginsRoute />
+        <Toaster />
+      </>
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Add Linear" }));
+    expect(await screen.findByText("Couldn’t add the plugin.")).toBeVisible();
+    expect(
+      screen.getByText("The service isn’t available right now. Try again in a moment.")
+    ).toBeVisible();
+
+    // A code with no wording of its own reads as a general failure.
+    await user.click(screen.getByRole("button", { name: "Add Linear" }));
+    expect(await screen.findByText("Something went wrong. Try again.")).toBeVisible();
+    expect(screen.queryByText(/upstream_unavailable|internal_error/)).toBeNull();
+  });
+
+  it("words a failure started from the onboarding for its apps, without sending the user to Plugins", async () => {
+    const user = userEvent.setup();
+    harness.installWorkspacePlugin.mockRejectedValueOnce(
+      new CommaApiError(503, "upstream_unavailable", { error: "upstream_unavailable" })
+    );
+    render(
+      <>
+        <OnboardingConnectLinear />
+        <Toaster />
+      </>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Connect Linear" }));
+    expect(await screen.findByText("Couldn’t connect the app.")).toBeVisible();
+    expect(
+      screen.getByText("The service isn’t available right now. Try again in a moment.")
+    ).toBeVisible();
+    expect(screen.queryByText(/plugin/i)).toBeNull();
+  });
+
+  it("words an onboarding authorization that times out in another window for its apps", async () => {
+    let handoff: ((payload: OnboardingHandoff) => void) | undefined;
+    installNativeBridgeMock({
+      onboarding: {
+        onHandoff: (listener: (payload: OnboardingHandoff) => void) => {
+          handoff = listener;
+          return () => {
+            handoff = undefined;
+          };
+        },
+      },
+    });
+    render(
+      <>
+        <OnboardingPluginHandoff />
+        <Toaster />
+      </>
+    );
+
+    // The onboarding window closed with Linear's consent open, which the user
+    // never finishes.
+    act(() =>
+      handoff?.({
+        pluginAuthorization: {
+          authorizationState: "onboarding-state",
+          expiresAt: Date.now() + 50,
+          pluginId: "linear",
+          workspaceId: "wsp_1",
+        },
+      })
+    );
+
+    expect(
+      await screen.findByText("Authorization timed out. Try connecting the app again.")
+    ).toBeVisible();
+    expect(screen.queryByText(/Plugins/)).toBeNull();
   });
 
   it("retries pending authorization without focus or reopening the browser", async () => {

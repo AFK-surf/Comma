@@ -70,6 +70,18 @@
       ]
     },
     {
+      "id": "comma_bft",
+      "kind": "app",
+      "name": "@comma/bft",
+      "path": "clients/apps/bft/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/ui",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
       "id": "comma_chat-contract",
       "kind": "package",
       "name": "@comma/chat-contract",
@@ -943,6 +955,11 @@
         "namespace": "appPreferences"
       },
       {
+        "id": "appPreferences.requestNotificationAuthorization",
+        "kind": "capability",
+        "namespace": "appPreferences"
+      },
+      {
         "id": "connectorRuntime.state",
         "kind": "capability",
         "namespace": "connectorRuntime"
@@ -1073,6 +1090,36 @@
         "namespace": "surfaces"
       },
       {
+        "id": "onboarding.presentWindow",
+        "kind": "capability",
+        "namespace": "onboarding"
+      },
+      {
+        "id": "onboarding.closeWindow",
+        "kind": "capability",
+        "namespace": "onboarding"
+      },
+      {
+        "id": "onboarding.window",
+        "kind": "capability",
+        "namespace": "onboarding"
+      },
+      {
+        "id": "onboarding.window.changed",
+        "kind": "event",
+        "namespace": "onboarding"
+      },
+      {
+        "id": "onboarding.window",
+        "kind": "state",
+        "namespace": "onboarding"
+      },
+      {
+        "id": "onboarding.handoff",
+        "kind": "event",
+        "namespace": "onboarding"
+      },
+      {
         "id": "clipboard.readText",
         "kind": "capability",
         "namespace": "clipboard"
@@ -1091,6 +1138,26 @@
         "id": "clipboard.writeImage",
         "kind": "capability",
         "namespace": "clipboard"
+      },
+      {
+        "id": "tokenDanceAuthorization.start",
+        "kind": "capability",
+        "namespace": "tokenDanceAuthorization"
+      },
+      {
+        "id": "tokenDanceAuthorization.status",
+        "kind": "capability",
+        "namespace": "tokenDanceAuthorization"
+      },
+      {
+        "id": "tokenDanceAuthorization.save",
+        "kind": "capability",
+        "namespace": "tokenDanceAuthorization"
+      },
+      {
+        "id": "tokenDanceAuthorization.cancel",
+        "kind": "capability",
+        "namespace": "tokenDanceAuthorization"
       },
       {
         "id": "subscriptionAuthorization.start",
@@ -1573,6 +1640,36 @@
         "namespace": "localData"
       },
       {
+        "id": "computeNode.localOverview",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.disposeLocal",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.resumeLocalDisposal",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.recoveryCandidates",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.recover",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.localWorkloads",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
         "id": "computeNode.state",
         "kind": "capability",
         "namespace": "computeNode"
@@ -1593,6 +1690,11 @@
         "namespace": "computeNode"
       },
       {
+        "id": "computeNode.refresh",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
         "id": "computeNode.repair",
         "kind": "capability",
         "namespace": "computeNode"
@@ -1609,6 +1711,11 @@
       },
       {
         "id": "computeNode.remove",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.abandon",
         "kind": "capability",
         "namespace": "computeNode"
       },
@@ -1948,12 +2055,13 @@
       },
       {
         "name": "appPreferences",
-        "commands": 4,
+        "commands": 5,
         "events": 1,
         "states": 1,
         "leafIds": [
           "appPreferences.initializeClientSettings",
           "appPreferences.openNotificationSettings",
+          "appPreferences.requestNotificationAuthorization",
           "appPreferences.state",
           "appPreferences.state.changed",
           "appPreferences.update"
@@ -2043,15 +2151,23 @@
       },
       {
         "name": "computeNode",
-        "commands": 6,
+        "commands": 14,
         "events": 1,
         "states": 1,
         "leafIds": [
+          "computeNode.abandon",
           "computeNode.configure",
+          "computeNode.disposeLocal",
           "computeNode.drain",
+          "computeNode.localOverview",
+          "computeNode.localWorkloads",
           "computeNode.rebuild",
+          "computeNode.recover",
+          "computeNode.recoveryCandidates",
+          "computeNode.refresh",
           "computeNode.remove",
           "computeNode.repair",
+          "computeNode.resumeLocalDisposal",
           "computeNode.state",
           "computeNode.state.changed"
         ]
@@ -2185,6 +2301,19 @@
           "notch.stop",
           "notch.toggle",
           "notch.update"
+        ]
+      },
+      {
+        "name": "onboarding",
+        "commands": 3,
+        "events": 2,
+        "states": 1,
+        "leafIds": [
+          "onboarding.closeWindow",
+          "onboarding.handoff",
+          "onboarding.presentWindow",
+          "onboarding.window",
+          "onboarding.window.changed"
         ]
       },
       {
@@ -2341,6 +2470,18 @@
           "synchronicity.state",
           "synchronicity.versions",
           "synchronicity.write"
+        ]
+      },
+      {
+        "name": "tokenDanceAuthorization",
+        "commands": 4,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "tokenDanceAuthorization.cancel",
+          "tokenDanceAuthorization.save",
+          "tokenDanceAuthorization.start",
+          "tokenDanceAuthorization.status"
         ]
       },
       {
@@ -2509,25 +2650,6 @@
       "directTests": []
     },
     {
-      "concept": "BFT 当前 Assistant Chat",
-      "layer": "产品绑定",
-      "implementation": "BridgeForTeams.Schema.UserAssistantChat",
-      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user_assistant_chat.ex",
-      "directTests": []
-    },
-    {
-      "concept": "Agent 工作范围的 Chat-ready 条件",
-      "layer": "产品生命周期",
-      "implementation": "BridgeForTeams.AssistantChats.ensure_chat/4",
-      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex",
-      "directTests": [
-        {
-          "path": "systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs",
-          "name": "invalid router config creates no chat"
-        }
-      ]
-    },
-    {
       "concept": "Conversation",
       "layer": "协作事实",
       "implementation": "SalixIM.ConversationActor",
@@ -2678,18 +2800,6 @@
         {
           "path": "systems/apps/salix_im/test/conversations_test.exs",
           "name": "concurrent Router reassignment cannot deactivate both desired Router participants"
-        }
-      ]
-    },
-    {
-      "concept": "BFT 控制面显式重新指定 Group Router",
-      "layer": "产品生命周期",
-      "implementation": "BridgeForTeams.AssistantChats",
-      "path": "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex",
-      "directTests": [
-        {
-          "path": "systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs",
-          "name": "revalidates canonical kind, current Router, and BFT provider before reuse"
         }
       ]
     },

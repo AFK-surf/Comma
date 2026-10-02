@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
 async function startBrowserStub() {
@@ -294,6 +295,7 @@ test("a live window resize keeps the chat column steady while the sidebar yields
   const apiStub = await startChatSmokeStub({
     assistantReply: `[Open browser](${browserStub.baseUrl}/page)`,
   });
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
@@ -487,6 +489,7 @@ test("the Chat Sidebar returns to its own width once the window no longer needs 
   const apiStub = await startChatSmokeStub({
     assistantReply: `[Open browser](${browserStub.baseUrl}/page)`,
   });
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],

@@ -287,6 +287,20 @@ test("a previewed file becomes a tab of the shell's one right sidebar", async ({
   await page.getByRole("button", { name: "Close Openai.pdf" }).click();
   await expect(page.getByRole("tab", { name: "Openai.pdf" })).toHaveCount(0);
   await expect(screenshotTab).toHaveAttribute("aria-selected", "true");
+  await expect(sidebar).toHaveAttribute("data-open", "true");
+
+  await screenshotTab.hover();
+  await page.getByRole("button", { name: `Close ${fileName}` }).click();
+  await expect(sidebar).toHaveAttribute("data-open", "false");
+  await expect(page.getByTestId("chat-sidebar-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  await expect.poll(async () => (await sidebar.boundingBox())?.width ?? 0).toBe(0);
+
+  await pdfRow.click();
+  await expect(sidebar).toHaveAttribute("data-open", "true");
+  await expect(previewTab).toHaveAttribute("aria-selected", "true");
 });
 
 test("a click joins the selection under way instead of opening the file", async ({
@@ -976,6 +990,26 @@ test("a space's menu renames it and the local folder follows when synced", async
   await expect(page.getByTestId("comma-drive-folder-renamed")).toContainText(
     "the local folder was renamed too"
   );
+});
+
+test("the local sync pill toggles its panel", async ({ page }) => {
+  await openDrive(page);
+
+  const trigger = page.getByTestId("drive-sync-trigger");
+  const panel = page.getByTestId("drive-sync-panel");
+  const box = await trigger.boundingBox();
+  expect(box).not.toBeNull();
+  // A real pointer press at the pill: while the panel is open, whatever layer
+  // sits over the pill must still turn this second press into a close.
+  const pressPill = () =>
+    page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  for (let round = 0; round < 2; round += 1) {
+    await pressPill();
+    await expect(panel).toBeVisible();
+    await pressPill();
+    await expect(panel).toBeHidden();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  }
 });
 
 test("local sync starts from a folder picker and marks what is left out", async ({

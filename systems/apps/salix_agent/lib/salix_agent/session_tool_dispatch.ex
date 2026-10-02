@@ -89,7 +89,7 @@ defmodule SalixAgent.SessionToolDispatch do
              ctx,
              call[:name] || call["name"],
              call[:args] || call["args"] || %{}
-           ) do
+           ) and SalixAgent.GuestPolicy.allowed_tool?(ctx, call[:name] || call["name"]) do
           case SalixAgent.TerminalReply.authorize(call, ctx) do
             {:ok, call} ->
               {:execute, call}

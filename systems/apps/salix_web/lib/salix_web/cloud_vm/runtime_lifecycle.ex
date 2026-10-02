@@ -34,7 +34,8 @@ defmodule SalixWeb.CloudVM.RuntimeLifecycle do
             "status" => status
           }} <- GroupCompute.group_workload(scope.group_id),
          true <- tenant == scope.tenant_id,
-         true <- provider == "cloudflare" and status in ~w(ready archived waking),
+         true <-
+           provider == "cloudflare" and status in ~w(ready archived waking billing_suspended),
          {:ok, %{"device_id" => ^device_id} = device} <-
            SalixEnv.RuntimeTargets.device(scope.tenant_id, scope.group_id, id),
          true <-
@@ -45,12 +46,14 @@ defmodule SalixWeb.CloudVM.RuntimeLifecycle do
       timeout = Keyword.get(opts, :timeout, 30_000) |> max(0) |> min(30_000)
       deadline = System.monotonic_time(:millisecond) + timeout
 
-      with :ok <-
+      with :ok <- SalixWeb.ComputeProviders.Cloudflare.authorize_resume(scope.group_id),
+           :ok <-
              hold(scope.group_id, tenant, device_id, System.system_time(:millisecond) + timeout,
                require_runtime_connector: true
              ) do
         await_wake(scope.group_id, select, deadline)
       else
+        {:error, %{"error_class" => "billing_unavailable"}} = error -> error
         _ -> {:error, :target_unavailable}
       end
     else
@@ -92,19 +95,29 @@ defmodule SalixWeb.CloudVM.RuntimeLifecycle do
   defp await_wake(group, select, deadline) do
     case wake(group) do
       :ok ->
-        await_selection(select, deadline)
+        await_selection(group, select, deadline)
 
       {:error, :runtime_waking} ->
         if pause_selection(deadline),
           do: await_wake(group, select, deadline),
           else: {:error, :target_unavailable}
+
+      {:error, _} = error ->
+        error
     end
   end
 
-  defp await_selection(select, deadline) do
+  defp await_selection(group, select, deadline) do
+    case wake(group) do
+      {:error, %{"error_class" => "billing_unavailable"}} = error -> error
+      _ -> await_selected(group, select, deadline)
+    end
+  end
+
+  defp await_selected(group, select, deadline) do
     case select.() do
       {:error, :target_unavailable} = error ->
-        if pause_selection(deadline), do: await_selection(select, deadline), else: error
+        if pause_selection(deadline), do: await_selection(group, select, deadline), else: error
 
       result ->
         result
@@ -141,9 +154,19 @@ defmodule SalixWeb.CloudVM.RuntimeLifecycle do
     end
   end
 
+  defp wake_cloudflare(%{"status" => status, "group_id" => group})
+       when status in ~w(creating billing_suspended eligible_for_resume),
+       do: SalixWeb.ComputeProviders.Cloudflare.authorize_resume(group)
+
   defp wake_cloudflare(%{"status" => status}) when status not in ~w(archived waking), do: :ok
 
   defp wake_cloudflare(rec) do
+    with :ok <- SalixWeb.ComputeProviders.Cloudflare.authorize_resume(rec["group_id"]) do
+      request_wake(rec)
+    end
+  end
+
+  defp request_wake(rec) do
     case SalixEnv.ComputeReconciler.request_group_wake(rec["group_id"]) do
       {:error, :group_recovery_action_required} ->
         {:error,

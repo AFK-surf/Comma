@@ -62,6 +62,30 @@ defmodule SalixStore.OAuth do
     end
   end
 
+  @doc """
+  Rewrite a stored record with an `If-Match` write. `fun` returns
+  `{:ok, record}` to write, or `:skip` to leave the record as it is. A
+  concurrent writer, such as a token refresh, makes it retry on the fresh
+  record, so neither write loses the other's fields.
+  """
+  @spec update(String.t(), (conn_record() -> {:ok, conn_record()} | :skip), pos_integer()) ::
+          {:ok, conn_record()} | :skipped | {:error, term()}
+  def update(id, fun, attempts \\ 3) do
+    with {:ok, %{body: body, etag: etag}} <- S3.get(Keys.oauth_connection(id)) do
+      case fun.(Jason.decode!(body)) do
+        :skip ->
+          :skipped
+
+        {:ok, record} ->
+          case S3.put(Keys.oauth_connection(id), Jason.encode!(record), if_match: etag) do
+            {:ok, _} -> {:ok, record}
+            {:error, :precondition_failed} when attempts > 1 -> update(id, fun, attempts - 1)
+            {:error, _} = error -> error
+          end
+      end
+    end
+  end
+
   defp cas_refresh(id, record, etag, refresher) do
     with {:ok, refreshed} <- refresher.(record) do
       new_record =

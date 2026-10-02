@@ -852,7 +852,7 @@ test("Participant opens a right-sidebar Session tab while retaining the Conversa
     await participant.click();
     const sidebar = page.getByTestId("chat-sidebar");
     const historyTab = sidebar.getByRole("tab", {
-      name: "Session history · Router",
+      name: "Session history · Comma",
       exact: true,
     });
     await expect(historyTab).toHaveAttribute("aria-selected", "true");
@@ -921,7 +921,7 @@ test("Participant opens a right-sidebar Session tab while retaining the Conversa
     await sidebar.getByRole("button", { name: "New tab", exact: true }).click();
     await historyTab.click();
     await sidebar
-      .getByRole("button", { name: "Close Session history · Router", exact: true })
+      .getByRole("button", { name: "Close Session history · Comma", exact: true })
       .click();
     await expect(history).toHaveCount(0);
     await expect(participant).toBeVisible();

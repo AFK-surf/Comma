@@ -141,6 +141,21 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sourceRoot, "owned.bin"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Older archives can retain a command link while omitting its package.
+	commandLink := filepath.Join(".salix", "sprite-home", ".local", "bin", "codex")
+	omittedCommand := filepath.Join(sourceRoot, ".salix", "sprite-home", ".cache", "codex")
+	if err := os.MkdirAll(filepath.Dir(omittedCommand), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(omittedCommand, []byte("cached command"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(sourceRoot, commandLink)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../.cache/codex", filepath.Join(sourceRoot, commandLink)); err != nil {
+		t.Fatal(err)
+	}
 	operation := "zstd-handler-roundtrip"
 	transfers := make([]signedArchiveTransfer, 1024)
 	for index := range transfers {
@@ -203,6 +218,23 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	restored, err := os.ReadFile(filepath.Join(targetRoot, "owned.bin"))
 	if err != nil || !bytes.Equal(restored, data) {
 		t.Fatalf("restored data differs: %v", err)
+	}
+	if link, err := os.Readlink(filepath.Join(targetRoot, commandLink)); err != nil || link != "../../.cache/codex" {
+		t.Fatalf("restored command link differs: %q %v", link, err)
+	}
+	if _, err := os.Stat(filepath.Join(targetRoot, commandLink)); !os.IsNotExist(err) {
+		t.Fatalf("omitted command must remain absent: %v", err)
+	}
+	var nextArchive bytes.Buffer
+	if err := writeTarZstTrees(context.Background(), &nextArchive, []archiveTree{{targetRoot, "."}}, nil, migrationByteLimit); err != nil {
+		t.Fatalf("archive restored workspace: %v", err)
+	}
+	nextRoot := t.TempDir()
+	if err := restoreTarZstStateLimit(&nextArchive, nextRoot, nil, migrationByteLimit); err != nil {
+		t.Fatalf("restore next archive: %v", err)
+	}
+	if link, err := os.Readlink(filepath.Join(nextRoot, commandLink)); err != nil || link != "../../.cache/codex" {
+		t.Fatalf("re-archived command link differs: %q %v", link, err)
 	}
 	assertStreamReceipt := func(target *connector, outcome string) {
 		t.Helper()

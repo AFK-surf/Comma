@@ -2,14 +2,14 @@ defmodule BridgeForTeams.MeetingsTest do
   @moduledoc """
   `BridgeForTeams.Meetings` reads bot-attended meeting records from Salix over
   the erpc boundary (same-BEAM salix node with fake S3 in tests) and
-  normalizes summaries/action items for the New Home board.
+  normalizes summaries/action items for Triage context.
   """
   use BridgeForTeams.DataCase, async: false
 
   alias BridgeForTeams.Meetings
   alias BridgeForTeams.Schema.Project
 
-  test "list_meetings/1 returns the project group's meetings from Salix" do
+  test "list_triage_meetings/2 returns the project group's normalized meetings from Salix" do
     group_id = "group-meetings-#{System.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
@@ -34,7 +34,7 @@ defmodule BridgeForTeams.MeetingsTest do
 
     project = %Project{salix_group_id: group_id}
 
-    assert [meeting] = Meetings.list_meetings(project)
+    assert {:ok, [meeting]} = Meetings.list_triage_meetings(project, limit: 25)
     assert meeting["title"] == "Portfolio weekly sync"
     assert meeting["status"] == "done"
     assert meeting["artifacts"] == ["transcript"]
@@ -42,11 +42,6 @@ defmodule BridgeForTeams.MeetingsTest do
 
     assert [%{"description" => "Send diligence memo", "owner" => "Alex", "deadline" => "Friday"}] =
              Meetings.action_items(meeting)
-  end
-
-  test "list_meetings/1 is best-effort: no group means no meetings" do
-    assert Meetings.list_meetings(%Project{salix_group_id: nil}) == []
-    assert Meetings.list_meetings(nil) == []
   end
 
   # GET latency paid by the calling process, so a sequential reader is slow and

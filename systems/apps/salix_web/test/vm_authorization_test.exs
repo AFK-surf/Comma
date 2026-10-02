@@ -17,6 +17,56 @@ defmodule SalixWeb.VMAuthorizationTest do
     :ok
   end
 
+  test "paid LLM calls with omitted or zero estimates reject an exhausted account" do
+    account = unique_account_id("ba_llm")
+
+    assert :ok =
+             BillingCore.Accounts.ensure_account(%{
+               billing_account_id: account,
+               surface: "comma",
+               product_owner_type: "workspace",
+               product_owner_id: account
+             })
+
+    fact = %{
+      billing_account_id: account,
+      provider: "openai",
+      model: "gpt-4.1",
+      surface: "comma",
+      product_owner_type: "workspace",
+      product_owner_id: account,
+      fee_control_typed_sink: __MODULE__.ProjectionSink
+    }
+
+    for paid <- [fact, Map.put(fact, :estimated_credits, 0)] do
+      assert {:error, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+               BillingCore.LLMMetering.before_llm_call(paid)
+    end
+
+    assert :ok =
+             BillingCore.LLMMetering.before_llm_call(Map.put(fact, :credential_scope, "tenant"))
+  end
+
+  test "voice admission uses account availability and keeps unattributed calls" do
+    account = unique_account_id("ba_voice")
+
+    assert :ok =
+             BillingCore.Accounts.ensure_account(%{
+               billing_account_id: account,
+               surface: "comma",
+               product_owner_type: "workspace",
+               product_owner_id: account
+             })
+
+    assert {:error, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+             BillingCore.VoiceMetering.authorize(%{
+               group_id: "group_voice",
+               owner_snapshot: %{"billing_account_id" => account, "surface" => "comma"}
+             })
+
+    assert :ok = BillingCore.VoiceMetering.authorize(%{owner_snapshot: %{}})
+  end
+
   test "denied VM authorization emits observable fee-control projection rows" do
     assert {:error, {:billing_unavailable, decision}} =
              SalixWeb.ComputeProviders.Cloudflare.VMAuthorization.BillingCore.authorize_vm(%{

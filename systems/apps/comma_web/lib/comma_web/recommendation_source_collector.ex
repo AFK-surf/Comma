@@ -518,6 +518,14 @@ defmodule CommaWeb.RecommendationSourceCollector do
     if encoded_bytes <= budget, do: {value, encoded_bytes, false}, else: :omit
   end
 
+  @reconnect_codes ~w(missing_scope invalid_auth not_authed token_revoked token_expired account_inactive)
+  # `Salix.Bindings.MCPCredentials` reports an unusable grant as text.
+  @reconnect_credential_errors [
+    "requires reauthorization",
+    "is revoked",
+    "is missing required scopes"
+  ]
+
   defp failure(source, reason) do
     %{
       "appId" => source["appId"],
@@ -535,6 +543,18 @@ defmodule CommaWeb.RecommendationSourceCollector do
               :member_source_changed
             ],
        do: "identity"
+
+  # Only the member can fix these, by reconnecting the source in Plugins: the
+  # grant lacks a scope, or the provider rejects or revoked the token.
+  defp failure_class({:member_provider_error, code}) when code in @reconnect_codes,
+    do: "reconnect"
+
+  defp failure_class({kind, 401}) when kind in [:member_provider_http, :oauth_provider_http],
+    do: "reconnect"
+
+  defp failure_class(reason) when is_binary(reason) do
+    if String.contains?(reason, @reconnect_credential_errors), do: "reconnect", else: "read"
+  end
 
   defp failure_class(_), do: "read"
 

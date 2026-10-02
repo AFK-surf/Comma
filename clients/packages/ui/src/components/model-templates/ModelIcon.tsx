@@ -9,6 +9,12 @@ import {
   MetaAiBrandIcon,
   GrokBrandIcon,
   QwenBrandIcon,
+  ZaiBrandIcon,
+  NvidiaBrandIcon,
+  OllamaBrandIcon,
+  OpencodeBrandIcon,
+  VercelBrandIcon,
+  CopilotBrandIcon,
   SparklesIcon,
 } from "../icons";
 
@@ -23,7 +29,17 @@ const icons = {
   meta: MetaAiBrandIcon,
   xai: GrokBrandIcon,
   qwen: QwenBrandIcon,
+  zai: ZaiBrandIcon,
+  nvidia: NvidiaBrandIcon,
+  ollama: OllamaBrandIcon,
+  opencode: OpencodeBrandIcon,
+  vercel: VercelBrandIcon,
+  "github-copilot": CopilotBrandIcon,
 };
+
+/** Whether `brand` has its own mark rather than the generic sparkles. */
+export const hasModelIcon = (brand: string | null | undefined) =>
+  !!brand && brand in icons;
 
 export function ModelIcon({ brand }: { brand?: string | null | undefined }) {
   const Icon =

@@ -6,11 +6,12 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole as findWindowByNativeRole } from "../src/test-support/electron-native-window";
 import { findElectronWindowByRole } from "../src/test-support/electron-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startSessionProjectionStub } from "../../../e2e/helpers/session-fixture";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
@@ -556,6 +557,8 @@ test.afterAll(async () => {
 
 test.beforeEach(async () => {
   userDataDir = await mkdtemp(join(tmpdir(), "comma-shell-e2e-"));
+  // Every stub here signs the shell account in.
+  recordElectronOnboardingCompleted(userDataDir, [shellSessionStub.userId]);
 });
 
 test("electron keeps native window backing aligned with Comma appearance while signed out", async () => {
@@ -1098,6 +1101,73 @@ test("electron CSP permits the authenticated blob avatar to load", async () => {
   }
 });
 
+test("electron moves an Open Comma shortcut left at the old default to Option-Comma, once", async () => {
+  test.skip(process.platform !== "darwin", "Side Chat is a macOS-only surface.");
+  // A profile from before Option-Comma: the first launch saved every default,
+  // Option-Space included, and no defaults revision.
+  const preferencesPath = join(userDataDir, "app-preferences.json");
+  const stored = JSON.parse(await readFile(preferencesPath, "utf8"));
+  await writeFile(
+    preferencesPath,
+    `${JSON.stringify({
+      ...stored,
+      clientSettings: {
+        ...stored.clientSettings,
+        openCommaShortcut: {
+          key: "space",
+          modifiers: { alt: true, control: false, meta: false, shift: false },
+        },
+      },
+    })}\n`
+  );
+  const launch = () =>
+    electron.launch({
+      args: [electronMain, `--user-data-dir=${userDataDir}`],
+      cwd: electronAppDir,
+      env: electronTestEnv({ sideChatHostPath: sideChatShortcutRejectionHostFixture }),
+    });
+  let app = await launch();
+  try {
+    let page = await findWindowByNativeRole(app, "main-window");
+    await openAppSettingsFromRail(page);
+    await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+    await dismissVisibleToasts(page);
+    const optionComma = page.getByRole("button", { name: "Open Comma: Alt + ," });
+    await expect(optionComma).toBeEnabled();
+    expect(
+      await app.evaluate(({ globalShortcut }) => [
+        globalShortcut.isRegistered("Alt+,"),
+        globalShortcut.isRegistered("Alt+Space"),
+      ])
+    ).toEqual([true, false]);
+    expect(JSON.parse(await readFile(preferencesPath, "utf8"))).toMatchObject({
+      defaultsRevision: 1,
+    });
+
+    // Option-Space chosen again afterwards is the user's: it stays.
+    await optionComma.click();
+    await page.keyboard.press("Alt+Space");
+    await expect(
+      page.getByRole("button", { name: "Open Comma: Alt + Space" })
+    ).toBeEnabled();
+    await app.close();
+    app = await launch();
+    page = await findWindowByNativeRole(app, "main-window");
+    await openAppSettingsFromRail(page);
+    await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+    await expect(
+      page.getByRole("button", { name: "Open Comma: Alt + Space" })
+    ).toBeEnabled();
+    expect(
+      await app.evaluate(({ globalShortcut }) =>
+        globalShortcut.isRegistered("Alt+Space")
+      )
+    ).toBe(true);
+  } finally {
+    await app.close();
+  }
+});
+
 test("electron registers Open Comma and preserves cleared global shortcuts across restart", async () => {
   test.skip(process.platform !== "darwin", "Side Chat is a macOS-only surface.");
   const launch = () =>
@@ -1112,12 +1182,10 @@ test("electron registers Open Comma and preserves cleared global shortcuts acros
     await openAppSettingsFromRail(page);
     await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
     await dismissVisibleToasts(page);
-    const openComma = page.getByRole("button", { name: "Open Comma: Alt + Space" });
+    const openComma = page.getByRole("button", { name: "Open Comma: Alt + ," });
     await expect(openComma).toBeEnabled();
     expect(
-      await app.evaluate(({ globalShortcut }) =>
-        globalShortcut.isRegistered("Alt+Space")
-      )
+      await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered("Alt+,"))
     ).toBe(true);
     // Reserve another chord in the OS to exercise native rejection through the
     // actual settings owner, rather than only a mocked component error.
@@ -1133,9 +1201,7 @@ test("electron registers Open Comma and preserves cleared global shortcuts acros
     ).toBeVisible();
     await expect(openComma).toBeEnabled();
     expect(
-      await app.evaluate(({ globalShortcut }) =>
-        globalShortcut.isRegistered("Alt+Space")
-      )
+      await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered("Alt+,"))
     ).toBe(true);
     await app.evaluate(({ globalShortcut }) =>
       globalShortcut.unregister("Control+Alt+Shift+9")
@@ -1146,21 +1212,17 @@ test("electron registers Open Comma and preserves cleared global shortcuts acros
       page.getByRole("button", { name: "Open Comma: Not set" })
     ).toBeEnabled();
     expect(
-      await app.evaluate(({ globalShortcut }) =>
-        globalShortcut.isRegistered("Alt+Space")
-      )
+      await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered("Alt+,"))
     ).toBe(false);
     await page.getByRole("button", { name: "Open Comma: Not set" }).click();
-    await page.keyboard.press("Alt+Space");
+    await page.keyboard.press("Alt+Comma");
     await expect(
-      page.getByRole("button", { name: "Open Comma: Alt + Space" })
+      page.getByRole("button", { name: "Open Comma: Alt + ," })
     ).toBeEnabled();
     expect(
-      await app.evaluate(({ globalShortcut }) =>
-        globalShortcut.isRegistered("Alt+Space")
-      )
+      await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered("Alt+,"))
     ).toBe(true);
-    await page.getByRole("button", { name: "Open Comma: Alt + Space" }).click();
+    await page.getByRole("button", { name: "Open Comma: Alt + ," }).click();
     await page.getByRole("button", { name: "Clear shortcut" }).click();
     await expect(
       page.getByRole("button", { name: "Open Comma: Not set" })
@@ -1190,9 +1252,7 @@ test("electron registers Open Comma and preserves cleared global shortcuts acros
         page.getByRole("button", { name: `${title}: Not set` })
       ).toBeEnabled();
     expect(
-      await app.evaluate(({ globalShortcut }) =>
-        globalShortcut.isRegistered("Alt+Space")
-      )
+      await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered("Alt+,"))
     ).toBe(false);
   } finally {
     await app.close();

@@ -193,3 +193,94 @@ func assertWorkloadReplicas(t *testing.T, runner Runner, namespace, resource str
 		t.Fatalf("%s replicas = spec:%d ready:%d, want %d", resource, workload.Spec.Replicas, workload.Status.ReadyReplicas, want)
 	}
 }
+
+// Migration execution is covered by the namespace/database matrices. This
+// fixture exercises real failed Helm/OrderedReady recovery and Pod replacement.
+type helmRepairFixture struct {
+	KubectlPlatform
+	plan Plan
+}
+
+func (p *helmRepairFixture) Preflight(context.Context, []byte) (string, error) {
+	return "sha256:repair-values", nil
+}
+func (p *helmRepairFixture) RunPlan(context.Context, State) (Plan, error) { return p.plan, nil }
+func (p *helmRepairFixture) RunJob(context.Context, JobSpec) error        { return nil }
+func (p *helmRepairFixture) Verify(ctx context.Context, state State) (ApplyEvidence, error) {
+	if _, err := p.Kubectl.Run(ctx, nil, "-n", p.Spec.Namespace, "rollout", "status", "statefulset/comma", "--timeout=45s"); err != nil {
+		return ApplyEvidence{}, err
+	}
+	revision, err := p.Helm.Status(ctx)
+	return ApplyEvidence{HelmRevision: revision.Revision}, err
+}
+
+func TestHelmRepairE2E(t *testing.T) {
+	if os.Getenv("COMMA_RELEASE_KUBERNETES_E2E") != "1" {
+		t.Skip("requires disposable Kubernetes cluster")
+	}
+	namespace := os.Getenv("COMMA_RELEASE_E2E_NAMESPACE") + "-repair"
+	kubectl := ExecRunner{Name: "kubectl"}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := kubectl.Run(ctx, nil, "create", "namespace", namespace); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = kubectl.Run(context.Background(), nil, "delete", "namespace", namespace, "--wait=false")
+	})
+	helm := HelmAdapter{Runner: ExecRunner{Name: os.Getenv("COMMA_HELM_BIN")}, Release: "comma", Namespace: namespace, Chart: filepath.Join("testdata", "recovery-chart"), Timeout: 8 * time.Second}
+	healthy := []byte("maintenance:\n  enabled: false\nreplicas: 2\n")
+	broken := []byte("maintenance:\n  enabled: false\nreplicas: 2\nunready: true\n")
+	if _, err := helm.Runner.Run(ctx, healthy, "install", "comma", helm.Chart, "--namespace", namespace, "--values", "-", "--wait=watcher", "--timeout=90s"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := helm.Runner.Run(ctx, broken, "upgrade", "comma", helm.Chart, "--namespace", namespace, "--values", "-"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kubectl.Run(ctx, nil, "-n", namespace, "rollout", "status", "statefulset/comma", "--timeout=5s"); err == nil {
+		t.Fatal("broken template unexpectedly ready")
+	}
+	// Recreate ordinal 0 under the broken template to reproduce two bad Pods.
+	if _, err := kubectl.Run(ctx, nil, "-n", namespace, "delete", "pod/comma-0", "--wait=true", "--timeout=15s"); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := helm.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := KubectlStore{Runner: kubectl, Namespace: namespace}
+	old := NewState("e2e", "broken-old", "registry.k8s.io/pause:3.10", revision.Revision, time.Now())
+	old.Phase = PhaseApplying
+	old.RequiredMode = ModeOnline
+	old.ManifestDigest = "sha256:" + strings.Repeat("c", 64)
+	old.Attempts = []JobAttempt{{Stage: "online", Attempt: 1, Name: JobName(old.ReleaseID, "online", 1), Status: "complete", AllowedStepIDs: []string{"already-applied"}}}
+	if _, err = store.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	plan := testPlan(t, ModeOnline)
+	plan.PendingIDs = nil
+	plan.PendingSteps = nil
+	platform := &helmRepairFixture{KubectlPlatform: KubectlPlatform{Kubectl: kubectl, Helm: helm, Spec: EnvironmentSpec{Environment: "e2e", Namespace: namespace}, HelmValues: []byte(`{"maintenance":{"enabled":false},"replicas":2,"rollout":{"partition":0}}`)}, plan: plan}
+	engine := Engine{Store: store, Platform: platform, Now: time.Now}
+	if _, err = engine.Recover(ctx, old.ReleaseID); err == nil {
+		t.Fatal("broken snapshot unexpectedly recovered")
+	}
+	bundle := []byte(`{"schemaVersion":1,"replacements":{}}`)
+	if _, err = engine.Prepare(ctx, "e2e", "repair-new", old.Image, bundle); err == nil {
+		t.Fatal("normal prepare accepted failed Helm")
+	}
+	platform.Helm.Timeout = 60 * time.Second
+	if _, err = engine.PrepareRepair(ctx, "e2e", "repair-new", old.Image, bundle, old.ReleaseID); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := store.Archived(ctx, old.ReleaseID)
+	if err != nil || archived.Phase != PhaseRecovering || archived.ManifestDigest != old.ManifestDigest || len(archived.Attempts) != 1 {
+		t.Fatalf("old facts lost: %v", err)
+	}
+	state, err := engine.Reconcile(ctx)
+	if err != nil || state.Phase != PhaseSucceeded {
+		t.Fatalf("repair failed: phase=%s error=%v", state.Phase, err)
+	}
+	assertWorkloadReplicas(t, kubectl, namespace, "statefulset/comma", 2)
+}

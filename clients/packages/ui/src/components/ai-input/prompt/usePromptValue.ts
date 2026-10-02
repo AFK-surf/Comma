@@ -84,8 +84,8 @@ export function usePromptValue({
     measureEdit();
   };
 
-  // A value written from outside (a restored draft, an accepted suggestion)
-  // is measured before it paints, so motion that follows sees it settled.
+  // A value written from outside (such as a restored draft) is measured
+  // before it paints, so motion that follows sees it settled.
   // The prompt's own edits were already measured, or asked for a read.
   useLayoutEffect(() => {
     if (currentValue === lastEditorValueRef.current) return;

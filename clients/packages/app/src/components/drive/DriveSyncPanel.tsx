@@ -22,7 +22,9 @@ import { driveSecondaryButton } from "./driveButtonStyles";
  * Local sync, from the toolbar: a pill that says whether this Mac mirrors
  * anything, opening a small panel with the one switch, where the mirror
  * lives (and a way to open it), and what sync has done so far. The panel is
- * a popover, not a modal: it is glanced at and dismissed, never confirmed.
+ * a popover, not a dialog: it is glanced at and dismissed, never confirmed.
+ * It is not `isNonModal`: that variant closes on blur, so pressing the pill
+ * again closed the panel and the same press reopened it.
  */
 export function DriveSyncPanel({
   enabled,
@@ -67,7 +69,6 @@ export function DriveSyncPanel({
       </AriaButton>
       <AriaPopover
         className="motion-reduce:animate-none"
-        isNonModal
         offset={4}
         placement="bottom start"
       >

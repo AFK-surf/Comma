@@ -1,6 +1,6 @@
 defmodule Mix.Tasks.BridgeForTeams.DashboardProjection.Rebuild do
   @moduledoc """
-  Rebuild BridgeForTeams My Space dashboard projections.
+  Rebuild BridgeForTeams project dashboard snapshots.
 
       mix bridge_for_teams.dashboard_projection.rebuild --org afk-ai --dry-run
       mix bridge_for_teams.dashboard_projection.rebuild --org afk-ai --project swarm-slug
@@ -13,7 +13,7 @@ defmodule Mix.Tasks.BridgeForTeams.DashboardProjection.Rebuild do
   alias BridgeForTeams.{Accounts, Agents, DashboardProjection, Orgs, Projects, Repo}
   alias BridgeForTeams.Schema.{Organization, Project}
 
-  @shortdoc "Rebuild BFT My Space local dashboard projections"
+  @shortdoc "Rebuild BFT project dashboard snapshots"
   @requirements ["app.start"]
 
   @impl true

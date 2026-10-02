@@ -96,7 +96,8 @@ defmodule Comma.ReleaseAdapterE2ETest do
 
     assert [
              20_260_723_000_003,
-             20_260_912_000_001
+             20_260_912_000_001,
+             20_261_001_190_001
            ] =
              Ecto.Migrator.run(
                Comma.Repo,
@@ -110,6 +111,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
     assert {:ok, after_cutover} = production_release_plan()
     refute "comma-20260723000003" in after_cutover.pendingIDs
     refute "comma-20260912000001" in after_cutover.pendingIDs
+    refute "comma-20261001190001" in after_cutover.pendingIDs
   end
 
   test "aggregate dev/compose migration relocates retained nested participant state" do

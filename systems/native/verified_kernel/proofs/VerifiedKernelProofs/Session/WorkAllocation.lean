@@ -4,23 +4,6 @@ import VerifiedKernelProofs.Session.WorkEncoding
 namespace VerifiedKernel.Session.WorkConservation
 open Data
 
-theorem binary_beq_true {t : Term} {key : String} (h : (t == b key) = true) : t = b key := by
-  cases t <;> simp [b, Term.text, BEq.beq] at h
-  exact congrArg Term.binary (ByteArray.ext (by
-    simpa only [ByteArray.beq, beq_iff_eq, String.toUTF8_eq_toByteArray] using h))
-
-theorem get_put_binary_other (v x : Term) {key other : String} (different : other ≠ key) :
-    (v.put (b other) x).get (b key) = v.get (b key) := by
-  have neq : (b other == b key) = false := by simp [binary_key_beq, different]
-  cases v with
-  | map entries =>
-    simp only [Term.put, Term.get, List.find?_cons, neq]
-    rw [find?_filter_of_imp]
-    intro entry matched
-    have same := binary_beq_true matched
-    simp [same, binary_key_beq, Ne.symm different]
-  | _ => simp [Term.put, Term.get, neq]
-
 theorem binary_map_atom_nil {fields : List (Term × Term)} (key : String)
     (binary : fields.all (fun pair => pair.1.isBinary) = true) :
     (Term.map fields).get (a key) = nil := by

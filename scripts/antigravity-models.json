@@ -1,0 +1,150 @@
+{
+ "source": "github.com/router-for-me/CLIProxyAPI/v8@v8.0.4 internal/registry/models/models.json (antigravity)",
+ "models": [
+  {
+   "id": "claude-opus-4-6-thinking",
+   "display_name": "Claude Opus 4.6 (Thinking)",
+   "description": "Claude Opus 4.6 (Thinking)",
+   "context_length": 200000,
+   "max_completion_tokens": 64000,
+   "supportedInputModalities": [
+    "text",
+    "image"
+   ]
+  },
+  {
+   "id": "claude-sonnet-4-6",
+   "display_name": "Claude Sonnet 4.6 (Thinking)",
+   "description": "Claude Sonnet 4.6 (Thinking)",
+   "context_length": 200000,
+   "max_completion_tokens": 64000,
+   "supportedInputModalities": [
+    "text",
+    "image"
+   ]
+  },
+  {
+   "id": "gemini-3.6-flash-high",
+   "display_name": "Gemini 3.6 Flash",
+   "description": "Gemini 3.6 Flash (High)",
+   "context_length": 1048576,
+   "max_completion_tokens": 65536,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gemini-3.7-flash-high",
+   "display_name": "Gemini 3.7 Flash",
+   "description": "Gemini 3.7 Flash (High)",
+   "context_length": 1048576,
+   "max_completion_tokens": 65536,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gemini-3.8-flash-high",
+   "display_name": "Gemini 3.8 Flash",
+   "description": "Gemini 3.8 Flash (High)",
+   "context_length": 1048576,
+   "max_completion_tokens": 65536,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gemini-3-flash",
+   "display_name": "Gemini 3 Flash",
+   "description": "Gemini 3 Flash",
+   "context_length": 1048576,
+   "max_completion_tokens": 65536,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gemini-3.1-flash-image",
+   "display_name": "Gemini 3.1 Flash Image",
+   "description": "Gemini 3.1 Flash Image",
+   "supportedInputModalities": [
+    "text",
+    "image"
+   ]
+  },
+  {
+   "id": "gemini-pro-agent",
+   "display_name": "Gemini 3.1 Pro (High)",
+   "description": "Gemini 3.1 Pro (High)",
+   "context_length": 1048576,
+   "max_completion_tokens": 65535,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gemini-3.1-pro-low",
+   "display_name": "Gemini 3.1 Pro (Low)",
+   "description": "Gemini 3.1 Pro (Low)",
+   "context_length": 1048576,
+   "max_completion_tokens": 65535,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gpt-oss-120b-medium",
+   "display_name": "GPT-OSS 120B (Medium)",
+   "description": "GPT-OSS 120B (Medium)",
+   "context_length": 114000,
+   "max_completion_tokens": 32768,
+   "supportedInputModalities": [
+    "text"
+   ]
+  },
+  {
+   "id": "gemini-3.1-flash-lite",
+   "display_name": "Gemini 3.1 Flash Lite",
+   "description": "Gemini 3.1 Flash Lite",
+   "context_length": 1048576,
+   "max_completion_tokens": 65535,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  },
+  {
+   "id": "gemini-3.5-flash-lite",
+   "display_name": "Gemini 3.5 Flash Lite",
+   "description": "Gemini 3.5 Flash Lite",
+   "context_length": 1048576,
+   "max_completion_tokens": 65535,
+   "supportedInputModalities": [
+    "text",
+    "image",
+    "audio",
+    "video"
+   ]
+  }
+ ]
+}

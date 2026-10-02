@@ -25,6 +25,12 @@ const BRAND_MARKS = new Set([
   "MetaAiBrandIcon",
   "GrokBrandIcon",
   "QwenBrandIcon",
+  "ZaiBrandIcon",
+  "NvidiaBrandIcon",
+  "OllamaBrandIcon",
+  "OpencodeBrandIcon",
+  "VercelBrandIcon",
+  "CopilotBrandIcon",
   "ClaudeAiIcon",
   "GithubBrandIcon",
   "GoogleBrandIcon",
@@ -33,6 +39,7 @@ const BRAND_MARKS = new Set([
   "TelegramBrandIcon",
   "SlackBrandIcon",
   "WechatBrandIcon",
+  "DiscordBrandIcon",
 ]);
 
 describe("icon stroke weight", () => {

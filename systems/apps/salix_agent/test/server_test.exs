@@ -306,8 +306,6 @@ defmodule SalixAgent.ServerTest do
 
           receive do
             :release_pending_llm -> {:final, "stale answer"}
-          after
-            5_000 -> {:final, "stale timeout"}
           end
 
         true ->
@@ -1023,6 +1021,29 @@ defmodule SalixAgent.ServerTest do
 
       [] ->
         :not_running
+    end
+  end
+
+  defp await_pending_llm!(agent_id, session_id, retries \\ 200)
+
+  defp await_pending_llm!(_agent_id, _session_id, 0),
+    do: flunk("Session owner did not retain an admitted model task")
+
+  defp await_pending_llm!(agent_id, session_id, retries) do
+    pid =
+      case stalled_actor_state(agent_id, session_id) do
+        %{pending_llm: %{pid: pid} = pending} when not is_map_key(pending, :persistence_gate) ->
+          if Process.alive?(pid), do: pid
+
+        _ ->
+          nil
+      end
+
+    if pid do
+      pid
+    else
+      Process.sleep(10)
+      await_pending_llm!(agent_id, session_id, retries - 1)
     end
   end
 
@@ -3589,128 +3610,152 @@ defmodule SalixAgent.ServerTest do
     assert Enum.any?(messages, &(&1[:content] == "fresh direction"))
   end
 
-  test "async tool completion queues while an internal session LLM task is pending", %{
-    agent: a
-  } do
-    Application.put_env(:salix_agent, :llm, AsyncCompletionWhilePendingLLM)
-    AsyncCompletionWhilePendingLLM.set_owner(self())
+  for restart_owner? <- [false, true] do
+    suffix = if restart_owner?, do: " after the Session owner restarts", else: ""
 
-    SalixAgent.TestSupport.create_control_agent!(a)
+    @tag restart_owner?: restart_owner?
+    test "async tool completion queues while an internal session LLM task is pending#{suffix}", %{
+      agent: a,
+      restart_owner?: restart_owner?
+    } do
+      Application.put_env(:salix_agent, :llm, AsyncCompletionWhilePendingLLM)
+      AsyncCompletionWhilePendingLLM.set_owner(self())
 
-    capability =
-      SalixAgent.TestSupport.pending_capability_fields!(
-        a,
-        "ses1_0000000000000000920",
-        "async-during-pending"
-      )
+      SalixAgent.TestSupport.create_control_agent!(a)
 
-    {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(a, "ses1_0000000000000000920", [
-        %{"type" => "session_created", "session_id" => "ses1_0000000000000000920"},
-        %{
-          "type" => "async_tool_call_started",
-          "session_id" => "ses1_0000000000000000920",
-          "tool_call_id" => "async-during-pending",
-          "tool_name" => "permission.request",
-          "status" => "running",
-          "completion_mode" => "external_callback",
-          "capability_request_id" => capability["capability_request_id"],
-          "capability_deadline_ms" => capability["capability_deadline_ms"]
-        }
-      ])
+      capability =
+        SalixAgent.TestSupport.pending_capability_fields!(
+          a,
+          "ses1_0000000000000000920",
+          "async-during-pending"
+        )
 
-    {:ok, _pid} = Fleet.ensure_started(a, create: false)
+      {:ok, _session} =
+        SalixAgent.InternalSessionStore.prepare_commit(a, "ses1_0000000000000000920", [
+          %{"type" => "session_created", "session_id" => "ses1_0000000000000000920"},
+          %{
+            "type" => "async_tool_call_started",
+            "session_id" => "ses1_0000000000000000920",
+            "tool_call_id" => "async-during-pending",
+            "tool_name" => "permission.request",
+            "status" => "running",
+            "completion_mode" => "external_callback",
+            "capability_request_id" => capability["capability_request_id"],
+            "capability_deadline_ms" => capability["capability_deadline_ms"]
+          }
+        ])
 
-    {:ok, :created} =
-      deliver(a, "u-start", %{
-        content: "start pending",
-        session_id: "ses1_0000000000000000920"
-      })
+      {:ok, _pid} = Fleet.ensure_started(a, create: false)
 
-    Server.wake(a)
+      {:ok, :created} =
+        deliver(a, "u-start", %{
+          content: "start pending",
+          session_id: "ses1_0000000000000000920"
+        })
 
-    assert_receive {:pending_llm_started, llm_pid}, 2_000
+      Server.wake(a)
 
-    result_content = Jason.encode!(%{"status" => "approved"})
+      assert_receive {:pending_llm_started, llm_pid}, 2_000
 
-    assert {:ok, %{"status" => "completed", "tool_call_id" => "async-during-pending"}} =
-             SalixAgent.complete_async_tool_call(
-               a,
-               "ses1_0000000000000000920",
-               "async-during-pending",
-               %{
-                 "content" => result_content,
-                 "output" => result_content,
-                 "status" => "completed",
-                 "error" => false
-               },
-               %{"tool_call_id" => "async-during-pending", "tool_name" => "permission.request"}
+      if restart_owner? do
+        SalixAgent.TestSupport.join_session_owner(a, "ses1_0000000000000000920")
+        monitor = Process.monitor(llm_pid)
+
+        [{actor, _}] =
+          Registry.lookup(
+            SalixAgent.Registry,
+            SalixAgent.InternalSessionActor.key(a, "ses1_0000000000000000920")
+          )
+
+        Process.exit(actor, :kill)
+        assert_receive {:DOWN, ^monitor, :process, ^llm_pid, _reason}, 2_000
+        :ok = SalixAgent.InternalSessionFleet.wake(a, "ses1_0000000000000000920")
+        assert_receive {:pending_llm_started, _replacement_pid}, 2_000
+      end
+
+      # Provider startup can precede admission, and recovery can replace that task.
+      llm_pid = await_pending_llm!(a, "ses1_0000000000000000920")
+      result_content = Jason.encode!(%{"status" => "approved"})
+
+      assert {:ok, %{"status" => "completed", "tool_call_id" => "async-during-pending"}} =
+               SalixAgent.complete_async_tool_call(
+                 a,
+                 "ses1_0000000000000000920",
+                 "async-during-pending",
+                 %{
+                   "content" => result_content,
+                   "output" => result_content,
+                   "status" => "completed",
+                   "error" => false
+                 },
+                 %{"tool_call_id" => "async-during-pending", "tool_name" => "permission.request"}
+               )
+
+      {:ok, pending_session} =
+        SalixAgent.InternalSessionStore.read(a, "ses1_0000000000000000920")
+
+      assert Enum.any?(SalixAgent.InternalSession.get(pending_session, :input_queue), fn item ->
+               item["kind"] == "runtime_message" and
+                 item["payload"]["source_tool_call_id"] == "async-during-pending"
+             end)
+
+      refute Enum.any?(
+               SalixAgent.InternalSession.get(pending_session, :messages),
+               &(&1.role == "runtime" and &1[:source_tool_call_id] == "async-during-pending")
              )
 
-    {:ok, pending_session} =
-      SalixAgent.InternalSessionStore.read(a, "ses1_0000000000000000920")
+      send(llm_pid, :release_pending_llm)
 
-    assert Enum.any?(SalixAgent.InternalSession.get(pending_session, :input_queue), fn item ->
-             item["kind"] == "runtime_message" and
-               item["payload"]["source_tool_call_id"] == "async-during-pending"
-           end)
+      unless eventually(
+               fn ->
+                 assistant_content?(a, "ses1_0000000000000000920", "async completion handled")
+               end,
+               450
+             ) do
+        session = read_session!(a, "ses1_0000000000000000920")
 
-    refute Enum.any?(
-             SalixAgent.InternalSession.get(pending_session, :messages),
-             &(&1.role == "runtime" and &1.source_tool_call_id == "async-during-pending")
-           )
+        flunk(
+          "async completion did not reach a follow-up round: " <>
+            inspect(%{
+              actor: stalled_actor_state(a, "ses1_0000000000000000920"),
+              llm: Process.info(llm_pid, [:current_stacktrace, :message_queue_len]),
+              status: SalixAgent.InternalSession.status(session),
+              wait: SalixAgent.InternalSession.wait(session),
+              queue_ack_id: SalixAgent.InternalSession.get(session, :queue_ack_id),
+              input_queue: SalixAgent.InternalSession.get(session, :input_queue),
+              messages:
+                Enum.map(SalixAgent.InternalSession.get(session, :messages), fn message ->
+                  %{
+                    id: message.id,
+                    role: message.role,
+                    content: message.content,
+                    runtime_message_id: Map.get(message, :runtime_message_id),
+                    source_tool_call_id: Map.get(message, :source_tool_call_id)
+                  }
+                end)
+            })
+        )
+      end
 
-    send(llm_pid, :release_pending_llm)
+      assert_receive {:async_completion_messages, messages}, 2_000
 
-    unless eventually(
-             fn ->
-               assistant_content?(a, "ses1_0000000000000000920", "async completion handled")
-             end,
-             450
-           ) do
+      assert Enum.any?(messages, fn message ->
+               message[:source_tool_call_id] == "async-during-pending" or
+                 String.contains?(to_string(message[:content]), "async-during-pending")
+             end)
+
       session = read_session!(a, "ses1_0000000000000000920")
 
-      flunk(
-        "async completion did not reach a follow-up round: " <>
-          inspect(%{
-            actor: stalled_actor_state(a, "ses1_0000000000000000920"),
-            llm: Process.info(llm_pid, [:current_stacktrace, :message_queue_len]),
-            status: SalixAgent.InternalSession.status(session),
-            wait: SalixAgent.InternalSession.wait(session),
-            queue_ack_id: SalixAgent.InternalSession.get(session, :queue_ack_id),
-            input_queue: SalixAgent.InternalSession.get(session, :input_queue),
-            messages:
-              Enum.map(SalixAgent.InternalSession.get(session, :messages), fn message ->
-                %{
-                  id: message.id,
-                  role: message.role,
-                  content: message.content,
-                  runtime_message_id: Map.get(message, :runtime_message_id),
-                  source_tool_call_id: Map.get(message, :source_tool_call_id)
-                }
-              end)
-          })
-      )
+      assert SalixAgent.InternalSession.get(session, :input_queue) == []
+
+      assert {:ok, %{"status" => "completed"}} =
+               SalixAgent.InternalSession.lookup_async_call(session, "async-during-pending")
+
+      assert Enum.any?(SalixAgent.InternalSession.get(session, :messages), fn message ->
+               message.role == "runtime" and
+                 message[:source_tool_call_id] == "async-during-pending"
+             end)
     end
-
-    assert_receive {:async_completion_messages, messages}, 2_000
-
-    assert Enum.any?(messages, fn message ->
-             message[:source_tool_call_id] == "async-during-pending" or
-               String.contains?(to_string(message[:content]), "async-during-pending")
-           end)
-
-    session = read_session!(a, "ses1_0000000000000000920")
-
-    assert SalixAgent.InternalSession.get(session, :input_queue) == []
-
-    assert {:ok, %{"status" => "completed"}} =
-             SalixAgent.InternalSession.lookup_async_call(session, "async-during-pending")
-
-    assert Enum.any?(SalixAgent.InternalSession.get(session, :messages), fn message ->
-             message.role == "runtime" and
-               message[:source_tool_call_id] == "async-during-pending"
-           end)
   end
 
   test "private async failure invalidates an in-flight clean visible reply", %{agent: a} do

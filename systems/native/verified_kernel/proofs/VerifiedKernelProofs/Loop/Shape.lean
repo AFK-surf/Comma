@@ -21,10 +21,7 @@ set_option maxHeartbeats 1000000
 open Lean Elab Tactic in
 /-- `unfold_native_at "Full.Private.Name" h` unfolds a private runtime helper in `h`. -/
 elab "unfold_native_at " requested:str h:ident : tactic => do
-  let candidates := (← getEnv).constants.toList.filter fun (name, _) =>
-    (privateToUserName name).toString == requested.getString
-  let [(name, _)] := candidates | throwError "expected one native declaration for {requested}"
-  let id := mkIdent name
+  let id := mkIdent (← WorkConservation.nativeDecl requested.getString)
   evalTactic (← `(tactic| unfold $id:ident at $h:ident))
 
 /-- `loop% name`: the runtime helper `VerifiedKernel.Session.Loop.name`, private or not. -/
@@ -118,7 +115,7 @@ macro_rules
     let prior := Lean.mkIdent `prior
     `(tactic|
     (repeat' first
-      | exact (fail_ok $h).elim
+      | (head_is $h [VerifiedKernel.fail, argumentError, inspectedError]; exact (fail_ok $h).elim)
       | (execution_head_is $h "Pure.pure"
          have returned := pure_ok $h
          clear $h
@@ -127,7 +124,7 @@ macro_rules
          have bound := bind_ok $h
          clear $h
          rcases bound with ⟨_, _, $prior:ident, $h:ident⟩
-         try exact (fail_ok $prior).elim
+         try (head_is $prior [VerifiedKernel.fail, argumentError, inspectedError]; exact (fail_ok $prior).elim)
          try (execution_head_is $prior "Pure.pure"
               have returned := pure_ok $prior
               clear $prior
@@ -345,23 +342,40 @@ theorem step_shape_out {ask : Loop.Ask} {state args out : Term} {j j' : List Ter
   unfold Loop.stepWith at h
   unfold_loop finalStop
   run_split
+  -- Select the helper lemma by the execution head. A failed `exact` against another helper
+  -- unfolds both helper bodies before it fails.
   all_goals first
     | close_shape
-    | exact guardNotice_shape h
-    | exact modelFailure_shape h
-    | exact finalRecord_shape h
-    | exact intentRecord_shape h
-    | exact toolsDone_shape h
-    | exact resultsStored_shape h
-    | exact activation_shape h
-    | exact timeoutEntry_shape h
-    | exact expire_shape h
-    | exact classify_shape h
-    | exact outputCommitted_shape h
-    | exact modelFailed_shape h
-    | exact noticeCleanup_shape h
-    | exact guardOutcome_shape h
-    | exact continuation_shape h
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardNotice"
+       exact guardNotice_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailure"
+       exact modelFailure_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.finalRecord"
+       exact finalRecord_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.intentRecord"
+       exact intentRecord_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.toolsDone"
+       exact toolsDone_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.resultsStored"
+       exact resultsStored_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       exact activation_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.timeoutEntry"
+       exact timeoutEntry_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.expire"
+       exact expire_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.classify"
+       exact classify_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.outputCommitted"
+       exact outputCommitted_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailed"
+       exact modelFailed_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.noticeCleanup"
+       exact noticeCleanup_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardOutcome"
+       exact guardOutcome_shape h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.continuation"
+       exact continuation_shape h)
 
 /-- Every successful step returns a machine and an effect list of notifications,
 at most one commit, non-blocking effects, and one blocking effect. This holds
@@ -673,23 +687,23 @@ theorem finalRecord_sourced {state machine event record out : Term} {j j' : List
   all_goals solve_sourced
   all_goals refine elem_commit ?_
   all_goals
-    obtain ⟨nmid, hn, fresh⟩ := fresh_true ‹(loop% fresh) _ _ _ = _› ‹_›
-    obtain ⟨eid, created, rfl⟩ := runawayUnsettled_ok ‹(loop% runawayUnsettled) _ _ _ _ _ = _›
-    have committed := (asList_ok_iff.mp ‹asList _ _ = _›).1
-    have checked := host_admission_ok ‹Loop.admitHostEvents _ _ = _›
+    obtain ⟨nmid, hn, fresh⟩ := fresh_true (hyp% (loop% fresh) _ _ _ = _) ‹_›
+    obtain ⟨eid, created, rfl⟩ := runawayUnsettled_ok (hyp% (loop% runawayUnsettled) _ _ _ _ _ = _)
+    have committed := (asList_ok_iff.mp (hyp% asList _ _ = _)).1
+    have checked := host_admission_ok (hyp% Loop.admitHostEvents _ _ = _)
   all_goals first
     | exact CommitSource.finalOutput _ _ _ _ _ _ _ _ _ _ _ _ entry phase hn fresh checked rfl ⟨_, _, ‹_›⟩
-        ⟨_, _, ‹Loop.queryAsk _ "finish_output" _ _ = _›⟩
-        (Or.inl ⟨‹_›, _, _, _, ‹Loop.queryAsk _ "onboarding_settlement" _ _ = _›⟩) committed
+        ⟨_, _, (hyp% Loop.queryAsk _ "finish_output" _ _ = _)⟩
+        (Or.inl ⟨‹_›, _, _, _, (hyp% Loop.queryAsk _ "onboarding_settlement" _ _ = _)⟩) committed
     | exact CommitSource.finalOutput _ _ _ _ _ _ _ _ _ _ _ _ entry phase hn fresh checked rfl ⟨_, _, ‹_›⟩
-        ⟨_, _, ‹Loop.queryAsk _ "finish_output" _ _ = _›⟩ (Or.inr ⟨not_true_false ‹_›, rfl⟩) committed
+        ⟨_, _, (hyp% Loop.queryAsk _ "finish_output" _ _ = _)⟩ (Or.inr ⟨not_true_false ‹_›, rfl⟩) committed
     | (have source := CommitSource.finalOutput _ _ _ _ _ _ _ _ _ _ _ _ entry phase hn fresh checked rfl
-          ⟨_, _, ‹_›⟩ ⟨_, _, ‹Loop.queryAsk _ "finish_output" _ _ = _›⟩
-          (Or.inl ⟨‹_›, _, _, _, ‹Loop.queryAsk _ "onboarding_settlement" _ _ = _›⟩) committed
+          ⟨_, _, ‹_›⟩ ⟨_, _, (hyp% Loop.queryAsk _ "finish_output" _ _ = _)⟩
+          (Or.inl ⟨‹_›, _, _, _, (hyp% Loop.queryAsk _ "onboarding_settlement" _ _ = _)⟩) committed
        rw [finishHwm_other ‹_›] at source
        exact source)
     | (have source := CommitSource.finalOutput _ _ _ _ _ _ _ _ _ _ _ _ entry phase hn fresh checked rfl
-          ⟨_, _, ‹_›⟩ ⟨_, _, ‹Loop.queryAsk _ "finish_output" _ _ = _›⟩ (Or.inr ⟨not_true_false ‹_›, rfl⟩)
+          ⟨_, _, ‹_›⟩ ⟨_, _, (hyp% Loop.queryAsk _ "finish_output" _ _ = _)⟩ (Or.inr ⟨not_true_false ‹_›, rfl⟩)
           committed
        rw [finishHwm_other ‹_›] at source
        exact source)
@@ -705,9 +719,9 @@ theorem guardNotice_sourced {state machine event out : Term} {j j' : List Term}
     | close_sourced
     | (refine ⟨_, _, rfl, ?_⟩; solve_sourced)
   all_goals refine elem_commit ?_
-  · obtain ⟨rfl, _⟩ := asList_ok_iff.mp ‹asList _ _ = _›
+  · obtain ⟨rfl, _⟩ := asList_ok_iff.mp (hyp% asList _ _ = _)
     exact CommitSource.guardRetire _ entry ⟨_, _, ‹_›⟩
-  · obtain ⟨rfl, _⟩ := asList_ok_iff.mp ‹asList _ _ = _›
+  · obtain ⟨rfl, _⟩ := asList_ok_iff.mp (hyp% asList _ _ = _)
     exact CommitSource.guardLocal _ _ entry ⟨_, _, ‹_›⟩ (not_true_false ‹_›) ⟨_, _, ‹_›⟩
   · exact CommitSource.notice _ _ _ _ _ _ _ _ entry ⟨_, _, ‹_›⟩ (not_true_false ‹_›) ⟨_, _, ‹_›⟩
       (not_true_false ‹_›) ⟨_, _, ‹_›⟩ (not_true_false ‹_›) (not_not_true ‹_›) ⟨_, _, ‹_›⟩ ⟨_, _, ‹_›⟩
@@ -725,21 +739,21 @@ theorem modelFailure_sourced {state machine event m info out : Term} {recover : 
   all_goals refine ⟨_, _, rfl, ?_⟩
   all_goals solve_sourced
   all_goals refine elem_commit ?_
-  · have cond := ‹(recover && _ && _) = true›
+  · have cond := (hyp% (recover && _ && _) = true)
     simp only [Bool.and_eq_true, Bool.not_eq_true'] at cond
     obtain ⟨entry', hround⟩ := overflowEntry cond.1.1
-    exact CommitSource.overflow _ (i ((loop% ackHwm) m)) _ _ _ _ _ entry' ⟨_, _, ‹field state "session_id" _ = _›⟩
-      (by rw [← hround] <;> rfl) ⟨_, _, ‹field state "context_overflow_recovery" _ = _›⟩ cond.2
-      ⟨_, _, ‹field state "summary_sequence" _ = _›⟩ ⟨_, _, ‹field state "compacted_through" _ = _›⟩
+    exact CommitSource.overflow _ (i ((loop% ackHwm) m)) _ _ _ _ _ entry' ⟨_, _, (hyp% field state "session_id" _ = _)⟩
+      (by rw [← hround] <;> rfl) ⟨_, _, (hyp% field state "context_overflow_recovery" _ = _)⟩ cond.2
+      ⟨_, _, (hyp% field state "summary_sequence" _ = _)⟩ ⟨_, _, (hyp% field state "compacted_through" _ = _)⟩
   all_goals
     obtain ⟨v, _, hv, hx⟩ := truthy_ok prior
     subst hx
-    have src := CommitSource.modelFailure _ (i ((loop% ackHwm) m)) _ _ _ _ _ v entry ⟨_, _, ‹field state "session_id" _ = _›⟩
-      (by rw [← round] <;> rfl) ⟨_, _, ‹Loop.queryAsk _ "llm_retry_metadata" _ _ = _›⟩
-      ⟨_, _, ‹Command.project _ _ _ = _›⟩ ⟨_, _, hv⟩
+    have src := CommitSource.modelFailure _ (i ((loop% ackHwm) m)) _ _ _ _ _ v entry ⟨_, _, (hyp% field state "session_id" _ = _)⟩
+      (by rw [← round] <;> rfl) ⟨_, _, (hyp% Loop.queryAsk _ "llm_retry_metadata" _ _ = _)⟩
+      ⟨_, _, (hyp% Command.project _ _ _ = _)⟩ ⟨_, _, hv⟩
   all_goals first
-    | (simp only [‹Term.truthy _ = true›, ‹integerValue _ > 0›, ↓reduceIte] at src; exact src)
-    | (simp only [‹Term.truthy _ = true›, ‹¬integerValue _ > 0›, ↓reduceIte] at src; exact src)
+    | (simp only [(hyp% Term.truthy _ = true), ‹integerValue _ > 0›, ↓reduceIte] at src; exact src)
+    | (simp only [(hyp% Term.truthy _ = true), ‹¬integerValue _ > 0›, ↓reduceIte] at src; exact src)
     | (simp only [not_true_false ‹¬Term.truthy _ = true›, ‹integerValue _ > 0›, ↓reduceIte,
          Bool.false_eq_true, List.append_nil] at src; exact src)
     | (simp only [not_true_false ‹¬Term.truthy _ = true›, ‹¬integerValue _ > 0›, ↓reduceIte,
@@ -774,10 +788,10 @@ theorem intentRecord_sourced {state machine event record out : Term} {j j' : Lis
   all_goals refine ⟨_, _, rfl, ?_⟩
   all_goals solve_sourced
   all_goals
-    obtain ⟨nmid, hn, fresh⟩ := fresh_true ‹(loop% fresh) _ _ _ = _› ‹_›
+    obtain ⟨nmid, hn, fresh⟩ := fresh_true (hyp% (loop% fresh) _ _ _ = _) ‹_›
     have checked : Loop.hostEventsList (intentEvents record) = a "ok" := host_admission_ok ‹_›
-    obtain ⟨r1, rfl⟩ := advance_ok ‹(loop% advance) machine _ _ _ = _›
-    obtain ⟨r2, rfl⟩ := advance_ok ‹(loop% advance) _ _ _ _ = _›
+    obtain ⟨r1, rfl⟩ := advance_ok (hyp% (loop% advance) machine _ _ _ = _)
+    obtain ⟨r2, rfl⟩ := advance_ok (hyp% (loop% advance) _ _ _ _ = _)
     rw [mkey_put_same, decode_encode] at r2
   all_goals first
     | (refine elem_commit ?_
@@ -805,12 +819,12 @@ theorem resultsStored_sourced {state machine event events hwm base stored out : 
   all_goals solve_sourced
   all_goals refine elem_commit ?_
   all_goals
-    obtain ⟨_, _, rfl⟩ := runawayUnsettled_ok ‹(loop% runawayUnsettled) _ _ _ _ _ = _›
-    obtain ⟨_, _, rfl⟩ := runawayReset_ok ‹(loop% runawayReset) _ _ _ _ _ = _›
-    obtain ⟨_, _, _, rfl⟩ := truthy_ok ‹(loop% truthy) _ _ _ _ _ = _›
-    obtain ⟨rfl, _⟩ := asList_ok_iff.mp ‹asList _ _ = _›
-    exact CommitSource.settle _ _ _ _ _ _ _ _ _ _ _ _ entry phase ⟨_, _, ‹field state "next_message_id" _ = _›⟩
-      (not_true_false ‹_›) (host_admission_ok ‹_›) ⟨_, _, ‹field state "session_id" _ = _›⟩ ⟨_, _, ‹_›⟩
+    obtain ⟨_, _, rfl⟩ := runawayUnsettled_ok (hyp% (loop% runawayUnsettled) _ _ _ _ _ = _)
+    obtain ⟨_, _, rfl⟩ := runawayReset_ok (hyp% (loop% runawayReset) _ _ _ _ _ = _)
+    obtain ⟨_, _, _, rfl⟩ := truthy_ok (hyp% (loop% truthy) _ _ _ _ _ = _)
+    obtain ⟨rfl, _⟩ := asList_ok_iff.mp (hyp% asList _ _ = _)
+    exact CommitSource.settle _ _ _ _ _ _ _ _ _ _ _ _ entry phase ⟨_, _, (hyp% field state "next_message_id" _ = _)⟩
+      (not_true_false ‹_›) (host_admission_ok ‹_›) ⟨_, _, (hyp% field state "session_id" _ = _)⟩ ⟨_, _, ‹_›⟩
 
 /-- Where the timeout event that `expire` commits comes from. -/
 def TimeoutFact (state machine event ev : Term) : Prop :=
@@ -849,8 +863,8 @@ theorem expire_sourced {state machine event m busy out : Term} {j j' : List Term
   all_goals refine elem_commit ?_
   all_goals first
     | exact (‹∀ next, _ = Term.tuple [Term.atom "extend", next] → False› _ ‹_ = Term.tuple [a "extend", _]›).elim
-    | (obtain ⟨sid, session, rfl⟩ := waitSetEvent_ok ‹(loop% waitSetEvent) _ _ _ = _›
-       exact CommitSource.waitExtend sid _ busy _ _ _ entry session ⟨_, _, ‹field state "wait" _ = _›⟩
+    | (obtain ⟨sid, session, rfl⟩ := waitSetEvent_ok (hyp% (loop% waitSetEvent) _ _ _ = _)
+       exact CommitSource.waitExtend sid _ busy _ _ _ entry session ⟨_, _, (hyp% field state "wait" _ = _)⟩
          (by rw [← round] <;> rfl) hd)
     | exact timeout_commit (timeout (WorkConservation.binary_beq_true ‹_›))
 
@@ -889,12 +903,12 @@ theorem activation_sourced {state machine event m out : Term} {j j' : List Term}
     | (refine ⟨_, _, rfl, ?_⟩
        solve_sourced
        refine elem_write ?_
-       obtain ⟨rfl, _⟩ := asList_ok_iff.mp ‹asList _ _ = _›
-       exact WriteSource.yield _ _ _ _ _ entry ⟨_, _, ‹Loop.queryAsk _ "activation_next" _ _ = _›⟩
-         ⟨_, _, ‹Loop.queryAsk _ "wait_identity" _ _ = _›⟩ ⟨_, _, ‹field state "next_message_id" _ = _›⟩
-         ⟨_, _, ‹field state "last_ack_message_id" _ = _›⟩
-         ⟨_, _, ‹Loop.queryAsk _ "active_human_source_ids" _ _ = _›⟩
-         ⟨_, _, ‹Loop.queryAsk _ "provider_wait_yield_events" _ _ = _›⟩ (ne_nil_of_not_isEmpty ‹_›))
+       obtain ⟨rfl, _⟩ := asList_ok_iff.mp (hyp% asList _ _ = _)
+       exact WriteSource.yield _ _ _ _ _ entry ⟨_, _, (hyp% Loop.queryAsk _ "activation_next" _ _ = _)⟩
+         ⟨_, _, (hyp% Loop.queryAsk _ "wait_identity" _ _ = _)⟩ ⟨_, _, (hyp% field state "next_message_id" _ = _)⟩
+         ⟨_, _, (hyp% field state "last_ack_message_id" _ = _)⟩
+         ⟨_, _, (hyp% Loop.queryAsk _ "active_human_source_ids" _ _ = _)⟩
+         ⟨_, _, (hyp% Loop.queryAsk _ "provider_wait_yield_events" _ _ = _)⟩ (ne_nil_of_not_isEmpty ‹_›))
 
 theorem timeoutEntry_sourced {state machine event m out : Term} {j j' : List Term}
     (entry : (∃ facts, event = .tuple [a "wait_timeout", mkey m "wait_id", mkey m "source", facts]) ∨
@@ -912,7 +926,7 @@ theorem timeoutEntry_sourced {state machine event m out : Term} {j j' : List Ter
     | close_sourced
     | (refine expireEntry_sourced wait (by put_norm; exact round) (fun _ => ?_) h
        put_norm
-       refine Or.inl ⟨_, _, ?_, ⟨_, _, ‹Loop.queryAsk _ "wait_timeout_event" _ _ = _›⟩, not_true_false ‹_›⟩
+       refine Or.inl ⟨_, _, ?_, ⟨_, _, (hyp% Loop.queryAsk _ "wait_timeout_event" _ _ = _)⟩, not_true_false ‹_›⟩
        rcases entry with ⟨facts, same⟩ | ⟨same, phase, rfl⟩
        · exact Or.inl ⟨facts, same⟩
        · exact Or.inr ⟨same, phase, rfl, rfl⟩)
@@ -946,58 +960,79 @@ theorem step_sourced_out {state machine event out : Term} {j j' : List Term}
   unfold Loop.stepWith at h
   unfold_loop finalStop
   run_split
+  -- Select the helper lemma by the execution head. A failed `exact` against another helper
+  -- unfolds both helper bodies before it fails.
   all_goals first
     | close_sourced
-    | exact guardNotice_sourced (Or.inl ⟨_, rfl⟩) h
-    | exact modelFailure_sourced (Or.inr ⟨_, _, rfl⟩) (by put_norm <;> rfl)
-        (fun hf => (Bool.false_ne_true hf).elim) h
-    | exact finalRecord_sourced rfl (WorkConservation.binary_beq_true ‹(_ == b "final_record") = true›) h
-    | exact intentRecord_sourced rfl (WorkConservation.binary_beq_true ‹(_ == b "intent") = true›) h
-    | exact toolsDone_sourced h
-    | (refine resultsStored_sourced rfl ?_ h
-       have cond := ‹((_ == b "results" || _ == b "results_only") || _ == b "notice_results") = true›
-       simp only [Bool.or_eq_true] at cond
-       rcases cond with (same | same) | same
-       · exact Or.inl (WorkConservation.binary_beq_true same)
-       · exact Or.inr (Or.inl (WorkConservation.binary_beq_true same))
-       · exact Or.inr (Or.inr (WorkConservation.binary_beq_true same)))
-    | exact activation_sourced (Or.inl ⟨_, rfl⟩) rfl rfl
-        (fun he => absurd (he.symm.trans rfl) (binary_ne (by decide))) h
-    | exact timeoutEntry_sourced (Or.inl ⟨_, rfl⟩) rfl h
-    | (have phase : phaseIs machine "router" := WorkConservation.binary_beq_true ‹(_ == b "router") = true›
-       refine activation_sourced (Or.inr (Or.inr ⟨_, rfl, phase⟩)) (by put_norm <;> rfl) (by put_norm <;> rfl)
-         (fun he => ?_) h
-       put_norm
-       simp (disch := decide) only [mkey_put_other] at he
-       exact Or.inr ⟨_, Or.inl ⟨rfl, Or.inr phase⟩, he, rfl⟩)
-    | (have phase : phaseIs machine "busy" := WorkConservation.binary_beq_true ‹(_ == b "busy") = true›
-       exact expire_sourced (Or.inr (Or.inr (Or.inr ⟨_, rfl, phase⟩))) rfl
-         (fun he => Or.inr ⟨_, Or.inl ⟨rfl, Or.inl phase⟩, he, rfl⟩) h)
-    | exact classify_sourced ⟨rfl, WorkConservation.binary_beq_true ‹(_ == b "classify") = true›⟩ h
-    | (have phase : phaseIs machine "activation" := WorkConservation.binary_beq_true ‹(_ == b "activation") = true›
-       refine activation_sourced (Or.inr (Or.inl ⟨rfl, phase⟩)) (by put_norm <;> rfl) (by put_norm <;> rfl)
-         (fun he => ?_) h
-       put_norm
-       exact Or.inr ⟨nil, Or.inr ⟨rfl, phase⟩, he, rfl⟩)
-    | exact timeoutEntry_sourced (Or.inr ⟨rfl, WorkConservation.binary_beq_true ‹(_ == b "timeout") = true›, rfl⟩)
-        (by put_norm <;> rfl) h
-    | exact outputCommitted_sourced h
-    | exact modelFailed_sourced h
-    | exact guardNotice_sourced (Or.inr ⟨rfl, WorkConservation.binary_beq_true ‹(_ == b "guard_notice") = true›⟩) h
-    | exact noticeCleanup_sourced ⟨rfl, WorkConservation.binary_beq_true ‹(_ == b "notice_cleanup") = true›⟩ h
-    | exact guardOutcome_sourced h
-    | exact continuation_sourced h
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardNotice"
+       exact guardNotice_sourced (Or.inl ⟨_, rfl⟩) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailure"
+       exact modelFailure_sourced (Or.inr ⟨_, _, rfl⟩) (by put_norm <;> rfl)
+         (fun hf => (Bool.false_ne_true hf).elim) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.finalRecord"
+       exact finalRecord_sourced rfl (WorkConservation.binary_beq_true (hyp% (_ == b "final_record") = true)) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.intentRecord"
+       exact intentRecord_sourced rfl (WorkConservation.binary_beq_true (hyp% (_ == b "intent") = true)) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.toolsDone"
+       exact toolsDone_sourced h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.resultsStored"
+       (refine resultsStored_sourced rfl ?_ h
+        have cond := (hyp% ((_ == b "results" || _ == b "results_only") || _ == b "notice_results") = true)
+        simp only [Bool.or_eq_true] at cond
+        rcases cond with (same | same) | same
+        · exact Or.inl (WorkConservation.binary_beq_true same)
+        · exact Or.inr (Or.inl (WorkConservation.binary_beq_true same))
+        · exact Or.inr (Or.inr (WorkConservation.binary_beq_true same))))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       exact activation_sourced (Or.inl ⟨_, rfl⟩) rfl rfl
+         (fun he => absurd (he.symm.trans rfl) (binary_ne (by decide))) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.timeoutEntry"
+       exact timeoutEntry_sourced (Or.inl ⟨_, rfl⟩) rfl h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       (have phase : phaseIs machine "router" := WorkConservation.binary_beq_true (hyp% (_ == b "router") = true)
+        refine activation_sourced (Or.inr (Or.inr ⟨_, rfl, phase⟩)) (by put_norm <;> rfl) (by put_norm <;> rfl)
+          (fun he => ?_) h
+        put_norm
+        simp (disch := decide) only [mkey_put_other] at he
+        exact Or.inr ⟨_, Or.inl ⟨rfl, Or.inr phase⟩, he, rfl⟩))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.expire"
+       (have phase : phaseIs machine "busy" := WorkConservation.binary_beq_true (hyp% (_ == b "busy") = true)
+        exact expire_sourced (Or.inr (Or.inr (Or.inr ⟨_, rfl, phase⟩))) rfl
+          (fun he => Or.inr ⟨_, Or.inl ⟨rfl, Or.inl phase⟩, he, rfl⟩) h))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.classify"
+       exact classify_sourced ⟨rfl, WorkConservation.binary_beq_true (hyp% (_ == b "classify") = true)⟩ h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.activation"
+       (have phase : phaseIs machine "activation" := WorkConservation.binary_beq_true (hyp% (_ == b "activation") = true)
+        refine activation_sourced (Or.inr (Or.inl ⟨rfl, phase⟩)) (by put_norm <;> rfl) (by put_norm <;> rfl)
+          (fun he => ?_) h
+        put_norm
+        exact Or.inr ⟨nil, Or.inr ⟨rfl, phase⟩, he, rfl⟩))
+    | (execution_head_is h "VerifiedKernel.Session.Loop.timeoutEntry"
+       exact timeoutEntry_sourced (Or.inr ⟨rfl, WorkConservation.binary_beq_true (hyp% (_ == b "timeout") = true), rfl⟩)
+         (by put_norm <;> rfl) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.outputCommitted"
+       exact outputCommitted_sourced h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.modelFailed"
+       exact modelFailed_sourced h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardNotice"
+       exact guardNotice_sourced (Or.inr ⟨rfl, WorkConservation.binary_beq_true (hyp% (_ == b "guard_notice") = true)⟩) h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.noticeCleanup"
+       exact noticeCleanup_sourced ⟨rfl, WorkConservation.binary_beq_true (hyp% (_ == b "notice_cleanup") = true)⟩ h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.guardOutcome"
+       exact guardOutcome_sourced h)
+    | (execution_head_is h "VerifiedKernel.Session.Loop.continuation"
+       exact continuation_sourced h)
     | (refine ⟨_, _, rfl, ?_⟩
        solve_sourced
        refine elem_commit ?_
        first
          | exact CommitSource.boundaryIdle _ "boundary" rfl
-             (WorkConservation.binary_beq_true ‹(_ == b "boundary") = true›) (Or.inl rfl) ⟨_, _, prior⟩
+             (WorkConservation.binary_beq_true (hyp% (_ == b "boundary") = true)) (Or.inl rfl) ⟨_, _, prior⟩
          | exact CommitSource.boundaryIdle _ "async_boundary" rfl
-             (WorkConservation.binary_beq_true ‹(_ == b "async_boundary") = true›) (Or.inr (Or.inl rfl))
+             (WorkConservation.binary_beq_true (hyp% (_ == b "async_boundary") = true)) (Or.inr (Or.inl rfl))
              ⟨_, _, prior⟩
          | exact CommitSource.boundaryIdle _ "boundary_after_tools" rfl
-             (WorkConservation.binary_beq_true ‹(_ == b "boundary_after_tools") = true›) (Or.inr (Or.inr rfl))
+             (WorkConservation.binary_beq_true (hyp% (_ == b "boundary_after_tools") = true)) (Or.inr (Or.inr rfl))
              ⟨_, _, prior⟩)
 
 theorem result_inj {m m' : Term} {xs ys : List Term}
@@ -1054,8 +1089,8 @@ theorem intentRecord_head {state machine record out machine' calls flags : Term}
     | skip
   all_goals
     cases result_inj same
-    obtain ⟨_, rfl⟩ := advance_ok ‹(loop% advance) machine _ _ _ = _›
-    obtain ⟨_, rfl⟩ := advance_ok ‹(loop% advance) _ _ _ _ = _›
+    obtain ⟨_, rfl⟩ := advance_ok (hyp% (loop% advance) machine _ _ _ = _)
+    obtain ⟨_, rfl⟩ := advance_ok (hyp% (loop% advance) _ _ _ _ = _)
   all_goals
     simp only [List.head?_cons, Option.some.injEq]
     unfold intentEvents intentHwm
@@ -1083,7 +1118,7 @@ theorem step_dispatch_after_commit {state machine record machine' calls flags : 
        subst hv
        exact intentRecord_head h rfl mem)
     | (exfalso
-       have other := WorkConservation.binary_beq_true ‹(_ == b "final_record") = true›
+       have other := WorkConservation.binary_beq_true (hyp% (_ == b "final_record") = true)
        exact binary_ne (by decide) (phase.symm.trans other))
 
 /-- `Loop.step` is `stepWith` with the kernel oracle. -/

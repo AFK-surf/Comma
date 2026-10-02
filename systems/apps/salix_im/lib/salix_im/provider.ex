@@ -346,6 +346,7 @@ defmodule SalixIM.Provider do
     with {:ok, connect} <- external_connect(scope, connect_id, provider, api, params),
          :ok <- triage_slack_read_source_fence(provider, api, connect) do
       fun.(connect)
+      |> SalixIM.PlatformMessage.record_success(scope, connect, api, params)
     end
   end
 

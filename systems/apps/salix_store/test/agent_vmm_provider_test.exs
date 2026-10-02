@@ -158,7 +158,7 @@ defmodule SalixStore.AgentVMMProviderTest do
              Enum.any?(results, &match?({:error, :registration_inactive}, &1))
   end
 
-  test "multi-scope registration remains fail closed after the legacy index contract" do
+  test "multi-scope registration remains fail closed under active scope uniqueness" do
     attrs = %{
       id: "registration-a",
       tenant_id: "tenant",
@@ -190,13 +190,14 @@ defmodule SalixStore.AgentVMMProviderTest do
         AND table_class.relname = 'agent_vmm_registrations'
         AND index_class.relname IN (
           'agent_vmm_registrations_tenant_id_device_id_index',
-          'agent_vmm_registrations_tenant_id_group_id_device_id_index'
+          'agent_vmm_registrations_tenant_id_group_id_device_id_index',
+          'agent_vmm_registrations_active_scope_device_index'
         )
       ORDER BY index_class.relname
       """).rows
 
     assert Enum.map(indexes, &hd/1) == [
-             "agent_vmm_registrations_tenant_id_group_id_device_id_index"
+             "agent_vmm_registrations_active_scope_device_index"
            ]
 
     assert Enum.all?(indexes, fn [_name, unique, valid, ready] ->
@@ -204,7 +205,7 @@ defmodule SalixStore.AgentVMMProviderTest do
            end)
   end
 
-  test "replacement expand keeps the full fence while active-only uniqueness is ready" do
+  test "replacement contract preserves revoked facts and allows one active replacement" do
     attrs = %{
       id: "registration-old",
       tenant_id: "tenant",
@@ -217,12 +218,18 @@ defmodule SalixStore.AgentVMMProviderTest do
     assert {:ok, revoked} = AgentVMM.revoke_registration("tenant", old.id, old.revision)
     assert revoked.status == "revoked"
 
-    assert {:error, :already_exists} =
+    assert {:ok, replacement} =
              AgentVMM.create_registration(%{
                attrs
                | id: "registration-replacement",
                  enrollment_token: String.duplicate("b", 32)
              })
+
+    assert replacement.id != old.id
+    assert Repo.get!(AgentVMM.Registration, old.id).status == "revoked"
+
+    assert {:error, :already_exists} =
+             AgentVMM.create_registration(%{attrs | id: "conflicting-active-registration"})
 
     assert [[true, true, "(status <> 'revoked'::text)"]] =
              Repo.query!("""

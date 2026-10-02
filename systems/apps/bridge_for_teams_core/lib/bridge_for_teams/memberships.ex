@@ -89,9 +89,9 @@ defmodule BridgeForTeams.Memberships do
   @spec project_role(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, String.t()} | {:error, :not_found}
   def project_role(project_id, user_id) do
     explicit =
-      case Repo.get_by(ProjectMembership, project_id: project_id, user_id: user_id) do
-        nil -> nil
-        %{role: role} -> role
+      case project_grant(project_id, user_id) do
+        {:ok, role} -> role
+        {:error, :not_found} -> nil
       end
 
     derived = org_derived_project_role(project_id, user_id)
@@ -99,6 +99,15 @@ defmodule BridgeForTeams.Memberships do
     case max_project_role(explicit, derived) do
       nil -> {:error, :not_found}
       role -> {:ok, role}
+    end
+  end
+
+  @doc "Fetch a user's explicit Agent Swarm grant role, ignoring org-derived access."
+  @spec project_grant(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, String.t()} | {:error, :not_found}
+  def project_grant(project_id, user_id) do
+    case Repo.get_by(ProjectMembership, project_id: project_id, user_id: user_id) do
+      nil -> {:error, :not_found}
+      %{role: role} -> {:ok, role}
     end
   end
 
@@ -167,22 +176,28 @@ defmodule BridgeForTeams.Memberships do
     |> Enum.sort_by(fn m -> {-(@project_rank[m.role] || 0), user_sort_key(m.user)} end)
   end
 
-  @doc "List a bounded, stable prefix of explicit Agent Swarm ACL grants with completeness."
-  @spec list_project_members_bounded(Ecto.UUID.t(), 1..100) ::
+  @doc """
+  List a bounded page of explicit Agent Swarm ACL grants in a stable order, with
+  completeness. `:offset` skips that many grants of the same order.
+  """
+  @spec list_project_members_bounded(Ecto.UUID.t(), 1..100, keyword()) ::
           {:ok,
            %{
              members: [ProjectMembership.t()],
              completeness: :complete | :truncated,
              truncated: boolean()
            }}
-  def list_project_members_bounded(project_id, limit)
+  def list_project_members_bounded(project_id, limit, opts \\ [])
       when is_integer(limit) and limit in 1..100 do
+    offset = Keyword.get(opts, :offset, 0)
+
     members =
       from(m in ProjectMembership,
         where: m.project_id == ^project_id,
         join: u in assoc(m, :user),
         order_by: [asc: m.role, asc_nulls_last: u.email, asc_nulls_last: u.name, asc: u.id],
         limit: ^(limit + 1),
+        offset: ^offset,
         preload: [user: u]
       )
       |> Repo.all()

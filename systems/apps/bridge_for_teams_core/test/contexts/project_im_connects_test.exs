@@ -35,6 +35,22 @@ defmodule BridgeForTeams.ProjectIMConnectsTest do
       do: {:error, {:bad_request, "Feishu credential validation failed"}}
   end
 
+  # Records each route read; the group id picks the answer.
+  defmodule RouteListSalixClient do
+    @moduledoc false
+
+    def list_group_im_connects(group_id, provider, opts) do
+      send(self(), {:route_list_read, group_id, provider, opts})
+
+      case group_id do
+        "g-ok" -> {:ok, [%{"connect_id" => "c-1", "app_id" => "cli_app"}]}
+        "g-missing" -> {:error, :not_found}
+        "g-rejected" -> {:error, {:error, :boom}}
+        _ -> {:error, :timeout}
+      end
+    end
+  end
+
   defmodule GroupMissingSalixClient do
     @moduledoc false
 
@@ -278,6 +294,25 @@ defmodule BridgeForTeams.ProjectIMConnectsTest do
 
     assert {:error, :group_not_ready} =
              ProjectIMConnects.list_project_connects(org.id, project.id, "feishu")
+  end
+
+  test "the route lookup of many projects stops at the first Salix timeout" do
+    projects =
+      Enum.map(
+        ~w(g-ok g-missing g-rejected g-slow g-after),
+        &%BridgeForTeams.Schema.Project{id: &1, salix_group_id: &1}
+      )
+
+    with_client(RouteListSalixClient)
+
+    assert {[{%{id: "g-ok"}, %{"connect_id" => "c-1"}}], :timeout} =
+             ProjectIMConnects.list_connects_for_projects(projects, "feishu")
+
+    for group_id <- ~w(g-ok g-missing g-rejected g-slow) do
+      assert_received {:route_list_read, ^group_id, "feishu", [timeout: 3_000]}
+    end
+
+    refute_received {:route_list_read, "g-after", _provider, _opts}
   end
 
   test "list records an Operations diagnostic when Salix IM connects are unreachable", %{

@@ -7,7 +7,7 @@ defmodule BridgeForTeams.Projects do
   """
   import Ecto.Query
 
-  alias BridgeForTeams.{Artifacts, Observability, Repo}
+  alias BridgeForTeams.{Observability, Repo}
   alias BridgeForTeams.Outbox
   alias BridgeForTeams.Salix.Identity
   alias BridgeForTeams.Schema.{Agent, OrgMembership, Organization, Project, ProjectMembership}
@@ -15,6 +15,8 @@ defmodule BridgeForTeams.Projects do
 
   # How many non-archived Agent Swarms an ordinary org member may create per org.
   @member_project_quota 1
+  # The Agent Swarms list loads this many rows per page.
+  @project_page_limit 50
 
   @doc """
   Create a project under an org. Assigns the Salix group id, creates the first
@@ -103,14 +105,19 @@ defmodule BridgeForTeams.Projects do
     end
   end
 
-  @doc "List projects in an org (excludes archived)."
-  @spec list_projects(Ecto.UUID.t()) :: [Project.t()]
-  def list_projects(org_id) do
-    from(p in Project,
-      where: p.org_id == ^org_id and is_nil(p.archived_at),
-      order_by: [asc: p.name]
-    )
-    |> Repo.all()
+  @doc "List projects in an org (excludes archived), by name. `:limit` caps the rows."
+  @spec list_projects(Ecto.UUID.t(), keyword()) :: [Project.t()]
+  def list_projects(org_id, opts \\ []) do
+    query =
+      from(p in Project,
+        where: p.org_id == ^org_id and is_nil(p.archived_at),
+        order_by: [asc: p.name, asc: p.id]
+      )
+
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> query |> limit(^limit) |> Repo.all()
+      _ -> Repo.all(query)
+    end
   end
 
   @doc """
@@ -135,6 +142,83 @@ defmodule BridgeForTeams.Projects do
         |> Repo.all()
     end
   end
+
+  @doc """
+  One page of the projects in an org visible to a user (the rows of
+  `list_projects_for_user/2`), by name, in one query. Options: `:query`
+  matches a case-insensitive substring of the name, slug or Salix group id;
+  `:after` takes a previous page's `next_cursor`; `:limit` is at most
+  #{@project_page_limit}. An unreadable cursor starts from the first page.
+  """
+  @spec page_projects_for_user(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: %{
+          entries: [Project.t()],
+          next_cursor: String.t() | nil
+        }
+  def page_projects_for_user(org_id, user_id, opts \\ []) do
+    limit = opts |> Keyword.get(:limit, @project_page_limit) |> min(@project_page_limit) |> max(1)
+
+    rows =
+      from(p in Project,
+        as: :project,
+        where: p.org_id == ^org_id and is_nil(p.archived_at),
+        where:
+          exists(
+            from(m in OrgMembership,
+              where:
+                m.org_id == ^org_id and m.user_id == ^user_id and m.role in ["owner", "admin"]
+            )
+          ) or
+            exists(
+              from(m in ProjectMembership,
+                where: m.project_id == parent_as(:project).id and m.user_id == ^user_id
+              )
+            ),
+        order_by: [asc: p.name, asc: p.id],
+        limit: ^(limit + 1)
+      )
+      |> matching_projects(opts[:query])
+      |> after_project_cursor(opts[:after])
+      |> Repo.all()
+
+    entries = Enum.take(rows, limit)
+    last = List.last(entries)
+
+    next_cursor =
+      if length(rows) > limit,
+        do: Base.url_encode64(Jason.encode!([last.name, last.id]), padding: false)
+
+    %{entries: entries, next_cursor: next_cursor}
+  end
+
+  defp matching_projects(query, text) when is_binary(text) do
+    case String.trim(text) do
+      "" ->
+        query
+
+      text ->
+        pattern = "%" <> String.replace(text, ~r/[\\%_]/, "\\\\\\0") <> "%"
+
+        where(
+          query,
+          [p],
+          ilike(p.name, ^pattern) or ilike(p.slug, ^pattern) or ilike(p.salix_group_id, ^pattern)
+        )
+    end
+  end
+
+  defp matching_projects(query, _text), do: query
+
+  defp after_project_cursor(query, cursor) when is_binary(cursor) do
+    with {:ok, json} <- Base.url_decode64(cursor, padding: false),
+         {:ok, [name, id]} when is_binary(name) <- Jason.decode(json),
+         {:ok, id} <- Ecto.UUID.cast(id) do
+      where(query, [p], p.name > ^name or (p.name == ^name and p.id > ^id))
+    else
+      _ -> query
+    end
+  end
+
+  defp after_project_cursor(query, _cursor), do: query
 
   @doc """
   Whether a user may create another Agent Swarm in the org. Org owners/admins
@@ -177,8 +261,8 @@ defmodule BridgeForTeams.Projects do
   idempotent. Two kinds of broader access deliberately do NOT count:
 
     * plain membership in someone else's swarm — the point (first-run
-      onboarding) is that every user gets a swarm of their own for board
-      tasks and routine schedules to land in, not that they can see one;
+      onboarding) is that every user gets a swarm of their own to connect
+      integrations to, not that they can see one;
     * the implied project admin org owners/admins hold on every swarm —
       that's access, not ownership, and counting it would mean org admins
       never get a swarm of their own through onboarding.
@@ -186,9 +270,8 @@ defmodule BridgeForTeams.Projects do
   When the user owns none, one is created through `create_project/3` — Salix
   group, default router, creator `"admin"` ACL, outbox reconcile — under the
   caller-provided display `name`. The slug is namespaced with the user-id
-  suffix (`BridgeForTeams.Artifacts.user_suffix/1`, the same namespacing
-  report series and artifact slugs use), so two members whose names slugify
-  identically never collide on the org-scoped slug.
+  suffix (the first 8 hex characters of the user id), so two members whose
+  names slugify identically never collide on the org-scoped slug.
   """
   @spec ensure_owned_project(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, Project.t()} | {:error, Ecto.Changeset.t() | term()}
@@ -200,13 +283,16 @@ defmodule BridgeForTeams.Projects do
       nil ->
         slug =
           case slugify(name) do
-            "" -> "swarm-" <> Artifacts.user_suffix(user_id)
-            base -> base <> "-" <> Artifacts.user_suffix(user_id)
+            "" -> "swarm-" <> user_suffix(user_id)
+            base -> base <> "-" <> user_suffix(user_id)
           end
 
         create_project(org_id, %{"name" => name, "slug" => slug}, creator_user_id: user_id)
     end
   end
+
+  defp user_suffix(user_id),
+    do: user_id |> to_string() |> String.replace("-", "") |> String.slice(0, 8)
 
   defp first_member_project(org_id, user_id, roles) do
     from(p in Project,

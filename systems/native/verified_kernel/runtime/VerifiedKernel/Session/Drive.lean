@@ -509,7 +509,12 @@ private def run (state machine instr : Term) : KernelM Step := do
   -- runs again once the activation is durable.
   | .tuple [.atom "round_failed", reason] =>
     if get machine "kind" == a "speculative" then
-      return emitIn (set machine [("kind", a "prepared")]) "retry_fence" (a "await_fence")
+      let machine := set machine [("kind", a "prepared"), ("reason", reason)]
+      return emitIn machine "retry_fence" (a "await_fence")
+    if reason.get (b "error_class") == b "billing_unavailable" &&
+        reason.get (b "retryable") == a "false" then
+      return emitIn (set machine [("reason", reason)]) "billing_failure_config"
+        (.tuple [a "round_prepare", a "failure"])
     match reason with
     -- A model call that never started records its failure without a
     -- transcript position.
@@ -615,7 +620,12 @@ private def resume (state machine event : Term) : KernelM Step := do
         return emitIn machine "activate" (.tuple [a "command", a "activate", get machine "args"])
       return activationFailure machine (errorReason value)
     if is "retry_fence" then
-      if isOk value then return .next machine (.tuple [a "round", a "prepared"])
+      if isOk value then
+        let reason := get machine "reason"
+        if reason.get (b "error_class") == b "billing_unavailable" &&
+            reason.get (b "retryable") == a "false" then
+          return .next machine (.tuple [a "round_failed", reason])
+        return .next machine (.tuple [a "round", a "prepared"])
       return activationFailure machine (errorReason value)
     if is "gate_fence" then
       if isOk value then return .emit (set machine [("phase", b "model")]) (a "await")
@@ -625,6 +635,12 @@ private def resume (state machine event : Term) : KernelM Step := do
       match value with
       | .tuple [.atom "ok", config] => return .next machine (.tuple [a "prepared_round", config])
       | _ => return .next machine (.tuple [a "round_failed", errorReason value])
+    if is "billing_failure_config" then
+      match value with
+      | .tuple [.atom "ok", config] =>
+        let facts ← configFacts state config (a "current")
+        return roundLoop machine facts (.tuple [a "model_failure", get machine "reason", facts])
+      | _ => return roundFailure machine (errorReason value)
     if is "failure_config" then
       match value with
       | .tuple [.atom "ok", config] =>

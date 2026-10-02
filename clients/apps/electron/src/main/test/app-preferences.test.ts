@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  defaultAppPreferences,
   defaultCommaClientSettings,
+  type KeepAwakeWhenLidClosedStatus,
   type SystemNotificationsStatus,
 } from "@comma/native-bridge";
 import { AppPreferencesService } from "../app-preferences";
@@ -52,6 +54,59 @@ describe("AppPreferencesService", () => {
     });
     await reopened.close();
   });
+  it("moves an Open Comma shortcut still at the old Option-Space default to Option-Comma, once", async () => {
+    const optionSpace = {
+      key: "space",
+      modifiers: { alt: true, control: false, meta: false, shift: false },
+    } as const;
+    const optionComma = { ...optionSpace, key: "comma" } as const;
+    const controlK = {
+      key: "k",
+      modifiers: { alt: false, control: true, meta: false, shift: false },
+    } as const;
+    // Written by a release before the change: every default saved, no revision.
+    const { revision: _revision, ...legacyPreferences } = defaultAppPreferences;
+    const legacyFile = async (openCommaShortcut: unknown, extra = {}) => {
+      const filePath = await temporaryPreferencesPath();
+      await writeFile(
+        filePath,
+        JSON.stringify({
+          ...legacyPreferences,
+          clientSettings: { ...defaultCommaClientSettings, openCommaShortcut },
+          ...extra,
+        })
+      );
+      return filePath;
+    };
+
+    const untouched = await legacyFile(optionSpace);
+    const platform = { ...createPlatform(), setOpenCommaShortcut: vi.fn() };
+    const service = await AppPreferencesService.open({ filePath: untouched, platform });
+    expect(platform.setOpenCommaShortcut).toHaveBeenLastCalledWith(optionComma);
+    expect(service.state().clientSettings?.openCommaShortcut).toEqual(optionComma);
+    expect(JSON.parse(await readFile(untouched, "utf8"))).toMatchObject({
+      clientSettings: { openCommaShortcut: optionComma },
+      defaultsRevision: 1,
+    });
+    // Option-Space chosen again afterwards stays.
+    await service.update({ clientSettings: { openCommaShortcut: optionSpace } });
+    await service.close();
+    const reopened = await AppPreferencesService.open({
+      filePath: untouched,
+      platform,
+    });
+    expect(reopened.state().clientSettings?.openCommaShortcut).toEqual(optionSpace);
+    await reopened.close();
+
+    // A shortcut the user chose, or cleared, before the change stays.
+    for (const chosen of [controlK, null]) {
+      const filePath = await legacyFile(chosen);
+      const kept = await AppPreferencesService.open({ filePath, platform });
+      expect(kept.state().clientSettings?.openCommaShortcut).toEqual(chosen);
+      await kept.close();
+    }
+  });
+
   it("registers Open Comma by default, persists clearing, and restores after a failed edit", async () => {
     const filePath = await temporaryPreferencesPath();
     const platform = { ...createPlatform(), setOpenCommaShortcut: vi.fn() };
@@ -194,6 +249,7 @@ describe("AppPreferencesService", () => {
 
     expect(service.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
       notificationSound: true,
@@ -203,11 +259,148 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(platform.setShowInDock).toHaveBeenCalledWith(false);
     expect(platform.setShowInMenuBar).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps the Mac awake only after opting in and reapplies the choice on launch", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const platform = { ...createPlatform(), setKeepAwakeWhenLidClosed: vi.fn() };
+    const service = await AppPreferencesService.open({ filePath, platform });
+    expect(service.state().keepAwakeWhenLidClosed).toBe(false);
+    expect(platform.setKeepAwakeWhenLidClosed).not.toHaveBeenCalled();
+
+    await service.update({ keepAwakeWhenLidClosed: true });
+    expect(platform.setKeepAwakeWhenLidClosed).toHaveBeenLastCalledWith(true);
+    await service.close();
+
+    const relaunched = { ...createPlatform(), setKeepAwakeWhenLidClosed: vi.fn() };
+    const reopened = await AppPreferencesService.open({
+      filePath,
+      platform: relaunched,
+    });
+    expect(reopened.state().keepAwakeWhenLidClosed).toBe(true);
+    expect(relaunched.setKeepAwakeWhenLidClosed).toHaveBeenCalledWith(true, {
+      atLaunch: true,
+    });
+
+    relaunched.setKeepAwakeWhenLidClosed.mockImplementationOnce(() => {
+      throw new Error("sleep guard unavailable");
+    });
+    await expect(reopened.update({ keepAwakeWhenLidClosed: false })).rejects.toThrow(
+      "sleep guard unavailable"
+    );
+    expect(reopened.state().keepAwakeWhenLidClosed).toBe(true);
+    await reopened.close();
+
+    // A daemon that refuses still lets Comma start, with the setting off.
+    const refused = {
+      ...createPlatform(),
+      setKeepAwakeWhenLidClosed: vi.fn(() => {
+        throw new Error("pmset exited with 1");
+      }),
+    };
+    const afterRefusal = await AppPreferencesService.open({
+      filePath,
+      platform: refused,
+    });
+    expect(afterRefusal.state().keepAwakeWhenLidClosed).toBe(false);
+    await afterRefusal.close();
+  });
+
+  it("waits for Login Items approval, holds once allowed, and releases when revoked", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const daemon = createSleepGuardDaemon("not-registered");
+    const platform = { ...createPlatform(), ...daemon.platform };
+    const onStateChanged = vi.fn();
+    const service = await AppPreferencesService.open({
+      filePath,
+      onStateChanged,
+      platform,
+    });
+    expect(service.state()).toMatchObject({
+      keepAwakeWhenLidClosed: false,
+      keepAwakeWhenLidClosedStatus: "not-registered",
+    });
+
+    // Turning it on registers the daemon; the choice waits for the user.
+    await expect(
+      service.update({ keepAwakeWhenLidClosed: true })
+    ).resolves.toMatchObject({
+      keepAwakeWhenLidClosed: true,
+      keepAwakeWhenLidClosedStatus: "requires-approval",
+    });
+    expect(daemon.platform.setKeepAwakeWhenLidClosed.mock.calls).toEqual([[true]]);
+    // The choice persists; the status is a readback and never does.
+    const persisted = JSON.parse(await readFile(filePath, "utf8"));
+    expect(persisted.keepAwakeWhenLidClosed).toBe(true);
+    expect(persisted).not.toHaveProperty("keepAwakeWhenLidClosedStatus");
+
+    // Nothing changed in Login Items: no hold and nothing to publish.
+    onStateChanged.mockClear();
+    await service.refreshKeepAwakeWhenLidClosedStatus();
+    expect(daemon.platform.setKeepAwakeWhenLidClosed).toHaveBeenCalledTimes(1);
+    expect(onStateChanged).not.toHaveBeenCalled();
+
+    // The user allows Comma in Login Items: the next readback takes the hold.
+    daemon.setStatus("available");
+    await expect(service.refreshKeepAwakeWhenLidClosedStatus()).resolves.toMatchObject({
+      keepAwakeWhenLidClosed: true,
+      keepAwakeWhenLidClosedStatus: "available",
+    });
+    expect(daemon.platform.setKeepAwakeWhenLidClosed).toHaveBeenLastCalledWith(true, {
+      atLaunch: true,
+    });
+    expect(onStateChanged).toHaveBeenLastCalledWith(
+      expect.objectContaining({ keepAwakeWhenLidClosedStatus: "available" })
+    );
+
+    // A revoked approval drops the hold but keeps the choice for a later approval.
+    daemon.setStatus("requires-approval");
+    await expect(service.refreshKeepAwakeWhenLidClosedStatus()).resolves.toMatchObject({
+      keepAwakeWhenLidClosed: true,
+      keepAwakeWhenLidClosedStatus: "requires-approval",
+    });
+    expect(daemon.platform.setKeepAwakeWhenLidClosed).toHaveBeenLastCalledWith(false);
+    await service.close();
+  });
+
+  it("keeps a choice that waits for approval across launches and asks again when turned on", async () => {
+    const filePath = await temporaryPreferencesPath();
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        keepAwakeWhenLidClosed: true,
+        launchAtLogin: false,
+        showInDock: true,
+        showInMenuBar: true,
+      })
+    );
+    const daemon = createSleepGuardDaemon("not-registered");
+    const service = await AppPreferencesService.open({
+      filePath,
+      platform: { ...createPlatform(), ...daemon.platform },
+    });
+
+    // At launch Comma neither registers the daemon nor drops the choice.
+    expect(daemon.platform.setKeepAwakeWhenLidClosed.mock.calls).toEqual([
+      [true, { atLaunch: true }],
+    ]);
+    expect(service.state()).toMatchObject({
+      keepAwakeWhenLidClosed: true,
+      keepAwakeWhenLidClosedStatus: "not-registered",
+    });
+
+    // Turning it on again asks again, which registers the daemon.
+    await expect(
+      service.update({ keepAwakeWhenLidClosed: true })
+    ).resolves.toMatchObject({ keepAwakeWhenLidClosedStatus: "requires-approval" });
+    expect(daemon.platform.setKeepAwakeWhenLidClosed).toHaveBeenLastCalledWith(true);
+    await service.close();
   });
 
   it("retains an approval-required macOS registration while publishing native truth", async () => {
@@ -241,6 +434,7 @@ describe("AppPreferencesService", () => {
 
     await expect(service.update({ launchAtLogin: true })).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       launchAtLoginStatus: "requires-approval",
       notchSideWidth: 156,
@@ -251,6 +445,7 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -260,6 +455,7 @@ describe("AppPreferencesService", () => {
     ]);
     expect(onStateChanged).toHaveBeenCalledWith({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       launchAtLoginStatus: "requires-approval",
       notchSideWidth: 156,
@@ -270,12 +466,15 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(service.state().launchAtLogin).toBe(false);
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
+      defaultsRevision: 1,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -284,11 +483,13 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
     });
     const reopened = await AppPreferencesService.open({ filePath, platform });
     expect(reopened.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       launchAtLoginStatus: "requires-approval",
       notchSideWidth: 156,
@@ -299,11 +500,13 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     await expect(reopened.update({ launchAtLogin: true })).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       launchAtLoginStatus: "requires-approval",
       notchSideWidth: 156,
@@ -314,6 +517,7 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -321,6 +525,7 @@ describe("AppPreferencesService", () => {
 
     await expect(reopened.update({ launchAtLogin: false })).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       launchAtLoginStatus: "not-registered",
       notchSideWidth: 156,
@@ -331,6 +536,7 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -360,6 +566,7 @@ describe("AppPreferencesService", () => {
 
     expect(service.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       launchAtLoginStatus: "enabled",
       notchSideWidth: 156,
@@ -370,11 +577,13 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(onStateChanged).toHaveBeenCalledWith({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       launchAtLoginStatus: "enabled",
       notchSideWidth: 156,
@@ -385,6 +594,7 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -406,6 +616,7 @@ describe("AppPreferencesService", () => {
 
     await expect(service.update({ showInDock: false })).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       launchAtLoginStatus: "enabled",
       notchSideWidth: 156,
@@ -416,11 +627,14 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
+      defaultsRevision: 1,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
       notificationSound: true,
@@ -429,10 +643,12 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
     });
     expect(onStateChanged).toHaveBeenLastCalledWith({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       launchAtLoginStatus: "enabled",
       notchSideWidth: 156,
@@ -443,6 +659,7 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -474,6 +691,7 @@ describe("AppPreferencesService", () => {
     ]);
     expect(service.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       launchAtLoginStatus: "requires-approval",
       notchSideWidth: 156,
@@ -484,6 +702,7 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -521,6 +740,7 @@ describe("AppPreferencesService", () => {
     expect(platform.setLaunchAtLogin).toHaveBeenCalledTimes(2);
     expect(service.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       launchAtLoginStatus: "enabled",
       notchSideWidth: 156,
@@ -531,11 +751,13 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(onStateChanged).toHaveBeenLastCalledWith({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       launchAtLoginStatus: "enabled",
       notchSideWidth: 156,
@@ -546,6 +768,7 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -573,6 +796,7 @@ describe("AppPreferencesService", () => {
     releaseDockSetter.resolve();
     await expect(dockUpdate).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -582,11 +806,13 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     await expect(menuUpdate).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -596,11 +822,13 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(service.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -610,11 +838,14 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
+      defaultsRevision: 1,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -623,6 +854,7 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
     });
   });
@@ -654,6 +886,7 @@ describe("AppPreferencesService", () => {
     releaseDockSetter.resolve();
     await expect(update).resolves.toMatchObject({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       notificationSound: true,
       notifyRouterMessages: true,
       revision: 1,
@@ -718,6 +951,7 @@ describe("AppPreferencesService", () => {
       })
     ).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
       notificationSound: true,
@@ -727,6 +961,7 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -736,6 +971,7 @@ describe("AppPreferencesService", () => {
     expect(platform.setShowInMenuBar).toHaveBeenLastCalledWith(false);
     expect(onStateChanged).toHaveBeenCalledWith({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
       notificationSound: true,
@@ -745,11 +981,14 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
+      defaultsRevision: 1,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
       notificationSound: true,
@@ -758,6 +997,7 @@ describe("AppPreferencesService", () => {
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
     });
   });
@@ -777,9 +1017,11 @@ describe("AppPreferencesService", () => {
     expect(reopened.state().airDropName).toBe("Studio Mac");
     await expect(reopened.update({ airDropName: null })).resolves.toMatchObject({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toMatchObject({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
     });
   });
 
@@ -816,6 +1058,8 @@ describe("AppPreferencesService", () => {
     );
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
+      defaultsRevision: 1,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -824,8 +1068,52 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: false,
     });
+  });
+
+  it("asks the OS about notifications without holding up preference writes, then publishes its answer", async () => {
+    const filePath = await temporaryPreferencesPath();
+    let osStatus: SystemNotificationsStatus = "undetermined";
+    const prompt = deferred<void>();
+    const platform = {
+      ...createPlatform(),
+      // macOS keeps its prompt up until the user answers it.
+      authorizeSystemNotifications: vi.fn(async () => {
+        await prompt.promise;
+        osStatus = "available";
+        return true;
+      }),
+      getSystemNotificationsStatus: vi.fn(() => osStatus),
+    };
+    const onStateChanged = vi.fn();
+    const service = await AppPreferencesService.open({
+      filePath,
+      onStateChanged,
+      platform,
+    });
+    expect(service.state()).toMatchObject({
+      revision: 0,
+      systemNotificationsStatus: "undetermined",
+    });
+
+    const request = service.requestSystemNotificationsAuthorization();
+    await expect(service.update({ showInDock: false })).resolves.toMatchObject({
+      revision: 1,
+      showInDock: false,
+      systemNotificationsStatus: "undetermined",
+    });
+
+    prompt.resolve();
+    await expect(request).resolves.toBe("available");
+    expect(platform.authorizeSystemNotifications).toHaveBeenCalledOnce();
+    expect(onStateChanged).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision: 2, systemNotificationsStatus: "available" })
+    );
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty(
+      "systemNotificationsStatus"
+    );
   });
 
   it("rolls back native changes when persistence fails", async () => {
@@ -860,6 +1148,7 @@ describe("AppPreferencesService", () => {
     await expect(failedUpdate).rejects.toThrow("Dock unavailable");
     await expect(succeedingUpdate).resolves.toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -869,11 +1158,13 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
     expect(service.state()).toEqual({
       airDropName: null,
+      keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
       notificationSound: true,
@@ -883,11 +1174,34 @@ describe("AppPreferencesService", () => {
       showInDock: true,
       showInMenuBar: false,
       showInNotch: true,
+      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
   });
 });
+
+// A sleep guard daemon as Login Items shows it: turning it on registers one
+// that is not registered yet (never at launch), and holds only when allowed.
+function createSleepGuardDaemon(initial: KeepAwakeWhenLidClosedStatus) {
+  let status = initial;
+  return {
+    platform: {
+      getKeepAwakeWhenLidClosedStatus: vi.fn(() => status),
+      setKeepAwakeWhenLidClosed: vi.fn(
+        async (enabled: boolean, options?: { atLaunch?: boolean }) => {
+          if (enabled && status === "not-registered" && !options?.atLaunch) {
+            status = "requires-approval";
+          }
+          return status;
+        }
+      ),
+    },
+    setStatus(next: KeepAwakeWhenLidClosedStatus) {
+      status = next;
+    },
+  };
+}
 
 function createPlatform({
   launchAtLogin = false,
@@ -895,6 +1209,9 @@ function createPlatform({
 } = {}) {
   let nativeLaunchAtLogin = launchAtLogin;
   return {
+    authorizeSystemNotifications: vi.fn(
+      async () => systemNotificationsStatus === "available"
+    ),
     getLaunchAtLogin: vi.fn(
       (): LaunchAtLoginReadback => ({ enabled: nativeLaunchAtLogin })
     ),

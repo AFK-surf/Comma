@@ -10,7 +10,7 @@ import {
 } from "@comma/native-bridge";
 import { SitePermissionMenuWindow } from "./site-permission-menu-window";
 import { createSitePermissionPlatform } from "./modules/browser-sidebar/site-permissions-platform";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { once } from "node:events";
 import { join, resolve } from "node:path";
 
@@ -20,6 +20,7 @@ import {
   Menu,
   MessageChannelMain,
   Notification,
+  powerMonitor,
   Tray,
   WebContentsView,
   clipboard as electronClipboard,
@@ -42,6 +43,8 @@ import type {
 import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
 import {
   notchHostEvent,
+  onboardingHandoffEvent,
+  onboardingWindowChangedEvent,
   sideChatDebugSettingsChangedEvent,
   sideChatPresentationChangedEvent,
   surfacesWindowFullScreenChangedEvent,
@@ -67,6 +70,7 @@ import {
   awaitElectronE2eDockUpdateRelease,
   awaitElectronE2eMainReadyRelease,
   clearElectronE2eLaunchAtLoginRegistered,
+  createElectronE2eSleepGuardAddon,
   decorateElectronE2eAppPreferencesProvider,
   recordElectronE2eLaunchAtLoginDisabled,
   recordElectronE2eLaunchAtLoginRegistered,
@@ -76,6 +80,7 @@ import { configureManagedWindow } from "./managed-window";
 import { bindRecorderClientVisibility } from "./recorder-client-visibility";
 import { MeetingRecorderWindow } from "./meeting-recorder-window";
 import { initializeElectronMainI18n } from "./main-locale";
+import { readStoredLocalePreference } from "./app-preferences";
 import { NativeEventBus, WebContentsRegistry, createSenderPolicy } from "./modules/ipc";
 import { JsonlNativeObservabilitySink } from "./modules/observability";
 import { NativeSurfaceService, NativeWindowCommandService } from "./modules/surfaces";
@@ -101,7 +106,13 @@ import {
   type FontFamiliesAddon,
 } from "../../native/macos/FontFamilies";
 import { loadNotificationAuthorizationAddon } from "../../native/macos/NotificationAuthorization";
+import {
+  runningMacAppBundleId,
+  systemNotificationsStatusFromAuthorization,
+} from "./system-notification-settings";
 import { getOperatingSystem } from "./os";
+import { loadSleepGuardAddon } from "../../native/macos/SleepGuard";
+import { LidSleepGuard } from "./lid-sleep-guard";
 import { SystemBrowserGoogleAuth } from "./google-desktop-auth";
 import {
   resolveLaunchAtLoginReadback,
@@ -123,8 +134,12 @@ import { bootstrapCommaElectronRuntime } from "./runtime-bootstrap";
 import {
   createCommaStatusTray,
   createCommaStatusTrayIcon,
+  electronStatusTrayHost,
+  fallbackStatusTrayHost,
+  helperStatusTrayHost,
   statusTrayTaskRoute,
   type StatusTrayContent,
+  type StatusTrayHost,
 } from "./status-tray";
 import {
   applyUpdate,
@@ -134,10 +149,21 @@ import {
 } from "./updates";
 import {
   createMainWindowOptions,
+  createOnboardingWindowOptions,
   createRuntimeWorkbenchWindowOptions,
   createSideChatTestWindowOptions,
   createSideChatWindowOptions,
 } from "./window-options";
+import {
+  MainWindowOnboardingHold,
+  OnboardingWindowPresenter,
+  onboardingHoldsMainWindow,
+  onboardingWindowFor,
+  onboardingWindowRoute,
+  type WindowBounds,
+} from "./onboarding-window";
+import { readMacOutputVolume } from "./output-volume";
+import { getCurrentNativeSessionAdmission } from "./modules/session/native-session-admission";
 import { installWindowViewportSync } from "./window-viewport-sync";
 import { OpaqueWindowBackgroundController } from "./window-background";
 import { applyCommaDockVisibility } from "./dock-visibility";
@@ -206,6 +232,7 @@ const connector = new ConnectorService({
   runtimeNamespace: runtimePaths.runtimeNamespace,
 });
 let appContext: ElectronMainContext | undefined;
+let applicationMenu: ReturnType<typeof installApplicationMenu> | undefined;
 const sideChat = new NativeSideChatService({
   activateOpenWindow: !showTestWindowsInactive,
   ...(e2eSideChatHostPath ? { resolveExecutablePath: () => e2eSideChatHostPath } : {}),
@@ -216,6 +243,7 @@ const sideChat = new NativeSideChatService({
   onDebugSettingsChanged: (settings) => {
     appContext?.nativeEventBus.emit(sideChatDebugSettingsChangedEvent, settings);
   },
+  onEnabledChanged: () => applicationMenu?.update(),
   onOpenSettings: () => openMainAppRoute("/settings"),
   onOpenTestWindow: (input) => openSideChatTestWindow(input),
   onPresentationChanged: (presentation) => {
@@ -247,7 +275,7 @@ let sideChatBrowserWindowStableTimer: ReturnType<typeof setTimeout> | undefined;
 let sideChatTestBrowserWindow: BrowserWindow | undefined;
 let sideChatTestBrowserWindowGeneration = 0;
 let statusTray: ReturnType<typeof createCommaStatusTray> | undefined;
-let statusTrayContent: StatusTrayContent = { recentTasks: [] };
+let statusTrayContent: StatusTrayContent = { inProgressTasks: [] };
 let fontFamiliesAddon: FontFamiliesAddon | undefined;
 let statusTrayInteractionsEnabled = false;
 let statusTrayVisibleRequested = false;
@@ -268,6 +296,10 @@ const sideChatWindowIdentity = {
 const sideChatTestWindowIdentity = {
   id: "win_side_chat_test",
   role: "side-chat-test-window",
+} as const;
+const onboardingWindowIdentity = {
+  id: "win_onboarding",
+  role: "onboarding-window",
 } as const;
 
 function resolveWindowIconPath() {
@@ -292,7 +324,7 @@ function resolveStatusTrayIconPath() {
   return resolve(__dirname, "../../build/icons/tray/CommaTemplate.png");
 }
 
-// Appearance lists the installed families; the menu-bar menu measures Task titles.
+// Appearance lists the installed families.
 function fontFamilies() {
   fontFamiliesAddon ??= loadFontFamiliesAddon({
     isPackaged: app.isPackaged,
@@ -310,22 +342,61 @@ applicationMenuProvider.subscribe(({ items }) => {
   statusTray?.update(statusTrayContent);
 });
 
+// macOS draws the menu-bar item in the Side Chat helper, whose main thread is
+// otherwise idle, so hovering the menu never waits on Main. A checkout without
+// the built helper, and every other platform, uses Electron's Tray, as does
+// macOS once the helper is lost, until the menu-bar item is next turned on.
+function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTrayHost {
+  let drawnByHelper = operatingSystem() === "macos" && sideChat.hostAvailable();
+  const electronHost = () =>
+    electronStatusTrayHost({
+      buildMenu: (template) => Menu.buildFromTemplate(template),
+      createTray: () =>
+        new Tray(
+          createCommaStatusTrayIcon({
+            iconPath: resolveStatusTrayIconPath(),
+            nativeImage,
+            platform: process.platform,
+          })
+        ),
+      toolTip,
+    });
+  const host = drawnByHelper
+    ? fallbackStatusTrayHost({
+        createFallback: () => {
+          log.warn("The Side Chat helper was lost; Electron draws the menu-bar item.");
+          drawnByHelper = false;
+          return electronHost();
+        },
+        createPrimary: (onLost) =>
+          helperStatusTrayHost({
+            helper: sideChat,
+            iconPath: resolveStatusTrayIconPath(),
+            onLost,
+            onQuit: () => app.quit(),
+            toolTip,
+          }),
+        reinstall,
+      })
+    : electronHost();
+  return {
+    ...host,
+    setMenu(items) {
+      recordElectronE2eStatusTrayMenu(
+        e2eHooks,
+        drawnByHelper ? "side-chat-helper" : "electron",
+        items
+      );
+      host.setMenu(items);
+    },
+  };
+}
+
 function installStatusTray() {
   if (statusTray) return;
   const installedTray = createCommaStatusTray({
-    buildMenu: (template) => {
-      recordElectronE2eStatusTrayMenu(e2eHooks, template);
-      return Menu.buildFromTemplate(template);
-    },
     content: statusTrayContent,
-    measureMenuText: (text) => fontFamilies().menuTextWidth(text),
-    createTray: (trayIcon) =>
-      new Tray(trayIcon as ReturnType<typeof nativeImage.createFromPath>),
-    icon: createCommaStatusTrayIcon({
-      iconPath: resolveStatusTrayIconPath(),
-      nativeImage,
-      platform: process.platform,
-    }),
+    createHost: createStatusTrayHost,
     locale: electronMainLocale,
     onOpenMainApp: requestOpenMainApp,
     onOpenSettings: openStatusTraySettings,
@@ -335,6 +406,7 @@ function installStatusTray() {
       });
     },
     onOpenTask: (task) => requestOpenMainAppRoute(statusTrayTaskRoute(task)),
+    onOpenTasks: () => requestOpenMainAppRoute("/tasks"),
     productName: releaseConfig.productName,
   });
   statusTray = installedTray;
@@ -351,8 +423,40 @@ function openStatusTraySettings() {
   safelyControlSideChat(() => sideChat.openSettings());
 }
 
+// A signed-in account that has not finished the onboarding on this Mac meets
+// it before the product. At launch the main window loads hidden (its renderer
+// presents the onboarding window); signed in just now, the main window steps
+// aside as the onboarding window opens. Either way it shows once that window
+// has closed, however it closed.
+const mainWindowOnboardingHold = new MainWindowOnboardingHold({
+  bringOnboardingForward: () => onboardingWindow.mainWindowFocused(),
+  hideMainWindow: () => {
+    if (primaryWindow && !primaryWindow.isDestroyed() && primaryWindow.isVisible()) {
+      primaryWindow.hide();
+    }
+  },
+  logger: log,
+  onboardingOpen: () => onboardingWindow.window().open,
+  showMainWindow: () => requestOpenMainApp(),
+  graceMs: 5_000,
+  timeoutMs: 20_000,
+});
+
+async function onboardingPendingAtLaunch(context: ElectronMainContext) {
+  const { clientSettings } = await context.appPreferences.state();
+  return onboardingHoldsMainWindow({
+    completedUserIds: clientSettings?.onboardingCompletedUserIds ?? [],
+    operatingSystem: operatingSystem(),
+    session: context.session.state(),
+  });
+}
+
 function requestOpenMainApp() {
   if (!mainWindowInteractionsEnabled) return;
+  // While the first-launch onboarding holds the main window, opening Comma
+  // (the Dock, the shortcut, the status item) brings the onboarding forward,
+  // or shows the main window when no onboarding window is open.
+  if (mainWindowOnboardingHold.openRequested()) return;
   void openMainApp().catch((error: unknown) => {
     log.error(`main window open failed: ${errorMessage(error)}`);
   });
@@ -526,8 +630,9 @@ async function readSystemNotificationsStatus(): Promise<SystemNotificationsStatu
   if (e2eHooks.systemNotificationsStatus) return e2eHooks.systemNotificationsStatus;
   if (!Notification.isSupported()) return "unsupported";
   if (operatingSystem() !== "macos") return "available";
-  const status = await notificationAuthorization.authorizationStatus();
-  return status === "denied" ? "denied" : "available";
+  return systemNotificationsStatusFromAuthorization(
+    await notificationAuthorization.authorizationStatus()
+  );
 }
 
 // Whether the OS will take a banner right now. macOS decides per bundle and
@@ -535,6 +640,7 @@ async function readSystemNotificationsStatus(): Promise<SystemNotificationsStatu
 // question is put before the first banner instead of left to Electron, whose
 // presenter fires the same request but posts without awaiting the answer —
 // that banner races the prompt, is refused (UNErrorDomain 1) and is lost.
+// The preferences' request capability asks through here too, then reads back.
 async function authorizeSystemNotifications(): Promise<boolean> {
   if (e2eHooks.systemNotificationsStatus) {
     return e2eHooks.systemNotificationsStatus === "available";
@@ -643,6 +749,8 @@ async function createWindow({
     mainWindow.on("closed", () => {
       if (primaryWindow === mainWindow) primaryWindow = undefined;
     });
+    // Activating Comma lands on this window; an open onboarding moves back above it.
+    mainWindow.on("focus", () => onboardingWindow.mainWindowFocused());
   }
 
   await configureManagedWindow({
@@ -659,6 +767,8 @@ async function createWindow({
     logger: log,
     route,
     role: mainWindowIdentity.role,
+    // Held for the first-launch onboarding: it shows once that has closed.
+    showOnReady: !mainWindowOnboardingHold.held,
     showInactiveOnReady: showTestWindowsInactive,
     surfaces,
     webContentsRegistry,
@@ -1117,6 +1227,110 @@ function failSideChatTestWindow(
   closeSideChatTestWindow();
 }
 
+// The first-launch onboarding, presented by the main window's renderer as one
+// full-screen window over the display that holds the main window.
+const onboardingWindow = new OnboardingWindowPresenter({
+  activate: !showTestWindowsInactive,
+  // AppKit takes key status from every window of an app that resigns active.
+  appActive: () => BrowserWindow.getFocusedWindow() !== null,
+  admittedUserId: () => getCurrentNativeSessionAdmission().principalUserId,
+  createWindow: createOnboardingWindow,
+  displayMatching: (bounds) => screen.getDisplayMatching(bounds),
+  focusMainWindow: requestOpenMainApp,
+  logger: log,
+  mainWindow: () =>
+    primaryWindow && !primaryWindow.isDestroyed() ? primaryWindow : undefined,
+  onAppActiveChanged: (listener) => {
+    const becameActive = () => listener(true);
+    const resignedActive = () => listener(false);
+    app.on("did-become-active", becameActive);
+    app.on("did-resign-active", resignedActive);
+    return () => {
+      app.removeListener("did-become-active", becameActive);
+      app.removeListener("did-resign-active", resignedActive);
+    };
+  },
+  onDisplaysChanged: (listener) => {
+    screen.on("display-added", listener);
+    screen.on("display-removed", listener);
+    screen.on("display-metrics-changed", listener);
+    return () => {
+      screen.removeListener("display-added", listener);
+      screen.removeListener("display-removed", listener);
+      screen.removeListener("display-metrics-changed", listener);
+    };
+  },
+  onHandoff: (handoff) => {
+    appContext?.nativeEventBus.emit(onboardingHandoffEvent, handoff);
+  },
+  onWindowChanged: (state) => {
+    appContext?.nativeEventBus.emit(onboardingWindowChangedEvent, state);
+    // The onboarding's last step teaches the Open Comma shortcut: while it is
+    // open the keys reach its page.
+    if (!openCommaShortcut.setSuspended(state.open)) {
+      log.warn("the Open Comma shortcut was taken during the onboarding");
+    }
+    // The onboarding comes before the product; once it is over, finished or
+    // closed, the product comes up.
+    if (state.open) mainWindowOnboardingHold.onboardingOpened();
+    else mainWindowOnboardingHold.release();
+  },
+  outputVolume: () => readMacOutputVolume(),
+  preferences: {
+    state: () => readyAppContext().appPreferences.state(),
+    update: (patch) => readyAppContext().appPreferences.update(patch),
+  },
+});
+
+function createOnboardingWindow(bounds: WindowBounds) {
+  const { surfaces, webContentsRegistry } = readyAppContext();
+  const window = new BrowserWindow(
+    createOnboardingWindowOptions({
+      bounds,
+      locale: electronMainLocale,
+      preloadPath: join(__dirname, "preload.js"),
+      productName: releaseConfig.productName,
+      windowId: onboardingWindowIdentity.id,
+      windowRole: onboardingWindowIdentity.role,
+    })
+  );
+  // The shared document title names the app; this window keeps its own name
+  // for the Window menu and VoiceOver.
+  window.on("page-title-updated", (event) => event.preventDefault());
+  return {
+    load: () =>
+      configureManagedWindow({
+        browserWindow: window,
+        failureLabel: "onboarding window",
+        id: onboardingWindowIdentity.id,
+        installWindowSecurity: () =>
+          installWindowSecurity({
+            allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
+            logger: log,
+            webContents: window.webContents,
+          }),
+        loadUrl: withHashRoute(
+          e2eHooks.rendererUrl ?? appRendererUrl(),
+          onboardingWindowRoute
+        ),
+        logger: log,
+        role: onboardingWindowIdentity.role,
+        route: onboardingWindowRoute,
+        showInactiveOnReady: showTestWindowsInactive,
+        surfaces,
+        webContentsRegistry,
+      }),
+    window,
+  };
+}
+
+function readyAppContext() {
+  if (closingMainServices || !appContext) {
+    throw new Error("The onboarding window is unavailable while Main is not running.");
+  }
+  return appContext;
+}
+
 function sideChatElectronBounds(
   presentation: SideChatPresentation
 ): { height: number; width: number; x: number; y: number } | undefined {
@@ -1231,6 +1445,14 @@ function ensureMeetingRecorderWindow() {
 
 const openCommaShortcut = new OpenCommaShortcut(globalShortcut, requestOpenMainApp);
 app.on("will-quit", () => openCommaShortcut.dispose());
+// Quitting needs no cleanup: the daemon restores sleep when this process's
+// connection to it closes.
+const lidSleepGuard = new LidSleepGuard({
+  addon: e2eHooks.sleepGuardDirectory
+    ? createElectronE2eSleepGuardAddon(e2eHooks.sleepGuardDirectory)
+    : loadSleepGuardAddon({ isPackaged: app.isPackaged, logger: log }),
+  appBundleId: releaseConfig.appBundleId,
+});
 
 async function createElectronMainContext() {
   const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
@@ -1244,22 +1466,91 @@ async function createElectronMainContext() {
   const context = await createElectronMainServices({
     computerUse: connector,
     appPreferencesFilePath: join(app.getPath("userData"), "app-preferences.json"),
-    appBundleId: releaseConfig.appBundleId,
+    appBundleId:
+      operatingSystem() === "macos"
+        ? runningMacAppBundleId(
+            process.execPath,
+            (path) => readFileSync(path, "utf8"),
+            releaseConfig.appBundleId
+          )
+        : releaseConfig.appBundleId,
     // Main applies native effects and publishes from one preferences queue.
     // Feature-model retirement and coverage scope: tla/README.md.
     appPreferencesPlatform: {
       setOpenCommaShortcut: (shortcut) => openCommaShortcut.set(shortcut),
+      authorizeSystemNotifications,
       getLaunchAtLogin: readLaunchAtLogin,
       getSystemNotificationsStatus: readSystemNotificationsStatus,
       setLaunchAtLogin,
       setShowInDock: setDockVisible,
       setShowInMenuBar: setStatusTrayVisible,
+      getKeepAwakeWhenLidClosedStatus: () => lidSleepGuard.status(),
+      setKeepAwakeWhenLidClosed: (enabled, options) =>
+        lidSleepGuard.set(enabled, options),
+      openLoginItemsSettings: () => lidSleepGuard.openLoginItemsSettings(),
+    },
+    userActivity: {
+      systemIdleSeconds: () => powerMonitor.getSystemIdleTime(),
+      // Home banners come from the main window's open Home chat.
+      mainWindowOpen: () => primaryWindow !== undefined && !primaryWindow.isDestroyed(),
     },
     decorateAppPreferencesProvider: (provider) =>
       decorateElectronE2eAppPreferencesProvider(e2eHooks, provider),
     onMeetingRecorderStateChanged: (state) => {
       if (appContext && !closingMainServices)
         ensureMeetingRecorderWindow().update(state);
+    },
+    confirmHostMaintenance: async (input) => {
+      const locale = { locale: electronMainLocale };
+      const action =
+        input.action === "update"
+          ? messages.compute_maintenance_action_update({}, locale)
+          : input.action === "reinstall"
+            ? input.dataPolicy === "reset"
+              ? messages.compute_maintenance_action_reinstall_reset({}, locale)
+              : messages.compute_maintenance_action_reinstall({}, locale)
+            : input.dataPolicy === "reset"
+              ? messages.compute_maintenance_action_uninstall_reset({}, locale)
+              : messages.compute_maintenance_action_uninstall({}, locale);
+      const result = await dialog.showMessageBox({
+        type: "warning",
+        title: messages.compute_maintenance_confirmation_title({}, locale),
+        message: action,
+        detail: `${messages.compute_maintenance_shared_warning({}, locale)}\n\n${input.dataPolicy === "reset" ? messages.compute_maintenance_erase_confirmation({}, locale) : messages.compute_maintenance_keep_confirmation({}, locale)}`,
+        buttons: [messages.settings_profile_cancel({}, locale), action],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return result.response === 1;
+    },
+    confirmLocalDisposal: async (preview) => {
+      const result = await dialog.showMessageBox({
+        type: "warning",
+        title: messages.compute_force_title({}, { locale: electronMainLocale }),
+        message:
+          preview.kind === "registration"
+            ? messages.compute_force_registration(
+                { id: preview.label },
+                { locale: electronMainLocale }
+              )
+            : messages.compute_force_environment(
+                { id: preview.label },
+                { locale: electronMainLocale }
+              ),
+        detail: messages.compute_force_detail(
+          { count: preview.environmentCount },
+          { locale: electronMainLocale }
+        ),
+        buttons: [
+          messages.settings_profile_cancel({}, { locale: electronMainLocale }),
+          messages.compute_force_delete({}, { locale: electronMainLocale }),
+        ],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return result.response === 1;
     },
     resolveMeetingRecovery: async (name) => {
       const result = await dialog.showMessageBox({
@@ -1369,7 +1660,7 @@ async function createElectronMainContext() {
           }),
         }
       : new SystemBrowserGoogleAuth({
-          locale: electronMainLocale,
+          locale: () => electronMainLocale,
           openExternal: (url) => shell.openExternal(url),
         }),
     ipcMain,
@@ -1402,14 +1693,31 @@ async function createElectronMainContext() {
           }),
         }),
     notch,
+    onLocaleChanged: (locale) => {
+      electronMainLocale = initializeElectronMainI18n({
+        appLocale: app.getLocale(),
+        localePreference: locale,
+        preferredSystemLanguages: app.getPreferredSystemLanguages(),
+      });
+      statusTrayContent = { ...statusTrayContent, locale: electronMainLocale };
+      statusTray?.update(statusTrayContent);
+    },
     onStatusTrayChanged: (content) => {
       statusTrayContent = {
         ...content,
+        locale: statusTrayContent.locale,
         settingsAccelerator: statusTrayContent.settingsAccelerator,
       };
       statusTray?.update(statusTrayContent);
     },
     productName: releaseConfig.productName,
+    onboardingWindow: onboardingWindowFor(operatingSystem(), onboardingWindow),
+    onSessionStateChanged: (state) => {
+      // Signed out (or another account) before the onboarding: sign-in needs
+      // the main window.
+      if (state.phase !== "signed_in") mainWindowOnboardingHold.release();
+      return onboardingWindow.sessionChanged(state);
+    },
     sideChat,
     windowAppearance: opaqueWindowBackgrounds,
     browserAppBundleIdentifier: releaseConfig.appBundleId,
@@ -1537,8 +1845,13 @@ function startElectronApp() {
   void app
     .whenReady()
     .then(async () => {
+      // The stored app language is the account's, synced by the renderer. A
+      // device without one yet follows the operating system.
       electronMainLocale = initializeElectronMainI18n({
         appLocale: app.getLocale(),
+        localePreference: await readStoredLocalePreference(
+          join(app.getPath("userData"), "app-preferences.json")
+        ),
         preferredSystemLanguages: app.getPreferredSystemLanguages(),
       });
       configureElectronAboutPanel(app, {
@@ -1556,12 +1869,13 @@ function startElectronApp() {
       installDynamicUiNetworkSecurity(session.defaultSession);
       appContext = await createElectronMainContext();
       registerNativeBridgeHandlersFromContext(appContext);
-      installApplicationMenu({
+      applicationMenu = installApplicationMenu({
         isMainFocused: () => primaryWindow?.isFocused() ?? false,
         dispatch: (id) =>
           appContext?.nativeEventBus.emit(applicationMenuCommandEvent, id),
         openMain: openMainApp,
         openSideChat: () => safelyControlSideChat(() => sideChat.open()),
+        sideChatEnabled: () => sideChat.enabled(),
         ...(process.platform === "darwin" &&
         !app.isPackaged &&
         releaseConfig.flavor === "dev" &&
@@ -1618,6 +1932,10 @@ function startElectronApp() {
       } else if (pendingBillingReturn) {
         await openBillingSettings();
       } else {
+        if (await onboardingPendingAtLaunch(appContext)) {
+          log.info("first launch: the main window waits for the onboarding");
+          mainWindowOnboardingHold.begin();
+        }
         await openMainApp();
       }
       if (devServerUrl && !e2eHooks.devRendererUrl) {
@@ -1764,6 +2082,7 @@ async function closeMainServices() {
   sideChat.dispose();
   opaqueWindowBackgrounds.dispose();
   closeSideChatTestWindow();
+  onboardingWindow.dispose();
   sideChatBrowserWindow?.destroy();
   sideChatBrowserWindow = undefined;
   await appContext?.close();

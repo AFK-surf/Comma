@@ -26,27 +26,17 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
 
   use Gettext, backend: BridgeForTeamsWeb.Gettext
 
-  alias BridgeForTeams.{Agents, Memberships, Onboarding, SlackHistoryOnboarding}
+  alias BridgeForTeams.{Memberships, Onboarding}
 
   @admin_roles ~w(owner admin)
 
-  # Pages where the onboarding UI would be in the way.
-  @skip_views [BridgeForTeamsWeb.Dashboard.CLIDeviceLoginLive]
-
   def on_mount(:default, _params, _session, socket) do
-    socket =
-      socket
-      |> assign(:onboarding, nil)
-      |> assign(:oauth_reminder_alert, nil)
-
-    if socket.view in @skip_views do
-      {:cont, socket}
-    else
-      {:cont,
-       socket
-       |> attach_hook(:bft_onboarding_params, :handle_params, &handle_params_hook/3)
-       |> attach_hook(:bft_onboarding_events, :handle_event, &handle_event_hook/3)}
-    end
+    {:cont,
+     socket
+     |> assign(:onboarding, nil)
+     |> assign(:oauth_reminder_alert, nil)
+     |> attach_hook(:bft_onboarding_params, :handle_params, &handle_params_hook/3)
+     |> attach_hook(:bft_onboarding_events, :handle_event, &handle_event_hook/3)}
   end
 
   defp handle_params_hook(_params, _uri, socket), do: {:cont, rebuild(socket)}
@@ -74,7 +64,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
 
     socket
     |> assign(:onboarding, build_onboarding(org, user, role, page))
-    |> assign(:oauth_reminder_alert, build_reminder_alert(org, role, page))
+    |> assign(:oauth_reminder_alert, build_reminder_alert(org, role))
   end
 
   defp build_onboarding(org, user, role, page) do
@@ -92,9 +82,8 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
 
   # The global admin alert while members wait for OAuth clients. Independent of
   # the admin's own onboarding progress (they may have finished or skipped it).
-  # Suppressed on the OAuth settings page, which shows the full banner instead.
-  defp build_reminder_alert(org, role, page)
-       when not is_nil(org) and role in @admin_roles and page != :settings_oauth do
+  # Settings → Integrations (React) lists the waiting members itself.
+  defp build_reminder_alert(org, role) when not is_nil(org) and role in @admin_roles do
     if Onboarding.oauth_configured?(org.id) do
       nil
     else
@@ -105,7 +94,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
     end
   end
 
-  defp build_reminder_alert(_org, _role, _page), do: nil
+  defp build_reminder_alert(_org, _role), do: nil
 
   @doc """
   Mark the connect step done when a non-empty connections list is shown to the
@@ -134,7 +123,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
     state = snap.state
     welcome? = is_nil(state.welcome_seen_at)
     checklist_on? = not welcome?
-    slack_context_preview? = SlackHistoryOnboarding.readiness().onboarding_preview?
 
     %{
       org: org,
@@ -147,12 +135,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
       done: snap.done,
       active_step: snap.active_step,
       first_project: snap.first_project,
-      slack_context_preview?: slack_context_preview?,
-      first_project_agent_id:
-        if(
-          snap.all_done? and role in @admin_roles and slack_context_preview?,
-          do: first_project_agent_id(snap.first_project)
-        ),
       done_count: snap.done_count,
       total: snap.total,
       all_done?: snap.all_done?,
@@ -164,24 +146,12 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
     }
   end
 
-  defp first_project_agent_id(nil), do: nil
-
-  defp first_project_agent_id(project) do
-    case Agents.list_agents(project.id, limit: 1, role: "router") do
-      [%{id: agent_id}] -> agent_id
-      [] -> nil
-    end
-  end
-
   # ---- page context ----
 
   defp page_context(view, live_action) do
     case {view, live_action} do
-      {BridgeForTeamsWeb.Dashboard.ProjectLive.Index, _} -> :swarms
       {BridgeForTeamsWeb.Dashboard.ProjectLive.Show, :connections} -> :swarm_connections
       {BridgeForTeamsWeb.Dashboard.ProjectLive.Show, _} -> :swarm
-      {BridgeForTeamsWeb.Dashboard.SettingsLive, :oauth} -> :settings_oauth
-      {BridgeForTeamsWeb.Dashboard.SettingsLive, _} -> :settings
       _ -> :other
     end
   end
@@ -267,7 +237,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
       socket
       |> put_flash(
         :info,
-        gettext("Your org admins were asked to configure OAuth under Settings → OAuth apps.")
+        gettext("Your org admins were asked to configure OAuth under Settings → Integrations.")
       )
       |> rebuild()
     end
@@ -281,26 +251,31 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
 
     target =
       case step do
+        # React pages: redirect for a full page load.
         "swarm" ->
-          if ob.page == :swarms, do: nil, else: "/orgs/#{slug}/projects"
+          {:redirect, "/orgs/#{slug}/projects"}
 
         "oauth" ->
-          if ob.page == :settings_oauth, do: nil, else: "/orgs/#{slug}/settings/oauth"
+          {:redirect, "/orgs/#{slug}/settings/integrations"}
 
         "connect" ->
           cond do
-            ob.first_project && ob.page != :swarm_connections ->
-              "/orgs/#{slug}/projects/#{ob.first_project.id}/connections"
+            is_nil(ob.first_project) ->
+              {:redirect, "/orgs/#{slug}/projects"}
 
-            is_nil(ob.first_project) && ob.page != :swarms ->
-              "/orgs/#{slug}/projects"
+            ob.page != :swarm_connections ->
+              "/orgs/#{slug}/projects/#{ob.first_project.id}/connections"
 
             true ->
               nil
           end
       end
 
-    if target, do: push_navigate(socket, to: target), else: socket
+    case target do
+      nil -> socket
+      {:redirect, path} -> redirect(socket, to: path)
+      path -> push_navigate(socket, to: path)
+    end
   end
 
   # ---- guided tour ----
@@ -324,32 +299,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
     end
   end
 
-  defp candidates("swarm", :swarms, role, _snap) do
-    [
-      %{
-        key: "swarm-form",
-        target: "#new-project-container",
-        placement: "right",
-        title: gettext("Create the Agent Swarm"),
-        body:
-          gettext(
-            "Give it a name (the slug is generated for you), then click “Create Agent Swarm”."
-          )
-      },
-      %{
-        key: "swarm-new",
-        target: "#new-project-button",
-        placement: "bottom",
-        title: gettext("Create a new Swarm"),
-        body:
-          if(role == "member",
-            do: gettext("Click “New Agent Swarm”. Each member can create one."),
-            else: gettext("Click “New Agent Swarm”.")
-          )
-      }
-    ]
-  end
-
   defp candidates("swarm", _page, _role, _snap) do
     [
       %{
@@ -365,33 +314,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
     ]
   end
 
-  defp candidates("oauth", :settings_oauth, _role, _snap) do
-    [
-      %{
-        key: "oauth-form",
-        target: "[id^='oauth-app-']",
-        placement: "right",
-        title: gettext("Configure a platform"),
-        body:
-          gettext(
-            "Paste a client ID and secret and click “Save”. Configuring any one platform is enough to continue."
-          )
-      }
-    ]
-  end
-
-  defp candidates("oauth", :settings, _role, _snap) do
-    [
-      %{
-        key: "oauth-tab",
-        target: "a[href$='/settings/oauth']",
-        placement: "bottom",
-        title: gettext("Configure OAuth clients"),
-        body: gettext("Open the “OAuth apps” tab.")
-      }
-    ]
-  end
-
   defp candidates("oauth", _page, _role, _snap) do
     [
       %{
@@ -401,7 +323,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
         title: gettext("Configure OAuth clients"),
         body:
           gettext(
-            "Go to Settings → OAuth apps. Members can only connect a platform in an Agent Swarm after a client ID is configured."
+            "Go to Settings → Integrations. Members can only connect a platform in an Agent Swarm after a client ID is configured."
           )
       }
     ]
@@ -451,18 +373,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Onboarding do
           }
         ]
     end
-  end
-
-  defp candidates("connect", :swarms, _role, %{first_project: %{id: id}}) do
-    [
-      %{
-        key: "conn-row",
-        target: "#project-#{id}",
-        placement: "bottom",
-        title: gettext("Connect a third-party account"),
-        body: gettext("Open the Agent Swarm you just created.")
-      }
-    ]
   end
 
   defp candidates("connect", :swarm, _role, _snap) do

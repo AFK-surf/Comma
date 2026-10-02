@@ -122,8 +122,10 @@ export {
 export { SideChatApp } from "./components/chat/side-chat/SideChatApp";
 export { SideChatTestWindow } from "./components/chat/side-chat/SideChatTestWindow";
 export { BrowserInspectionComposer } from "./components/chat-sidebar/BrowserInspectionComposer";
+export { OnboardingWindowApp } from "./components/onboarding/window/OnboardingWindowApp";
 // Re-exported so an Electron renderer can declare, at its entry point, whether
-// its window has a toast surface at all. Only CommaApp mounts a <Toaster />.
+// its window has a toast surface at all. Only CommaApp and OnboardingWindowApp
+// mount a <Toaster />.
 export { setToastsEnabled } from "@comma/ui";
 export { CommaAppearanceProvider, CommaReducedMotionRootSync };
 

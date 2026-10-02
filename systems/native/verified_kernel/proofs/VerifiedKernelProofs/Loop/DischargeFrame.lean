@@ -232,13 +232,56 @@ reply_rule storedResult (state event)
 reply_rule transcriptToolResult (state event)
 reply_rule transcriptAssistant (state event)
 reply_rule transcriptLog (state event)
-reply_rule runtimeAppend (state event)
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). This is much
+cheaper than a walk over every branch of `runtimeAppend`. -/
+theorem runtimeAppend_reply_frame {state event next : Term} {journal rest : List Term}
+    (call : runtimeAppend state event journal = .ok (next, rest)) : ReplyFrame state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
+  exact reply_frame_trans (appendFields_reply_frame appended) (reply_frame_trans (write_reply_frame written rfl rfl)
+    (reply_frame_trans (bumpHwm_reply_frame bumped) (resetFresh_reply_frame reset)))
+
+theorem runtimeAppend_reply_frame_step {state event next : Term} {journal rest : List Term} :
+    runtimeAppend state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = runtimeAppend state event journal ∧ ReplyFrame state next :=
+  step_iff runtimeAppend_reply_frame
 reply_rule transcriptRuntime (state event)
 reply_rule transcriptSeed (state event)
 reply_rule queueAppend (state event)
 reply_rule queueAck (state event)
 reply_rule queueConsume (state event)
-reply_rule sessionEvent (state event)
+set_option backward.split false in
+/-- `sessionEvent` writes only atom keys, so it keeps every binary key. -/
+theorem sessionEvent_binary_kept {s e t : Term} {k : ByteArray} {j r : List Term}
+    (h : sessionEvent s e j = .ok (t, r)) : t.get (.binary k) = s.get (.binary k) := by
+  unfold sessionEvent at h
+  have preserved : s.get (.binary k) = s.get (.binary k) := rfl
+  repeat' first
+    | (execution_head_is h "VerifiedKernel.Data.write"
+       exact (write_binary_frame h).trans preserved)
+    | (execution_head_is h "Bind.bind"
+       have bound := bind_ok h
+       clear h
+       obtain ⟨value, _, prior, h⟩ := bound
+       first
+         | (execution_head_is prior "VerifiedKernel.Data.write"
+            have preserved : value.get (.binary k) = s.get (.binary k) :=
+              (write_binary_frame prior).trans preserved)
+         | (execution_head_is prior "Pure.pure"; have same := pure_ok prior; subst value)
+         | skip)
+    | dsimp only at h
+    | split at h
+
+/-- `sessionEvent` writes only `sessionEventWrittenKeys`. This frame is much cheaper than a
+walk over every branch of `sessionEvent`. -/
+theorem sessionEvent_reply_frame {state event next : Term} {journal rest : List Term}
+    (call : sessionEvent state event journal = .ok (next, rest)) : ReplyFrame state next :=
+  have kept := (sessionEvent_fields call).2
+  ⟨kept "last_ack_message_id" rfl, kept "provider_reply_obligations" rfl, sessionEvent_binary_kept call⟩
+
+theorem sessionEvent_reply_frame_step {state event next : Term} {journal rest : List Term} :
+    sessionEvent state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = sessionEvent state event journal ∧ ReplyFrame state next :=
+  step_iff sessionEvent_reply_frame
 
 theorem mergePredicate_reply_frame {s kind through replacement extra t : Term} {j r : List Term}
     (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : ReplyFrame s t := by
@@ -419,10 +462,14 @@ theorem obligationCard_keys_kept_step {s conversation limit t : Term} {j r : Lis
       Except.ok (t, r) = obligationCard s conversation limit j ∧ KeysKept s t :=
   step_iff obligationCard_keys_kept
 
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). This is
+much cheaper than a walk over every branch of `transcriptDelivery`. -/
 theorem transcriptDelivery_keys_kept {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : KeysKept s t := by
-  unfold transcriptDelivery at h
-  keys_kept_walk h
+  rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
+  · exact keys_kept_refl _
+  · exact keys_kept_trans ((appendFields_reply_frame appended).kept) (keys_kept_trans ((write_keys_kept_step.mp written).2 rfl rfl)
+      (keys_kept_trans (addObligation_keys_kept obligated) (keys_kept_trans ((bumpHwm_reply_frame bumped).kept) ((resetFresh_reply_frame reset).kept))))
 
 theorem transcriptDelivery_keys_kept_step {s e t : Term} {j r : List Term} :
     transcriptDelivery s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptDelivery s e j ∧ KeysKept s t :=

@@ -3,5 +3,6 @@ export type {
   LoginCopy,
   LoginEmailProps,
   LoginProps,
+  LoginSecondaryAction,
   LoginVerificationProps,
 } from "./Login";

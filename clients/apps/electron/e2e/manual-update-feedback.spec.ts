@@ -1,8 +1,15 @@
-import { _electron as electron, expect, test } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  _electron as electron,
+  expect,
+  test,
+  type ElectronApplication,
+} from "@playwright/test";
+import { execSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { UpdateInfo } from "@comma/native-bridge";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
 
@@ -17,6 +24,7 @@ for (const outcome of ["current", "failed", "download"] as const) {
   test(`manual update check shows progress and ${outcome} feedback`, async () => {
     const apiStub = await startChatSmokeStub();
     const userDataDir = await mkdtemp(join(tmpdir(), "comma-update-feedback-"));
+    recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
     const appDir = resolve(process.cwd(), "apps/electron");
     const { ELECTRON_RUN_AS_NODE: _runAsNode, ...env } = process.env;
     const app = await electron.launch({
@@ -50,7 +58,13 @@ for (const outcome of ["current", "failed", "download"] as const) {
           ({ Menu }) =>
             Menu.getApplicationMenu()?.getMenuItemById("check-updates")?.enabled
         );
-      await expect.poll(enabled).toBe(true);
+      await expect
+        .poll(enabled)
+        .toBe(true)
+        .catch(async (error: unknown) => {
+          await describeFocus(app, userDataDir);
+          throw error;
+        });
       await app.evaluate(({ ipcMain }) => {
         ipcMain.removeHandler("comma:updates:status");
         ipcMain.removeHandler("comma:updates:check");
@@ -188,4 +202,59 @@ for (const outcome of ["current", "failed", "download"] as const) {
       await rm(userDataDir, { recursive: true, force: true });
     }
   });
+}
+
+// TEMPORARY CI diagnosis for a focus failure seen only on CI runners: what
+// holds focus when the main window does not get it. Remove once understood.
+function run(command: string, timeout = 5_000) {
+  try {
+    return execSync(command, { encoding: "utf8", timeout });
+  } catch (error) {
+    return String(error);
+  }
+}
+
+async function describeFocus(app: ElectronApplication, userDataDir: string) {
+  const state = await app.evaluate(({ app: electronApp, BrowserWindow }) => ({
+    focusedWindow: BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? null,
+    hidden: electronApp.isHidden(),
+    windows: BrowserWindow.getAllWindows().map((window) => ({
+      alwaysOnTop: window.isAlwaysOnTop(),
+      focused: window.isFocused(),
+      url: window.webContents.getURL(),
+      visible: window.isVisible(),
+    })),
+  }));
+  console.log(
+    `[focus-diagnosis] front app: ${run("lsappinfo info -only name `lsappinfo front`")}`
+  );
+  // Runners cannot capture the screen; the unified log says which alert the
+  // front app shows and who asked for it.
+  console.log(
+    `[focus-diagnosis] alerts:\n${run(
+      'log show --last 30m --style compact --predicate \'process == "UserNotificationCenter" OR eventMessage CONTAINS[c] "CFUserNotification"\' | tail -40',
+      60_000
+    )}`
+  );
+  console.log(
+    `[focus-diagnosis] alert text: ${run(
+      'osascript -e \'tell application "System Events" to get value of every static text of every window of process "UserNotificationCenter"\'',
+      15_000
+    )}`
+  );
+  console.log(
+    `[focus-diagnosis] Electron processes:\n${run(
+      "ps -axo pid,etime,command | grep -i '[E]lectron' | cut -c1-220"
+    )}`
+  );
+  const log = await readFile(join(userDataDir, "logs", "main.log"), "utf8").catch(
+    (error: unknown) => String(error)
+  );
+  console.log(
+    `[focus-diagnosis] ${JSON.stringify(state)}\n[focus-diagnosis] main.log tail:\n${log
+      .split("\n")
+      .filter((line) => !/^\s+at /.test(line))
+      .slice(-40)
+      .join("\n")}`
+  );
 }

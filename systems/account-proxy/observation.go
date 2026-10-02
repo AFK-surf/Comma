@@ -20,7 +20,7 @@ func observeCall(ctx context.Context, cmd command) (context.Context, func(event)
 	started := time.Now()
 	operation := "unknown"
 	switch cmd.Op {
-	case "/subscription/seal", "/normalize", "/prepare", "/quota", "/quota/reset", "/oauth/begin", "/oauth/device/begin", "/oauth/device/poll", "/oauth/exchange", "/v1/responses", "/v1/responses/compact", "/v1/messages", "/v1/images/generations", "/v1/images/edits":
+	case "/subscription/seal", "/normalize", "/prepare", "/quota", "/quota/reset", "/oauth/begin", "/oauth/device/begin", "/oauth/device/poll", "/oauth/exchange", "/v1/responses", "/v1/responses/compact", "/v1/messages", "/v1/chat/completions", "/v1/images/generations", "/v1/images/edits":
 		operation = cmd.Op
 	}
 	var body struct {

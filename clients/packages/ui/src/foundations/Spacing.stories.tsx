@@ -49,8 +49,8 @@ const MeasurementGap = ({ value }: { value: number }) => (
 );
 
 const SpacingMeasurement = ({ name, value }: { name: string; value: number }) => (
-  <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-[72px_minmax(0,1fr)] sm:items-center sm:gap-6">
-    <div className="grid gap-1 sm:text-right">
+  <div className="grid min-w-0 grid-cols-1 gap-3 @min-[640px]/comma-window:grid-cols-[72px_minmax(0,1fr)] @min-[640px]/comma-window:items-center @min-[640px]/comma-window:gap-6">
+    <div className="grid gap-1 @min-[640px]/comma-window:text-right">
       <span className="text-sm font-semibold text-primary">{name}</span>
       <span className="text-xs text-tertiary">{value}px</span>
     </div>
@@ -63,7 +63,7 @@ const SpacingMeasurement = ({ name, value }: { name: string; value: number }) =>
 );
 
 const LargeSpacingMeasurement = ({ value }: { value: number }) => (
-  <div className="flex min-h-[520px] items-center justify-center overflow-hidden bg-white p-6 sm:p-12">
+  <div className="flex min-h-[520px] items-center justify-center overflow-hidden bg-white p-6 @min-[640px]/comma-window:p-12">
     <div className="flex w-full max-w-[640px] min-w-0 items-center justify-center overflow-visible">
       <MeasurementCard size="lg" />
       <MeasurementGap value={value} />
@@ -94,7 +94,7 @@ export const SpacingScale: Story = {
 
 export const AllTokens: Story = {
   render: () => (
-    <div className="grid w-full max-w-[760px] gap-8 bg-white p-6 sm:p-12">
+    <div className="grid w-full max-w-[760px] gap-8 bg-white p-6 @min-[640px]/comma-window:p-12">
       {Object.entries(spacing).map(([name, value]) => (
         <SpacingMeasurement key={name} name={name} value={value} />
       ))}
@@ -104,7 +104,7 @@ export const AllTokens: Story = {
 
 export const Radius: Story = {
   render: () => (
-    <div className="flex w-full max-w-[720px] flex-wrap gap-4 p-4 sm:p-8">
+    <div className="flex w-full max-w-[720px] flex-wrap gap-4 p-4 @min-[640px]/comma-window:p-8">
       {Object.entries(radius).map(([name, value]) => (
         <div key={name} className="grid gap-2 text-center text-xs text-tertiary">
           <div

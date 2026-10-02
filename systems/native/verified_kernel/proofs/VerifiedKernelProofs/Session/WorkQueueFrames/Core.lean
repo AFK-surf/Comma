@@ -651,10 +651,13 @@ theorem afterEvent_queue_frame_step {previous next e t : Term} {j r : List Term}
   step_iff afterEvent_queue_frame
 
 
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). This is much
+cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_queue_frame {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     QueueFrame s t := by
-  unfold runtimeAppend at h
-  queue_frame_walk h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
+  exact queue_frame_trans (appendFields_queue_frame appended) (queue_frame_trans (write_queue_frame written rfl rfl rfl rfl rfl)
+    (queue_frame_trans (bumpHwm_queue_frame bumped) (resetFresh_queue_frame reset)))
 
 
 theorem runtimeAppend_queue_frame_step {s e t : Term} {j r : List Term} :
@@ -673,10 +676,14 @@ theorem transcriptRuntime_queue_frame_step {s e t : Term} {j r : List Term} :
   step_iff transcriptRuntime_queue_frame
 
 
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). This is
+much cheaper than a walk over every branch of `transcriptDelivery`. -/
 theorem transcriptDelivery_queue_frame {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : QueueFrame s t := by
-  unfold transcriptDelivery at h
-  queue_frame_walk h
+  rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
+  · exact queue_frame_refl _
+  · exact queue_frame_trans (appendFields_queue_frame appended) (queue_frame_trans (write_queue_frame written rfl rfl rfl rfl rfl)
+      (queue_frame_trans (addObligation_queue_frame obligated) (queue_frame_trans (bumpHwm_queue_frame bumped) (resetFresh_queue_frame reset))))
 
 
 theorem transcriptDelivery_queue_frame_step {s e t : Term} {j r : List Term} :

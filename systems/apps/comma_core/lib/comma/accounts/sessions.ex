@@ -12,6 +12,10 @@ defmodule Comma.Accounts.Sessions do
   @task_panel_token_prefix "comma_panel_"
   @default_ttl_seconds 30 * 24 * 60 * 60
   @last_seen_interval_seconds 5 * 60
+  # A desktop App reports use at most this often while its user is at the
+  # computer; the owner counts as present for twice that long.
+  @active_interval_seconds 60
+  @present_seconds 10 * 60
   @default_page_limit 50
   @max_page_limit 100
 
@@ -31,6 +35,7 @@ defmodule Comma.Accounts.Sessions do
         auth_method: auth_method(source, opts),
         login_identity_id: Keyword.get(opts, :login_identity_id),
         session_source: source,
+        parent_session_id: Keyword.get(opts, :parent_session_id),
         authenticated_at: Keyword.get(opts, :authenticated_at, now),
         expires_at: DateTime.add(now, Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)),
         last_seen_at: now,
@@ -80,6 +85,29 @@ defmodule Comma.Accounts.Sessions do
 
   def resolve(_token, _opts), do: {:error, :not_found}
 
+  @doc "Recheck an authenticated Session at an owner mutation boundary without exposing its token."
+  def authorize_current(user_id, session_id, opts \\ []) do
+    target_repo = Keyword.get(opts, :repo, Repo)
+
+    with {:ok, id} <- Ecto.UUID.cast(session_id),
+         {%AuthSession{} = session, %User{} = user} <-
+           target_repo.one(
+             from(s in AuthSession,
+               join: u in assoc(s, :user),
+               where: s.id == ^id and s.user_id == ^user_id,
+               select: {s, u}
+             )
+           ),
+         :ok <- active_session?(session, user),
+         :ok <- active_identity(session, target_repo),
+         :ok <- active_pairing_parent(session, target_repo) do
+      :ok
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp resolve_known_token(token, opts) do
     target_repo = Keyword.get(opts, :repo, Repo)
 
@@ -93,12 +121,35 @@ defmodule Comma.Accounts.Sessions do
     case target_repo.one(query) do
       {%AuthSession{} = session, %User{} = user} ->
         with :ok <- active_session?(session, user),
-             :ok <- active_identity(session, target_repo) do
+             :ok <- active_identity(session, target_repo),
+             :ok <- active_pairing_parent(session, target_repo) do
           {:ok, user, public_session(session)}
         end
 
       nil ->
         {:error, :not_found}
+    end
+  end
+
+  def resolve_id(session_id, opts \\ []) do
+    target_repo = Keyword.get(opts, :repo, Repo)
+
+    with {:ok, id} <- Ecto.UUID.cast(session_id),
+         {session, user} when not is_nil(session) <-
+           target_repo.one(
+             from(session in AuthSession,
+               join: user in assoc(session, :user),
+               where: session.id == ^id,
+               select: {session, user}
+             )
+           ),
+         :ok <- active_session?(session, user),
+         :ok <- active_identity(session, target_repo),
+         :ok <- active_pairing_parent(session, target_repo) do
+      {:ok, user, public_session(session)}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :not_found}
     end
   end
 
@@ -124,6 +175,50 @@ defmodule Comma.Accounts.Sessions do
   end
 
   def touch_last_seen(_session, _opts), do: :ok
+
+  @doc """
+  Records that the person is using the desktop App of this session right now.
+  Only full desktop App sessions count.
+  """
+  def touch_active(session, opts \\ [])
+
+  def touch_active(
+        %{"id" => session_id, "client_kind" => "electron", "restricted" => false},
+        opts
+      )
+      when is_binary(session_id) do
+    target_repo = Keyword.get(opts, :repo, Repo)
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+    cutoff = DateTime.add(now, -@active_interval_seconds)
+
+    target_repo.update_all(
+      from(row in AuthSession,
+        where:
+          row.id == ^session_id and is_nil(row.revoked_at) and
+            (is_nil(row.active_at) or row.active_at < ^cutoff)
+      ),
+      set: [active_at: now, updated_at: now]
+    )
+
+    :ok
+  end
+
+  def touch_active(_session, _opts), do: {:error, :not_desktop_app}
+
+  @doc "Whether the user used a signed-in desktop App in the last ten minutes."
+  def present?(user_id, opts \\ []) when is_binary(user_id) do
+    target_repo = Keyword.get(opts, :repo, Repo)
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+    since = DateTime.add(now, -@present_seconds)
+
+    target_repo.exists?(
+      from(row in AuthSession,
+        where:
+          row.user_id == ^user_id and is_nil(row.revoked_at) and row.expires_at > ^now and
+            row.client_kind == "electron" and row.active_at > ^since
+      )
+    )
+  end
 
   def list(user_id, opts \\ [])
 
@@ -164,17 +259,18 @@ defmodule Comma.Accounts.Sessions do
         target_repo = Keyword.get(opts, :repo, Repo)
         now = DateTime.utc_now()
 
-        {count, _} =
+        {_count, _} =
           target_repo.update_all(
             from(session in AuthSession,
               where:
-                session.id == ^session_id and session.user_id == ^user_id and
+                (session.id == ^session_id or session.parent_session_id == ^session_id) and
+                  session.user_id == ^user_id and
                   is_nil(session.revoked_at)
             ),
             set: [revoked_at: now, revoke_reason: reason, updated_at: now]
           )
 
-        if count in [0, 1], do: :ok
+        :ok
 
       :error ->
         :ok
@@ -195,9 +291,17 @@ defmodule Comma.Accounts.Sessions do
     target_repo = Keyword.get(opts, :repo, Repo)
     now = DateTime.utc_now()
 
+    parents =
+      from(session in AuthSession,
+        where: session.token_hash == ^token_hash(token),
+        select: session.id
+      )
+
     target_repo.update_all(
       from(session in AuthSession,
-        where: session.token_hash == ^token_hash(token) and is_nil(session.revoked_at)
+        where:
+          (session.id in subquery(parents) or session.parent_session_id in subquery(parents)) and
+            is_nil(session.revoked_at)
       ),
       set: [revoked_at: now, revoke_reason: reason, updated_at: now]
     )
@@ -286,6 +390,7 @@ defmodule Comma.Accounts.Sessions do
       "user_id" => session.user_id,
       "auth_method" => session.auth_method,
       "session_source" => session.session_source,
+      "parent_session_id" => session.parent_session_id,
       "authenticated_at" => unix(session.authenticated_at),
       "expires_at" => unix(session.expires_at),
       "last_seen_at" => unix(session.last_seen_at),
@@ -302,6 +407,32 @@ defmodule Comma.Accounts.Sessions do
       "interaction_budget_remaining" => session.interaction_budget_remaining,
       "tool_allowlist" => session.tool_allowlist || []
     }
+  end
+
+  # Pairing grants authority once; this bounded parent read preserves explicit
+  # revocation during races with grant exchange, without making parent expiry
+  # or phone connectivity a requirement for the Watch's independent session.
+  defp active_pairing_parent(%{auth_method: "watch_pairing"} = session, repo) do
+    case repo.get(AuthSession, session.parent_session_id) do
+      %{user_id: user_id, revoked_at: nil, restricted: false, parent_session_id: nil} = parent
+      when user_id == session.user_id ->
+        active_identity(parent, repo)
+
+      _ ->
+        {:error, :revoked}
+    end
+  end
+
+  defp active_pairing_parent(_session, _repo), do: :ok
+
+  defp active_identity(%{auth_method: "apple"} = session, repo) do
+    case repo.get(Comma.Accounts.Identity, session.login_identity_id) do
+      %{provider: "apple", disabled_at: nil, user_id: user_id} when user_id == session.user_id ->
+        :ok
+
+      _ ->
+        {:error, :revoked}
+    end
   end
 
   defp active_identity(%{auth_method: "ssh_public_key"} = session, repo) do

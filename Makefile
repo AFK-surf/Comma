@@ -126,6 +126,7 @@ test-bft-cli:
 test-policy:
 	python3 -m unittest discover -s selfhost
 	node scripts/check-docs.mjs
+	node scripts/generate-model-catalog.mjs --check
 	go test -C systems/ops/comma-release ./...
 	node --test systems/apps/bridge_for_teams_core/priv/repo/migrations/organization_icon_migration.test.ts
 	node --test scripts/bridge-staging-bootstrap-invite.test.cjs

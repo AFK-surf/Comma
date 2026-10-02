@@ -7,6 +7,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockConnectGateway do
 
   def base_url(pid), do: GenServer.call(pid, :base_url)
   def frames(pid), do: GenServer.call(pid, :frames)
+  def set_connect_status(pid, status), do: GenServer.call(pid, {:connect_status, status})
 
   def wait_for_frame(pid, fun, timeout_ms \\ 2_000) when is_function(fun, 1) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -29,13 +30,26 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockConnectGateway do
       )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
-    {:ok, %{port: port, frames: [], drop_heartbeats: Keyword.get(opts, :drop_heartbeats, 0)}}
+
+    {:ok,
+     %{
+       port: port,
+       frames: [],
+       controls: %{},
+       connect_status: 101,
+       drop_heartbeats: Keyword.get(opts, :drop_heartbeats, 0)
+     }}
   end
 
   @impl true
   def handle_call(:base_url, _from, state), do: {:reply, "http://127.0.0.1:#{state.port}", state}
 
   def handle_call(:frames, _from, state), do: {:reply, Enum.reverse(state.frames), state}
+
+  def handle_call({:connect_status, status}, _from, state),
+    do: {:reply, :ok, %{state | connect_status: status}}
+
+  def handle_call(:connect_status, _from, state), do: {:reply, state.connect_status, state}
 
   def handle_call({:record_frame, sandbox_id, frame}, _from, state) do
     {:reply, :ok, %{state | frames: [%{sandbox_id: sandbox_id, frame: frame} | state.frames]}}
@@ -49,6 +63,19 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockConnectGateway do
   def handle_call({:record_http, op, sandbox_id, attrs}, _from, state) do
     frame = Map.put(attrs, "http_op", op)
     {:reply, :ok, %{state | frames: [%{sandbox_id: sandbox_id, frame: frame} | state.frames]}}
+  end
+
+  def handle_call({:control, sandbox, body}, _from, state) do
+    control =
+      if is_map(body),
+        do: Map.put(body["control"], "sealed", body["action"] == "seal"),
+        else: state.controls[sandbox]
+
+    {:reply,
+     %{
+       "control" => control,
+       "managed_commands_settled" => is_map(control) and control["sealed"] == true
+     }, %{state | controls: Map.put(state.controls, sandbox, control)}}
   end
 
   def handle_call(:drop_heartbeat?, _from, %{drop_heartbeats: remaining} = state)
@@ -82,6 +109,17 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockConnectGateway do
     def init(opts), do: opts
 
     @impl true
+    def call(
+          %{method: method, path_info: ["internal", "v1", "sandboxes", sandbox, "control"]} = conn,
+          opts
+        )
+        when method in ["GET", "POST"] do
+      {:ok, raw, conn} = read_body(conn)
+      body = if raw == "", do: nil, else: Jason.decode!(raw)
+      result = GenServer.call(opts.pid, {:control, sandbox, body})
+      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(result))
+    end
+
     def call(%{method: "POST", path_info: ["internal", "v1", "sandboxes"]} = conn, opts) do
       pid = Map.fetch!(opts, :pid)
       {:ok, raw, conn} = read_body(conn)
@@ -137,16 +175,22 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockConnectGateway do
           %{"nonce" => get_req_header(conn, "x-salix-nonce") |> List.first()}
         })
 
-      upgrade_adapter(
-        conn,
-        :websocket,
-        {SalixEnv.VM.Providers.Cloudflare.MockConnectGateway.WS,
-         [
-           pid: pid,
-           sandbox_id: sandbox_id,
-           hold_commands: Map.get(opts, :hold_commands, [])
-         ], []}
-      )
+      case GenServer.call(pid, :connect_status) do
+        101 ->
+          upgrade_adapter(
+            conn,
+            :websocket,
+            {SalixEnv.VM.Providers.Cloudflare.MockConnectGateway.WS,
+             [
+               pid: pid,
+               sandbox_id: sandbox_id,
+               hold_commands: Map.get(opts, :hold_commands, [])
+             ], []}
+          )
+
+        status ->
+          send_resp(conn, status, "connect failed")
+      end
     end
 
     def call(conn, _opts) do

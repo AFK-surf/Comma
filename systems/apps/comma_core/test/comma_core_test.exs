@@ -132,6 +132,17 @@ defmodule CommaCoreTest do
     end
 
     @impl true
+    def ensure_group_router_conversation(workspace, opts) do
+      with {:ok, conversation} <- ensure_group_router_conversation(workspace),
+           {:ok, %{"messages" => messages}} <-
+             get_group_conversation_with_messages(workspace, conversation["conversation_id"],
+               tail: opts |> Keyword.get(:message_limit, 1_000) |> max(1) |> min(1_000)
+             ) do
+        {:ok, Map.put(conversation, "messages", messages)}
+      end
+    end
+
+    @impl true
     def append_group_router_conversation_message(workspace, attrs) do
       with {:ok, conversation} <- ensure_group_router_conversation(workspace) do
         append_group_conversation_message(
@@ -1021,6 +1032,63 @@ defmodule CommaCoreTest do
     assert detail["status"] == "active"
   end
 
+  test "native Home, send and event snapshots return an explicit bounded tail without changing defaults" do
+    {user, workspace, session} = setup_user_workspace("native-bounded-tail@example.com")
+    group_id = workspace["default_group_id"]
+    {:ok, chat} = converge_assistant_chat(user, session, group_id)
+
+    RuntimeFake.put_messages(
+      chat["id"],
+      for index <- 1..1_005 do
+        %{
+          "actor_type" => "agent",
+          "agent_id" => workspace["router_agent_id"],
+          "content" => [%{"type" => "text", "text" => "native-#{index}"}]
+        }
+      end
+    )
+
+    assert {:ok, old_home} = Comma.AssistantChats.ensure_chat(user, session, group_id)
+    refute Map.has_key?(old_home, "messages")
+
+    assert {:ok, home} =
+             Comma.AssistantChats.ensure_chat(user, session, group_id, message_limit: 24)
+
+    assert length(home["messages"]) == 24
+    assert home["message_count"] == 1_005
+    assert hd(home["messages"])["content"] == [%{"type" => "text", "text" => "native-982"}]
+    assert home["final_message_id"] == List.last(home["messages"])["message_id"]
+    assert RuntimeFake.last_snapshot_opts(chat["id"]) == [tail: 24]
+
+    attrs = %{"client_request_id" => "bounded-send", "message" => %{"content" => "new input"}}
+
+    assert {:ok, sent} =
+             Comma.Conversations.send_message(user, session, group_id, chat["id"], attrs,
+               message_limit: 24
+             )
+
+    assert sent["message_count"] == 1_006
+    assert length(sent["messages"]) == 24
+    assert List.last(sent["messages"])["actor_type"] == "user"
+
+    assert {:ok, old_send} =
+             Comma.Conversations.send_message(user, session, group_id, chat["id"], attrs)
+
+    assert old_send["message_count"] == 1_006
+    assert length(old_send["messages"]) == 1_000
+
+    assert {:ok, snapshot, [], _context} =
+             Comma.Conversations.events(user, session, group_id, chat["id"], message_limit: 24)
+
+    assert length(snapshot["messages"]) == 24
+    assert snapshot["message_count"] == 1_006
+
+    assert {:ok, default_snapshot, [], _context} =
+             Comma.Conversations.events(user, session, group_id, chat["id"])
+
+    assert length(default_snapshot["messages"]) == 1_000
+  end
+
   test "Conversation command matrix accepts only canonical Tasks and the fixed Router Chat" do
     {user, workspace, session} = setup_user_workspace("verbs@example.com")
     {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
@@ -1160,19 +1228,51 @@ defmodule CommaCoreTest do
 
     task_id = task["conversation_id"]
 
+    messages =
+      for index <- 1..1_005 do
+        %{
+          "actor_type" => "agent",
+          "content" => [%{"type" => "text", "text" => "review-#{index}"}]
+        }
+      end
+
+    RuntimeFake.put_messages(task_id, messages)
+    RuntimeFake.update_conversation(task_id, %{"updated_at" => 42_000})
+
     assert {:ok, accepted} =
              Comma.Conversations.accept_task_review(
                user,
                session,
                workspace["default_group_id"],
                task_id,
-               %{"review_version" => 42_000}
+               %{"review_version" => 42_000},
+               message_limit: 24
              )
 
     assert_receive {:accept_task_review, ^task_id, 42_000}
     assert accepted["id"] == task_id
     assert accepted["status"] == "completed"
     assert accepted["updated_at"] == 42_001
+    assert accepted["message_count"] == 1_005
+    assert length(accepted["messages"]) == 24
+
+    default_task = RuntimeFake.put_conversation(workspace, %{"status" => "ready_for_review"})
+    default_id = default_task["conversation_id"]
+    RuntimeFake.put_messages(default_id, messages)
+    RuntimeFake.update_conversation(default_id, %{"updated_at" => 43_000})
+
+    assert {:ok, default_accepted} =
+             Comma.Conversations.accept_task_review(
+               user,
+               session,
+               workspace["default_group_id"],
+               default_id,
+               %{"review_version" => 43_000}
+             )
+
+    assert default_accepted["status"] == "completed"
+    assert default_accepted["message_count"] == 1_005
+    assert length(default_accepted["messages"]) == 1_000
   end
 
   test "a Task preserves every historical author it shows" do

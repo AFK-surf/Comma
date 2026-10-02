@@ -527,7 +527,12 @@ defmodule Comma.Conversations do
          {:ok, %{"kind" => "agent_task"}} <- authorized_binding(user, workspace, conversation_id),
          version when is_integer(version) and version > 0 <- attrs["expected_updated_at"],
          {:ok, conversation} <-
-           Comma.Salix.Client.impl().set_task_archived(workspace, conversation_id, action, version) do
+           Comma.Salix.Client.impl().set_task_archived(
+             workspace,
+             conversation_id,
+             action,
+             version
+           ) do
       {:ok, present_canonical(workspace, conversation, user)}
     else
       {:error, _} = error -> error
@@ -570,7 +575,7 @@ defmodule Comma.Conversations do
   defp filter_archived(data, mode),
     do: Enum.filter(data, &(&1["status"] == "archived" == (mode == "only")))
 
-  def accept_task_review(user, session, group_id, conversation_id, attrs) do
+  def accept_task_review(user, session, group_id, conversation_id, attrs, opts \\ []) do
     attrs = stringify(attrs)
 
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
@@ -585,7 +590,7 @@ defmodule Comma.Conversations do
              salix_conversation_id(binding),
              review_version
            ) do
-      read_task_conversation(workspace, binding)
+      read_task_conversation(workspace, binding, opts)
     else
       {:ok, %{"kind" => kind}} -> {:error, {:unsupported_for_kind, kind, "accept"}}
       {:error, _} = error -> error
@@ -639,33 +644,7 @@ defmodule Comma.Conversations do
     end
   end
 
-  @doc """
-  One authorized read for auxiliary work that needs the transcript *and* the
-  Workspace facts that go with it (`Comma.ChatSuggestions`).
-
-  `messages/4` alone is not enough: an auxiliary LLM call has to resolve the
-  Group Router's model and attribute its own cost. Those facts do not belong in
-  the canonical Message resource returned to the client.
-  """
-  @spec suggestion_source(map(), map(), String.t(), String.t()) ::
-          {:ok, %{agent_id: String.t() | nil, billing_context: map(), messages: [map()]}}
-          | {:error, term()}
-  def suggestion_source(user, session, group_id, conversation_id) do
-    with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
-         :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
-         {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
-         {:ok, binding} <- authorized_binding(user, workspace, conversation_id),
-         {:ok, conversation} <- read_conversation(workspace, binding) do
-      {:ok,
-       %{
-         agent_id: workspace["router_agent_id"],
-         billing_context: billing_context(workspace, binding["id"], user["id"]),
-         messages: conversation["messages"] || []
-       }}
-    end
-  end
-
-  def send_message(user, session, group_id, conversation_id, attrs) do
+  def send_message(user, session, group_id, conversation_id, attrs, opts \\ []) do
     attrs = stringify(attrs)
 
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
@@ -676,7 +655,7 @@ defmodule Comma.Conversations do
         normalize_request_id(attrs["client_request_id"]) ||
           new_request_id()
 
-      send_salix_message(user, session, workspace, binding, attrs, request_id)
+      send_salix_message(user, session, workspace, binding, attrs, request_id, opts)
     end
   end
 
@@ -686,14 +665,14 @@ defmodule Comma.Conversations do
   The returned snapshot is canonical Salix state. Subsequent notifications are
   hints only; no Salix sequence or durable Comma cursor is exposed.
   """
-  def events(user, session, group_id, conversation_id, _opts \\ []) do
+  def events(user, session, group_id, conversation_id, opts \\ []) do
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
          :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
          {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
          {:ok, binding} <- authorized_binding(user, workspace, conversation_id),
          :ok <- ensure_events_kind(binding),
          {:ok, subscription} <- subscribe_user_chat(workspace, binding),
-         {:ok, conversation} <- read_user_chat_conversation(workspace, binding) do
+         {:ok, conversation} <- read_user_chat_conversation(workspace, binding, opts) do
       stream_context =
         %{
           conversation_id: binding["id"],
@@ -712,10 +691,21 @@ defmodule Comma.Conversations do
   @doc false
   def present_canonical(workspace, salix_conversation, user \\ nil)
       when is_map(workspace) and is_map(salix_conversation) do
-    workspace
-    |> canonical_binding(salix_conversation, user)
-    |> projected_summary()
-    |> public_summary()
+    summary =
+      workspace
+      |> canonical_binding(salix_conversation, user)
+      |> projected_summary()
+      |> public_summary()
+
+    case salix_conversation["messages"] do
+      messages when is_list(messages) ->
+        summary
+        |> Map.put("messages", messages)
+        |> Map.put("final_message_id", final_message_id(messages))
+
+      _ ->
+        summary
+    end
   end
 
   defp canonical_binding(workspace, salix_conversation, user) do
@@ -919,8 +909,6 @@ defmodule Comma.Conversations do
   defp optional_public_activity_prose?(nil), do: true
   defp optional_public_activity_prose?(value), do: public_activity_prose?(value)
 
-  defp read_conversation(workspace, binding, opts \\ [])
-
   defp read_conversation(workspace, %{"kind" => "user_chat"} = binding, opts),
     do: read_user_chat_conversation(workspace, binding, opts)
 
@@ -929,7 +917,7 @@ defmodule Comma.Conversations do
 
   defp read_conversation(_workspace, _binding, _opts), do: {:error, :not_found}
 
-  defp read_user_chat_conversation(workspace, binding, opts \\ []) do
+  defp read_user_chat_conversation(workspace, binding, opts) do
     with {:ok, %{"conversation" => salix_conversation, "messages" => messages}} <-
            salix_get_group_conversation_with_messages(
              workspace,
@@ -956,7 +944,7 @@ defmodule Comma.Conversations do
     end
   end
 
-  defp read_task_conversation(workspace, binding, opts \\ []) do
+  defp read_task_conversation(workspace, binding, opts) do
     with {:ok, %{"conversation" => salix_conversation, "messages" => messages}} <-
            salix_get_group_conversation_with_messages(
              workspace,
@@ -985,7 +973,7 @@ defmodule Comma.Conversations do
     end
   end
 
-  defp send_salix_message(user, session, workspace, binding, attrs, request_id) do
+  defp send_salix_message(user, session, workspace, binding, attrs, request_id, opts) do
     content = salix_user_content(attrs["message"] || attrs, workspace, attrs["skills"])
 
     policy_binding =
@@ -1012,7 +1000,8 @@ defmodule Comma.Conversations do
         request_id,
         salix_id,
         message_client_metadata(session, workspace, attrs),
-        attrs["reply_to_message_id"]
+        attrs["reply_to_message_id"],
+        opts
       )
     end
   end
@@ -1025,7 +1014,8 @@ defmodule Comma.Conversations do
          request_id,
          salix_id,
          client_metadata,
-         reply_to_message_id
+         reply_to_message_id,
+         opts
        ) do
     with true <- salix_id == workspace["router_conversation_id"],
          {:ok, result} <-
@@ -1041,7 +1031,7 @@ defmodule Comma.Conversations do
            ),
          message_id when is_binary(message_id) <- result["message_id"],
          true <- SalixStore.Ids.valid_message_id?(message_id) do
-      read_conversation(workspace, binding)
+      read_conversation(workspace, binding, opts)
     else
       false -> {:error, :not_found}
       {:error, _} = error -> error
@@ -1057,7 +1047,8 @@ defmodule Comma.Conversations do
          request_id,
          salix_id,
          client_metadata,
-         reply_to_message_id
+         reply_to_message_id,
+         opts
        ) do
     with {:ok, _participant} <-
            salix_ensure_user_participant(workspace, salix_id, user["id"]),
@@ -1075,7 +1066,7 @@ defmodule Comma.Conversations do
            ),
          message_id when is_binary(message_id) <- result["message_id"],
          true <- SalixStore.Ids.valid_message_id?(message_id) do
-      read_conversation(workspace, binding)
+      read_conversation(workspace, binding, opts)
     else
       false -> {:error, :invalid_salix_message_identity}
       {:error, _} = error -> error
@@ -1091,7 +1082,8 @@ defmodule Comma.Conversations do
          _request_id,
          _salix_id,
          _client_metadata,
-         _reply_to_message_id
+         _reply_to_message_id,
+         _opts
        ),
        do: {:error, {:unsupported_for_kind, binding["kind"], "message"}}
 

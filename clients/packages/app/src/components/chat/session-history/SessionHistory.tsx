@@ -16,6 +16,9 @@ import { useSessionHistory } from "../../../runtime-chat/sessionHistoryBridge";
 import { useChatRegistry, useChatProductLease } from "../ChatProvider";
 import type { ChatParticipantStatus } from "../model/conversationChannel";
 import { workerMeshGradientStyle } from "../thread/activity/workerAvatar";
+import { useRouterDisplayName } from "../../router-identity/RouterIdentityProvider";
+import { routerDisplayName } from "../../router-identity/routerDisplayName";
+import { withRouterNameSpacing } from "../../router-identity/routerNameSpacing";
 import {
   formatSessionDuration,
   presentSessionRecords,
@@ -160,6 +163,20 @@ export function ConversationParticipants({
   );
 }
 
+/**
+ * Participants snapshot the Agent name when they join, so a Router renamed
+ * later is labelled by its current name instead.
+ */
+export function sessionParticipantName(
+  participant: Pick<ChatParticipantStatus, "actorRole" | "name">,
+  routerName: string,
+  workerFallback: string
+) {
+  return participant.actorRole === "worker"
+    ? routerDisplayName(participant.name, workerFallback)
+    : routerName;
+}
+
 function ParticipantHistoryLink({
   participant,
   input,
@@ -171,10 +188,13 @@ function ParticipantHistoryLink({
 }) {
   const [hovered, setHovered] = useState(false);
   const messages = useCommaMessages();
-  const name =
-    participant.name?.replace(/^Default workspace\s+/i, "").trim() ||
-    messages.chat_actor_router();
+  const routerName = useRouterDisplayName();
   const router = participant.actorRole !== "worker";
+  const name = sessionParticipantName(
+    participant,
+    routerName,
+    messages.chat_actor_worker()
+  );
   return (
     <HoverCard
       className="comma-session-hover"
@@ -185,7 +205,7 @@ function ParticipantHistoryLink({
         type="button"
         className="comma-session-participant"
         onClick={onOpen}
-        aria-label={messages.session_history_open({ name })}
+        aria-label={withRouterNameSpacing(messages.session_history_open({ name }))}
         data-testid="session-history-participant"
       >
         <span

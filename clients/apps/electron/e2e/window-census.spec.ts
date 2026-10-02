@@ -34,6 +34,11 @@ const SURFACE_RUNTIME: Record<
     productionPresence: "on-demand",
     route: "/meeting-recorder",
   },
+  // Presented after sign-in until the account finishes the onboarding.
+  "onboarding-window": {
+    productionPresence: "on-demand",
+    route: "/onboarding",
+  },
   "site-permission-menu": {
     productionPresence: "on-demand",
     route: "/site-permission-menu",

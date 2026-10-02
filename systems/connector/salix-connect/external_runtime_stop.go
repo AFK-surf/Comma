@@ -224,7 +224,9 @@ func (i *piRuntimeImplementation) quietSessions(ctx context.Context, selected st
 			break
 		}
 	}
-	i.activityMu.Lock()
+	if err := lockRuntimeContext(ctx, &i.activityMu); err != nil {
+		return err
+	}
 	defer i.activityMu.Unlock()
 	if i.activityRevision.Load() != activityRevision {
 		return errRuntimeNotQuiet
@@ -243,7 +245,9 @@ func (i *piRuntimeImplementation) quietSessions(ctx context.Context, selected st
 			if slot == nil {
 				return errRuntimeNotQuiet
 			}
-			slot.mu.Lock()
+			if err := lockRuntimeContext(ctx, &slot.mu); err != nil {
+				return err
+			}
 			session := slot.session
 			if session != nil {
 				session.markAbandoned()
@@ -359,7 +363,9 @@ func (i *claudeRuntimeImplementation) quietSessions(ctx context.Context, selecte
 			break
 		}
 	}
-	i.activityMu.Lock()
+	if err := lockRuntimeContext(ctx, &i.activityMu); err != nil {
+		return err
+	}
 	defer i.activityMu.Unlock()
 	if i.activityRevision.Load() != activityRevision {
 		return errRuntimeNotQuiet
@@ -371,24 +377,39 @@ func (i *claudeRuntimeImplementation) quietSessions(ctx context.Context, selecte
 		if len(ids) == 0 {
 			break
 		}
+		locked := make([]*claudeRuntimeSlot, 0, len(ids))
 		for _, id := range ids {
 			i.mu.Lock()
 			slot := i.sessions[id]
 			i.mu.Unlock()
-			if slot == nil {
+			if slot == nil || !slot.mu.TryLock() {
+				for _, held := range locked {
+					held.mu.Unlock()
+				}
 				return errRuntimeNotQuiet
 			}
-			slot.mu.Lock()
+			locked = append(locked, slot)
+		}
+		err := checkNativeQuietPage(ctx, locked, func(ctx context.Context, slot *claudeRuntimeSlot) error {
 			session := slot.session
 			if session != nil {
 				session.markAbandoned()
 				if err := session.drain(ctx); err != nil {
-					slot.mu.Unlock()
 					return err
 				}
-				slot.session = nil
-				slot.recoveryInput = externalRuntimeInput{}
 			}
+			return nil
+		})
+		if err != nil {
+			for _, held := range locked {
+				held.mu.Unlock()
+			}
+			return err
+		}
+		for index, id := range ids {
+			slot := locked[index]
+			slot.session = nil
+			slot.recoveryInput = externalRuntimeInput{}
 			slot.mu.Unlock()
 			i.mu.Lock()
 			if i.sessions[id] == slot {
@@ -539,46 +560,43 @@ func (i *codexRuntimeImplementation) quietSessions(ctx context.Context, selected
 			}
 			locked = append(locked, session)
 		}
-		for _, session := range locked {
+		err := checkNativeQuietPage(ctx, locked, func(ctx context.Context, session *codexRuntimeSession) error {
 			session.mu.Lock()
 			runtime, threadID := session.runtime, session.threadID
 			busy := session.workState == "starting" || session.workState == "running" || session.recoveryPending || session.persistencePending
 			session.mu.Unlock()
 			if busy {
-				for _, held := range locked {
-					held.inputMu.Unlock()
-				}
 				return errRuntimeNotQuiet
 			}
 			if runtime != nil && threadID != "" {
 				result, err := runtime.rpc(ctx, "thread/backgroundTerminals/list", map[string]any{"threadId": threadID, "limit": 1}, 5*time.Second)
 				if err != nil {
-					for _, held := range locked {
-						held.inputMu.Unlock()
-					}
 					return fmt.Errorf("native Codex background terminals could not be inspected: %w", err)
 				}
 				terminals, ok := result["data"].([]any)
 				if !ok || len(terminals) != 0 {
-					for _, held := range locked {
-						held.inputMu.Unlock()
-					}
 					if !ok {
 						return errors.New("native Codex background terminal response is invalid")
 					}
 					return errRuntimeNotQuiet
 				}
 			}
-		}
+			return nil
+		})
 		for _, held := range locked {
 			held.inputMu.Unlock()
+		}
+		if err != nil {
+			return err
 		}
 		offset += len(ids)
 		if offset >= total {
 			break
 		}
 	}
-	i.activityMu.Lock()
+	if err := lockRuntimeContext(ctx, &i.activityMu); err != nil {
+		return err
+	}
 	defer i.activityMu.Unlock()
 	if i.activityRevision.Load() != activityRevision {
 		return errRuntimeNotQuiet
@@ -597,7 +615,9 @@ func (i *codexRuntimeImplementation) quietSessions(ctx context.Context, selected
 			if session == nil {
 				return errRuntimeNotQuiet
 			}
-			session.inputMu.Lock()
+			if err := lockRuntimeContext(ctx, &session.inputMu); err != nil {
+				return err
+			}
 			session.mu.Lock()
 			record := externalRuntimeRecoveryRecordFromInput("codex", session.recoveryInput)
 			session.mu.Unlock()

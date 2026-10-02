@@ -7472,6 +7472,58 @@ defmodule SalixIM.ConversationsTest do
     assert get_in(notice_message, ["metadata", "task_worker_watch", "issue"]) == "quota_exhausted"
   end
 
+  test "TaskWorkerWatch tells the Router at once when billing refuses the Worker", %{
+    group_id: group_id,
+    router_id: router_id,
+    worker_id: worker_id
+  } do
+    {conversation_id, session_id, watch} =
+      start_watched_plain_task(group_id, router_id, worker_id, "task-worker-watch-billing")
+
+    failed_at = System.system_time(:millisecond)
+    version = Integer.to_string(failed_at)
+
+    TaskSessionActivity.set(
+      worker_id,
+      session_id,
+      "error",
+      failed_at,
+      "insufficient_credits",
+      nil,
+      "error: not enough credits; add credits and try again"
+    )
+
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :error, "insufficient_credits", _timer, token} =
+             eventually_value(fn -> :sys.get_state(watch).stop end)
+
+    send(watch, {:task_worker_stopped_timeout, {worker_id, session_id}, version, token})
+
+    assert_receive {:captured_agent_delivery, ^router_id, notice, _opts}, 2_000
+    assert notice.content =~ "blocked by billing (insufficient_credits)"
+    assert notice.content =~ "add credits"
+    assert notice.content =~ "not a platform outage"
+    refute_receive {:captured_agent_delivery, ^worker_id, _, _}, 100
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 20)
+
+    refute Enum.any?(
+             messages,
+             &(get_in(&1, ["metadata", "message_type"]) == "task_worker_nudge")
+           )
+
+    assert [notice_message] =
+             Enum.filter(
+               messages,
+               &(get_in(&1, ["metadata", "message_type"]) == "task_worker_stopped")
+             )
+
+    assert get_in(notice_message, ["metadata", "task_worker_watch", "issue"]) ==
+             "insufficient_credits"
+  end
+
   test "TaskWorkerWatch does not escalate the stop it already reminded for after a restart", %{
     group_id: group_id,
     router_id: router_id,

@@ -29,6 +29,7 @@ import {
 import { createPortal } from "react-dom";
 import { CommaAuthGate, useCommaAuth } from "../../AuthGate";
 import { CommaUiThemeProvider } from "../../commaUiTheme";
+import { RouterIdentityProvider } from "../../router-identity/RouterIdentityProvider";
 import { useSideChatAppearance, useSideChatThemeName } from "../../sideChatAppearance";
 import { ChatProvider, useChatApi } from "../ChatProvider";
 import {
@@ -392,7 +393,9 @@ const SideChatTaskWindowAuthenticated = memo(function SideChatTaskWindowAuthenti
   const { api, productLease, sessionSignal } = useCommaAuth();
   return (
     <ChatProvider api={api} productLease={productLease} sessionSignal={sessionSignal}>
-      <SideChatTaskWindowConversation onDismiss={onDismiss} target={target} />
+      <RouterIdentityProvider workspaceId={target.workspaceId}>
+        <SideChatTaskWindowConversation onDismiss={onDismiss} target={target} />
+      </RouterIdentityProvider>
     </ChatProvider>
   );
 });

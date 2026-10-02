@@ -33,6 +33,7 @@ defmodule Comma.Accounts.Repository do
           {:ok, User.t()} | {:error, :not_found | :invalid_email | Ecto.Changeset.t()}
   def ensure_user_by_email(email, attrs \\ %{}, opts \\ []) when is_map(attrs) do
     with {:ok, normalized} <- Email.normalize(email),
+         :ok <- Comma.GuestMode.reject_guest_email(normalized),
          {:ok, values} <- user_values(normalized, attrs) do
       target_repo = repo(opts)
       now = DateTime.utc_now()

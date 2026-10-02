@@ -187,8 +187,16 @@ defmodule Comma.Admin do
   Salix owns (the Signal number, docs/messaging-voice.md).
   """
   def user_workspace_tenant(user_id) when is_binary(user_id) do
-    with {:ok, %Workspace{} = workspace} <- ready_user_workspace(user_id) do
-      {:ok, %{"workspace_id" => workspace.id, "salix_tenant_id" => workspace.salix_tenant_id}}
+    # Guest Workspaces share one Tenant, so they have no Workspace-owned Tenant settings.
+    case ready_user_workspace(user_id) do
+      {:ok, %Workspace{kind: "standard"} = workspace} ->
+        {:ok, %{"workspace_id" => workspace.id, "salix_tenant_id" => workspace.salix_tenant_id}}
+
+      {:ok, %Workspace{}} ->
+        {:error, :not_found}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

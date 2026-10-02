@@ -149,6 +149,35 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
     assert verified_claims["email"] == "user@example.test"
   end
 
+  test "accepts an Android Credential Manager token only from an authorized party", context do
+    android_client_id = "comma-android.apps.googleusercontent.com"
+
+    android_token =
+      token(
+        context.signing_key,
+        "initial-kid",
+        claims(context.issuer, %{"azp" => android_client_id})
+      )
+
+    assert {:error, :invalid_google_credential} = verify(android_token)
+
+    assert {:ok, verified_claims} =
+             GoogleAdapter.verify_id_token(android_token,
+               authorized_parties: [android_client_id],
+               client_id: @client_id,
+               nonce: @nonce
+             )
+
+    assert verified_claims["azp"] == android_client_id
+
+    assert {:error, :invalid_google_credential} =
+             GoogleAdapter.verify_id_token(android_token,
+               authorized_parties: ["another-android.apps.googleusercontent.com"],
+               client_id: @client_id,
+               nonce: @nonce
+             )
+  end
+
   test "exchanges the desktop code with client_secret_post and validates PKCE and nonce" do
     assert {:ok, claims} =
              GoogleAdapter.exchange_authorization_code("desktop-authorization-code",

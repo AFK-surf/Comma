@@ -401,7 +401,7 @@ func verifyRuntimeAuthClaude(ctx context.Context, command, expectedBackend, mode
 		"MAX_THINKING_TOKENS":           "0",
 	}, true)
 	cmd.WaitDelay = time.Second
-	diagnostics := &claudeDiagnosticBuffer{}
+	diagnostics := &harnessDiagnosticBuffer{}
 	cmd.Stderr = diagnostics
 	stdout, err := cmd.StdoutPipe()
 	if err != nil || cmd.Start() != nil {

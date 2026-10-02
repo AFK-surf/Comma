@@ -47,14 +47,56 @@ def RecordEvent (event : Term) : Prop :=
   event.get (b "from_queue") = a "true" ∧
     (event.get (b "type") = b "delivery" ∨ event.get (b "type") = b "runtime_message")
 
+theorem binary_key_beq (left right : String) : (b left == b right) = (left == right) := by
+  apply Bool.eq_iff_iff.mpr
+  change (left.toByteArray.data == right.toByteArray.data) = true ↔ (left == right) = true
+  simp only [beq_iff_eq]
+  constructor
+  · intro same
+    exact String.toByteArray_inj.mp (ByteArray.ext same)
+  · intro same
+    subst right
+    rfl
+
+theorem binary_beq_true {t : Term} {key : String} (h : (t == b key) = true) : t = b key := by
+  cases t <;> simp [b, Term.text, BEq.beq] at h
+  exact congrArg Term.binary (ByteArray.ext (by
+    simpa only [ByteArray.beq, beq_iff_eq, String.toUTF8_eq_toByteArray] using h))
+
+theorem get_put_binary_other (v x : Term) {key other : String} (different : other ≠ key) :
+    (v.put (b other) x).get (b key) = v.get (b key) := by
+  have neq : (b other == b key) = false := by simp [binary_key_beq, different]
+  cases v with
+  | map entries =>
+    simp only [Term.put, Term.get, List.find?_cons, neq]
+    rw [find?_filter_of_imp]
+    intro entry matched
+    have same := binary_beq_true matched
+    simp [same, binary_key_beq, Ne.symm different]
+  | _ => simp [Term.put, Term.get, neq]
+
+theorem putPresent_get_other (target value : Term) {name key : String} (different : name ≠ key) :
+    (putPresent target name value).get (b key) = target.get (b key) := by
+  unfold putPresent
+  split
+  · rfl
+  · exact get_put_binary_other _ _ different
+
+theorem recordEvent_putPresent {event : Term} {name : String} (shape : RecordEvent event)
+    (fromQueue : name ≠ "from_queue") (type : name ≠ "type") (value : Term) :
+    RecordEvent (putPresent event name value) := by
+  obtain ⟨queued, kind⟩ := shape
+  rw [RecordEvent, putPresent_get_other _ _ fromQueue, putPresent_get_other _ _ type]
+  exact ⟨queued, kind⟩
+
 theorem delivery_event_shape {session item payload id event : Term} {j r : List Term}
     (h : deliveryEvent session item payload id j = .ok (event, r)) : RecordEvent event := by
   unfold deliveryEvent at h
   repeat obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain rfl := pure_ok h
-  unfold putPresent
-  split <;> split <;> split <;>
-    simp +decide [RecordEvent, stringKeyed, Term.put, Term.get, BEq.beq, Term.text]
+  -- The optional fields are outside `RecordEvent`. Check the literal map once, not per branch.
+  repeat (refine recordEvent_putPresent ?_ (by decide) (by decide) _)
+  simp +decide [RecordEvent, stringKeyed, Term.get, BEq.beq, Term.text]
 
 theorem runtime_event_shape {session item payload id event : Term} {j r : List Term}
     (h : runtimeEvent session item payload id j = .ok (event, r)) : RecordEvent event := by
@@ -78,7 +120,9 @@ theorem generated_record_event {session item event : Term} (h : Generated sessio
     have eq := pure_ok h
     have same : event = encoded := congrArg Prod.fst eq
     subst event
-    first | exact runtime_event_shape he | exact delivery_event_shape he
+    first
+      | (head_is he [runtimeEvent]; exact runtime_event_shape he)
+      | exact delivery_event_shape he
 
 
 /-- Successful canonical event applications, including admission and activity bookkeeping.

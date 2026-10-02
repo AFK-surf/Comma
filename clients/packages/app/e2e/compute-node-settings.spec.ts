@@ -21,6 +21,7 @@ test("recovers a lost Shell creation response after reload and permits explicit 
     kind: string;
     desired_state: string;
     observed_state: string;
+    phase?: string;
   }> = [];
   const results = new Map<string, (typeof workloads)[number]>();
   let loseResponse = true;
@@ -88,6 +89,9 @@ test("recovers a lost Shell creation response after reload and permits explicit 
   });
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "Compute node", exact: true }).click();
+  await page
+    .getByRole("button", { name: "View workspace compute", exact: true })
+    .click();
   await page.getByRole("button", { name: "Manage environments", exact: true }).click();
   await page
     .getByRole("button", { name: "Create Shell workload", exact: true })
@@ -100,13 +104,25 @@ test("recovers a lost Shell creation response after reload and permits explicit 
   await page.reload();
   await page.getByRole("button", { name: "Compute node", exact: true }).click();
   await page.getByRole("button", { name: "Retry this creation", exact: true }).click();
-  await expect(
-    page.getByText("Created, preparing the runtime", { exact: true })
-  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "View workspace compute", exact: true })
+    .click();
+  await expect(page.getByText("Check resource details", { exact: true })).toBeVisible();
   expect(requests).toHaveLength(2);
   expect(requests[0]!.request_id).toBe(requests[1]!.request_id);
   expect(workloads).toHaveLength(1);
   queryNotFound = false;
+  workloads[0]!.phase = "waiting_connection";
+  await page.getByRole("button", { name: "Refresh workloads", exact: true }).click();
+  await expect(
+    page.getByText("Waiting for node connection", { exact: true })
+  ).toBeVisible();
+  workloads[0]!.phase = "starting";
+  await page.getByRole("button", { name: "Refresh workloads", exact: true }).click();
+  await expect(
+    page.getByText("Created, preparing the runtime", { exact: true })
+  ).toBeVisible();
+  workloads[0]!.phase = "ready";
   workloads[0]!.observed_state = "ready";
   await page.getByRole("button", { name: "Refresh workloads", exact: true }).click();
   await expect(page.getByText("Ready to use", { exact: true })).toBeVisible();
@@ -146,6 +162,7 @@ test("keeps the current creation across late responses and tracks recovered reso
       kind: string;
       desired_state: string;
       observed_state: string;
+      phase?: string;
     }
   >();
   let releaseFirst!: () => void;
@@ -179,6 +196,7 @@ test("keeps the current creation across late responses and tracks recovered reso
         kind: "shell",
         desired_state: "ready",
         observed_state: "pending",
+        phase: "waiting_connection",
       };
       results.set(input.request_id, workload);
       if (requests.length === 1) await firstResponse;
@@ -217,6 +235,9 @@ test("keeps the current creation across late responses and tracks recovered reso
     );
     await target.goto("/#/settings");
     await target.getByRole("button", { name: "Compute node", exact: true }).click();
+    await target
+      .getByRole("button", { name: "View workspace compute", exact: true })
+      .click();
   };
   await open(page);
   await createShell(page);
@@ -224,9 +245,10 @@ test("keeps the current creation across late responses and tracks recovered reso
   const other = await context.newPage();
   await open(other);
   await expect(
-    other.getByText("Created, preparing the runtime", { exact: true })
+    other.getByText("Waiting for node connection", { exact: true })
   ).toBeVisible();
   results.get(requests[0]!)!.observed_state = "ready";
+  results.get(requests[0]!)!.phase = "ready";
   await expect(other.getByText("Ready to use", { exact: true })).toBeVisible();
   await createShell(other, true);
   await expect(

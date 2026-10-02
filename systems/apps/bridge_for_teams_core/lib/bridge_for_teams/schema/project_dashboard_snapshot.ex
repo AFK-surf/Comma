@@ -1,6 +1,7 @@
 defmodule BridgeForTeams.Schema.ProjectDashboardSnapshot do
   @moduledoc """
-  Rebuildable project-level dashboard projection for My Space summaries.
+  Rebuildable project-level dashboard projection read by the org Overview and
+  Agent Swarm overview.
   """
   use Ecto.Schema
   import Ecto.Changeset

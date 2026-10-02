@@ -246,7 +246,7 @@ theorem waitClear_field {s e : Term} {key : String} (notWait : key ≠ "wait") (
     | rfl
     | (intro j out j' run
        rw [ArchivePublication.pruneResultRefs_field notRefs run,
-         write_field_frame ‹write _ _ _ = _› (by simpa using Ne.symm notWait)])
+         write_field_frame (hyp% write _ _ _ = _) (by simpa using Ne.symm notWait)])
 
 theorem statusTransition_field {s e : Term} {key : String} (notStatus : key ≠ "status")
     (notActivity : key ≠ "activity_status") :
@@ -440,7 +440,7 @@ theorem localSettlement_shape {s : Term} :
   all_goals first
     | exact Or.inl rfl
     | (rw [settlementEvents_native]
-       exact Or.inr ⟨_, _, ⟨_, _, ‹sub _ _ _ = _›⟩, rfl⟩)
+       exact Or.inr ⟨_, _, ⟨_, _, (hyp% sub _ _ _ = _)⟩, rfl⟩)
 
 theorem lookup_local_settlement :
     lookupOp queryTable (a "guard_failure_local_settlement") = some (fun state _ => Settlement.guardLocalSettlement state) :=
@@ -516,7 +516,7 @@ theorem replyRepair_keeps {s e : Term} : Gate.SatA (Keeps s) (replyRepair s e) :
   track_walk
   all_goals
     intro j out j' written
-    exact keeps_trans (write_keeps ‹write s _ _ = _› (by simp [watchedKeys]))
+    exact keeps_trans (write_keeps (hyp% write s _ _ = _) (by simp [watchedKeys]))
       (write_keeps written (by simp [watchedKeys]))
 
 /-- The events that `retireRunaway` puts before the settlement events. -/
@@ -592,7 +592,7 @@ theorem retireRunaway_shape {s : Term} :
   all_goals first
     | exact Or.inl rfl
     | (rw [settlementEvents_native]
-       refine Or.inr ⟨_, _, _, ?_, ⟨_, _, ‹sub _ _ _ = _›⟩, rfl⟩
+       refine Or.inr ⟨_, _, _, ?_, ⟨_, _, (hyp% sub _ _ _ = _)⟩, rfl⟩
        intro e mem
        simp only [List.mem_append, List.mem_map] at mem
        rcases mem with (⟨target, _, rfl⟩ | abort) | repair
@@ -659,6 +659,6 @@ theorem failureAck_final {s : Term} :
     | (intro _; exact Or.inl ‹_›)
     | (intro _
        right
-       exact ⟨_, _, _, ‹RoundQuery.failureReason s _ = _›, by simpa using ‹¬(_ == nil) = true›⟩)
+       exact ⟨_, _, _, (hyp% RoundQuery.failureReason s _ = _), by simpa using ‹¬(_ == nil) = true›⟩)
 
 end VerifiedKernel.Session.Loop.TerminalTail

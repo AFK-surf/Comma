@@ -44,6 +44,10 @@ const HOT_STREAM_RECONNECT_MS = 250;
 const WARM_STREAM_RECONNECT_MS = 3_000;
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 15_000;
+// A brief outage, such as a laptop waking while Wi-Fi rejoins, recovers
+// silently. The stale-transcript warning appears only once the 1s, 2s and 4s
+// retries have also failed and the next wait would be at least this long.
+const STALE_WARNING_BACKOFF_MS = 8_000;
 const AWAITING_TIMEOUT_MS = 150_000;
 const TASK_EVENT_WAIT_MS = 30_000;
 const ACTIVITY_TTL_MS = 150_000;
@@ -1865,7 +1869,12 @@ export class ConversationChannel {
       errorKind,
       lastBackoffMs: nextBackoffMs,
       status: this.state.conversation ? "ready" : "error",
-      syncWarning: this.state.conversation ? "stale" : undefined,
+      syncWarning:
+        this.state.conversation && nextBackoffMs >= STALE_WARNING_BACKOFF_MS
+          ? "stale"
+          : this.state.syncWarning === "suspect-empty"
+            ? "suspect-empty"
+            : undefined,
     });
     this.pollSoon(nextBackoffMs + this.env.jitterMs(nextBackoffMs));
   }
@@ -2054,7 +2063,11 @@ export class ConversationChannel {
       );
     }
     this.recordMessageFirstObservation(messageId, clientRequestId);
-    if (raw.role === "assistant" && this.locallyAwaitedClientRequestId) {
+    if (
+      raw.role === "assistant" &&
+      !raw.platform_message &&
+      this.locallyAwaitedClientRequestId
+    ) {
       const localUserMessageId = this.canonicalMessageIdsByClientRequestId.get(
         this.locallyAwaitedClientRequestId
       );
@@ -2097,7 +2110,9 @@ export class ConversationChannel {
     const userIndex = messages.findIndex((message) => message.messageId === messageId);
     if (
       userIndex >= 0 &&
-      messages.slice(userIndex + 1).some((message) => message.role === "assistant")
+      messages
+        .slice(userIndex + 1)
+        .some((message) => message.role === "assistant" && !message.platformSource)
     ) {
       this.clearLocalReplyWait();
     }
@@ -2296,31 +2311,40 @@ export function normalizeServerMessages(
 ) {
   const previousById = new Map(previous.map((message) => [message.messageId, message]));
   const normalizedTail = rawMessages.flatMap((message) => {
+    const platformMessage = message.platform_message;
     if (
+      !platformMessage &&
       message.actor_type === "system" &&
       (message.agent_input != null ||
         (message.kind === "app_event" &&
-          ["provider.output", "provider.status", "message.redelivery"].includes(
-            String(message.metadata?.event_type ?? "")
-          )))
+          [
+            "provider.output",
+            "provider.status",
+            "provider.message",
+            "message.redelivery",
+          ].includes(String(message.metadata?.event_type ?? ""))))
     ) {
       return [];
     }
-    const text = contentBlocksToText(message.content);
-    if (isCommaContextMessage(text)) {
+    const content = platformMessage?.content ?? message.content;
+    const text = contentBlocksToText(content);
+    if (!platformMessage && isCommaContextMessage(text)) {
       return [];
     }
 
     const blockViews = deriveBlockViews(
-      message.content,
+      content,
       message.actor_type === "agent" ? message.agent_id : undefined,
       conversationId,
       message.message_id
     );
-    const strippedText = stripCommaProtocolMarkers(text);
+    const strippedText = platformMessage ? text : stripCommaProtocolMarkers(text);
+    const role =
+      platformMessage?.role ??
+      (assistantActorType(message.actor_type) ? "assistant" : "user");
     const parts = blockViews.parts.some((part) => part.kind !== "markdown")
       ? blockViews.parts
-      : ((message.actor_type === "user"
+      : ((role === "user" && !platformMessage
           ? splitUserTaskMentionParts(strippedText)
           : undefined) ?? [{ kind: "markdown" as const, text: strippedText }]);
     const next: ChatMessage = {
@@ -2338,10 +2362,11 @@ export function normalizeServerMessages(
       threadRootMessageId: message.thread_root_message_id,
       parts,
       refs: blockViews.refs,
-      role: assistantActorType(message.actor_type) ? "assistant" : "user",
+      role,
+      platformSource: platformMessage?.provider,
       source: "server",
       status: "committed",
-      text: stripCommaProtocolMarkers(text),
+      text: strippedText,
     };
     const current = previousById.get(next.messageId);
     return current && sameMessage(current, next) ? [current] : [next];
@@ -2419,6 +2444,7 @@ function sameMessage(a: ChatMessage, b: ChatMessage) {
     a.replyToMessageId === b.replyToMessageId &&
     a.threadRootMessageId === b.threadRootMessageId &&
     a.role === b.role &&
+    a.platformSource === b.platformSource &&
     a.source === b.source &&
     a.status === b.status &&
     a.text === b.text

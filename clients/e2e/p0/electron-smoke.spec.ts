@@ -12,6 +12,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole } from "../../apps/electron/src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../helpers/electron-profile";
 import { createE2eSessionProjection } from "../helpers/session-fixture";
 import {
   chatSmokeWorkspaceChat,
@@ -160,6 +161,7 @@ test("electron routes one Chat send through the Main-owned /v1 proxy", async ({
     additionalInboxConversations: [chatSmokeWorkspaceChat],
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-chat-smoke-"));
+  recordElectronOnboardingCompleted(userDataDir, [stub.userId]);
   const app = await electron.launch({
     args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -268,6 +270,7 @@ test("electron assets proxy streams SSE chunks incrementally", async ({
 }, testInfo) => {
   const stub = await startStreamingFlushStub();
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-assets-stream-"));
+  recordElectronOnboardingCompleted(userDataDir, [stub.userId]);
   const app = await electron.launch({
     args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -404,6 +407,7 @@ function installAssetsFetchRecorder() {
 }
 
 function startStreamingFlushStub() {
+  const session = createE2eSessionProjection({ email: "smoke@comma.local" });
   const server = createServer((req, res) => {
     res.setHeader("access-control-allow-origin", "*");
     res.setHeader("access-control-allow-headers", "authorization,content-type,accept");
@@ -424,13 +428,7 @@ function startStreamingFlushStub() {
         "cache-control": "no-store",
         "content-type": "application/json",
       });
-      res.end(
-        JSON.stringify(
-          createE2eSessionProjection({
-            email: "smoke@comma.local",
-          })
-        )
-      );
+      res.end(JSON.stringify(session));
       return;
     }
 
@@ -459,6 +457,7 @@ function startStreamingFlushStub() {
   return new Promise<{
     baseUrl: string;
     close: () => Promise<void>;
+    userId: string;
   }>((resolveStub) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
@@ -466,6 +465,7 @@ function startStreamingFlushStub() {
         baseUrl: `http://127.0.0.1:${port}`,
         close: () =>
           new Promise<void>((done) => (server as Server).close(() => done())),
+        userId: session.user.id,
       });
     });
   });

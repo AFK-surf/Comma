@@ -243,7 +243,8 @@ defmodule SalixAgent.DependencyAdmission do
             task_refs: %{},
             owner_refs: %{},
             tenant_counts: %{},
-            kind_counts: %{}
+            kind_counts: %{},
+            tenant_limits: %{}
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -259,6 +260,7 @@ defmodule SalixAgent.DependencyAdmission do
   def init(_opts) do
     state = %__MODULE__{}
     Enum.each(@kinds, &emit_active(&1, state))
+    if tenant_limit_refresh_ms(), do: schedule_tenant_limit_refresh(0)
     {:ok, state}
   end
 
@@ -311,6 +313,28 @@ defmodule SalixAgent.DependencyAdmission do
   end
 
   @impl true
+  def handle_info(:refresh_tenant_limits, state) do
+    server = self()
+
+    # Tenant profiles override the per-Tenant limit. The bounded read runs
+    # outside admission; a failed read keeps the last known overrides.
+    Task.start(fn ->
+      try do
+        send(server, {:tenant_limits, SalixStore.TenantProfiles.dependency_limits()})
+      rescue
+        _error -> :ok
+      catch
+        _kind, _reason -> :ok
+      end
+    end)
+
+    schedule_tenant_limit_refresh(tenant_limit_refresh_ms())
+    {:noreply, state}
+  end
+
+  def handle_info({:tenant_limits, limits}, state) when is_map(limits),
+    do: {:noreply, %{state | tenant_limits: limits}}
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     cond do
       token = state.task_refs[ref] ->
@@ -334,10 +358,22 @@ defmodule SalixAgent.DependencyAdmission do
   end
 
   defp admitted?(state, tenant_id) do
-    map_size(state.jobs) < limit(:dependency_max_children, @default_global_limit) and
-      Map.get(state.tenant_counts, tenant_id, 0) <
+    tenant_limit =
+      Map.get_lazy(state.tenant_limits, tenant_id, fn ->
         limit(:dependency_max_children_per_tenant, @default_per_tenant_limit)
+      end)
+
+    map_size(state.jobs) < limit(:dependency_max_children, @default_global_limit) and
+      Map.get(state.tenant_counts, tenant_id, 0) < tenant_limit
   end
+
+  defp tenant_limit_refresh_ms,
+    do: Application.get_env(:salix_agent, :dependency_tenant_limit_refresh_ms, 30_000)
+
+  defp schedule_tenant_limit_refresh(ms) when is_integer(ms) and ms >= 0,
+    do: Process.send_after(self(), :refresh_tenant_limits, ms)
+
+  defp schedule_tenant_limit_refresh(_disabled), do: :ok
 
   defp limit(key, default) do
     case Application.get_env(:salix_agent, key, default) do

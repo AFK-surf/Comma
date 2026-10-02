@@ -6577,6 +6577,7 @@ defmodule SalixWeb.RouterTest do
            )
 
     refute Map.has_key?(hd(stuck), "archive")
+    refute Enum.any?(leaks, &Map.has_key?(&1, "archive"))
     assert req(:get, "/v1/admin/vm/ops/stuck?limit=101").status == 400
     assert req(:get, "/v1/admin/vm/ops/stuck?limit=no").status == 400
 

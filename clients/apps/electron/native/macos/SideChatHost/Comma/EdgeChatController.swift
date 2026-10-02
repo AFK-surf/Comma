@@ -119,6 +119,10 @@ final class EdgeChatController {
     private var hotKey: GlobalHotKey?
     private var hotKeyKeyCode = UInt32(kVK_ANSI_Z)
     private var hotKeyModifiers = UInt32(controlKey)
+    /// The binding Main last saved, kept while Side Chat is off so turning it
+    /// back on registers the same chord; nil means the shortcut is cleared.
+    private var savedHotKey: (keyCode: UInt32, modifiers: UInt32)?
+    private var isEnabled = true
     private var nextHotKeyID = UInt32(1)
     private var trackpadMonitor: TrackpadEdgeSwipeMonitor?
     private var notificationObservers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -145,6 +149,30 @@ final class EdgeChatController {
 
         // Main replays the saved binding, including an explicitly cleared one.
 
+        startTrackpadMonitor()
+        applyProgress(0, phase: .closed)
+    }
+
+    /// Off releases the edge gesture and the global shortcut, so neither the
+    /// trackpad nor the chord reaches Side Chat, and closes a visible surface.
+    func setEnabled(_ enabled: Bool) {
+        guard enabled != isEnabled else { return }
+        isEnabled = enabled
+        if enabled {
+            startTrackpadMonitor()
+            if let savedHotKey {
+                _ = updateHotKey(keyCode: savedHotKey.keyCode, modifiers: savedHotKey.modifiers)
+            }
+            return
+        }
+        trackpadMonitor?.stop()
+        trackpadMonitor = nil
+        hotKey = nil
+        forceClose()
+    }
+
+    private func startTrackpadMonitor() {
+        guard trackpadMonitor == nil else { return }
         let monitor = TrackpadEdgeSwipeMonitor(
             onProgress: { [weak self] gestureProgress in
                 self?.setInteractiveProgress(gestureProgress)
@@ -156,14 +184,19 @@ final class EdgeChatController {
         )
         trackpadMonitor = monitor
         monitor.start()
-
-        applyProgress(0, phase: .closed)
+        monitor.panelVisibility = progress
+        if activeForcedCloseEpoch != nil { monitor.setInputEnabled(false) }
     }
 
     @discardableResult
     func updateHotKey(keyCode: UInt32?, modifiers: UInt32) -> Bool {
         guard let keyCode else {
+            savedHotKey = nil
             hotKey = nil
+            return true
+        }
+        guard isEnabled else {
+            savedHotKey = (keyCode, modifiers)
             return true
         }
         if let hotKey,
@@ -187,6 +220,7 @@ final class EdgeChatController {
         hotKey = candidate
         hotKeyKeyCode = keyCode
         hotKeyModifiers = modifiers
+        savedHotKey = (keyCode, modifiers)
         return true
     }
 
@@ -238,7 +272,7 @@ final class EdgeChatController {
     }
 
     func open() {
-        guard activeForcedCloseEpoch == nil else { return }
+        guard isEnabled, activeForcedCloseEpoch == nil else { return }
         animate(to: 1, phase: .opening)
     }
 
@@ -329,7 +363,7 @@ final class EdgeChatController {
     }
 
     func setInteractiveProgress(_ nextProgress: CGFloat) {
-        guard activeForcedCloseEpoch == nil else { return }
+        guard isEnabled, activeForcedCloseEpoch == nil else { return }
         progressAnimationGeneration += 1
         pendingInteractiveProgress = nextProgress
         guard !isInteractiveProgressScheduled else { return }

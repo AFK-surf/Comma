@@ -22,7 +22,7 @@ device. Add `--cookies-from-browser chrome` for protected or sensitive media.
 ## Replies, threads, search, and posting
 
 Use the Comma in-app browser on `https://x.com` with the user's login. X often
-challenges datacenter logins, so log in there rather than in `browser.*`. Read the
+challenges datacenter logins, so log in with the in-app browser. Read the
 conversation from the page text and scroll for more replies.
 
 The X API is pay-per-use only (about $0.005 per post read and $0.015 per post

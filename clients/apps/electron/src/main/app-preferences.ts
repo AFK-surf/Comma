@@ -5,9 +5,11 @@ import {
   commaClientSettingsSchema,
   defaultAppPreferences,
   defaultCommaClientSettings,
+  defaultOpenCommaShortcut,
   type AppPreferences,
   type AppPreferencesPatch,
   type CommaClientSettings,
+  type KeepAwakeWhenLidClosedStatus,
   type SystemNotificationsStatus,
   type SideChatShortcutBinding,
 } from "@comma/native-bridge";
@@ -15,6 +17,24 @@ import type { LaunchAtLoginReadback } from "./launch-at-login";
 
 export interface AppPreferencesPlatform {
   setOpenCommaShortcut?(shortcut: SideChatShortcutBinding): void;
+  /** macOS: whether the sleep guard daemon may run, as Login Items shows it. */
+  getKeepAwakeWhenLidClosedStatus?(): KeepAwakeWhenLidClosedStatus;
+  /**
+   * Holds or releases the Mac's lid-closed wakefulness and resolves the
+   * daemon's status. Turning on holds only an approved daemon; otherwise it
+   * resolves the status that still needs the user.
+   */
+  setKeepAwakeWhenLidClosed?(
+    enabled: boolean,
+    options?: { atLaunch?: boolean }
+  ): Promise<KeepAwakeWhenLidClosedStatus | void> | KeepAwakeWhenLidClosedStatus | void;
+  /** macOS: opens Login Items, where the user allows the sleep guard daemon. */
+  openLoginItemsSettings?(): { opened: boolean };
+  /**
+   * Asks the OS to let Comma notify and resolves once it has answered. macOS
+   * prompts only while it has not asked the user about Comma yet.
+   */
+  authorizeSystemNotifications(): Promise<boolean> | boolean;
   getLaunchAtLogin(): LaunchAtLoginReadback;
   getSystemNotificationsStatus():
     | Promise<SystemNotificationsStatus>
@@ -61,10 +81,21 @@ export class AppPreferencesService {
     onStateChanged?: (preferences: AppPreferences) => void;
     platform: AppPreferencesPlatform;
   }) {
-    const persisted = await readPreferences(filePath);
-    const preferences = withSystemNotificationsStatusReadback(
-      withLaunchAtLoginReadback(persisted, platform.getLaunchAtLogin()),
-      await platform.getSystemNotificationsStatus()
+    const { defaultsRevision, preferences: stored } =
+      await readStoredPreferences(filePath);
+    const persisted =
+      defaultsRevision < currentDefaultsRevision ? withCurrentDefaults(stored) : stored;
+    if (defaultsRevision < currentDefaultsRevision) {
+      // Saved now, so a shortcut the user sets later is never moved again. A
+      // failed write moves it again on the next launch, to the same value.
+      await writePreferences(filePath, persisted).catch(() => undefined);
+    }
+    const preferences = withKeepAwakeWhenLidClosedStatusReadback(
+      withSystemNotificationsStatusReadback(
+        withLaunchAtLoginReadback(persisted, platform.getLaunchAtLogin()),
+        await platform.getSystemNotificationsStatus()
+      ),
+      platform.getKeepAwakeWhenLidClosedStatus?.()
     );
     const service = new AppPreferencesService({
       filePath,
@@ -77,6 +108,21 @@ export class AppPreferencesService {
       platform.setShowInDock(preferences.showInDock),
       platform.setShowInMenuBar(preferences.showInMenuBar),
     ]);
+    if (preferences.keepAwakeWhenLidClosed && platform.setKeepAwakeWhenLidClosed) {
+      try {
+        // A revoked approval keeps the choice: the status readback shows
+        // the approval it waits for, and a later approval resumes it.
+        service.#preferences = withKeepAwakeWhenLidClosedStatusReadback(
+          service.#preferences,
+          (await platform.setKeepAwakeWhenLidClosed(true, { atLaunch: true })) ??
+            undefined
+        );
+      } catch {
+        // A daemon that refuses must not prevent Comma from starting; the
+        // setting shows off until the user turns it on again.
+        service.#preferences.keepAwakeWhenLidClosed = false;
+      }
+    }
     if (platform.setOpenCommaShortcut) {
       try {
         const shortcut = (preferences.clientSettings ?? defaultCommaClientSettings)
@@ -116,17 +162,65 @@ export class AppPreferencesService {
    * when it actually moves.
    */
   async refreshSystemNotificationsStatus() {
+    return this.#enqueue(async () =>
+      this.#applySystemNotificationsStatus(
+        await this.#platform.getSystemNotificationsStatus()
+      )
+    );
+  }
+
+  /**
+   * Reads whether macOS lets the sleep guard daemon run and publishes the
+   * answer. The user allows the daemon in Login Items, outside Comma, so this
+   * is where a choice that waited for approval takes effect, and where a
+   * revoked approval releases the hold. Like the other readbacks the status
+   * is never persisted.
+   */
+  async refreshKeepAwakeWhenLidClosedStatus() {
+    const platform = this.#platform;
+    if (!platform.getKeepAwakeWhenLidClosedStatus) return this.state();
     return this.#enqueue(async () => {
-      const status = await this.#platform.getSystemNotificationsStatus();
-      const refreshed = withSystemNotificationsStatusReadback(
-        this.#preferences,
-        status
-      );
-      if (samePreferenceValues(refreshed, this.#preferences)) return this.state();
-      this.#preferences = withNextRevision(refreshed, this.#preferences);
+      const previous = this.#preferences;
+      const status = platform.getKeepAwakeWhenLidClosedStatus!();
+      let next = withKeepAwakeWhenLidClosedStatusReadback(previous, status);
+      const wasAvailable = previous.keepAwakeWhenLidClosedStatus === "available";
+      if (previous.keepAwakeWhenLidClosed && platform.setKeepAwakeWhenLidClosed) {
+        if (status === "available" && !wasAvailable) {
+          try {
+            await platform.setKeepAwakeWhenLidClosed(true, { atLaunch: true });
+          } catch {
+            // Shows off, as after a refused start; the user can turn it on again.
+            next = { ...next, keepAwakeWhenLidClosed: false };
+          }
+        } else if (status !== "available" && wasAvailable) {
+          // launchd stopped the daemon, which restored sleep. Drop the hold
+          // so that a later reconnect cannot take it back without approval.
+          try {
+            await platform.setKeepAwakeWhenLidClosed(false);
+          } catch {
+            // Nothing is held: the daemon is gone.
+          }
+        }
+      }
+      if (samePreferenceValues(next, previous)) return this.state();
+      this.#preferences = withNextRevision(next, previous);
       const snapshot = this.state();
       this.#onStateChanged(snapshot);
       return snapshot;
+    });
+  }
+
+  /**
+   * Asks the OS to let Comma notify, then reads the answer back and publishes
+   * it like any other readback change. A prompt waits on the user, so the
+   * question stays outside the mutation queue; only the re-read joins it.
+   */
+  async requestSystemNotificationsAuthorization() {
+    await this.#platform.authorizeSystemNotifications();
+    return this.#enqueue(async () => {
+      const status = await this.#platform.getSystemNotificationsStatus();
+      this.#applySystemNotificationsStatus(status);
+      return status;
     });
   }
 
@@ -139,7 +233,7 @@ export class AppPreferencesService {
     );
   }
 
-  #enqueue(task: () => Promise<AppPreferences>) {
+  #enqueue<Result>(task: () => Promise<Result>): Promise<Result> {
     if (this.#closed) {
       return Promise.reject(new Error("Application preferences are closing."));
     }
@@ -159,6 +253,15 @@ export class AppPreferencesService {
       () => undefined
     );
     return queued;
+  }
+
+  #applySystemNotificationsStatus(status: SystemNotificationsStatus) {
+    const refreshed = withSystemNotificationsStatusReadback(this.#preferences, status);
+    if (samePreferenceValues(refreshed, this.#preferences)) return this.state();
+    this.#preferences = withNextRevision(refreshed, this.#preferences);
+    const snapshot = this.state();
+    this.#onStateChanged(snapshot);
+    return snapshot;
   }
 
   #refreshLaunchAtLogin() {
@@ -191,9 +294,16 @@ export class AppPreferencesService {
     const shouldApplyLaunchAtLogin =
       requestedLaunchAtLogin !== undefined &&
       requestedLaunchAtLogin !== launchAtLoginIntent(previous);
+    // Turning keep-awake on again while it waits for approval asks the
+    // daemon again: that registers one that is not registered yet.
+    const shouldApplyKeepAwake =
+      patch.keepAwakeWhenLidClosed !== undefined &&
+      (patch.keepAwakeWhenLidClosed !== previous.keepAwakeWhenLidClosed ||
+        (patch.keepAwakeWhenLidClosed && keepAwakeWhenLidClosedWaiting(previous)));
     if (
       samePreferenceValues(previous, next) &&
       !shouldApplyLaunchAtLogin &&
+      !shouldApplyKeepAwake &&
       !(
         clientSettingsPatch?.openCommaShortcut !== undefined &&
         previous.openCommaShortcutStatus === "unavailable"
@@ -247,6 +357,22 @@ export class AppPreferencesService {
         await this.#platform.setShowInDock(next.showInDock);
         applied.push(async () => this.#platform.setShowInDock(previous.showInDock));
       }
+      if (shouldApplyKeepAwake && this.#platform.setKeepAwakeWhenLidClosed) {
+        next = withKeepAwakeWhenLidClosedStatusReadback(
+          next,
+          (await this.#platform.setKeepAwakeWhenLidClosed(
+            next.keepAwakeWhenLidClosed
+          )) ?? undefined
+        );
+        if (next.keepAwakeWhenLidClosed !== previous.keepAwakeWhenLidClosed) {
+          applied.push(async () => {
+            await this.#platform.setKeepAwakeWhenLidClosed!(
+              previous.keepAwakeWhenLidClosed,
+              { atLaunch: true }
+            );
+          });
+        }
+      }
       if (samePreferenceValues(previous, next)) return this.state();
       next = withNextRevision(next, previous);
       await writePreferences(this.#filePath, next);
@@ -287,11 +413,80 @@ async function rollbackApplied(applied: Array<() => Promise<void>>) {
   return errors;
 }
 
+/** The stored app language, read before Main builds its first surfaces. */
+export async function readStoredLocalePreference(filePath: string) {
+  return (await readPreferences(filePath)).clientSettings?.localePreference;
+}
+
+/**
+ * The shipped defaults the preferences file has been carried onto, kept in the
+ * file beside the preferences and never published. Main moves an older file
+ * forward once as it opens it; a new install starts at the current one.
+ * - 1: Open Comma moved from Option-Space to Option-Comma.
+ */
+const currentDefaultsRevision = 1;
+
+/** Open Comma's default before revision 1. */
+const optionSpace = {
+  key: "space",
+  modifiers: { alt: true, control: false, meta: false, shift: false },
+} as const;
+
+/**
+ * Carries preferences onto the shipped defaults their file predates (see
+ * `currentDefaultsRevision`). The first launch saved every client setting,
+ * defaults included, so a setting still equal to an old default is one the
+ * user never chose: it takes the new default. Anything the user set stays,
+ * and so does whatever they set once this has run.
+ */
+function withCurrentDefaults(preferences: AppPreferences): AppPreferences {
+  const settings = preferences.clientSettings;
+  const openComma = settings?.openCommaShortcut;
+  const untouched =
+    openComma?.key === optionSpace.key &&
+    (
+      Object.keys(optionSpace.modifiers) as (keyof typeof optionSpace.modifiers)[]
+    ).every(
+      (modifier) => openComma.modifiers[modifier] === optionSpace.modifiers[modifier]
+    );
+  return settings && untouched
+    ? {
+        ...preferences,
+        clientSettings: { ...settings, openCommaShortcut: defaultOpenCommaShortcut },
+      }
+    : preferences;
+}
+
 async function readPreferences(filePath: string): Promise<AppPreferences> {
+  return (await readStoredPreferences(filePath)).preferences;
+}
+
+/** The file's preferences, and the defaults revision it was written at. */
+async function readStoredPreferences(filePath: string) {
+  let stored: unknown;
   try {
-    return appPreferencesSchema.parse(JSON.parse(await readFile(filePath, "utf8")));
+    stored = JSON.parse(await readFile(filePath, "utf8"));
   } catch {
-    return { ...defaultAppPreferences };
+    // No file yet: a new install, on the current defaults.
+    return {
+      defaultsRevision: currentDefaultsRevision,
+      preferences: { ...defaultAppPreferences },
+    };
+  }
+  const { defaultsRevision, ...rest } =
+    typeof stored === "object" && stored !== null
+      ? (stored as { defaultsRevision?: unknown })
+      : {};
+  try {
+    return {
+      defaultsRevision: typeof defaultsRevision === "number" ? defaultsRevision : 0,
+      preferences: appPreferencesSchema.parse(rest),
+    };
+  } catch {
+    return {
+      defaultsRevision: currentDefaultsRevision,
+      preferences: { ...defaultAppPreferences },
+    };
   }
 }
 
@@ -303,6 +498,8 @@ async function writePreferences(filePath: string, preferences: AppPreferences) {
       ? { clientSettings: preferences.clientSettings }
       : {}),
     airDropName: preferences.airDropName,
+    defaultsRevision: currentDefaultsRevision,
+    keepAwakeWhenLidClosed: preferences.keepAwakeWhenLidClosed,
     launchAtLogin: preferences.launchAtLogin,
     notchSideWidth: preferences.notchSideWidth,
     notificationSound: preferences.notificationSound,
@@ -311,6 +508,7 @@ async function writePreferences(filePath: string, preferences: AppPreferences) {
     showInDock: preferences.showInDock,
     showInMenuBar: preferences.showInMenuBar,
     showInNotch: preferences.showInNotch,
+    sideChatEnabled: preferences.sideChatEnabled,
     systemNotifications: preferences.systemNotifications,
   };
   await writeFile(temporaryPath, `${JSON.stringify(persisted, null, 2)}\n`, {
@@ -327,6 +525,8 @@ function samePreferenceValues(left: AppPreferences, right: AppPreferences) {
     sameClientSettings(left.clientSettings, right.clientSettings) &&
     left.openCommaShortcutStatus === right.openCommaShortcutStatus &&
     left.airDropName === right.airDropName &&
+    left.keepAwakeWhenLidClosed === right.keepAwakeWhenLidClosed &&
+    left.keepAwakeWhenLidClosedStatus === right.keepAwakeWhenLidClosedStatus &&
     left.launchAtLogin === right.launchAtLogin &&
     left.launchAtLoginStatus === right.launchAtLoginStatus &&
     left.notchSideWidth === right.notchSideWidth &&
@@ -336,6 +536,7 @@ function samePreferenceValues(left: AppPreferences, right: AppPreferences) {
     left.showInDock === right.showInDock &&
     left.showInMenuBar === right.showInMenuBar &&
     left.showInNotch === right.showInNotch &&
+    left.sideChatEnabled === right.sideChatEnabled &&
     left.systemNotifications === right.systemNotifications &&
     left.systemNotificationsStatus === right.systemNotificationsStatus
   );
@@ -383,6 +584,26 @@ function withSystemNotificationsStatusReadback(
     ...preferences,
     systemNotificationsStatus: status,
   });
+}
+
+/** An unknown status (no readback on this platform) leaves the last one. */
+function withKeepAwakeWhenLidClosedStatusReadback(
+  preferences: AppPreferences,
+  status: KeepAwakeWhenLidClosedStatus | undefined
+) {
+  if (status === undefined) return preferences;
+  return appPreferencesSchema.parse({
+    ...preferences,
+    keepAwakeWhenLidClosedStatus: status,
+  });
+}
+
+/** The daemon still needs the user before keep-awake can take effect. */
+function keepAwakeWhenLidClosedWaiting(preferences: AppPreferences) {
+  return (
+    preferences.keepAwakeWhenLidClosedStatus === "not-registered" ||
+    preferences.keepAwakeWhenLidClosedStatus === "requires-approval"
+  );
 }
 
 function withLaunchAtLoginReadback(

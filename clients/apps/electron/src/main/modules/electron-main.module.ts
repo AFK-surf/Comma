@@ -1,3 +1,7 @@
+import { LocalComputeOperator } from "./compute-node/local-operator";
+import { LocalHostMaintenance } from "./compute-node/host-maintenance";
+import { homedir } from "node:os";
+import { AccountComputeNodeService } from "./compute-node/account-service";
 import { TokenDanceAuthorizationService } from "../tokendance-authorization";
 import { SubscriptionAuthorizationService } from "../subscription-authorization";
 import { getCommaReleaseConfig } from "../../release-config";
@@ -25,8 +29,8 @@ import {
 } from "./native";
 import { CommaAppRuntime } from "@comma/app/host-runtime";
 import {
-  StatusTrayRecentTasks,
-  statusTrayAccelerators,
+  StatusTrayInProgressTasks,
+  statusTrayPreferenceContent,
   type StatusTrayContent,
 } from "../status-tray";
 import { sessionHistoryStateChangedEvent } from "@comma/native-bridge";
@@ -61,7 +65,7 @@ import {
   type CommaOperatingSystem,
 } from "@comma/native-bridge";
 import { dirname, join } from "node:path";
-import type { CommaLocale } from "@comma/i18n";
+import { baseLocale, type CommaLocale } from "@comma/i18n";
 import {
   snapshotMatchesSessionProductLease,
   sessionProductLease,
@@ -111,8 +115,12 @@ import {
   type ConnectorRuntimeProvider,
 } from "./native";
 import { AppPreferencesService, type AppPreferencesPlatform } from "../app-preferences";
+import type { OnboardingWindowProvider } from "../onboarding-window";
 import type { NotchPresentation } from "../notch";
-import { openSystemNotificationSettings } from "../system-notification-settings";
+import {
+  openSystemNotificationSettings,
+  systemNotificationsMayPost,
+} from "../system-notification-settings";
 import { SecureSessionStore, type SecureSessionInput } from "../secure-store";
 import type { DesktopGoogleAuthProvider } from "../google-desktop-auth";
 import { DownloadsService, type FilesProvider } from "./files/downloads";
@@ -131,6 +139,7 @@ import {
   type WorkspaceConnectorRuntimeLike,
 } from "./connector-runtime";
 import { canonicalizeSessionAudience } from "./session/credential";
+import { startActivityReporter } from "./session/activity-reporter";
 import { openElectronLocalDataRepository } from "./local-data/electron-utility-host";
 import type { LocalDataRepository } from "../../shared/local-data";
 import { ProductInboxNativeDemandProvider, ProductInboxRuntime } from "./product-inbox";
@@ -145,8 +154,6 @@ import {
 import {
   AgentVMMCommandAdapter,
   ComputeNodeInstallAuthorization,
-  ComputeWorkloadActivityOwner,
-  ComputeNodeService,
   runCommand,
   type ComputeNodeRuntimeAdapter,
 } from "./compute-node";
@@ -191,6 +198,14 @@ export interface ElectronMainRuntimeDeps {
   /** Receives the menu-bar menu's shortcuts and recent Tasks as they change. */
   onStatusTrayChanged?: (content: StatusTrayContent) => void;
   onMeetingRecorderStateChanged?: (state: MeetingRecorderState) => void;
+  confirmLocalDisposal?: (preview: {
+    kind: "environment" | "registration";
+    label: string;
+    environmentCount: string;
+  }) => Promise<boolean>;
+  confirmHostMaintenance?: (
+    input: import("@comma/native-bridge").HostMaintenanceInput
+  ) => Promise<boolean>;
   resolveMeetingRecovery?: (name: string) => Promise<"resume" | "new">;
   prepareMeetingRecorderWindow?: () => Promise<void>;
   layoutMeetingRecorderWindow?: (input: MeetingRecorderWindowLayout) => void;
@@ -272,11 +287,18 @@ export interface ElectronMainRuntimeDeps {
       }) => Promise<LocalDataRepository>)
     | undefined;
   logger?: NativeIpcLogger;
+  /** Main's language at startup; it then follows the stored app language. */
   locale?: CommaLocale;
+  /** The stored app language changed; Main surfaces outside this module follow it. */
+  onLocaleChanged?: (locale: CommaLocale) => void;
   /**
    * Absent (tests, unbuilt dev) no Router message notification is raised.
    */
   messageNotificationsPlatform?: MessageNotificationsPlatform | undefined;
+  /** Enables reports that the person is at the computer and sees Home banners. */
+  userActivity?:
+    | { mainWindowOpen: () => boolean; systemIdleSeconds: () => number }
+    | undefined;
   /**
    * Main also writes its own AirDrop scene to the same host, and applies the
    * reader's Notch preferences to it.
@@ -284,13 +306,16 @@ export interface ElectronMainRuntimeDeps {
   notch: NotchProvider &
     AirDropNotch & { setPresentation(presentation: NotchPresentation): void };
   productName?: string | undefined;
-  sideChat: SideChatProvider;
+  /** Main applies the General Side Chat switch to it. */
+  sideChat: SideChatProvider & { setEnabled(enabled: boolean): void };
   windowAppearance: WindowAppearanceProvider;
   observability?: NativeObservabilitySink;
   observabilityFileLocation?: string;
   onSessionStateChanged?:
     | ((state: SessionLifecycleSnapshot) => Promise<void> | void)
     | undefined;
+  /** The full-screen onboarding window; without it nothing is presented. */
+  onboardingWindow?: OnboardingWindowProvider | undefined;
   secureSessionFilePath: string;
   /**
    * Explicit unpackaged startup credential. The composition root persists it
@@ -393,6 +418,8 @@ const mainWindowNativePermissions = generatedNativePermissions;
 const devWorkbenchNativePermissions = generatedNativeCapabilityManifest
   .filter(({ id }) => !id.startsWith("session.") || id === "session.state")
   .map(({ permission }) => permission);
+// Each window that shows the Router's name reads whether the onboarding window,
+// which can rename the Router, is open, and reads the name again once it closes.
 const sideChatWindowCapabilityIds = new Set([
   "appPreferences.state",
   "appearance.fontFamilies",
@@ -402,6 +429,7 @@ const sideChatWindowCapabilityIds = new Set([
   "clipboard.writeText",
   "localFiles.pick",
   "localFiles.preview",
+  "onboarding.window",
   "session.state",
   "windows.focus",
   "sessionHistory.state",
@@ -439,6 +467,7 @@ const sideChatTestWindowNativePermissions = [
           id === "clipboard.readImage" ||
           id === "clipboard.writeText" ||
           id === "localFiles.preview" ||
+          id === "onboarding.window" ||
           id === "shell.openExternal" ||
           id === "sideChat.presentation" ||
           id === "sideChat.openTestWindow" ||
@@ -447,6 +476,29 @@ const sideChatTestWindowNativePermissions = [
           id.startsWith("sessionHistory.") ||
           id.startsWith("chat.")
       )
+      .map(({ permission }) => permission)
+  ),
+];
+// The onboarding window reads the session and client settings, opens the
+// browser for plugin authorization, asks for the macOS grants, reads the
+// output volume for its sound, and closes itself; Main records its
+// completion. Only the main window presents it.
+const onboardingWindowCapabilityIds = new Set([
+  "appPreferences.state",
+  "appPreferences.openNotificationSettings",
+  "appPreferences.requestNotificationAuthorization",
+  "computerUse.getPermissions",
+  "computerUse.openPermissionFlow",
+  "onboarding.closeWindow",
+  "onboarding.outputVolume",
+  "onboarding.window",
+  "session.state",
+  "shell.openExternal",
+]);
+const onboardingWindowNativePermissions = [
+  ...new Set(
+    generatedNativeCapabilityManifest
+      .filter(({ id }) => onboardingWindowCapabilityIds.has(id))
       .map(({ permission }) => permission)
   ),
 ];
@@ -521,7 +573,7 @@ export async function createElectronMainContext(
       sideWidth: preferences.notchSideWidth,
       visible: preferences.showInNotch,
     });
-  let statusTrayTasks: StatusTrayRecentTasks | undefined;
+  let statusTrayTasks: StatusTrayInProgressTasks | undefined;
   let statusTrayPreferences: AppPreferences | undefined;
   // Preference and session callbacks can run before the ProductInbox runtime
   // exists; the menu-bar projection starts once it does.
@@ -543,15 +595,25 @@ export async function createElectronMainContext(
   function publishStatusTray() {
     if (!statusTrayTasks || !statusTrayPreferences) return;
     deps.onStatusTrayChanged?.({
-      ...statusTrayAccelerators(statusTrayPreferences, deps.getOperatingSystem()),
-      recentTasks: statusTrayTasks.tasks,
+      ...statusTrayPreferenceContent(statusTrayPreferences, deps.getOperatingSystem()),
+      inProgressTasks: statusTrayTasks.tasks,
     });
   }
+  // The app language is an account setting the renderer stores in client
+  // settings; long-lived Main services read it at each use.
+  let mainLocale: CommaLocale = deps.locale ?? baseLocale;
+  const currentMainLocale = () => mainLocale;
   const appPreferencesService = await AppPreferencesService.open({
     filePath: deps.appPreferencesFilePath,
     onStateChanged: (preferences) => {
+      const preference = preferences.clientSettings?.localePreference;
+      if (preference && preference !== "system" && preference !== mainLocale) {
+        mainLocale = preference;
+        deps.onLocaleChanged?.(preference);
+      }
       nativeEventBus.emit(appPreferencesChangedEvent, preferences);
       applyNotchPreferences(preferences);
+      deps.sideChat.setEnabled(preferences.sideChatEnabled);
       statusTrayPreferences = preferences;
       followStatusTrayTasks();
       publishStatusTray();
@@ -578,6 +640,8 @@ export async function createElectronMainContext(
   });
   // Before any window can write a scene, so a Notch turned off never starts.
   applyNotchPreferences(appPreferencesService.state());
+  // Before the helper starts, so Side Chat turned off never takes the chord.
+  deps.sideChat.setEnabled(appPreferencesService.state().sideChatEnabled);
   // Whether the OS lets Comma notify is read once at open and again around the
   // renderer's own state reads (it already re-reads on window focus for the
   // login item), so a change made in System Settings shows up without new
@@ -596,6 +660,21 @@ export async function createElectronMainContext(
         );
       });
   };
+  // The sleep guard's approval is read back the same way: one local status
+  // read per renderer state read. Returning from Login Items is a window
+  // focus, so an approval given there takes effect without a poll.
+  const refreshKeepAwakeWhenLidClosedStatus = () => {
+    void appPreferencesService
+      .refreshKeepAwakeWhenLidClosedStatus()
+      .catch((error: unknown) => {
+        deps.logger?.warn(
+          `Keep-awake readback failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { source: "app-preferences" }
+        );
+      });
+  };
   const appPreferencesRuntime: AppPreferencesRuntime = {
     close: () => appPreferencesService.close(),
     initializeClientSettings: (settings) =>
@@ -606,8 +685,13 @@ export async function createElectronMainContext(
         openExternalUrl: deps.openExternalUrl,
         os: deps.getOperatingSystem(),
       }),
+    openLoginItemsSettings: async () =>
+      deps.appPreferencesPlatform.openLoginItemsSettings?.() ?? { opened: false },
+    requestNotificationAuthorization: () =>
+      appPreferencesService.requestSystemNotificationsAuthorization(),
     state: () => {
       refreshSystemNotificationsStatus();
+      refreshKeepAwakeWhenLidClosedStatus();
       return appPreferencesService.state();
     },
     update: (patch) => appPreferencesService.update(patch),
@@ -619,7 +703,7 @@ export async function createElectronMainContext(
   const messageNotifications = deps.messageNotificationsPlatform
     ? new MessageNotificationsService({
         emitEvent: (payload) => nativeEventBus.emit(messageNotificationsEvent, payload),
-        ...(deps.locale ? { locale: deps.locale } : {}),
+        locale: currentMainLocale,
         log: {
           warn: (message) =>
             deps.logger?.warn(message, { source: "message-notifications" }),
@@ -644,19 +728,21 @@ export async function createElectronMainContext(
   let clientControlCredentials: { endpoint: string; token: string } | undefined;
   let airdropSender: AirDropSender | undefined;
   const airDropReception = new AirDropReception({
-    locale: deps.locale,
+    locale: currentMainLocale,
     log: { warn: (message) => deps.logger?.warn(message, { source: "airdrop" }) },
     notch: deps.notch,
     platform: deps.airDropPresentation ?? unavailableAirDropPresentation,
     publish: (state) => nativeEventBus.emit(airDropStateChangedEvent, state),
   });
   let publishedSessionGeneration = 0;
+  let computeNodeSession: AccountComputeNodeService | undefined;
 
   const session = new SessionService({
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
     ...(deps.googleAuth ? { googleAuth: deps.googleAuth } : {}),
     onSnapshotChanged: (state) => {
       meetingRecorder?.sessionChanged();
+      computeNodeSession?.sessionChanged(state);
       if (state.generation !== publishedSessionGeneration) {
         publishedSessionGeneration = state.generation;
         chat?.reset();
@@ -803,7 +889,7 @@ export async function createElectronMainContext(
           .scopeSnapshot()
           .scopes.find((scope) => scope.workspaceId === workspaceId)?.deviceId,
       ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      ...(deps.locale ? { locale: deps.locale } : {}),
+      locale: currentMainLocale,
       ...(messageNotifications
         ? {
             onCanonicalMessagesAppended: (input) => {
@@ -868,7 +954,7 @@ export async function createElectronMainContext(
     demand: productInboxDemand,
   });
   statusTrayPreferences = appPreferencesService.state();
-  statusTrayTasks = new StatusTrayRecentTasks({
+  statusTrayTasks = new StatusTrayInProgressTasks({
     onChanged: publishStatusTray,
     subscribe: (lease, listener) => productInboxRuntime.subscribe(lease, listener),
   });
@@ -1068,32 +1154,71 @@ export async function createElectronMainContext(
     .state()
     .then((state) => meetingRecorder?.acceptCapture(state))
     .catch(() => undefined);
-  const workloadObservation = new ComputeWorkloadActivityOwner(
-    session,
-    deps.fetch ?? fetch
-  );
+  const userActivity = deps.userActivity;
+  const activityReporter =
+    userActivity && deps.messageNotificationsPlatform
+      ? startActivityReporter({
+          // Present means a Router reply in Home reaches the person as a
+          // banner or in the open window; otherwise reminders also go to
+          // their Telegram/WeChat chats.
+          canShowHomeReplies: () => {
+            const preferences = appPreferencesService.state();
+            return (
+              userActivity.mainWindowOpen() &&
+              preferences.systemNotifications &&
+              preferences.notifyRouterMessages &&
+              systemNotificationsMayPost(preferences.systemNotificationsStatus)
+            );
+          },
+          fetcher: deps.fetch ?? fetch,
+          session,
+          systemIdleSeconds: userActivity.systemIdleSeconds,
+        })
+      : undefined;
   const installAuthorization = new ComputeNodeInstallAuthorization(
     session,
     deps.fetch ?? fetch
   );
   const hostConfiguration = resolveHostConfiguration(getCommaReleaseConfig().flavor);
-  const computeNode = await ComputeNodeService.open({
-    adapter:
-      deps.computeNodeAdapter ??
-      new AgentVMMCommandAdapter(
-        deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
-        runCommand
-      ),
-    ...(!deps.computeNodeAdapter && !deps.computeNodeLifecyclePath
-      ? { preparation: new AgentVMMHostPreparation(hostConfiguration, runCommand) }
-      : {}),
-    filePath:
-      deps.computeNodeFilePath ??
-      join(dirname(deps.secureSessionFilePath), "compute-node-intent.json"),
-    onStateChanged: (state) => nativeEventBus.emit(computeNodeStateChangedEvent, state),
-    installAuthorization,
-    workloadObservation,
+  const localCompute = new LocalComputeOperator({
+    lifecyclePath: deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
+    journalDirectory: join(
+      dirname(deps.secureSessionFilePath),
+      "local-compute-disposals"
+    ),
+    run: runCommand,
+    ...(deps.confirmLocalDisposal ? { confirm: deps.confirmLocalDisposal } : {}),
   });
+  const computeNode = new AccountComputeNodeService(
+    {
+      adapter:
+        deps.computeNodeAdapter ??
+        new AgentVMMCommandAdapter(
+          deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
+          runCommand,
+          true
+        ),
+      ...(!deps.computeNodeAdapter && !deps.computeNodeLifecyclePath
+        ? { preparation: new AgentVMMHostPreparation(hostConfiguration, runCommand) }
+        : {}),
+      filePath:
+        deps.computeNodeFilePath ??
+        join(dirname(deps.secureSessionFilePath), "compute-node-intent.json"),
+      onStateChanged: (state) =>
+        nativeEventBus.emit(computeNodeStateChangedEvent, state),
+      installAuthorization,
+    },
+    session.state(),
+    localCompute,
+    new LocalHostMaintenance(
+      new AgentVMMHostPreparation(resolveHostConfiguration("prod", {}), runCommand),
+      join(homedir(), "Library", "Application Support", "Agent VMM Maintenance"),
+      runCommand,
+      deps.confirmHostMaintenance,
+      localCompute
+    )
+  );
+  computeNodeSession = computeNode;
   const surfaces = new NativeSurfaceService({
     getNativeInfo: () => nativeInfo.info(),
     getNotchStatus: () => deps.notch.status(),
@@ -1326,6 +1451,7 @@ export async function createElectronMainContext(
       // Modeled in tla/app-preferences/AppPreferences.tla: seal admission and
       // drain every accepted preference mutation before teardown can complete.
       await appPreferences.close();
+      activityReporter?.close();
       await airdrop?.close();
       airDropReception.close();
       await airdropSender?.close();
@@ -1385,6 +1511,9 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
     meetingRecorder: context.meetingRecorder,
     ...(context.runtimeDeps.browserSitePermissionPlatform?.menu
       ? { sitePermissionMenu: context.runtimeDeps.browserSitePermissionPlatform.menu }
+      : {}),
+    ...(context.runtimeDeps.onboardingWindow
+      ? { onboardingWindow: context.runtimeDeps.onboardingWindow }
       : {}),
     chat: createSessionBoundChatProvider(context.chat, context.localFilePicker),
     clipboard: context.clipboard,
@@ -1530,6 +1659,7 @@ function grantsByRole({ isDevelopment }: { isDevelopment: boolean }) {
       "meeting-presence.read",
       "app-preferences.read",
     ],
+    "onboarding-window": onboardingWindowNativePermissions,
     "side-chat-test-window": sideChatTestWindowNativePermissions,
     "side-chat-window": sideChatWindowNativePermissions,
     ...(isDevelopment ? { "dev-workbench": devWorkbenchNativePermissions } : {}),

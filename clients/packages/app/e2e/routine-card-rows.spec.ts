@@ -91,7 +91,10 @@ test("a pre-task row truncates from the end, keeping its verb and chip", async (
       `**/v1/comma/workspaces/${chatSmokeWorkspace.id}/recommendations**`,
       async (route) => {
         if (route.request().method() === "GET") {
-          await route.fulfill({ contentType: "application/json", json: envelope() });
+          const data = envelope();
+          const card = data.snapshot.cards[0]!;
+          card.items.push({ ...card.items[0]!, id: "second-reply" });
+          await route.fulfill({ contentType: "application/json", json: data });
           return;
         }
         await route.continue();
@@ -102,6 +105,15 @@ test("a pre-task row truncates from the end, keeping its verb and chip", async (
 
     const content = page.locator(".comma-recommendation-text-item-content").first();
     await expect(content).toContainText("Reply to");
+
+    const rows = page.locator(".comma-recommendation-text-item");
+    await expect(rows).toHaveCount(2);
+    const rowGap = await rows.evaluateAll(([first, second]) => {
+      return (
+        second!.getBoundingClientRect().top - first!.getBoundingClientRect().bottom
+      );
+    });
+    expect(rowGap).toBeCloseTo(1, 5);
 
     const geometry = await content.evaluate((element) => {
       const spans = Array.from(element.querySelectorAll("p > span"));

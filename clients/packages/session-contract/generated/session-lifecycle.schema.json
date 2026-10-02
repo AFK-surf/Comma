@@ -126,7 +126,13 @@
         "principal": { "type": "null" },
         "reason": {
           "type": "string",
-          "enum": ["no_session", "user_signed_out", "unauthorized", "expired"]
+          "enum": [
+            "no_session",
+            "user_signed_out",
+            "unauthorized",
+            "expired",
+            "guest_handoff"
+          ]
         },
         "session": { "type": "null" }
       },
@@ -200,6 +206,7 @@
           "properties": {
             "displayName": { "type": "string", "minLength": 1, "maxLength": 512 },
             "email": { "type": "string", "minLength": 1, "maxLength": 320 },
+            "kind": { "type": "string", "enum": ["guest", "registered"] },
             "userId": { "type": "string", "minLength": 1, "maxLength": 256 }
           },
           "required": ["email", "userId"],

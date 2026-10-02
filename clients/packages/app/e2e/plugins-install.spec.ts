@@ -286,3 +286,60 @@ test("personal sources name each product and keep MCP grants beside their MCP", 
     await stub.close();
   }
 });
+
+test("a personal source missing a newly required scope asks for a reconnect", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub();
+  await installBrowserTestSession(page, {
+    apiBaseUrl: stub.baseUrl,
+    email: "plugin-scope@comma.local",
+    token: "comma_sess_plugin_scope",
+  });
+  const linear = {
+    ...plugin,
+    installed: true,
+    mcps: [{ id: "mcp1_linear", name: "linear" }],
+  };
+  const reauthorized: unknown[] = [];
+  let widened = false;
+
+  try {
+    await page.route(
+      `**/v1/comma/workspaces/${chatSmokeWorkspace.id}/plugins`,
+      (route) => route.fulfill({ json: { data: [linear] } })
+    );
+    await page.route("**/plugins/linear/personal-sources", (route) =>
+      route.fulfill({
+        json: {
+          pluginId: "linear",
+          sources: [
+            {
+              connectionId: "linear-managed",
+              toolkit: "linear",
+              kind: "managed_oauth",
+              state: widened ? "ready" : "needs_reauthorization",
+              candidates: [],
+            },
+          ],
+        },
+      })
+    );
+    await page.route("**/plugins/linear/reauthorize", async (route) => {
+      reauthorized.push(route.request().postDataJSON());
+      widened = true;
+      await route.fulfill({ json: { authorization: null, plugin: linear } });
+    });
+
+    await page.goto("/#/plugins");
+    await page.getByRole("button", { name: "View Linear plugin details" }).click();
+    await expect(page.getByText("Reconnect to grant new access")).toBeVisible();
+    await page.getByRole("button", { name: "Reconnect Linear", exact: true }).click();
+    await expect
+      .poll(() => reauthorized)
+      .toEqual([{ connection_id: "linear-managed" }]);
+    await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});

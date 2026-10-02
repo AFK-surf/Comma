@@ -1183,6 +1183,46 @@ defmodule CommaWeb.RouterTest do
     assert get_resp_header(fetched, "cache-control") == ["no-store"]
     refute fetched.resp_body =~ "one_time_secret"
     assert fetched_body["operation"]["delivery_target_id"] == session["id"]
+    assert fetched_body["operation"]["work_activity"] == "unknown"
+
+    # A Comma session is valid on the product surface, but never a tenant API key.
+    tenant_response =
+      :get
+      |> conn("/v1/compute-node/work-activity/#{body["operation"]["registration_id"]}")
+      |> put_req_header("authorization", "Bearer #{session["token"]}")
+      |> SalixWeb.Router.call(SalixWeb.Router.init([]))
+
+    assert tenant_response.status == 401
+
+    environment =
+      SalixStore.Repo.get!(SalixStore.Compute.Environment, body["operation"]["environment_id"])
+
+    assert {:ok, _registration} =
+             SalixStore.AgentVMM.create_registration(%{
+               id: body["operation"]["registration_id"],
+               tenant_id: environment.tenant_id,
+               group_id: body["operation"]["group_id"],
+               device_id: "activity-device-#{suffix}",
+               enrollment_token: :crypto.strong_rand_bytes(32)
+             })
+
+    assert {:ok, _binding} =
+             SalixStore.Compute.create_provider_binding(%{
+               id: "activity-binding-#{suffix}",
+               environment_id: environment.id,
+               pool_id: environment.pool_id,
+               provider: "agent_vmm",
+               provider_ref: body["operation"]["registration_id"]
+             })
+
+    activity_response =
+      :get
+      |> conn(path <> "/#{body["operation"]["id"]}")
+      |> put_req_header("authorization", "Bearer #{session["token"]}")
+      |> call()
+      |> expect_json(200)
+
+    assert activity_response["operation"]["work_activity"] == "idle"
 
     other_session =
       :post
@@ -1198,6 +1238,15 @@ defmodule CommaWeb.RouterTest do
       |> call()
 
     assert foreign_retry.status == 404
+
+    foreign_read =
+      :get
+      |> conn(path <> "/#{body["operation"]["id"]}")
+      |> put_req_header("authorization", "Bearer #{other_session["token"]}")
+      |> call()
+
+    assert foreign_read.status == 404
+    refute foreign_read.resp_body =~ "work_activity"
   end
 
   test "restricted ops sessions return a top-level token without an S3 grant wrapper" do
@@ -1809,6 +1858,164 @@ defmodule CommaWeb.RouterTest do
 
     refute second["has_more"]
     assert second["next_cursor"] == nil
+  end
+
+  test "device checks refresh public readiness through the scoped live connector" do
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => "device-probe@example.com"})
+    workspace = create_ready_workspace!(user["id"], "Device checks")
+    other = create_additional_ready_workspace!(user["id"], "Other devices")
+
+    session =
+      :post
+      |> json_conn("/v1/comma/admin/users/#{user["id"]}/sessions", %{})
+      |> admin_auth()
+      |> call()
+      |> expect_json(201)
+
+    outsider = email_login!("device-probe-outsider@example.com")
+    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    :ok = CommaWeb.TestConvergence.workspace!(other["id"])
+
+    {:ok, token} =
+      SalixEnv.ConnectorTokens.create_group_connector_token(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        %{}
+      )
+
+    transport = "device-probe-#{System.unique_integer([:positive])}"
+    now = System.system_time(:millisecond)
+
+    runtime = %{
+      "kind" => "external",
+      "provider" => "codex",
+      "runtime_id" => "runtime",
+      "device_runtime_id" => "device-runtime",
+      "version" => "1.0.0",
+      "version_detected" => true,
+      "auth_ready" => true,
+      "native_server_startable" => true,
+      "ready" => true,
+      "readiness_checked_at" => now - 700_000,
+      "readiness_valid_until" => now - 1,
+      "identity_material" => "/private/codex"
+    }
+
+    {:ok, ^transport, record} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => workspace["salix_tenant_id"],
+          "group_id" => workspace["default_group_id"],
+          "device_id" => token["device_id"],
+          "connector_id" => token["connector_id"],
+          "capabilities" => %{"runtime_probe" => true},
+          "agent_runtimes" => [runtime]
+        },
+        connection_generation: 0,
+        credential_generation: token["credential_generation"],
+        transport_id: transport
+      )
+
+    run_id = record["connector_run_id"]
+    test_pid = self()
+
+    owner =
+      spawn_link(fn ->
+        SalixEnv.Bridge.register_owner(transport)
+        send(test_pid, :probe_owner_ready)
+
+        loop = fn loop ->
+          receive do
+            {:env_rpc, ref, from, message} ->
+              send(test_pid, {:probe_request, message})
+
+              fresh =
+                Map.merge(runtime, %{
+                  "readiness_checked_at" => now,
+                  "readiness_valid_until" => now + 600_000
+                })
+
+              {:ok, _} =
+                SalixEnv.Registry.update_meta(run_id, &Map.put(&1, "agent_runtimes", [fresh]))
+
+              send(from, {:env_rpc_reply, ref, {:ok, %{"runtimes" => [fresh]}}})
+              loop.(loop)
+
+            :stop ->
+              :ok
+          end
+        end
+
+        loop.(loop)
+      end)
+
+    on_exit(fn -> if Process.alive?(owner), do: send(owner, :stop) end)
+    assert_receive :probe_owner_ready
+    path = "/v1/comma/workspaces/#{workspace["id"]}/devices/#{token["device_id"]}"
+    before = :get |> conn(path) |> user_auth(session["token"]) |> call() |> expect_json(200)
+    assert Enum.find(before["device_runtimes"], &(&1["provider"] == "codex"))["status"] == "stale"
+
+    checked =
+      :post
+      |> json_conn(path <> "/probe", %{})
+      |> user_auth(session["token"])
+      |> call()
+      |> expect_json(200)
+
+    assert_receive {:probe_request, %{"method" => "runtime_probe", "params" => %{}}}
+    codex = Enum.find(checked["device_runtimes"], &(&1["provider"] == "codex"))
+    assert codex["status"] == "ready"
+    assert codex["readiness_checked_at"] == div(now, 1000)
+    refute Map.has_key?(codex, "identity_material")
+    refute Map.has_key?(checked, "connector_run_id")
+
+    :post
+    |> json_conn(path <> "/probe", %{})
+    |> user_auth(outsider["token"])
+    |> call()
+    |> expect_json(403)
+
+    :post
+    |> json_conn("/v1/comma/workspaces/#{other["id"]}/devices/#{token["device_id"]}/probe", %{})
+    |> user_auth(session["token"])
+    |> call()
+    |> expect_json(404)
+
+    restricted =
+      :post
+      |> json_conn("/v1/comma/admin/users/#{user["id"]}/sessions", %{
+        "restricted" => true,
+        "workspace_id" => workspace["id"]
+      })
+      |> admin_auth()
+      |> call()
+      |> expect_json(201)
+
+    :post
+    |> json_conn(path <> "/probe", %{})
+    |> user_auth(restricted["token"])
+    |> call()
+    |> expect_json(403)
+
+    {:ok, _} = SalixEnv.Registry.update_meta(run_id, &Map.put(&1, "scope", "local_file_read"))
+
+    :post
+    |> json_conn(path <> "/probe", %{})
+    |> user_auth(session["token"])
+    |> call()
+    |> expect_json(403)
+
+    {:ok, _} = SalixEnv.Registry.update_meta(run_id, &Map.delete(&1, "scope"))
+    {:ok, _} = SalixEnv.Registry.mark_disconnected(run_id)
+
+    :post
+    |> json_conn(path <> "/probe", %{})
+    |> user_auth(session["token"])
+    |> call()
+    |> expect_json(503)
+
+    refute_receive {:probe_request, _}
   end
 
   test "a device can be read and deleted before its first Connector connection" do
@@ -4352,7 +4559,11 @@ defmodule CommaWeb.RouterTest do
       result =
         case command["op"] do
           "/oauth/begin" ->
-            %{"url" => "https://example.com/authorize", "state" => command["body"]["state"]}
+            %{
+              "provider" => command["body"]["provider"],
+              "url" => "https://example.com/authorize",
+              "state" => command["body"]["state"]
+            }
 
           "/models" ->
             %{
@@ -4368,6 +4579,33 @@ defmodule CommaWeb.RouterTest do
 
           "/quota/reset" ->
             %{"code" => "reset", "windows_reset" => 2}
+
+          "/oauth/device/begin" ->
+            # A zero interval lets the first completion request poll immediately.
+            %{
+              "provider" => command["body"]["provider"],
+              "mode" => "device",
+              "device_auth_id" => "private-device-secret",
+              "user_code" => "USER-CODE",
+              "interval" => 0,
+              "url" => "https://example.com/device",
+              "context" => %{"device_id" => "device-secret"}
+            }
+
+          "/oauth/device/poll" ->
+            if command["body"]["device_auth_id"] == "private-device-secret" and
+                 command["body"]["context"] == %{"device_id" => "device-secret"},
+               do: %{
+                 "email" => "subscriber@example.com",
+                 "credentials" => %{
+                   "access_token" => "subscription-secret",
+                   "refresh_token" => "refresh-secret"
+                 }
+               },
+               else: %{"status" => "pending"}
+
+          "/v1/" <> _ = op ->
+            %{"op" => op, "provider" => command["credential"]["provider"]}
 
           "/quota" ->
             %{
@@ -4400,6 +4638,121 @@ defmodule CommaWeb.RouterTest do
     end
 
     def handle_cast(_, state), do: {:noreply, state}
+  end
+
+  @tag :subscriptions
+  test "new subscription providers sign in through workspace endpoints and receive pooled requests" do
+    quota_worker = Process.whereis(SalixAgent.SubscriptionQuotaWorker)
+    if quota_worker, do: :sys.suspend(quota_worker)
+
+    on_exit(fn ->
+      if quota_worker && Process.alive?(quota_worker), do: :sys.resume(quota_worker)
+    end)
+
+    previous = Application.get_env(:salix_agent, :subscription_worker)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:salix_agent, :subscription_worker, previous),
+        else: Application.delete_env(:salix_agent, :subscription_worker)
+    end)
+
+    Application.put_env(
+      :salix_agent,
+      :subscription_worker,
+      start_supervised!(SubscriptionWorkerStub)
+    )
+
+    login = email_login!("subscription-providers@example.com")
+    workspace = create_ready_workspace!(login["user"])
+    token = login["token"]
+    path = "/v1/comma/workspaces/#{workspace["id"]}/subscription-accounts"
+    template_path = "/v1/comma/workspaces/#{workspace["id"]}/model-templates"
+
+    for {provider, mode, protocol, op} <- [
+          {"gemini", nil, "chat_completions", "/v1/chat/completions"},
+          {"grok", "device", "responses", "/v1/responses"},
+          {"kimi-code", "device", "anthropic", "/v1/messages"},
+          {"github-copilot", "device", "chat_completions", "/v1/chat/completions"}
+        ] do
+      attempt =
+        :post
+        |> json_conn("#{path}/oauth", %{"provider" => provider})
+        |> user_auth(token)
+        |> call()
+        |> expect_json(200)
+
+      # The browser sees only the user-facing code and link, never the device secret.
+      assert attempt["mode"] == mode
+      assert attempt["url"] =~ "https://example.com/"
+      refute Jason.encode!(attempt) =~ "secret"
+
+      # Device-only providers reject a callback sign-in instead of starting one.
+      if mode == "device" do
+        :post
+        |> json_conn("#{path}/oauth", %{"provider" => provider, "mode" => "callback"})
+        |> user_auth(token)
+        |> call()
+        |> expect_json(400)
+      end
+
+      account =
+        :post
+        |> json_conn("#{path}/oauth/#{attempt["id"]}", %{
+          "code" => if(mode == "device", do: "", else: "browser-code")
+        })
+        |> user_auth(token)
+        |> call()
+        |> expect_json(200)
+
+      assert account["provider"] == provider
+      assert account["email"] == "subscriber@example.com"
+      refute Jason.encode!(account) =~ "secret"
+
+      template =
+        :post
+        |> json_conn(template_path, %{
+          "name" => "#{provider} pool",
+          "model" => "#{provider}-model",
+          "provider" => "subscription",
+          "account_pool" => provider
+        })
+        |> user_auth(token)
+        |> call()
+        |> expect_json(201)
+
+      assert template["protocol"] == protocol
+
+      :put
+      |> json_conn("/v1/comma/workspaces/#{workspace["id"]}/agent-models/router", %{
+        "template_id" => template["template_id"]
+      })
+      |> user_auth(token)
+      |> call()
+      |> expect_json(200)
+
+      assert {:ok, config} =
+               SalixAgent.Templates.resolve_llm_for_agent(workspace["router_agent_id"])
+
+      assert SalixAgent.AccountPool.owns_route?(config)
+      assert config["protocol"] == protocol
+
+      # Dispatch selects this provider's account and sends the protocol path to the worker.
+      result =
+        SalixAgent.AccountPool.dispatch(config, fn resolved ->
+          url = resolved["base_url"] <> String.replace_prefix(op, "/v1", "")
+
+          url =
+            if protocol == "anthropic", do: resolved["base_url"] <> op, else: url
+
+          {:ok, response} =
+            resolved["transport"].(url, json: %{"model" => config["model"], "stream" => false})
+
+          {:final, Jason.decode!(response.body), %{}}
+        end)
+
+      assert {:final, %{"op" => ^op, "provider" => ^provider}, _} = result
+    end
   end
 
   @tag :subscription_discovery
@@ -4730,6 +5083,100 @@ defmodule CommaWeb.RouterTest do
   end
 
   @tag :subscriptions
+  test "workspace owners add, rename, rekey and disable API-key Profiles for a catalog source" do
+    quota_worker = Process.whereis(SalixAgent.SubscriptionQuotaWorker)
+    if quota_worker, do: :sys.suspend(quota_worker)
+
+    on_exit(fn ->
+      if quota_worker && Process.alive?(quota_worker), do: :sys.resume(quota_worker)
+    end)
+
+    login = email_login!("api-key-profiles@example.com")
+    workspace = create_ready_workspace!(login["user"])
+    token = login["token"]
+    path = "/v1/comma/workspaces/#{workspace["id"]}/subscription-accounts"
+
+    send_json = fn method, url, body ->
+      method |> json_conn(url, body) |> user_auth(token) |> call()
+    end
+
+    profile =
+      send_json.(:post, path, %{
+        "credential_kind" => "provider_api_key",
+        "source" => "openrouter",
+        "api_key" => "sk-or-v1-secret-0123456789"
+      })
+      |> expect_json(200)
+
+    assert %{"source" => "openrouter", "status" => "active", "key_hint" => "…6789"} = profile
+    refute Jason.encode!(profile) =~ "secret"
+
+    listed =
+      :get |> conn("#{path}?view=profiles") |> user_auth(token) |> call() |> expect_json(200)
+
+    assert [%{"name" => "OpenRouter API Key"}] = listed["accounts"]
+
+    # Apps released before Profiles parse only Codex and Claude subscriptions;
+    # without the view they get no other account.
+    legacy = :get |> conn(path) |> user_auth(token) |> call() |> expect_json(200)
+    assert %{"accounts" => [], "next" => ""} = legacy
+
+    renamed =
+      send_json.(:patch, "#{path}/#{profile["id"]}", %{
+        "name" => "Team",
+        "version" => profile["version"]
+      })
+      |> expect_json(200)
+
+    rekeyed =
+      send_json.(:patch, "#{path}/#{profile["id"]}", %{
+        "api_key" => "sk-or-v1-other-9999999999",
+        "version" => renamed["version"]
+      })
+      |> expect_json(200)
+
+    assert %{"name" => "Team", "key_hint" => "…9999"} = rekeyed
+
+    disabled =
+      send_json.(:patch, "#{path}/#{profile["id"]}", %{
+        "disabled" => true,
+        "version" => rekeyed["version"]
+      })
+      |> expect_json(200)
+
+    assert disabled["disabled"]
+
+    send_json.(:post, path, %{
+      "credential_kind" => "provider_api_key",
+      "source" => "codex",
+      "api_key" => "sk-not-a-key-source"
+    })
+    |> expect_json(400)
+
+    # A Custom endpoint may have no key; its hint is then null. A catalog
+    # source still needs one.
+    keyless =
+      send_json.(:post, path, %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "base_url" => "https://ollama.example.test",
+        "protocol" => "chat_completions",
+        "models" => ["llama3.2:3b"]
+      })
+      |> expect_json(200)
+
+    assert %{"source" => "custom", "key_hint" => nil, "models" => ["llama3.2:3b"]} = keyless
+    assert Map.has_key?(keyless, "key_hint")
+
+    send_json.(:post, path, %{
+      "credential_kind" => "provider_api_key",
+      "source" => "openrouter",
+      "api_key" => ""
+    })
+    |> expect_json(400)
+  end
+
+  @tag :subscriptions
   test "workspace owners manage subscriptions and assign pool templates without exposing credentials" do
     # This test owns account versions through explicit HTTP mutations. The
     # background quota poller also changes them, so keep that independent
@@ -5036,6 +5483,90 @@ defmodule CommaWeb.RouterTest do
   end
 
   @tag :byok
+  test "Agents choose a catalog model and effort or the built-in model, and can be renamed" do
+    login = email_login!("catalog-agent-models@example.com")
+    token = login["token"]
+    workspace = create_ready_workspace!(login["user"])
+    base = "/v1/comma/workspaces/#{workspace["id"]}"
+    models = fn -> :get |> conn(base <> "/agent-models") |> user_auth(token) |> call() end
+
+    router = models.() |> expect_json(200) |> get_in(["agents", "router"])
+    assert router["selection"] == %{"kind" => "builtin"}
+    choose = base <> "/agents/#{router["agent_id"]}/model"
+
+    selection = %{
+      "kind" => "catalog",
+      "model" => "gpt-5.5",
+      "reasoning_effort" => "high",
+      "allow_paid" => false
+    }
+
+    chosen =
+      :put
+      |> json_conn(choose, %{"selection" => selection})
+      |> user_auth(token)
+      |> call()
+      |> expect_json(200)
+
+    assert chosen["selection"] == Map.put(selection, "profile_id", nil)
+    assert chosen["model_display_name"] == "GPT-5.5"
+
+    again =
+      :put
+      |> json_conn(choose, %{"selection" => selection})
+      |> user_auth(token)
+      |> call()
+      |> expect_json(200)
+
+    assert again["template_id"] == chosen["template_id"]
+
+    assert get_in(expect_json(models.(), 200), ["agents", "router", "selection"]) ==
+             Map.put(selection, "profile_id", nil)
+
+    for bad <- [
+          %{selection | "model" => "no-such-model"},
+          %{selection | "reasoning_effort" => "ultra"},
+          Map.delete(selection, "allow_paid")
+        ] do
+      :put
+      |> json_conn(choose, %{"selection" => bad})
+      |> user_auth(token)
+      |> call()
+      |> expect_json(400)
+    end
+
+    builtin =
+      :put
+      |> json_conn(choose, %{"selection" => %{"kind" => "builtin"}})
+      |> user_auth(token)
+      |> call()
+      |> expect_json(200)
+
+    assert builtin["selection"] == %{"kind" => "builtin"}
+
+    # The choice no Agent uses any more does not keep a template slot.
+    assert {:error, :not_found} =
+             SalixAgent.Templates.get(chosen["template_id"], workspace["salix_tenant_id"])
+
+    rename = base <> "/agents/#{router["agent_id"]}"
+
+    assert %{"name" => "Dispatcher"} =
+             :patch
+             |> json_conn(rename, %{"name" => "  Dispatcher "})
+             |> user_auth(token)
+             |> call()
+             |> expect_json(200)
+
+    assert get_in(expect_json(models.(), 200), ["agents", "router", "name"]) == "Dispatcher"
+
+    :patch
+    |> json_conn(rename, %{"name" => " "})
+    |> user_auth(token)
+    |> call()
+    |> expect_json(400)
+  end
+
+  @tag :byok
   test "Worker model settings report runtime choices and reject ineffective template writes" do
     login = email_login!("runtime-worker-models@example.com")
     token = login["token"]
@@ -5119,10 +5650,12 @@ defmodule CommaWeb.RouterTest do
     assert by_id[configured["agent_id"]]["reasoning_effort"] == "high"
     assert by_id[explicit["agent_id"]]["model"] == "gpt-compute"
     assert by_id[explicit["agent_id"]]["runtime"]["kind"] == "compute"
-    assert by_id[inherited["agent_id"]]["source"] in ~w(pinned platform_default)
-
-    assert by_id[inherited["agent_id"]]["template_id"] ==
-             models["platform_defaults"]["worker"]["template_id"]
+    # Without a chosen model, Codex runs its own default, not Comma's.
+    assert Map.take(by_id[inherited["agent_id"]], ~w(source model selection)) == %{
+             "source" => "runtime_default",
+             "model" => nil,
+             "selection" => %{"kind" => "builtin"}
+           }
 
     for agent <- [connected, configured, explicit] do
       :put
@@ -5135,6 +5668,231 @@ defmodule CommaWeb.RouterTest do
       assert unchanged["template_id"] == agent["template_id"]
       assert unchanged["runtime_config"] == agent["runtime_config"]
     end
+  end
+
+  @tag :byok
+  test "compute Workers choose a model and effort their runtime can run" do
+    login = email_login!("compute-runtime-models@example.com")
+    token = login["token"]
+    workspace = create_ready_workspace!(login["user"])
+    tenant = workspace["salix_tenant_id"]
+    group = workspace["default_group_id"]
+    base = "/v1/comma/workspaces/#{workspace["id"]}"
+
+    compute = fn name, spec ->
+      {:ok, agent} =
+        SalixAgent.Control.create_preallocated(
+          %{
+            "group_id" => group,
+            "role" => "worker",
+            "name" => name,
+            "runtime_config" => %{
+              "kind" => "compute_workload",
+              "workload_id" => "runtime-model-workload",
+              "runtime_spec" => spec
+            }
+          },
+          tenant,
+          SalixStore.Ids.new_agent_id(group)
+        )
+
+      agent
+    end
+
+    codex = compute.("Codex VM", %{"provider" => "codex"})
+    pi = compute.("Pi VM", %{"provider" => "pi"})
+
+    # Dispatch lets any of these binding fields win over the Agent's template.
+    pinned =
+      for {field, value} <- [
+            {"model", "gpt-5.4"},
+            {"reasoning_effort", "low"},
+            {"model_provider", "openai"}
+          ] do
+        compute.("Pinned #{field}", %{"provider" => "codex", field => value})
+      end
+
+    {:ok, connected} =
+      SalixAgent.Control.create(
+        %{
+          "group_id" => group,
+          "role" => "worker",
+          "name" => "Connected Codex",
+          "runtime_config" => %{
+            "kind" => "external",
+            "provider" => "codex",
+            "device_id" => "runtime-model-device",
+            "runtime_id" => "runtime-model-codex",
+            "device_runtime_id" =>
+              SalixStore.RuntimeIds.device_runtime_id(
+                "runtime-model-device",
+                "codex",
+                "runtime-model-codex"
+              )
+          }
+        },
+        tenant
+      )
+
+    choose = fn agent, selection ->
+      :put
+      |> json_conn(base <> "/agents/#{agent["agent_id"]}/model", %{"selection" => selection})
+      |> user_auth(token)
+      |> call()
+    end
+
+    workers = fn ->
+      :get
+      |> conn(base <> "/agent-models")
+      |> user_auth(token)
+      |> call()
+      |> expect_json(200)
+      |> get_in(["workers", "items"])
+      |> Map.new(&{&1["agent_id"], &1})
+    end
+
+    # Before a choice the compute Worker runs the runtime's own default model.
+    runtime_default = %{
+      "source" => "runtime_default",
+      "model" => nil,
+      "reasoning_effort" => nil,
+      "selection" => %{"kind" => "builtin"},
+      "runtime" => %{"kind" => "compute", "provider" => "codex"}
+    }
+
+    assert Map.take(workers.()[codex["agent_id"]], Map.keys(runtime_default)) == runtime_default
+
+    selection = %{"kind" => "runtime", "model" => "gpt-5.5", "reasoning_effort" => "high"}
+    chosen = codex |> choose.(selection) |> expect_json(200)
+
+    assert chosen["selection"] == selection
+    assert chosen["runtime"] == %{"kind" => "compute", "provider" => "codex"}
+    assert {chosen["model"], chosen["reasoning_effort"]} == {"gpt-5.5", "high"}
+
+    listed = workers.()[codex["agent_id"]]
+    assert listed["selection"] == selection
+    assert listed["runtime"] == %{"kind" => "compute", "provider" => "codex"}
+
+    # The same choice reuses its template; the binding itself is unchanged.
+    again = codex |> choose.(selection) |> expect_json(200)
+    assert again["template_id"] == chosen["template_id"]
+    {:ok, stored} = SalixAgent.Control.get(codex["agent_id"], tenant)
+    assert stored["template_id"] == chosen["template_id"]
+    assert stored["runtime_config"] == codex["runtime_config"]
+
+    # A runtime choice is not a model other Agents can pick by template id.
+    models = :get |> conn(base <> "/agent-models") |> user_auth(token) |> call()
+
+    refute Enum.any?(
+             expect_json(models, 200)["available_models"],
+             &(&1["template_id"] == chosen["template_id"])
+           )
+
+    :put
+    |> json_conn(base <> "/agent-models/" <> workspace["default_worker_agent_id"], %{
+      "template_id" => chosen["template_id"]
+    })
+    |> user_auth(token)
+    |> call()
+    |> expect_json(400)
+
+    # Codex runs only its own models: no Comma catalog model or template id.
+    codex
+    |> choose.(%{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false})
+    |> expect_json(400)
+
+    {:ok, other_template} =
+      SalixAgent.Templates.create(%{"name" => "Comma model", "model" => "gpt-comma"})
+
+    :put
+    |> json_conn(base <> "/agent-models/" <> codex["agent_id"], %{
+      "template_id" => other_template["template_id"]
+    })
+    |> user_auth(token)
+    |> call()
+    |> expect_json(400)
+
+    {:ok, still} = SalixAgent.Control.get(codex["agent_id"], tenant)
+    assert still["template_id"] == chosen["template_id"]
+
+    # Codex runs only Codex models and the model's own efforts.
+    for bad <- [
+          %{selection | "model" => "claude-opus-5"},
+          %{selection | "reasoning_effort" => "ultra"},
+          Map.put(selection, "allow_paid", true)
+        ] do
+      codex |> choose.(bad) |> expect_json(400)
+    end
+
+    # Other Workers keep their own model source.
+    for agent <- [connected, %{"agent_id" => workspace["default_worker_agent_id"]}] do
+      agent |> choose.(selection) |> expect_json(400)
+    end
+
+    listed = workers.()
+
+    for agent <- pinned do
+      assert %{"error" => "runtime_model_pinned"} =
+               agent |> choose.(selection) |> expect_json(409)
+
+      agent |> choose.(%{"kind" => "builtin"}) |> expect_json(400)
+
+      # The page shows the binding's values as read-only, not a template choice.
+      refute Map.has_key?(listed[agent["agent_id"]], "selection")
+      assert listed[agent["agent_id"]]["runtime"] == %{"kind" => "compute", "provider" => "codex"}
+
+      {:ok, unchanged} = SalixAgent.Control.get(agent["agent_id"], tenant)
+      assert unchanged["runtime_config"] == agent["runtime_config"]
+      assert unchanged["template_id"] == agent["template_id"]
+    end
+
+    assert listed[Enum.at(pinned, 1)["agent_id"]]["reasoning_effort"] == "low"
+
+    # Pi keeps the catalog and built-in choices; it has no runtime choice and
+    # follows Comma's default model.
+    assert listed[pi["agent_id"]]["runtime"] == %{"kind" => "compute", "provider" => "pi"}
+    assert listed[pi["agent_id"]]["source"] in ~w(pinned platform_default)
+    assert is_binary(listed[pi["agent_id"]]["model"])
+    pi |> choose.(selection) |> expect_json(400)
+
+    catalog = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+    pi_choice = pi |> choose.(catalog) |> expect_json(200)
+    assert pi_choice["selection"]["kind"] == "catalog"
+
+    # A choice made for another runtime (as after a rebind) is not sent, so the
+    # page shows the runtime default.
+    {:ok, claude_choice} =
+      SalixAgent.Templates.resolve_private_runtime("claude", "claude-opus-5", "high", tenant)
+
+    stale = compute.("Rebound Codex VM", %{"provider" => "codex"})
+
+    {:ok, _} =
+      SalixAgent.Control.configure(
+        stale["agent_id"],
+        %{"template_id" => claude_choice["template_id"]},
+        tenant
+      )
+
+    assert Map.take(workers.()[stale["agent_id"]], Map.keys(runtime_default)) ==
+             runtime_default
+
+    # A plain template (such as a copied creation default) is not sent either.
+    plain = compute.("Codex VM with a Comma template", %{"provider" => "codex"})
+
+    {:ok, _} =
+      SalixAgent.Control.configure(
+        plain["agent_id"],
+        %{"template_id" => other_template["template_id"]},
+        tenant
+      )
+
+    assert Map.take(workers.()[plain["agent_id"]], Map.keys(runtime_default)) ==
+             runtime_default
+
+    # Returning to the default releases the unused runtime choice.
+    builtin = codex |> choose.(%{"kind" => "builtin"}) |> expect_json(200)
+    assert Map.take(builtin, Map.keys(runtime_default)) == runtime_default
+    assert {:error, :not_found} = SalixAgent.Templates.get(chosen["template_id"], tenant)
   end
 
   @tag :byok
@@ -5833,6 +6591,196 @@ defmodule CommaWeb.RouterTest do
     |> user_auth(user_token)
     |> call()
     |> expect_json(403)
+  end
+
+  test "guest mode: admin enables it, guests reach only their Router chat, and sign-up redeems the claim" do
+    {admin_session, admin_token} = browser_cookie_login!("guest-admin@comma.surf", @admin_origin)
+
+    admin = fn conn ->
+      cookie_auth(conn, admin_token, @admin_origin, admin_session["session_id"])
+    end
+
+    # The web asks with its signed-out lifecycle headers, as a browser sends them.
+    guest_status = fn ->
+      :get
+      |> conn("/v1/comma/auth/guest")
+      |> web_cookie_request(@web_origin, :none)
+      |> raw_call()
+    end
+
+    assert %{"enabled" => false} = guest_status.() |> expect_json(200)
+
+    web_guest = fn body ->
+      :post
+      |> json_conn("/v1/comma/auth/guest", body)
+      |> web_cookie_request(@web_origin, :none)
+      |> call()
+    end
+
+    assert %{"error" => "guest_mode_disabled"} = %{} |> web_guest.() |> expect_json(404)
+
+    policy = :get |> conn("/v1/comma/admin/guest-mode") |> admin.() |> call() |> expect_json(200)
+
+    command = fn attrs, key, confirmation ->
+      Map.merge(attrs, %{
+        "reason" => "Open guest mode",
+        "idempotency_key" => key,
+        "confirmation" => confirmation
+      })
+    end
+
+    policy =
+      :post
+      |> json_conn(
+        "/v1/comma/admin/guest-mode/tenant",
+        command.(
+          %{"revision" => policy["revision"]},
+          "guest-tenant-1",
+          "create-guest-tenant:comma"
+        )
+      )
+      |> admin.()
+      |> call()
+      |> expect_json(200)
+
+    assert is_binary(policy["salix_tenant_id"])
+
+    assert %{"enabled" => true} =
+             :put
+             |> json_conn(
+               "/v1/comma/admin/guest-mode",
+               command.(
+                 %{"enabled" => true, "revision" => policy["revision"]},
+                 "guest-enable-1",
+                 "update-guest-policy:comma"
+               )
+             )
+             |> admin.()
+             |> call()
+             |> expect_json(200)
+
+    assert %{"enabled" => true, "pow" => %{"difficulty" => 12}} =
+             guest_status.() |> expect_json(200)
+
+    assert %{"error" => "guest_pow_invalid"} =
+             %{"client_kind" => "web"} |> web_guest.() |> expect_json(400)
+
+    # Guest mode is web-only: a bearer client still needs to sign in.
+    assert %{"error" => "guest_web_only"} =
+             :post
+             |> json_conn("/v1/comma/auth/guest", %{
+               "client_kind" => "electron",
+               "pow" => solved_guest_pow!()
+             })
+             |> call()
+             |> expect_json(403)
+
+    guest_conn = web_guest.(%{"client_kind" => "web", "pow" => solved_guest_pow!()})
+    guest_session = expect_json(guest_conn, 200)
+    refute Map.has_key?(guest_session, "token")
+    assert %{"kind" => "guest"} = guest_session["user"]
+    guest_cookie = guest_conn.resp_cookies[CommaWeb.SessionCookie.cookie_name()].value
+
+    as_guest = fn conn ->
+      cookie_auth(conn, guest_cookie, @web_origin, guest_session["session_id"])
+    end
+
+    assert %{"user" => %{"kind" => "guest"}} =
+             :get |> conn("/v1/comma/auth/session") |> as_guest.() |> call() |> expect_json(200)
+
+    for {method, path} <- [
+          {:get, "/v1/comma/auth/sessions"},
+          {:get, "/v1/comma/billing/summary"},
+          {:post, "/v1/comma/guest-imports"}
+        ] do
+      assert %{"error" => "guest_signup_required"} =
+               method |> json_conn(path, %{}) |> as_guest.() |> call() |> expect_json(403)
+    end
+
+    bootstrap = :post |> json_conn("/v1/comma/me/bootstrap", %{}) |> as_guest.() |> call()
+    assert bootstrap.status in [200, 202]
+
+    # The claim stays in an HttpOnly Cookie; the response never carries it.
+    handoff_conn =
+      :post |> json_conn("/v1/comma/auth/guest/handoff", %{}) |> as_guest.() |> call()
+
+    refute Map.has_key?(expect_json(handoff_conn, 200), "claim")
+    claim_cookie = handoff_conn.resp_cookies["comma_guest_claim"]
+    assert claim_cookie.http_only == true
+    assert claim_cookie.path == "/v1/comma"
+
+    :get |> conn("/v1/comma/auth/session") |> as_guest.() |> call() |> expect_json(401)
+
+    # A bearer account cannot redeem a claim, even one it learned some other way.
+    account = email_login!("guest-signup-#{System.unique_integer([:positive])}@example.com")
+
+    assert %{"error" => "guest_claim_invalid"} =
+             :post
+             |> json_conn("/v1/comma/guest-imports", %{"claim" => claim_cookie.value})
+             |> user_auth(account["token"])
+             |> call()
+             |> expect_json(404)
+
+    {web_session, web_token} =
+      browser_cookie_login!(
+        "guest-web-#{System.unique_integer([:positive])}@example.com",
+        @web_origin
+      )
+
+    assert %{"error" => "guest_only"} =
+             :post
+             |> json_conn("/v1/comma/auth/guest/handoff", %{})
+             |> cookie_auth(web_token, @web_origin, web_session["session_id"])
+             |> call()
+             |> expect_json(403)
+
+    redeem = fn ->
+      :post
+      |> json_conn("/v1/comma/guest-imports", %{})
+      |> put_req_header(
+        "cookie",
+        "#{CommaWeb.SessionCookie.cookie_name()}=#{web_token}; comma_guest_claim=#{claim_cookie.value}"
+      )
+      |> web_cookie_request(@web_origin, web_session["session_id"])
+      |> call()
+    end
+
+    # A transient failure keeps the claim Cookie, so a later attempt can retry.
+    # Here a conflicting import Operation makes the redemption fail.
+    guest_id = guest_session["user"]["id"]
+
+    conflict =
+      Repo.insert!(%Comma.Data.ExternalOperation{
+        operation_id: "gim_conflict_#{System.unique_integer([:positive])}",
+        operation_type: "guest_import",
+        owner_type: "comma_user",
+        owner_id: guest_id,
+        generation: 1,
+        status: "pending",
+        attempt: 0,
+        external_idempotency_key: "guest-import-fault:#{guest_id}",
+        metadata: %{}
+      })
+
+    failed_conn = redeem.()
+    assert %{"error" => "guest_mode_unavailable"} = expect_json(failed_conn, 503)
+    refute Map.has_key?(failed_conn.resp_cookies, "comma_guest_claim")
+
+    Repo.delete!(conflict)
+
+    redeem_conn = redeem.()
+    assert %{"import_id" => import_id, "status" => "pending"} = expect_json(redeem_conn, 202)
+    assert redeem_conn.resp_cookies["comma_guest_claim"].max_age == 0
+
+    # A repeated redemption returns the same import.
+    assert %{"import_id" => ^import_id} = redeem.() |> expect_json(202)
+
+    assert %{"import_id" => ^import_id} =
+             :get
+             |> conn("/v1/comma/guest-imports/#{import_id}")
+             |> cookie_auth(web_token, @web_origin, web_session["session_id"])
+             |> call()
+             |> expect_json(200)
   end
 
   test "Admin free Router policy exempts only main calls and preserves an admitted decision" do
@@ -7793,6 +8741,45 @@ defmodule CommaWeb.RouterTest do
            }
   end
 
+  @tag database_isolation: "SERIALIZABLE"
+  test "Android Google completion verifies the Credential Manager ID token and issues a bearer session" do
+    attempt =
+      :post
+      |> json_conn("/v1/comma/auth/google/attempt", %{"platform" => "android"})
+      |> call()
+      |> expect_json(200)
+
+    assert attempt["platform"] == "android"
+    assert attempt["client_id"] == "comma-web-test.apps.googleusercontent.com"
+
+    credential = "router-android-id-token"
+
+    put_google_credential!(credential, attempt, %{
+      "sub" => "router-android-google-subject",
+      "email" => "router-android@gmail.com",
+      "azp" => "comma-android-test.apps.googleusercontent.com"
+    })
+
+    session =
+      :post
+      |> json_conn("/v1/comma/auth/google", %{
+        "attempt_id" => attempt["attempt_id"],
+        "nonce" => attempt["nonce"],
+        "credential" => credential,
+        "client_kind" => "android",
+        "client_platform" => "android"
+      })
+      |> call()
+      |> expect_json(200)
+
+    assert "comma_sess_" <> _ = session["token"]
+    assert session["user"]["email"] == "router-android@gmail.com"
+
+    stored = Repo.get!(AuthSession, session["session_id"])
+    assert stored.client_kind == "android"
+    assert stored.device_label == "Comma Android app"
+  end
+
   test "Electron Google completion rejects non-loopback redirects before consuming the attempt" do
     Application.put_env(:comma_core, :google_adapter_fake_exchange_pid, self())
 
@@ -8408,6 +9395,23 @@ defmodule CommaWeb.RouterTest do
     end
   end
 
+  test "the model catalog gives signed-in users each source's request id" do
+    conn(:get, "/v1/comma/model-catalog") |> call() |> expect_json(401)
+
+    login = email_login!("model-catalog@example.com")
+
+    catalog =
+      conn(:get, "/v1/comma/model-catalog")
+      |> user_auth(login["token"])
+      |> call()
+      |> expect_json(200)
+
+    gpt = Enum.find(catalog["models"], &(&1["id"] == "gpt-5.5"))
+    assert gpt["routes"]["openai"]["model"] == "gpt-5.5"
+    assert gpt["routes"]["openrouter"]["model"] == "openai/gpt-5.5"
+    assert catalog["sources"]["codex"]["kind"] == "subscription"
+  end
+
   defp json_conn(method, path, body) do
     conn(method, path, Jason.encode!(body))
     |> put_req_header("content-type", "application/json")
@@ -8562,6 +9566,21 @@ defmodule CommaWeb.RouterTest do
     assert "comma_sess_" <> _ = cookie.value
 
     {session, cookie.value}
+  end
+
+  defp solved_guest_pow! do
+    %{"pow" => %{"challenge" => challenge, "difficulty" => difficulty}} =
+      :get |> conn("/v1/comma/auth/guest") |> call() |> expect_json(200)
+
+    nonce =
+      Stream.iterate(0, &(&1 + 1))
+      |> Stream.map(&Integer.to_string/1)
+      |> Enum.find(fn nonce ->
+        :crypto.hash(:sha256, challenge <> ":" <> nonce)
+        |> Comma.GuestPow.leading_zero_bits() >= difficulty
+      end)
+
+    %{"challenge" => challenge, "nonce" => nonce}
   end
 
   defp expect_json(conn, status) do

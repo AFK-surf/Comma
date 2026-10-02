@@ -8,6 +8,7 @@ import {
   packagedComputerUseAppPath,
   packagedNotchHostPath,
   packagedSideChatHostAppPath,
+  packagedSleepGuardPath,
 } from "./native-paths";
 
 const appDir = resolve(import.meta.dirname, "..");
@@ -118,14 +119,16 @@ async function main() {
   const notchHost = packagedNotchHostPath(app);
   const computerUseHelper = packagedComputerUseAppPath(app, forgePlatform, forgeArch);
   const sideChatHelper = packagedSideChatHostAppPath(app);
-  const binaries = existsSync(notchHost) ? [notchHost] : [];
+  const binaries = [notchHost, packagedSleepGuardPath(app)].filter((path) =>
+    existsSync(path)
+  );
 
   signNestedHelperApp(computerUseHelper, identity, keychain);
   signNestedHelperApp(sideChatHelper, identity, keychain);
 
   console.log(`Signing ${app}`);
-  if (binaries.length > 0) {
-    console.log(`Signing extra binary: ${basename(notchHost)}`);
+  for (const binary of binaries) {
+    console.log(`Signing extra binary: ${basename(binary)}`);
   }
 
   await sign({

@@ -51,7 +51,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import type { CommaApiClient, CommaChatSuggestion, CommaSkill } from "../../../api";
+import type { CommaApiClient, CommaSkill } from "../../../api";
 import { createConversationAnalytics } from "../../../analytics/experience";
 import { beginCommaMessageSend } from "../../../analytics/client";
 import { ParticipantStatusSlot } from "../thread/activity/ActivityLine";
@@ -111,8 +111,6 @@ import {
   isTranscodedImageAttachment,
 } from "../model/protocol";
 import { useComposerMentionSources } from "../composer/useComposerMentionSources";
-import { ChatSuggestionChips } from "../suggestions/ChatSuggestionChips";
-import { useChatSuggestions } from "../suggestions/useChatSuggestions";
 import { conversationMessageTurnKey } from "../model/visibleReplyPresentation";
 import { useMarkLoadedTaskReviewSeen } from "../tasks/useMarkLoadedTaskReviewSeen";
 
@@ -149,6 +147,8 @@ export type ConversationViewActions = {
 export type ConversationComposerPresentation = {
   disabled?: boolean | undefined;
   feedback?: ReactNode;
+  /** Each new value focuses the composer's prompt. */
+  focusRequest?: number | undefined;
   placeholder?: string | undefined;
   submitDisabled?: boolean | undefined;
 };
@@ -434,6 +434,13 @@ export const ConversationView = memo(function ConversationView({
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  const composerFocusRequest = composerPresentation?.focusRequest;
+  useEffect(() => {
+    if (!composerFocusRequest) return;
+    routeRef.current
+      ?.querySelector<HTMLElement>('.comma-chat-composer [role="textbox"]')
+      ?.focus({ preventScroll: true });
+  }, [composerFocusRequest]);
   const launchOutgoing = useCallback(
     (
       text: string,
@@ -516,16 +523,6 @@ export const ConversationView = memo(function ConversationView({
   const conversationId = state.conversation?.id;
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
-
-  // Reuse settled-turn generation on full chat surfaces.
-  const { clear: clearSuggestions, items: suggestionItems } = useChatSuggestions({
-    api,
-    conversationId,
-    enabled: !isArchived && (variant === "route" || variant === "home"),
-    groupId: threadGroupId || undefined,
-    locale,
-    state,
-  });
 
   // Tasks the agent created in this conversation dock above the composer, on
   // the full chat surfaces only — the rail and side chat are too narrow for a
@@ -669,17 +666,6 @@ export const ConversationView = memo(function ConversationView({
       return result;
     },
     [launchOutgoing]
-  );
-
-  const handleSelectSuggestion = useCallback(
-    (suggestion: CommaChatSuggestion) => {
-      clearSuggestions();
-      return launchOutgoing(suggestion.prompt, {
-        consumeDraft: false,
-        skills: [],
-      });
-    },
-    [clearSuggestions, launchOutgoing]
   );
 
   const handleAcceptTask = useCallback(async () => {
@@ -1063,24 +1049,10 @@ export const ConversationView = memo(function ConversationView({
     () => (
       <>
         {showTaskPanel ? null : taskReviewAction}
-        {!isArchived && suggestionItems.length > 0 ? (
-          <ChatSuggestionChips
-            items={suggestionItems}
-            onSelect={handleSelectSuggestion}
-          />
-        ) : null}
         {isTask ? responseFeedback({ hasResponse: false }) : null}
       </>
     ),
-    [
-      isTask,
-      responseFeedback,
-      showTaskPanel,
-      taskReviewAction,
-      isArchived,
-      suggestionItems,
-      handleSelectSuggestion,
-    ]
+    [isTask, responseFeedback, showTaskPanel, taskReviewAction]
   );
 
   useEffect(() => {
@@ -1227,8 +1199,6 @@ export const ConversationView = memo(function ConversationView({
               controlCommandsEnabled={state.conversation?.kind === "user_chat"}
               disabled={unboundComposerDisabled}
               draftSource={draftSource}
-              suggestion={isArchived ? undefined : suggestionItems[0]?.prompt}
-              onAcceptSuggestion={clearSuggestions}
               draftAttachments={state.draftAttachments}
               draftQuotes={draftQuotes}
               {...(handleAttachFiles ? { onAttachFiles: handleAttachFiles } : {})}

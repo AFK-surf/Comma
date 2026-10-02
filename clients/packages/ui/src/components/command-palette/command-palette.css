@@ -77,7 +77,8 @@
   transition-timing-function: var(--motion-easing-sharp-in);
 }
 
-@media (max-width: 30rem) {
+/* Media-query rem used the initial font size, not the app's text-size setting. */
+@container comma-window (width <= 480px) {
   .comma-command-palette-modal {
     width: min(
       calc(100vw - var(--spacing-xl)),

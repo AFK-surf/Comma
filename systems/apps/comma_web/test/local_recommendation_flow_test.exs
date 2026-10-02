@@ -404,6 +404,48 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     def delete_proxy_session(_settings, "member-auth-session"), do: :ok
   end
 
+  # The owner's Drive as the notebook sees it: one hosted file per path.
+  defmodule NotebookDrive do
+    def start, do: Agent.start_link(fn -> %{files: %{}, writes: 0} end, name: __MODULE__)
+    def files, do: Agent.get(__MODULE__, & &1.files)
+    def writes, do: Agent.get(__MODULE__, & &1.writes)
+
+    def stat(_group, path) do
+      if Map.has_key?(files(), path),
+        do:
+          {:ok, %{path: path, name: Path.basename(path), kind: "file", size: 0, modified_at: nil}},
+        else: {:error, :not_found}
+    end
+
+    def read(_group, path, _max) do
+      case files()[path] do
+        nil -> {:error, :not_found}
+        body -> {:ok, body, false}
+      end
+    end
+
+    def write(_group, path, body, size) do
+      Agent.update(__MODULE__, fn state ->
+        %{
+          state
+          | files: Map.put(state.files, path, IO.iodata_to_binary(body)),
+            writes: state.writes + 1
+        }
+      end)
+
+      {:ok, %{size: size, root: nil}}
+    end
+
+    def delete(_group, path) do
+      withdrawn = Map.has_key?(files(), path)
+      Agent.update(__MODULE__, &%{&1 | files: Map.delete(&1.files, path)})
+
+      if withdrawn,
+        do: {:ok, %{withdrawn: true, still_published: false}},
+        else: {:error, :not_found}
+    end
+  end
+
   # Collection tests observe the durable handoff, not a second LLM turn.
   defmodule RouterDelivery do
     def notify_conversation(agent, source),
@@ -416,6 +458,9 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     previous_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
     Application.put_env(:salix_im, :agent_delivery_mod, RouterDelivery)
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous_delivery) end)
+    # A scheduled briefing wakes the Router. Its turn is out of scope here and
+    # must not run into the next test's model fixture.
+    on_exit(fn -> SalixAgent.TestSupport.stop_all_agents() end)
     Req.Test.set_req_test_to_shared()
     unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
@@ -1316,6 +1361,74 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
                ctx
              )
 
+    # While the notification spacing is closed, a judged non-critical item is
+    # not handed to the Router: it could not notify. It waits in the pool.
+    Application.put_env(
+      :comma_web,
+      :member_slack_test,
+      Map.put(slack, :direct, [
+        direct.("500", "<@U123> can you review the slides this week?"),
+        direct.("400", "<@U123> please review the budget too"),
+        direct.("300", "<@U123> can you approve the launch today?")
+      ])
+    )
+
+    inputs = length(router_inputs.())
+    requests = length(DraftLLM.requests())
+    collect.()
+    assert length(DraftLLM.requests()) == requests + 1
+    assert length(router_inputs.()) == inputs
+    assert %{attention: nil, baseline: false} = Enum.find(pool.(), &(&1.url =~ "p500"))
+
+    # The owner's notebook in their Drive shows what Comma decided and why.
+    # The server renders it from the matters and the pool; no model writes it.
+    previous_drive = Application.get_env(:salix_agent, :drive_mod)
+    {:ok, _} = NotebookDrive.start()
+    Application.put_env(:salix_agent, :drive_mod, NotebookDrive)
+    on_exit(fn -> restore_env(:salix_agent, :drive_mod, previous_drive) end)
+    render = %{"group_id" => group, "owner_id" => user["id"]}
+    assert_enqueued(worker: CommaWeb.ProactiveNotebook, args: render)
+    assert :ok = perform_job(CommaWeb.ProactiveNotebook, render)
+    assert %{"Comma/Notebook.md" => notebook} = NotebookDrive.files()
+
+    [needs_you, quiet] =
+      notebook |> String.split(["## Needs you", "## Did not interrupt you"]) |> tl()
+
+    assert needs_you =~ "approve the launch today"
+    assert needs_you =~ "urgent"
+    assert needs_you =~ "told you at"
+    assert quiet =~ "review the notes"
+    assert quiet =~ "stayed quiet at"
+    assert quiet =~ "Already discussed"
+    assert notebook =~ "Source: Slack — last read around"
+    assert notebook =~ "Automatic messages are on. Until "
+    assert notebook =~ ", only urgent matters can interrupt you."
+
+    # A render that changes nothing leaves no new Drive version, and the Router
+    # can point the owner to the notebook.
+    assert :ok = perform_job(CommaWeb.ProactiveNotebook, render)
+    assert NotebookDrive.writes() == 1
+
+    assert {:ok, %{"notebook" => "/drive/Comma/Notebook.md"}} =
+             CommaWeb.Proactive.state(%{}, ctx)
+
+    # The Drive is the Workspace's shared folder. Once another member joins,
+    # the owner's private notebook is withdrawn.
+    {:ok, member} =
+      Comma.Accounts.create_user(%{
+        "email" => "notebook-member-#{System.unique_integer([:positive])}@comma.test"
+      })
+
+    Comma.Repo.insert!(%Comma.Data.WorkspaceMembership{
+      workspace_id: workspace["id"],
+      user_id: member["id"],
+      role: "member",
+      status: "active"
+    })
+
+    assert :ok = perform_job(CommaWeb.ProactiveNotebook, render)
+    assert NotebookDrive.files() == %{}
+
     # The scheduled Routine reads the same pool. Collection ran within its
     # interval, so the run makes no provider read and offers the pooled items.
     Application.put_env(:comma_web, :member_slack_test, Map.put(slack, :reads, self()))
@@ -1329,6 +1442,21 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     refute_received {:slack_read, _path}
     assert {:ok, %{run: %{status: "published"}}} = Recommendations.run_context(run["id"])
     {messages, [], %{"entrypoint" => "comma_recommendation"}} = List.last(DraftLLM.requests())
+
+    # The scheduled briefing reaches the Router once, as evidence it decides on.
+
+    briefing_inputs = fn ->
+      Enum.filter(
+        router_inputs.(),
+        &(&1["metadata"]["mail_source"] == CommaWeb.ProactiveBriefing.key())
+      )
+    end
+
+    assert [%{"agent_input" => %{"content" => briefing}}] = briefing_inputs.()
+    assert briefing =~ "scheduled Routine briefing was published"
+
+    assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run["id"]}})
+    assert length(briefing_inputs.()) == 1
 
     assert Jason.decode!(List.last(messages).content)["candidates"]
            |> Enum.map(& &1["url"])
@@ -2191,7 +2319,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     workspace = create_ready_workspace!(user)
     assert {:ok, _} = Comma.Plugins.install(user, %{}, workspace["id"], "slack")
-    assert {:ok, _} = RecommendationRuntime.ensure(user, %{}, workspace, "UTC", "en")
+    assert {:ok, _} = RecommendationRuntime.ensure(user, %{}, workspace, "UTC")
     # This fixture exercises the retained generic recipe; member tests opt in below.
     assert {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "generic")
     assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])

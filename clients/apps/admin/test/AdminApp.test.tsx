@@ -182,6 +182,30 @@ describe("AdminApp", () => {
               device_label: null,
               restricted: false,
             },
+            {
+              id: "sess_android",
+              auth_method: "google",
+              session_source: "user_login",
+              authenticated_at: 1_784_860_000,
+              expires_at: 4_102_444_800,
+              last_seen_at: 1_784_869_500,
+              revoked_at: 1_784_875_000,
+              client_kind: "android",
+              device_label: null,
+              restricted: false,
+            },
+            {
+              id: "sess_watch",
+              auth_method: "watch_pairing",
+              session_source: "user_login",
+              authenticated_at: 1_784_850_000,
+              expires_at: 4_102_444_800,
+              last_seen_at: 1_784_859_500,
+              revoked_at: 1_784_865_000,
+              client_kind: "watch",
+              device_label: null,
+              restricted: false,
+            },
           ],
           has_more: false,
           next_cursor: null,
@@ -363,6 +387,12 @@ describe("AdminApp", () => {
     expect(await within(dialog).findByText("Web on macOS")).toBeInTheDocument();
     expect(within(dialog).getByText("Comma Desktop on Windows")).toBeInTheDocument();
     expect(within(dialog).getByText("Comma SSH")).toBeInTheDocument();
+    expect(within(dialog).getByText("Comma Android app")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Reported Android · Google/)).toBeInTheDocument();
+    expect(within(dialog).getByText("Comma on Apple Watch")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Reported Apple Watch · Paired Watch/)
+    ).toBeInTheDocument();
     expect(
       within(dialog).getByText(/Reported SSH · SSH public key/)
     ).toBeInTheDocument();

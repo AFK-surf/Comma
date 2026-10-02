@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import {
   chatSmokeTaskConversation,
   chatSmokeWorkspace,
@@ -114,6 +115,7 @@ test("media menus upload originals, copy images and video files, freeze frames, 
       })),
     ],
   });
+  recordElectronOnboardingCompleted(`${root}/profile`, [stub.userId]);
   const { ELECTRON_RUN_AS_NODE: _runAsNode, ...env } = process.env;
   const appDir = resolve("apps/electron");
   const app = await electron.launch({
@@ -143,6 +145,12 @@ test("media menus upload originals, copy images and video files, freeze frames, 
     const windowHandle = await app.browserWindow(page);
     await windowHandle.evaluate((window) => window.setSize(1280, 800));
     await page.waitForLoadState("domcontentloaded");
+    // Each action raises a Toast; the stack stays above menus, so a lingering
+    // one can cover the next menu item. Assertions only read Toasts.
+    await page.addStyleTag({
+      content:
+        '[data-slot="toast-host"], [data-slot="toast-host"] * { pointer-events: none !important; }',
+    });
     await page.evaluate((hash) => {
       location.hash = hash;
     }, `/inbox/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`);

@@ -201,6 +201,13 @@ export async function startChatSmokeStub({
     kind: string;
     message_id: string;
     created_at: number;
+    agent_input?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+    platform_message?: {
+      provider: string;
+      role: "user" | "assistant";
+      content: { type: "text"; text: string }[];
+    };
     content: (
       | { type: "text"; text: string }
       | { type: "mail_reference"; source_key: string }
@@ -294,6 +301,9 @@ export async function startChatSmokeStub({
   let streamingActivitySequence = 0;
   let streamingDraftRevision = 0;
   let streamingReconnectCount = 0;
+  let workspaceChatEventsUnreachable = false;
+  let droppedWorkspaceChatEventStreamCount = 0;
+  const heldCompletedWorkspaceChatEventStreams = new Set<ServerResponse>();
   let participantSnapshotAvailable = true;
   let releaseWorkspaceChatMessage: (() => void) | undefined;
   let notifyWorkspaceChatMessage: (() => void) | undefined;
@@ -947,6 +957,12 @@ export async function startChatSmokeStub({
         `/v1/comma/groups/${chatSmokeWorkspace.group_id}/conversations/${chatSmokeWorkspaceChat.id}/events`
       )
     ) {
+      if (workspaceChatEventsUnreachable) {
+        // A dropped connection, as when a laptop wakes before Wi-Fi rejoins.
+        droppedWorkspaceChatEventStreamCount += 1;
+        req.socket.destroy();
+        return;
+      }
       const snapshot = {
         activity_status: workspaceChatActivityStatus(),
         conversation_id: chatSmokeWorkspaceChat.id,
@@ -1174,8 +1190,10 @@ export async function startChatSmokeStub({
       if (holdCompletedWorkspaceChatEventStream && assistantCommitted) {
         completedWorkspaceChatEventStreamRequestCount += 1;
         activeCompletedWorkspaceChatEventStreams += 1;
+        heldCompletedWorkspaceChatEventStreams.add(res);
         let released = false;
         res.once("close", () => {
+          heldCompletedWorkspaceChatEventStreams.delete(res);
           if (released) return;
           released = true;
           activeCompletedWorkspaceChatEventStreams -= 1;
@@ -1222,6 +1240,8 @@ export async function startChatSmokeStub({
     completeStreamingReply: () => void;
     appendPriorAssistantReply: (text: string) => void;
     reconnectStreamingReply: () => void;
+    droppedWorkspaceChatEventStreamCount: number;
+    setWorkspaceChatEventsUnreachable: (unreachable: boolean) => void;
     setParticipantSnapshotAvailable: (available: boolean) => void;
     streamingReconnectCount: number;
     commitThinkingReply: () => void;
@@ -1263,6 +1283,11 @@ export async function startChatSmokeStub({
       bytes: Buffer;
       contentType: string;
     }[];
+    /**
+     * The account a bearer session (the Electron app) signs in as. A browser
+     * session registered for its own cookie can belong to another one.
+     */
+    userId: string;
     setTaskParticipants: (
       participants: TaskParticipantFixture[],
       worker?: Pick<
@@ -1297,6 +1322,17 @@ export async function startChatSmokeStub({
           if (!streamingReplyResponse || streamingReplyResponse.destroyed)
             throw new Error("No streaming reply to reconnect");
           streamingReplyResponse.end();
+        },
+        get droppedWorkspaceChatEventStreamCount() {
+          return droppedWorkspaceChatEventStreamCount;
+        },
+        setWorkspaceChatEventsUnreachable: (unreachable) => {
+          workspaceChatEventsUnreachable = unreachable;
+          if (!unreachable) return;
+          for (const stream of heldCompletedWorkspaceChatEventStreams) {
+            droppedWorkspaceChatEventStreamCount += 1;
+            stream.destroy();
+          }
         },
         setParticipantSnapshotAvailable: (available) => {
           participantSnapshotAvailable = available;
@@ -1486,6 +1522,7 @@ export async function startChatSmokeStub({
           return taskListEventStreamRequestCount;
         },
         uploads,
+        userId: createE2eSessionProjection({ email: sessionEmail }).user.id,
         setWorkspaceChatHidden: (hidden) => {
           workspaceChatHidden = hidden;
         },

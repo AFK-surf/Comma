@@ -1092,7 +1092,7 @@ describe("ConversationView", () => {
     }
   });
 
-  it("keeps one explicit outgoing transition and its destination DOM through ACK", async () => {
+  it("keeps the Comma outgoing transition through ACK when an external user message arrives first", async () => {
     const geometry = mockOutgoingBubbleGeometry();
     const animate = vi.fn(
       (
@@ -1121,6 +1121,9 @@ describe("ConversationView", () => {
       delivery: "sending",
       source: "pending",
     });
+    const external = message("msg_external", "user", "External incoming", {
+      platformSource: "wechat",
+    });
     const launch: ChatOutgoingLaunch = {
       existingTurnKeys: new Set(),
       expiresAt: Date.now() + 4_000,
@@ -1140,7 +1143,7 @@ describe("ConversationView", () => {
     try {
       const view = render(
         <ConversationThread
-          messages={[pending]}
+          messages={[external, pending]}
           onDiscard={() => {}}
           onRetry={() => {}}
           outgoingLaunches={[launch]}
@@ -1164,10 +1167,16 @@ describe("ConversationView", () => {
       expect(pendingSlot).toHaveAttribute("data-outgoing-presentation-slot", "true");
       expect(pendingSlot).toHaveStyle({ height: "64px", width: "220px" });
       expect(view.container.querySelectorAll(".comma-chat-user-bubble")).toHaveLength(
-        1
+        2
       );
-      // The turn, slot, bubble, and text share one playback clock.
-      expect(animate).toHaveBeenCalledTimes(4);
+      expect(
+        containerArticle(view.container, external.messageId).querySelector(
+          ".comma-chat-user-bubble"
+        )
+      ).not.toHaveAttribute("data-outgoing-presentation");
+      // The turn, slot, bubble, its material plane, and text share one
+      // playback clock.
+      expect(animate).toHaveBeenCalledTimes(5);
       const originalAnimations = animate.mock.results.map((result) => result.value);
       for (const animation of originalAnimations) {
         expect(animation.pause).toHaveBeenCalledOnce();
@@ -1192,6 +1201,7 @@ describe("ConversationView", () => {
       view.rerender(
         <ConversationThread
           messages={[
+            external,
             message("msg_server", "user", "带动画进入", {
               clientRequestId: "req_motion",
               delivery: "sent",
@@ -1213,9 +1223,9 @@ describe("ConversationView", () => {
       );
       expect(pendingBubble).toHaveAttribute("data-outgoing-presentation", "flying");
       expect(view.container.querySelectorAll(".comma-chat-user-bubble")).toHaveLength(
-        1
+        2
       );
-      expect(animate).toHaveBeenCalledTimes(4);
+      expect(animate).toHaveBeenCalledTimes(5);
       for (const animation of originalAnimations) {
         expect(animation.cancel).not.toHaveBeenCalled();
         expect(animation.play).toHaveBeenCalledOnce();

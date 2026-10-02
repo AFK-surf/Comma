@@ -4,7 +4,7 @@ defmodule Comma.Accounts.SessionIssuer do
   alias Comma.Accounts
   alias Comma.Accounts.User
 
-  @public_user_fields ["id", "email", "name", "status"]
+  @public_user_fields ["id", "email", "name", "status", "kind"]
 
   @spec issue(User.t() | map(), keyword()) :: {:ok, map()} | {:error, term()}
   def issue(%User{} = user, opts), do: issue(Accounts.public_user(user), opts)

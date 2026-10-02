@@ -54,5 +54,10 @@ describe("file preview tabs", () => {
     act(() => result.current.closeFilePreview(host, previews.at(-1)!.id));
     expect(result.current.activeSession?.activeFilePreviewId).toBe(previews.at(-2)!.id);
     expect(result.current.activeSession?.activeSurface).toBe("file");
+    expect(result.current.isOpen).toBe(true);
+    for (const preview of previews.slice(0, -1)) {
+      act(() => result.current.closeFilePreview(host, preview.id));
+    }
+    expect(result.current.isOpen).toBe(false);
   });
 });

@@ -28,6 +28,7 @@ defmodule Comma.Accounts.Email do
   @spec normalize_recipient(term()) :: {:ok, String.t()} | {:error, :invalid_email}
   def normalize_recipient(email) do
     with {:ok, normalized} <- normalize(email),
+         false <- Comma.GuestMode.guest_email?(normalized),
          true <- byte_size(normalized) <= @max_recipient_bytes,
          [local_part, domain] <- String.split(normalized, "@", parts: 2),
          true <- valid_local_part?(local_part),

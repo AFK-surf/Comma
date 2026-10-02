@@ -910,6 +910,14 @@ if is_binary(comma_database_url) do
     telemetry_prefix: [:comma, :repo]
 end
 
+comma_apple_client_id =
+  SalixStore.ConfigJson.string(salix_config, ~w(comma apple_auth client_id)) ||
+    System.get_env("COMMA_APPLE_CLIENT_ID")
+
+if is_binary(comma_apple_client_id) and comma_apple_client_id != "" do
+  config :comma_core, :apple_auth, client_id: comma_apple_client_id
+end
+
 comma_google_web_client_id =
   SalixStore.ConfigJson.string(salix_config, ~w(comma google_auth web_client_id))
 
@@ -922,6 +930,27 @@ comma_google_electron_client_id =
 
 if is_binary(comma_google_electron_client_id) and comma_google_electron_client_id != "" do
   config :comma_core, :google_auth, electron_client_id: comma_google_electron_client_id
+end
+
+comma_google_android_client_ids =
+  case SalixStore.ConfigJson.get(salix_config, ~w(comma google_auth android_client_ids)) do
+    nil ->
+      []
+
+    ids when is_list(ids) ->
+      Enum.map(ids, fn id ->
+        case is_binary(id) && String.trim(id) do
+          trimmed when is_binary(trimmed) and trimmed != "" -> trimmed
+          _invalid -> raise("comma.google_auth.android_client_ids must contain nonempty strings")
+        end
+      end)
+
+    _invalid ->
+      raise("comma.google_auth.android_client_ids must be a list")
+  end
+
+if comma_google_android_client_ids != [] do
+  config :comma_core, :google_auth, android_client_ids: comma_google_android_client_ids
 end
 
 comma_google_electron_client_secret =
@@ -1743,6 +1772,38 @@ subscription_key =
 if subscription_key do
   config :salix_agent, :subscription_storage_key, Base.decode64!(subscription_key)
 end
+
+# SALIX_CONFIG_JSON is rendered by the existing release bundle into the
+# secret-mounted config.json already loaded above. Do not introduce a separate
+# key mount or put signing material in values/logs. Only local legacy setups
+# without comma.apns may use the original explicitly configured file path.
+apns_config =
+  case SalixStore.ConfigJson.apns_config(salix_config) do
+    nil ->
+      private_key =
+        case System.get_env("COMMA_APNS_PRIVATE_KEY_PATH") do
+          nil ->
+            nil
+
+          path ->
+            case File.read(path) do
+              {:ok, pem} -> pem
+              {:error, _} -> nil
+            end
+        end
+
+      SalixStore.ConfigJson.apns_config(salix_config,
+        team_id: System.get_env("COMMA_APNS_TEAM_ID"),
+        key_id: System.get_env("COMMA_APNS_KEY_ID"),
+        bundle_id: System.get_env("COMMA_APPLE_BUNDLE_ID"),
+        private_key: private_key
+      )
+
+    profiles ->
+      profiles
+  end
+
+config :comma_core, :apns, apns_config || []
 
 # Kubernetes injects COMMA_SSH_PORT for the comma-ssh Service as a tcp:// URL.
 # Use a distinct application setting, and ignore it on non-product nodes.

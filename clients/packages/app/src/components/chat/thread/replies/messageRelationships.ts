@@ -38,6 +38,7 @@ export function messageThreadRoots(messages: readonly ChatMessage[]) {
 export function sameMessageSender(a: ChatMessage, b: ChatMessage) {
   return (
     a.role === b.role &&
+    a.platformSource === b.platformSource &&
     a.actorRole === b.actorRole &&
     a.actorId === b.actorId &&
     a.createdBy === b.createdBy

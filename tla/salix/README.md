@@ -268,6 +268,18 @@ Multiple sources reuse this per-source invariant. No additional protocol owner i
 Non-target scanning, multiple source positions, and notification liveness remain implementation-test concerns.
 No new progress claim or external delivery guarantee follows from this abstraction.
 
+## External dispatch admission
+
+`ExternalSessionStore.start_dispatch` commits the Session target before the Actor can call the runtime.
+Failed or uncertain admission writes stutter without sending or consuming input.
+`ExternalRuntime.BeginDispatch` retains this admission-before-RPC boundary.
+A failed status read selects the added `unknown` dispatch mode.
+`PersistDispatchFailure` preserves existing observations and leaves that mode eligible for a later wake.
+The existing nonterminal failed-dispatch invariant covers both steer and unknown modes.
+Known start or steer observations survive a failed status PUT without creating a status availability gate.
+Projection persistence and native recovery remain runtime-test obligations.
+This change does not prove that legacy targetless queues were never sent or add provider liveness.
+
 ## Codex startup recovery mapping
 
 Codex persists its thread binding before starting or steering a native turn.
@@ -349,3 +361,17 @@ The retained S3/RPC/session abstractions are unchanged. Feature regressions cove
 request-before-enqueue ordering, stale inputs/claims, bounded retries, scoped
 submission and the existing attribution/publication gate. No new feature-level
 model or eventual completion guarantee under a failed Router is claimed.
+
+## Financial refusal of external input
+
+`ExternalRuntime.LogLocalRefusal` maps to the owner-only `billing_rejection`
+field in `ExternalSessionStore`. `ApplyLocalRefusal` maps to the exact-prefix
+queue update in `commit_status_record`. The actor reloads committed records
+after an uncertain write and completes that refusal before another dispatch.
+`QueueAccounting` conserves admitted input across the queue, Connector-owned
+input, and durable local refusals. Refused input cannot dispatch. A logged
+refusal enables local recovery; this is an enabled-action claim, not liveness.
+Both steps preserve native execution identity and evidence. Status projection
+retains an active owner when a new input is refused. The unsafe erase-before-log
+configuration must violate `QueueAccounting`. Existing ACK/fence counterexamples
+remain violating. Bounds and fairness remain those of each configuration.

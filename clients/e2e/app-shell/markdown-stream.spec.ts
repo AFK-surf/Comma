@@ -882,11 +882,9 @@ test("a sent user bubble keeps one morph owner and survives an immediate ACK", a
   expect(motion.animationDurations).toHaveLength(1);
   expect(motion.animationDurations[0]).toBeGreaterThan(850);
   expect(motion.animationDurations[0]).toBeLessThan(950);
-  expect(motion.animatedProperties).toEqual([
-    "backgroundColor",
-    "clipPath",
-    "transform",
-  ]);
+  // The shape travels and morphs; its material changes on the plane behind it.
+  expect(motion.animatedProperties).toEqual(["clipPath", "transform"]);
+  expect(motion.materialProperties).toEqual(["backgroundColor"]);
   expect(motion.filters).toEqual(["none"]);
   expect(motion.bubbleOverflow).toEqual(["visible", "visible"]);
   expect(motion.frames.length).toBeGreaterThan(4);
@@ -3446,6 +3444,20 @@ async function captureOutgoingUserMotion(
         }
       }
     }
+    // The material changes on its own plane behind the shape (the bubble's
+    // ::before), so a translucent material never shows twice over the box.
+    const materialProperties = new Set<string>();
+    for (const currentAnimation of bubble.getAnimations({ subtree: true })) {
+      const effect = currentAnimation.effect;
+      if (!(effect instanceof KeyframeEffect) || effect.pseudoElement !== "::before") {
+        continue;
+      }
+      for (const keyframe of effect.getKeyframes()) {
+        for (const property of Object.keys(keyframe)) {
+          if (!ignoredKeyframeFields.has(property)) materialProperties.add(property);
+        }
+      }
+    }
     const bubbleStyles = getComputedStyle(bubble);
     const bubbleOverflow = [bubbleStyles.overflowX, bubbleStyles.overflowY];
 
@@ -3561,6 +3573,7 @@ async function captureOutgoingUserMotion(
       animatedProperties: [...animatedProperties].toSorted(),
       animationDurations,
       animationIdentityPreserved,
+      materialProperties: [...materialProperties].toSorted(),
       animationTimeMonotonic,
       bubbleOrigin: {
         x: bubbleOriginParts[0] ?? Number.NaN,

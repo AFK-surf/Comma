@@ -16,6 +16,12 @@ model {
         link ../../../clients/packages/app/package.json 'package.json'
       }
 
+      comma_bft = code_module '@comma/bft' {
+        description '应用；1 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/apps/bft/package.json 'package.json'
+      }
+
       comma_chat-contract = code_module '@comma/chat-contract' {
         description '包；0 个仓库内源码依赖'
         technology 'TypeScript Workspace'
@@ -107,6 +113,7 @@ model {
       comma_app .depends_on comma_session-contract '产品/Peer 依赖'
       comma_app .depends_on comma_session-history-runtime '产品/Peer 依赖'
       comma_app .depends_on comma_ui '产品/Peer 依赖'
+      comma_bft .depends_on comma_ui '产品/Peer 依赖'
       comma_electron .depends_on comma_app '产品/Peer 依赖'
       comma_electron .depends_on comma_chat-contract '产品/Peer 依赖'
       comma_electron .depends_on comma_config '产品/Peer 依赖'
@@ -429,7 +436,7 @@ model {
       }
 
       appPreferences = code_module 'appPreferences' {
-        description '4 个 command · 1 个 event · 1 个 replay-last state'
+        description '5 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -459,7 +466,7 @@ model {
       }
 
       computeNode = code_module 'computeNode' {
-        description '6 个 command · 1 个 event · 1 个 replay-last state'
+        description '14 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -530,6 +537,12 @@ model {
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
+      onboarding = code_module 'onboarding' {
+        description '3 个 command · 2 个 event · 1 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
       peers = code_module 'peers' {
         description '1 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
@@ -592,6 +605,12 @@ model {
 
       synchronicity = code_module 'synchronicity' {
         description '21 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      tokenDanceAuthorization = code_module 'tokenDanceAuthorization' {
+        description '4 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }

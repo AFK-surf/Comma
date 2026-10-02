@@ -1385,7 +1385,7 @@ defmodule SalixAgent.InternalSessionActor do
   defp effect(ctx, _state, driver, :round_config) do
     case resolve_round_config(ctx.data, ctx.rev.state, nil) do
       {:ok, config, data} ->
-        case commit_miniskills(%{ctx | data: data, config: config}, config) do
+        case write_miniskills(%{ctx | data: data, config: config}, config) do
           {:ok, ctx} -> answer(ctx, driver, {:ok, config_facts(config)})
           {:error, reason, _ctx} -> answer(ctx, driver, {:error, reason})
         end
@@ -1750,7 +1750,7 @@ defmodule SalixAgent.InternalSessionActor do
   defp round_config(ctx, _kind) do
     case resolve_round_config(ctx.data, ctx.rev.state, nil) do
       {:ok, config, data} ->
-        commit_miniskills(%{ctx | data: data, config: config, prepared: nil}, config)
+        write_miniskills(%{ctx | data: data, config: config, prepared: nil}, config)
 
       {:error, reason, data} ->
         {:error, reason, %{ctx | data: data}}
@@ -1794,6 +1794,10 @@ defmodule SalixAgent.InternalSessionActor do
 
         answer(%{ctx | prep: nil, result: {:error, reason}}, driver, {:error, unstarted(reason)})
 
+      {:error, {:billing_unavailable, decision}} ->
+        error = {:error, SalixAgent.BillingAvailability.error(decision)}
+        answer(%{ctx | prep: nil, result: error}, driver, error)
+
       {:error, _} = error ->
         answer(%{ctx | prep: nil}, driver, error)
     end
@@ -1801,8 +1805,17 @@ defmodule SalixAgent.InternalSessionActor do
 
   # A round's outcome, before the driver decides what follows it.
   defp round_outcome(ctx, driver, outcome) do
-    result = Round.round_result(ctx.host, outcome)
-    ctx = %{ctx | host: nil, result: result}
+    result =
+      if SalixAgent.BillingAvailability.denied?(ctx.result),
+        do: ctx.result,
+        else: Round.round_result(ctx.host, outcome)
+
+    data =
+      if SalixAgent.BillingAvailability.denied?(result),
+        do: ctx.data |> reset_session_retry() |> reply_direct_round_waiter(result),
+        else: ctx.data
+
+    ctx = %{ctx | data: data, host: nil, result: result}
 
     case result do
       {:ok, context, outcome} ->
@@ -2360,21 +2373,16 @@ defmodule SalixAgent.InternalSessionActor do
     end
   end
 
-  defp commit_miniskills(ctx, %{miniskill_event: %{} = event}) do
+  defp write_miniskills(ctx, %{miniskill_event: %{} = event}) do
     with {:ok, revision} <-
-           InternalSessionStore.commit_revision(
-             ctx.data.agent_id,
-             ctx.data.session_id,
-             ctx.rev,
-             [event]
-           ) do
+           InternalSessionStore.write_revision(ctx.rev, [event]) do
       {:ok, %{ctx | rev: revision, data: retain(ctx.data, revision)}}
     else
       {:error, reason} -> {:error, reason, ctx}
     end
   end
 
-  defp commit_miniskills(ctx, _), do: {:ok, ctx}
+  defp write_miniskills(ctx, _), do: {:ok, ctx}
 
   # The round configuration receives plain data, never the session itself:
   # identity, platform, the admitted source ids, and the current turn's

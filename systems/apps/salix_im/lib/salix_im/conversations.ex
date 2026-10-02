@@ -108,7 +108,7 @@ defmodule SalixIM.Conversations do
       {:ok,
        %{
          "conversation" => projected,
-         "messages" => messages
+         "messages" => SalixIM.PlatformMessage.project_all(group_id, messages)
        }}
     end
   end
@@ -187,8 +187,9 @@ defmodule SalixIM.Conversations do
   end
 
   def list_group_conversation_messages(group_id, conversation_id, opts \\ []) do
-    with {:ok, conversation} <- get_group_conversation_record(group_id, conversation_id) do
-      list_messages(conversation, opts)
+    with {:ok, conversation} <- get_group_conversation_record(group_id, conversation_id),
+         {:ok, messages} <- list_messages(conversation, opts) do
+      {:ok, SalixIM.PlatformMessage.project_all(group_id, messages)}
     end
   end
 
@@ -229,7 +230,7 @@ defmodule SalixIM.Conversations do
 
       {:ok,
        %{
-         "messages" => messages,
+         "messages" => SalixIM.PlatformMessage.project_all(group_id, messages),
          "covered" => covered_span(messages),
          "has_older" => tail_seq > 0 and min(first_seq, last_seq + 1) > head_seq,
          "has_newer" => tail_seq > 0 and max(last_seq, first_seq - 1) < tail_seq,
@@ -329,7 +330,7 @@ defmodule SalixIM.Conversations do
          {:ok, pointer} <- message_pointer_by_id(group_id, conversation_id, message_id),
          {:ok, message} <-
            message_from_pointer(group_id, conversation_id, pointer, message_id: message_id) do
-      {:ok, message}
+      {:ok, hd(SalixIM.PlatformMessage.project_all(group_id, [message]))}
     end
   end
 

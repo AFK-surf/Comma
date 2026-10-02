@@ -25,6 +25,15 @@ export interface DeviceSettingsItem {
   description?: string | undefined;
   metadata?: string[] | undefined;
   actions?: ReactNode;
+  runtimeCheck?:
+    | {
+        label: string;
+        pending: boolean;
+        disabled: boolean;
+        error?: string | undefined;
+        onCheck(): void;
+      }
+    | undefined;
   agents: {
     id: string;
     name: string;
@@ -172,11 +181,35 @@ export function DeviceSettings(props: DeviceSettingsProps) {
                           ? props.agentsLabel
                           : (props.discoveredLabel ?? props.agentsLabel)}
                       </h4>
-                      <span>
-                        {device.agents.filter((agent) => agent.ready).length} /{" "}
-                        {device.agents.length}
-                      </span>
+                      <div className="flex items-center gap-md">
+                        <span>
+                          {device.agents.filter((agent) => agent.ready).length} /{" "}
+                          {device.agents.length}
+                        </span>
+                        {device.runtimeCheck && (
+                          <Button
+                            hierarchy="link-gray"
+                            size="sm"
+                            disabled={
+                              device.runtimeCheck.disabled ||
+                              device.runtimeCheck.pending
+                            }
+                            aria-busy={device.runtimeCheck.pending}
+                            onPress={device.runtimeCheck.onCheck}
+                          >
+                            {device.runtimeCheck.label}
+                          </Button>
+                        )}
+                      </div>
                     </div>
+                    {device.runtimeCheck?.error && (
+                      <p
+                        className="comma-device__empty text-error-primary"
+                        role="alert"
+                      >
+                        {device.runtimeCheck.error}
+                      </p>
+                    )}
                     {device.connected && !device.agents.length && (
                       <p className="comma-device__empty">{props.emptyAgentsLabel}</p>
                     )}

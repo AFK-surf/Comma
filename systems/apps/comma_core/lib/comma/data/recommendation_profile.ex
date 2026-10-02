@@ -11,7 +11,6 @@ defmodule Comma.Data.RecommendationProfile do
     field(:schedule_hour, :integer, default: 8)
     field(:schedule_minute, :integer, default: 0)
     field(:timezone, :string, default: "Etc/UTC")
-    field(:locale, :string)
     field(:auto_enable_new_sources, :boolean, default: true)
     field(:agent_id, :string)
     field(:session_id, :string)
@@ -42,19 +41,9 @@ defmodule Comma.Data.RecommendationProfile do
 
   def create_changeset(profile, attrs) do
     profile
-    |> cast(attrs, [:workspace_id, :user_id, :timezone, :locale, :relevance_mode])
+    |> cast(attrs, [:workspace_id, :user_id, :timezone, :relevance_mode])
     |> validate_required([:workspace_id, :user_id, :timezone])
     |> unique_constraint([:workspace_id, :user_id])
-  end
-
-  @doc """
-  Record the client-reported UI language so the briefing renderer can pin its
-  output language. Kept out of `settings_changeset/2` because the locale is a
-  client fact reported on every fetch, not a value the recommendations settings
-  form owns.
-  """
-  def locale_changeset(profile, locale) do
-    cast(profile, %{locale: locale}, [:locale])
   end
 
   @doc """

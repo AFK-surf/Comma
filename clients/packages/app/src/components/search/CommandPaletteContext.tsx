@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useIsGuestSession } from "../auth-context";
 import { ChatConsumerBoundary } from "../chat/ChatProvider";
 import { AppCommandPalette } from "./AppCommandPalette";
 
@@ -28,13 +29,17 @@ type CommandPaletteContextValue = {
 const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null);
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
+  // The palette searches and opens Tasks, which a guest Session does not have:
+  // it neither opens nor mounts its Task queries.
+  const guest = useIsGuestSession();
   const [isOpen, setOpen] = useState(false);
   const focusBeforeOpen = useRef<HTMLElement | null>(null);
   const open = useCallback(() => {
+    if (guest) return;
     focusBeforeOpen.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpen(true);
-  }, []);
+  }, [guest]);
   const close = useCallback(() => {
     setOpen(false);
     const target = focusBeforeOpen.current;
@@ -64,16 +69,17 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     return () => setHostCount((count) => count - 1);
   }, []);
   const paletteElement = useMemo(
-    () => (
-      <ChatConsumerBoundary>
-        <AppCommandPalette
-          onActionClose={closeAfterAction}
-          onOpenChange={handleOpenChange}
-          open={isOpen}
-        />
-      </ChatConsumerBoundary>
-    ),
-    [closeAfterAction, handleOpenChange, isOpen]
+    () =>
+      guest ? null : (
+        <ChatConsumerBoundary>
+          <AppCommandPalette
+            onActionClose={closeAfterAction}
+            onOpenChange={handleOpenChange}
+            open={isOpen}
+          />
+        </ChatConsumerBoundary>
+      ),
+    [closeAfterAction, guest, handleOpenChange, isOpen]
   );
   const value = useMemo(
     () => ({ claimPaletteHost, close, isOpen, open, paletteElement, toggle }),

@@ -773,9 +773,7 @@ function renderConversation({
 }
 
 function stubApi() {
-  return {
-    generateChatSuggestions: vi.fn().mockResolvedValue([]),
-  } as unknown as CommaApiClient;
+  return {} as unknown as CommaApiClient;
 }
 
 // Fixture server state is supplied separately from the transcript render path.

@@ -1,4 +1,3 @@
-import { LoadingIndicator } from "@comma/ui";
 import { SourceContext } from "./SourceContext";
 import { useTaskSummary, useArchiveAction } from "../tasks/useTaskArchive";
 import { useProductInboxSnapshot } from "../../product-inbox";
@@ -98,6 +97,7 @@ import {
 import {
   hasRecommendationLinkPreview,
   loadRecommendationLinkPreview,
+  peekRecommendationLinkPreview,
 } from "./linkPreviewCache";
 import {
   recommendationLinkHrefAttribute,
@@ -320,137 +320,9 @@ const maxConsecutivePollFailures = 45;
 // the last generation failed.
 type RailFailure = "unavailable" | "rate_limited" | undefined;
 
-// The server names the class of a failed generation; each class has its own
-// honest sentence, so the member can tell an empty day from a broken one.
-function generationFailureCopy(
-  messages: ReturnType<typeof useCommaMessages>,
-  lastError: RecommendationEnvelope["lastError"]
-) {
-  switch (lastError) {
-    case "renderer_declined":
-      return messages.recommendations_nothing_new();
-    case "member_identity_required":
-      return messages.recommendations_identity_required();
-    case "source_collection_failed":
-      return messages.recommendations_sources_unreadable();
-    case "timed_out":
-      return messages.recommendations_timed_out();
-    default:
-      return messages.recommendations_generation_failed();
-  }
-}
-
-// Routine problems are toasts titled with the Routines name, never rail
-// content. They close on their own timer: a toast with an action waits for the
-// member, and the stack sits over the composer's Send button. The rail
-// header's refresh is the way to try again. The window session records which
-// problems were announced, so returning to Home does not repeat them. A
-// refresh that ends in a problem is a new occurrence and is announced again.
-const announcedRoutineProblemsKey = "comma.routineProblemsAnnounced";
-const maxAnnouncedRoutineProblems = 50;
-
-function announcedRoutineProblems(): string[] {
-  try {
-    const stored: unknown = JSON.parse(
-      globalThis.sessionStorage?.getItem(announcedRoutineProblemsKey) ?? "[]"
-    );
-    return Array.isArray(stored)
-      ? stored.filter((key): key is string => typeof key === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function rememberRoutineProblem(key: string) {
-  try {
-    const keys = announcedRoutineProblems().filter((stored) => stored !== key);
-    globalThis.sessionStorage?.setItem(
-      announcedRoutineProblemsKey,
-      JSON.stringify([...keys, key].slice(-maxAnnouncedRoutineProblems))
-    );
-  } catch {
-    // Without session storage a problem can be announced again on return.
-  }
-}
-
-const routineProblemToastId = (workspaceId: string) => `routine-problem:${workspaceId}`;
-
-function useRoutineProblemToasts({
-  active,
-  envelope,
-  failure,
-  isRefreshing,
-  workspaceId,
-}: {
-  active: boolean;
-  envelope: RecommendationEnvelope | undefined;
-  failure: RailFailure;
-  isRefreshing: boolean;
-  workspaceId: string;
-}) {
-  const messages = useCommaMessages();
-  const refreshSeenRef = useRef(false);
-
-  useEffect(() => {
-    const id = routineProblemToastId(workspaceId);
-    if (isRefreshing) {
-      // A refresh answers the last problem. Its own outcome is announced anew.
-      refreshSeenRef.current = true;
-      toast.dismiss(id);
-      return;
-    }
-    if (!active) return;
-    const afterRefresh = refreshSeenRef.current;
-    refreshSeenRef.current = false;
-    // A refused refresh raised its own toast; the briefing did not change.
-    if (failure === "rate_limited") return;
-
-    const announce = (key: string, show: () => void) => {
-      if (!afterRefresh && announcedRoutineProblems().includes(key)) return;
-      rememberRoutineProblem(key);
-      show();
-    };
-    const generation = envelope?.snapshot?.generation ?? 0;
-    const failed =
-      failure === "unavailable" ||
-      envelope?.state === "stale" ||
-      envelope?.state === "error";
-
-    if (!failed) {
-      toast.dismiss(id);
-    } else if (envelope?.snapshot) {
-      announce(`${workspaceId}:${failure ?? envelope.lastError}:${generation}`, () =>
-        toast.error(messages.recommendations_title(), {
-          id,
-          description: messages.recommendations_stale(),
-          testId: "routine-problem-toast",
-        })
-      );
-    } else {
-      announce(`${workspaceId}:${failure ?? envelope?.lastError}:none`, () =>
-        toast.error(messages.recommendations_title(), {
-          id,
-          description:
-            failure === "unavailable"
-              ? messages.recommendations_error()
-              : generationFailureCopy(messages, envelope?.lastError),
-          testId: "routine-problem-toast",
-        })
-      );
-    }
-
-    for (const warning of envelope?.snapshot?.warnings ?? []) {
-      announce(`${workspaceId}:${warning.code}:${generation}`, () =>
-        toast.warning(messages.recommendations_title(), {
-          id: `routine-warning:${workspaceId}:${warning.code}`,
-          description: warning.message,
-          testId: "routine-warning-toast",
-        })
-      );
-    }
-  }, [active, envelope, failure, isRefreshing, messages, workspaceId]);
-}
+// Routine failures that the member cannot act on stay out of the UI: the rail
+// keeps the last briefing, and the server logs and counts every failed run.
+// Only a refused manual refresh answers the member, because they asked for it.
 
 export const RecommendationRail = memo(function RecommendationRail({
   active = true,
@@ -495,6 +367,10 @@ export const RecommendationRail = memo(function RecommendationRail({
   // A server-owned run stays "generating" only while its projection can still
   // be read; once the poll gives up, the last envelope no longer speaks for it.
   const isRefreshing = refreshing || (envelope?.state === "refreshing" && !error);
+  // Until the first read answers, the rail takes a briefing's layout, so the
+  // briefing most members have lands where its placeholder was.
+  const initialLoading = !envelope && !error && !isRefreshing;
+  const briefingPending = isRefreshing || initialLoading;
   const snapshotCards = envelope?.snapshot?.cards;
   const snapshotKey = envelope?.snapshot
     ? `${workspaceId}:${envelope.snapshot.generation}:${envelope.snapshot.generatedAt}`
@@ -599,7 +475,6 @@ export const RecommendationRail = memo(function RecommendationRail({
     lastLoadedAtRef.current = Date.now();
     try {
       const next = await api.getRecommendations(workspaceId, {
-        locale,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
       if (request === requestRef.current) {
@@ -654,7 +529,16 @@ export const RecommendationRail = memo(function RecommendationRail({
       }
       return undefined;
     }
-  }, [active, api, locale, workspaceId]);
+  }, [active, api, workspaceId]);
+
+  // An app language change regenerates the briefing on the server. Read again
+  // at once, so the rail shows that run instead of the old language.
+  const readLocaleRef = useRef(locale);
+  useEffect(() => {
+    if (readLocaleRef.current === locale) return;
+    readLocaleRef.current = locale;
+    void load();
+  }, [load, locale]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -762,8 +646,6 @@ export const RecommendationRail = memo(function RecommendationRail({
     }
   };
 
-  useRoutineProblemToasts({ active, envelope, failure, isRefreshing, workspaceId });
-
   const performAction = (action: RecommendationAction) => {
     if (action.type === "open_url") {
       onOpenUrl(action.href);
@@ -822,6 +704,38 @@ export const RecommendationRail = memo(function RecommendationRail({
     [setLinkMenuOpen]
   );
 
+  // A source only the member can repair stays named here until a read succeeds.
+  // It is the one Routine failure the member can act on, so it is not a toast.
+  const reconnectNames =
+    envelope?.settings.sources
+      .filter((source) => source.needsReconnect)
+      .map((source) => source.appName) ?? [];
+  const reconnectNotice =
+    reconnectNames.length > 0 ? (
+      <div
+        className="comma-recommendations-reconnect"
+        data-testid="routine-reconnect-notice"
+      >
+        <p className="comma-recommendations-empty-copy">
+          {messages.recommendations_source_needs_reconnect({
+            names: new Intl.ListFormat(locale, { type: "conjunction" }).format(
+              reconnectNames
+            ),
+          })}
+        </p>
+        {onConnectApps ? (
+          <Button
+            className="h-7 shrink-0 px-lg"
+            hierarchy="secondary-gray"
+            onPress={onConnectApps}
+            size="sm"
+          >
+            {messages.plugins_reconnect()}
+          </Button>
+        ) : null}
+      </div>
+    ) : null;
+
   const routinesToolbar = (
     <RoutinesToolbar
       cards={orderedCards}
@@ -843,12 +757,14 @@ export const RecommendationRail = memo(function RecommendationRail({
         onContextMenuCapture={handleContextMenuCapture}
         ref={railRef}
       >
-        {isRefreshing ? (
+        {isRefreshing || initialLoading ? (
           <output className="app-sr-only">
-            {messages.recommendations_refreshing()}
+            {isRefreshing
+              ? messages.recommendations_refreshing()
+              : messages.common_loading()}
           </output>
         ) : null}
-        {envelope?.snapshot ? (
+        {envelope?.snapshot || initialLoading ? (
           <ScrollArea
             className="comma-recommendations-scroll"
             contentClassName="comma-recommendations-content"
@@ -856,30 +772,48 @@ export const RecommendationRail = memo(function RecommendationRail({
             orientation="vertical"
             scrollbarVisibility="scroll"
           >
+            {reconnectNotice}
             <RecommendationSummary
               fallbackTitle={messages.recommendations_fallback_title()}
               greetingName={greetingName}
               onOpenTask={onOpenTask}
               onOpenUrl={onOpenUrl}
-              parts={envelope.snapshot.summary}
-              sources={envelope.settings.sources}
+              parts={envelope?.snapshot?.summary ?? []}
+              pending={briefingPending}
+              sources={envelope?.settings.sources ?? []}
             />
             {routinesToolbar}
-            {orderedCards
-              .filter((card) => !effectiveHiddenCardIds.has(card.id))
-              .map((card) => (
-                <RecommendationGeneratedCardView
-                  card={card}
-                  key={card.id}
-                  onAction={performAction}
-                  onOpenTask={onOpenTask}
-                  onOpenUrl={onOpenUrl}
-                  sources={envelope.settings.sources}
-                />
-              ))}
+            {briefingPending ? (
+              // The briefing is not on screen yet, or is being replaced: its
+              // cards give way to their shape until a briefing is read.
+              <RecommendationsSkeleton
+                groups={cardSkeletonLines}
+                testId={
+                  initialLoading
+                    ? "recommendations-loading"
+                    : "recommendations-refreshing"
+                }
+              />
+            ) : (
+              orderedCards
+                .filter((card) => !effectiveHiddenCardIds.has(card.id))
+                .map((card) => (
+                  <RecommendationGeneratedCardView
+                    card={card}
+                    key={card.id}
+                    onAction={performAction}
+                    onOpenTask={onOpenTask}
+                    onOpenUrl={onOpenUrl}
+                    sources={envelope?.settings.sources ?? []}
+                  />
+                ))
+            )}
           </ScrollArea>
         ) : (
+          // No briefing to show. An unreadable projection keeps only the rail
+          // header.
           <>
+            {reconnectNotice}
             {routinesToolbar}
             {isRefreshing ? (
               // A refresh is generating from the moment the member asks for
@@ -894,20 +828,7 @@ export const RecommendationRail = memo(function RecommendationRail({
                   {messages.recommendations_generating()}
                 </p>
               </RecommendationsEmptyState>
-            ) : !envelope ? (
-              // An unreadable projection is a toast; the rail keeps its header.
-              error ? null : (
-                <RecommendationsEmptyState
-                  showLogos={false}
-                  sources={undefined}
-                  testId="recommendations-loading"
-                >
-                  <p className="comma-recommendations-empty-copy">
-                    <LoadingIndicator label={messages.common_loading()} />
-                  </p>
-                </RecommendationsEmptyState>
-              )
-            ) : discoveringSources ? (
+            ) : !envelope ? null : discoveringSources ? (
               <RecommendationsEmptyState
                 sources={envelope.settings.sources}
                 testId="recommendations-discovering"
@@ -922,7 +843,9 @@ export const RecommendationRail = memo(function RecommendationRail({
                 testId="recommendations-ready"
               >
                 <p className="comma-recommendations-empty-copy">
-                  {messages.recommendations_ready()}
+                  {envelope.lastError === "renderer_declined"
+                    ? messages.recommendations_nothing_new()
+                    : messages.recommendations_ready()}
                 </p>
               </RecommendationsEmptyState>
             ) : (
@@ -979,13 +902,10 @@ const maxEmptyStateSourceLogos = sampleSourceLogos.length;
 // stack of app marks, one line of copy and an optional action.
 function RecommendationsEmptyState({
   children,
-  showLogos = true,
   sources,
   testId,
 }: {
   children: ReactNode;
-  /** The error state (Figma 1205:13333) shows copy + action only. */
-  showLogos?: boolean;
   sources: readonly RecommendationSource[] | undefined;
   testId: string;
 }) {
@@ -994,16 +914,51 @@ function RecommendationsEmptyState({
     .slice(0, maxEmptyStateSourceLogos);
   return (
     <div className="comma-recommendations-empty-state" data-testid={testId}>
-      {showLogos ? (
-        <div aria-hidden="true" className="comma-recommendations-empty-logos">
-          {connectedSources.length > 0
-            ? connectedSources.map((source) => (
-                <LinkProviderIcon key={source.connectionId} source={source} />
-              ))
-            : sampleSourceLogos}
-        </div>
-      ) : null}
+      <div aria-hidden="true" className="comma-recommendations-empty-logos">
+        {connectedSources.length > 0
+          ? connectedSources.map((source) => (
+              <LinkProviderIcon key={source.connectionId} source={source} />
+            ))
+          : sampleSourceLogos}
+      </div>
       {children}
+    </div>
+  );
+}
+
+// Line widths for the briefing's placeholder: one group for the summary body,
+// and one per card (its title, then its rows).
+const summarySkeletonLines = [["w-full", "w-5/6", "w-2/3"]] as const;
+const cardSkeletonLines = [
+  ["w-1/3", "w-5/6", "w-3/4", "w-2/5"],
+  ["w-1/4", "w-2/3", "w-5/6"],
+  ["w-1/3", "w-3/4", "w-1/2"],
+] as const;
+
+// The briefing's shape while a refresh regenerates it, in the command palette
+// preview's skeleton (TaskConversationPreview): pulsing rounded bars, grouped
+// the way the lines they stand in for are grouped. The rail's own status line
+// announces the refresh, so the bars stay out of the accessibility tree.
+function RecommendationsSkeleton({
+  groups,
+  testId,
+}: {
+  groups: readonly (readonly string[])[];
+  testId?: string;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex flex-col gap-2xl motion-safe:animate-pulse"
+      data-testid={testId}
+    >
+      {groups.map((widths, group) => (
+        <div className="flex flex-col items-start gap-sm" key={group}>
+          {widths.map((width, line) => (
+            <span className={`h-3 rounded-full bg-quaternary ${width}`} key={line} />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1986,6 +1941,17 @@ function RecommendationLinkHoverCard({
 
   const handleOpenChange = (open: boolean) => {
     if (!open || link.previewText || !richPreview || preview !== undefined) return;
+    // A settled answer renders at once: no skeleton flash, no request.
+    const cached = peekRecommendationLinkPreview(
+      previewContext.api,
+      previewContext.workspaceId,
+      { href: link.href, sourceId: link.sourceId }
+    );
+    if (cached === "missing") return;
+    if (cached) {
+      setPreview(cached);
+      return;
+    }
     const generation = ++requestGeneration.current;
     setPreview("loading");
     void loadRecommendationLinkPreview(previewContext.api, previewContext.workspaceId, {
@@ -2128,6 +2094,7 @@ export function RecommendationSummary({
   onOpenTask,
   onOpenUrl,
   parts,
+  pending = false,
   sources = [],
 }: {
   fallbackTitle: string;
@@ -2135,6 +2102,8 @@ export function RecommendationSummary({
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   parts: readonly RecommendationDocumentPart[];
+  /** A refresh is regenerating the body; the greeting stays, it is not model output. */
+  pending?: boolean;
   sources?: readonly RecommendationSource[];
 }) {
   const messages = useCommaMessages();
@@ -2149,7 +2118,9 @@ export function RecommendationSummary({
   return (
     <section className="comma-recommendations-summary">
       <h1>{title}</h1>
-      {body.length > 0 ? (
+      {pending ? (
+        <RecommendationsSkeleton groups={summarySkeletonLines} />
+      ) : body.length > 0 ? (
         <RecommendationDocument
           className="comma-recommendations-summary-body"
           onOpenTask={onOpenTask}

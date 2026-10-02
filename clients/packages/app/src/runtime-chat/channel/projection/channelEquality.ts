@@ -16,6 +16,9 @@ export function sameChannelMessage(previous: ChatMessage, next: ChatMessage) {
     previous.delivery === next.delivery &&
     previous.error === next.error &&
     previous.messageId === next.messageId &&
+    previous.platformSource === next.platformSource &&
+    previous.replyToMessageId === next.replyToMessageId &&
+    previous.threadRootMessageId === next.threadRootMessageId &&
     previous.role === next.role &&
     previous.source === next.source &&
     previous.status === next.status &&

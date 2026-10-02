@@ -139,6 +139,15 @@ function apiWithoutSnapshot(
 const withStableMaskIds = (markup: string | undefined) =>
   markup?.replaceAll(/[a-z-]*provider-logo-[^")]+/g, "provider-logo");
 
+const routinesHeadingFollowsGreeting = () =>
+  Boolean(
+    screen
+      .getByRole("heading", { level: 1 })
+      .compareDocumentPosition(
+        screen.getByRole("heading", { level: 2, name: "Routines" })
+      ) & Node.DOCUMENT_POSITION_FOLLOWING
+  );
+
 describe("RecommendationRail", () => {
   it("reconciles and reorders current-snapshot routine cards without losing new cards", () => {
     expect(
@@ -210,10 +219,10 @@ describe("RecommendationRail", () => {
     expect(pausedApi.getRecommendations).not.toHaveBeenCalled();
   });
 
-  it("reports the UI language so the briefing is generated in it", async () => {
+  it("re-reads the briefing once when the app language changes", async () => {
     const localeApi = api();
-    const { rerender } = render(
-      <CommaI18nProvider locale="en">
+    const rail = (locale: "en" | "zh-CN") => (
+      <CommaI18nProvider locale={locale}>
         <RecommendationRail
           api={localeApi}
           onOpenTask={vi.fn()}
@@ -223,33 +232,18 @@ describe("RecommendationRail", () => {
         />
       </CommaI18nProvider>
     );
+    const { rerender } = render(rail("en"));
 
-    await waitFor(() => expect(localeApi.getRecommendations).toHaveBeenCalled());
-    expect(localeApi.getRecommendations).toHaveBeenLastCalledWith(
-      "wsp_1",
-      expect.objectContaining({ locale: "en" })
-    );
+    await waitFor(() => expect(localeApi.getRecommendations).toHaveBeenCalledTimes(1));
+    // The language is an account setting; a read never carries it.
+    expect(localeApi.getRecommendations).toHaveBeenLastCalledWith("wsp_1", {
+      timezone: expect.any(String),
+    });
 
-    // Switching the language has to refetch: that request is what re-pins the
-    // renderer's output language for the next briefing.
-    rerender(
-      <CommaI18nProvider locale="zh-CN">
-        <RecommendationRail
-          api={localeApi}
-          onOpenTask={vi.fn()}
-          onOpenUrl={vi.fn()}
-          onUsePrompt={vi.fn()}
-          workspaceId="wsp_1"
-        />
-      </CommaI18nProvider>
-    );
-
-    await waitFor(() =>
-      expect(localeApi.getRecommendations).toHaveBeenLastCalledWith(
-        "wsp_1",
-        expect.objectContaining({ locale: "zh-CN" })
-      )
-    );
+    // The server regenerates on a language change, so the rail reads at once
+    // to show that run instead of the old language.
+    rerender(rail("zh-CN"));
+    await waitFor(() => expect(localeApi.getRecommendations).toHaveBeenCalledTimes(2));
   });
 
   it("does not re-render recommendation documents when its stable props are repeated", async () => {
@@ -409,7 +403,7 @@ describe("RecommendationRail", () => {
     expect(await screen.findByText("Generating your briefing…")).toBeInTheDocument();
     expect(
       await screen.findByText(
-        "Couldn’t generate your briefing.",
+        "Refresh to generate your first briefing.",
         {},
         { timeout: 3_000 }
       )
@@ -445,7 +439,7 @@ describe("RecommendationRail", () => {
     expect(await screen.findByText("Generating your briefing…")).toBeInTheDocument();
     expect(
       await screen.findByText(
-        "Couldn’t generate your briefing.",
+        "Refresh to generate your first briefing.",
         {},
         { timeout: 6_000 }
       )
@@ -535,14 +529,16 @@ describe("RecommendationRail", () => {
     // The toast surface mounts a raised toast on its next tick.
     await act(async () => vi.advanceTimersByTimeAsync(1));
 
-    expect(screen.getByText("Couldn’t generate your briefing.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Refresh to generate your first briefing.")
+    ).toBeInTheDocument();
     expect(manualRefreshApi.getRecommendations).toHaveBeenCalledTimes(3);
     // A failed generation is terminal: no discovery checks keep re-reading it.
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expect(manualRefreshApi.getRecommendations).toHaveBeenCalledTimes(3);
   });
 
-  it("reports a terminal generation error in a toast, not in the rail", async () => {
+  it("keeps a terminal generation error out of the UI", async () => {
     const { container } = render(
       <RecommendationRail
         api={apiWithoutSnapshot(true, "error")}
@@ -553,25 +549,20 @@ describe("RecommendationRail", () => {
       />
     );
 
-    expect(await screen.findByTestId("routine-problem-toast")).toHaveTextContent(
-      "Couldn’t generate your briefing."
-    );
     const rail = container.querySelector<HTMLElement>(".comma-recommendations")!;
-    expect(within(rail).queryByText("Couldn’t generate your briefing.")).toBeNull();
     expect(
-      within(rail).getByText("Refresh to generate your first briefing.")
+      await within(rail).findByText("Refresh to generate your first briefing.")
     ).toBeInTheDocument();
-    expect(screen.queryByText("Routines are unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument();
   });
 
   it.each([
+    // An empty day is a result, not a failure: the rail says so in place.
     ["renderer_declined", "Nothing new in your apps to brief today."],
-    [
-      "member_identity_required",
-      "Reconnect your apps in Plugins to verify your personal account.",
-    ],
+    // The member cannot fix a missing identity stamp; the rail stays neutral.
+    ["member_identity_required", "Refresh to generate your first briefing."],
   ] as const)(
-    "reads failure class %s into actionable copy",
+    "shows failure class %s as neutral rail copy",
     async (lastError, copy) => {
       const declinedApi = apiWithoutSnapshot(true, "error");
       const declined = await declinedApi.getRecommendations("wsp_1", {
@@ -592,11 +583,12 @@ describe("RecommendationRail", () => {
       );
 
       expect(await screen.findByText(copy)).toBeInTheDocument();
+      expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
     }
   );
 
-  it("shows the projection as unavailable and keeps the header refresh as the way back", async () => {
+  it("keeps an unreadable projection quiet and the header refresh as the way back", async () => {
     const offlineApi = {
       getRecommendations: vi.fn().mockRejectedValue(new Error("network down")),
       refreshRecommendations: vi.fn().mockRejectedValue(new Error("network down")),
@@ -611,12 +603,9 @@ describe("RecommendationRail", () => {
       />
     );
 
-    expect(await screen.findByTestId("routine-problem-toast")).toHaveTextContent(
-      "Routines are unavailable"
-    );
-    expect(
-      screen.queryByText("Couldn’t generate your briefing.")
-    ).not.toBeInTheDocument();
+    await waitFor(() => expect(offlineApi.getRecommendations).toHaveBeenCalled());
+    await act(async () => Promise.resolve());
+    expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument();
     // An unreadable projection lists no sources, and the header still refreshes.
     const refresh = screen.getByRole("button", { name: "Refresh" });
     expect(refresh).toBeEnabled();
@@ -659,15 +648,10 @@ describe("RecommendationRail", () => {
       />
     );
 
-    await screen.findByTestId("routine-problem-toast");
+    await screen.findByText("Refresh to generate your first briefing.");
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     // The refresh request is still collecting sources on the server.
     expect(await screen.findByTestId("recommendations-generating")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        screen.queryByText("Couldn’t generate your briefing.")
-      ).not.toBeInTheDocument()
-    );
     expect(finishRefresh).toBeDefined();
   });
 
@@ -686,12 +670,12 @@ describe("RecommendationRail", () => {
       />
     );
 
-    await screen.findByTestId("routine-problem-toast");
+    await screen.findByText("Refresh to generate your first briefing.");
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    // The member asked for this refresh, so its refusal is answered.
     expect(
       await screen.findByText("Too many refreshes in the last hour. Try again later.")
     ).toBeInTheDocument();
-    expect(screen.queryByText("Routines are unavailable")).not.toBeInTheDocument();
     // The header refresh stays the way to try again.
     expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
   });
@@ -754,7 +738,7 @@ describe("RecommendationRail", () => {
   });
 
   it("stops polling a server-owned run whose projection can no longer be read", async () => {
-    // Under fake timers the toast surface is not driven; assert the raised toast.
+    // Under fake timers the toast surface is not driven; assert no toast is raised.
     const toastError = vi.spyOn(toast, "error");
     vi.useFakeTimers();
     const refreshingApi = apiWithoutSnapshot(true, "refreshing");
@@ -780,13 +764,8 @@ describe("RecommendationRail", () => {
 
     // Two-second polls fail for longer than any run can live.
     await act(async () => vi.advanceTimersByTimeAsync(100_000));
-    expect(toastError).toHaveBeenCalledWith(
-      "Routines",
-      expect.objectContaining({
-        description: "Routines are unavailable",
-        testId: "routine-problem-toast",
-      })
-    );
+    expect(toastError).not.toHaveBeenCalled();
+    expect(screen.queryByText("Generating your briefing…")).not.toBeInTheDocument();
     const callsAtStop = vi.mocked(refreshingApi.getRecommendations).mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expect(refreshingApi.getRecommendations).toHaveBeenCalledTimes(callsAtStop);
@@ -855,6 +834,99 @@ describe("RecommendationRail", () => {
     expect(
       screen.queryByText("Couldn’t update routines. Showing the previous briefing.")
     ).not.toBeInTheDocument();
+  });
+
+  it("lays out the first read as a briefing so the routines heading holds its place", async () => {
+    const briefingApi = api();
+    const current = await briefingApi.getRecommendations("wsp_1", { timezone: "UTC" });
+    let answer!: () => void;
+    vi.mocked(briefingApi.getRecommendations).mockReturnValueOnce(
+      new Promise((resolve) => {
+        answer = () => resolve(current);
+      })
+    );
+    render(
+      <RecommendationRail
+        api={briefingApi}
+        greetingName="Zanwei"
+        onOpenTask={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
+      />
+    );
+
+    expect(await screen.findByTestId("recommendations-loading")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Zanwei");
+    expect(routinesHeadingFollowsGreeting()).toBe(true);
+
+    await act(async () => answer());
+
+    expect(
+      await screen.findByRole("heading", { name: "Document" })
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("recommendations-loading")).not.toBeInTheDocument();
+    expect(routinesHeadingFollowsGreeting()).toBe(true);
+  });
+
+  it("replaces the briefing with its skeleton while a refresh regenerates it", async () => {
+    const briefingApi = api();
+    const current = await briefingApi.getRecommendations("wsp_1", { timezone: "UTC" });
+    const snapshot = recommendationSnapshot();
+    const next = {
+      ...current,
+      snapshot: {
+        ...snapshot,
+        cards: [{ ...snapshot.cards[0]!, title: "Planning" }],
+        generation: 2,
+        generatedAt: 2,
+      },
+    };
+    let publish!: () => void;
+    vi.mocked(briefingApi.refreshRecommendations).mockReturnValue(
+      new Promise((resolve) => {
+        publish = () =>
+          resolve({
+            envelope: next,
+            run: {
+              generation: 2,
+              id: "rrn_manual",
+              sourceRevision: 1,
+              status: "published",
+              trigger: "manual",
+            },
+          });
+      })
+    );
+    render(
+      <RecommendationRail
+        api={briefingApi}
+        greetingName="Zanwei"
+        onOpenTask={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
+      />
+    );
+
+    await screen.findByRole("heading", { name: "Document" });
+    expect(screen.queryByTestId("recommendations-refreshing")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByTestId("recommendations-refreshing")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Document" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/before standup/)).not.toBeInTheDocument();
+    // The greeting is not model output, so it holds through the refresh.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Zanwei");
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
+
+    await act(async () => publish());
+
+    expect(
+      await screen.findByRole("heading", { name: "Planning" })
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("recommendations-refreshing")).not.toBeInTheDocument();
+    expect(screen.getByText(/before standup/)).toBeInTheDocument();
   });
 
   it("measures the wait until the next daily delivery on the schedule's clock", () => {
@@ -1318,6 +1390,46 @@ describe("RecommendationRail", () => {
 
     await screen.findByText("No routines created yet");
     fireEvent.click(screen.getByRole("button", { name: "Connect apps" }));
+    expect(onConnectApps).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a source only the member can repair and sends Reconnect to Plugins", async () => {
+    const onConnectApps = vi.fn();
+    render(
+      <RecommendationRail
+        api={api(recommendationSnapshot(), [
+          {
+            appId: "slack",
+            appName: "Slack",
+            connectionId: "slack-binding",
+            enabled: true,
+            kind: "managed_oauth" as const,
+            label: "Slack",
+            needsReconnect: true,
+          },
+          {
+            appId: "linear",
+            appName: "Linear",
+            connectionId: "linear-account",
+            enabled: true,
+            kind: "composio" as const,
+            label: "Linear",
+            needsReconnect: false,
+          },
+        ])}
+        onConnectApps={onConnectApps}
+        onOpenTask={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
+      />
+    );
+
+    expect(await screen.findByTestId("routine-reconnect-notice")).toHaveTextContent(
+      "Routines can’t read Slack. Reconnect to continue."
+    );
+    expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(onConnectApps).toHaveBeenCalledTimes(1);
   });
 
@@ -2050,8 +2162,8 @@ describe("RecommendationRail", () => {
     expect(chipMarkup).not.toBe(puzzleIcon.querySelector("svg")?.innerHTML);
   });
 
-  it("surfaces bounded partial-source warnings as toasts", async () => {
-    const snapshot = {
+  it("keeps partial-source warnings and a stale briefing out of the UI", async () => {
+    const staleApi = api({
       ...recommendationSnapshot(),
       warnings: [
         {
@@ -2060,11 +2172,15 @@ describe("RecommendationRail", () => {
           sourceIds: ["notion-account"],
         },
       ],
-    };
+    });
+    vi.mocked(staleApi.getRecommendations).mockResolvedValue({
+      ...(await staleApi.getRecommendations("wsp_1")),
+      state: "stale",
+    });
 
-    render(
+    const { container } = render(
       <RecommendationRail
-        api={api(snapshot)}
+        api={staleApi}
         onOpenTask={vi.fn()}
         onOpenUrl={vi.fn()}
         onUsePrompt={vi.fn()}
@@ -2072,50 +2188,18 @@ describe("RecommendationRail", () => {
       />
     );
 
-    expect(await screen.findByTestId("routine-warning-toast")).toHaveTextContent(
-      "Notion was temporarily unavailable."
-    );
-    expect(
-      within(
-        document.querySelector<HTMLElement>(".comma-recommendations")!
-      ).queryByText("Notion was temporarily unavailable.")
-    ).toBeNull();
-  });
-
-  it("announces a failed refresh once per window session while the briefing stays", async () => {
-    const staleApi = api();
-    vi.mocked(staleApi.getRecommendations).mockResolvedValue({
-      ...(await staleApi.getRecommendations("wsp_1")),
-      state: "stale",
-    });
-    const props = {
-      api: staleApi,
-      onOpenTask: vi.fn(),
-      onOpenUrl: vi.fn(),
-      onUsePrompt: vi.fn(),
-      workspaceId: "wsp_1",
-    };
-
-    const first = render(<RecommendationRail {...props} />);
-    expect(await screen.findByTestId("routine-problem-toast")).toHaveTextContent(
-      "Couldn’t update routines. Showing the previous briefing."
-    );
-    expect(
-      within(
-        first.container.querySelector<HTMLElement>(".comma-recommendations")!
-      ).queryByText("Couldn’t update routines. Showing the previous briefing.")
-    ).toBeNull();
-
-    // Returning to Home in the same window does not repeat the notice.
-    first.unmount();
-    act(() => toast.dismissAll());
+    // The previous briefing stays on screen without a problem notice.
     await waitFor(() =>
-      expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument()
+      expect(container.querySelector(".comma-recommendations")).toHaveAttribute(
+        "data-state",
+        "stale"
+      )
     );
-    render(<RecommendationRail {...props} />);
-    await waitFor(() => expect(staleApi.getRecommendations).toHaveBeenCalledTimes(3));
+    expect(container.querySelector(".comma-recommendations-scroll")).not.toBeNull();
     await act(async () => Promise.resolve());
     expect(screen.queryByTestId("routine-problem-toast")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("routine-warning-toast")).not.toBeInTheDocument();
+    expect(screen.queryByText("Notion was temporarily unavailable.")).toBeNull();
   });
 
   it("reloads canonical sources after a rejected refresh instead of retaining mock cards", async () => {

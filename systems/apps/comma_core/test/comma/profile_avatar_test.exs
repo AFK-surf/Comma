@@ -135,13 +135,46 @@ defmodule Comma.ProfileAvatarTest do
   end
 
   test "profile names are trimmed and bounded", %{user: user} do
-    assert {:ok, profile} = ProfileAvatar.update_name(user["id"], %{"name" => "  Ada  "})
+    assert {:ok, profile} = ProfileAvatar.update(user["id"], %{"name" => "  Ada  "})
     assert profile["name"] == "Ada"
 
-    assert {:error, :name_required} = ProfileAvatar.update_name(user["id"], %{"name" => " "})
+    assert {:error, :name_required} = ProfileAvatar.update(user["id"], %{"name" => " "})
 
     assert {:error, :name_too_long} =
-             ProfileAvatar.update_name(user["id"], %{"name" => String.duplicate("a", 65)})
+             ProfileAvatar.update(user["id"], %{"name" => String.duplicate("a", 65)})
+  end
+
+  test "the app language is an account setting with a closed set of values", %{user: user} do
+    assert {:ok, %{"locale" => nil}} = ProfileAvatar.get(user["id"])
+    assert Comma.Accounts.locale(user["id"]) == "en"
+
+    assert {:ok, %{"locale" => "zh-CN", "name" => name}} =
+             ProfileAvatar.update(user["id"], %{"locale" => "zh-CN"})
+
+    assert name == user["name"]
+    assert Comma.Accounts.locale(user["id"]) == "zh-CN"
+
+    # A follow-OS value or free text never becomes the stored language.
+    assert {:error, :invalid_locale} = ProfileAvatar.update(user["id"], %{"locale" => "system"})
+    assert {:error, :invalid_profile} = ProfileAvatar.update(user["id"], %{})
+    assert Comma.Accounts.locale(user["id"]) == "zh-CN"
+  end
+
+  @tag :tmp_dir
+  test "avatars up to 2 MiB are stored and larger files are rejected", %{
+    user: user,
+    tmp_dir: tmp_dir
+  } do
+    png_header = <<0x89, "PNG\r\n", 0x1A, "\n">>
+    at_limit = Path.join(tmp_dir, "at-limit.png")
+    over_limit = Path.join(tmp_dir, "over-limit.png")
+    File.write!(at_limit, [png_header, :binary.copy(<<0>>, 2_097_152 - 8)])
+    File.write!(over_limit, [png_header, :binary.copy(<<0>>, 2_097_152 - 7)])
+
+    assert {:ok, profile} = ProfileAvatar.upload(user["id"], %{path: at_limit})
+    assert Repo.get!(UserAvatar, profile["avatar_id"]).byte_size == 2_097_152
+
+    assert {:error, :avatar_too_large} = ProfileAvatar.upload(user["id"], %{path: over_limit})
   end
 
   @tag :tmp_dir

@@ -1,5 +1,12 @@
 import { TaskDetailsPanel } from "../../tasks/TaskDetailsPanel";
-import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@comma/test-utils/render";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommaApiClient } from "../../../../api";
 import { ConversationThread } from "../ConversationThread";
@@ -70,6 +77,186 @@ const fileCard = (position: number) =>
   screen.queryByTestId(`chat-attachment-file-msg_agent_media-${position}`);
 
 describe("real chat Markdown and attachment composition", () => {
+  it("keeps a streamed Comma reply in its source turn when an external user message arrives", async () => {
+    const home = message("msg_home", "user", "Home question");
+    const external = message("msg_wechat", "user", "WeChat question", {
+      platformSource: "wechat",
+    });
+    const draft = {
+      conversationId: "cnv_1",
+      draftId: "draft_home",
+      responseKey: "response_home",
+      sourceMessageIds: [home.messageId],
+      status: "streaming" as const,
+      text: "Working on the Home question",
+    };
+    const common = {
+      groupId: "grp_1",
+      workspaceId: "wsp_1",
+      onDiscard: noop,
+      onRetry: noop,
+    };
+    const { container, rerender } = render(
+      <ConversationThread {...common} messages={[home]} assistantDraft={draft} />
+    );
+    const draftNode = await screen.findByTestId("chat-assistant-draft");
+    rerender(
+      <ConversationThread
+        {...common}
+        messages={[home, external]}
+        assistantDraft={draft}
+      />
+    );
+    expect(screen.getByTestId("chat-assistant-draft")).toBe(draftNode);
+    expect(draftNode.closest("[data-turn-key]")).toBe(
+      container
+        .querySelector('[data-message-id="msg_home"]')
+        ?.closest("[data-turn-key]")
+    );
+    expect(draftNode.closest("[data-turn-key]")).not.toContainElement(
+      screen.getByText("WeChat question")
+    );
+  });
+
+  it("hands the streamed Comma row to its own reply when a platform reply shares the snapshot", async () => {
+    const home = message("msg_home", "user", "Home question");
+    const draft = {
+      conversationId: "cnv_1",
+      draftId: "draft_home",
+      responseKey: "response_home",
+      sourceMessageIds: [home.messageId],
+      status: "completed" as const,
+      text: "Home answer",
+    };
+    const common = {
+      groupId: "grp_1",
+      workspaceId: "wsp_1",
+      onDiscard: noop,
+      onRetry: noop,
+    };
+    const { container, rerender } = render(
+      <ConversationThread {...common} messages={[home]} assistantDraft={draft} />
+    );
+    const draftNode = await screen.findByTestId("chat-assistant-draft");
+    rerender(
+      <ConversationThread
+        {...common}
+        messages={[
+          home,
+          message("msg_home_reply", "assistant", "Home answer"),
+          message("msg_telegram_reply", "assistant", "Telegram answer", {
+            platformSource: "telegram",
+          }),
+        ]}
+      />
+    );
+    expect(container.querySelector('[data-message-id="msg_home_reply"]')).toBe(
+      draftNode
+    );
+    expect(container.querySelector('[data-message-id="msg_telegram_reply"]')).not.toBe(
+      draftNode
+    );
+    expect(draftNode.querySelector("[data-platform]")).toBeNull();
+  });
+
+  it("renders external source text literally instead of interpreting Comma composer metadata", () => {
+    const text = [
+      "Quoted from this conversation:",
+      "> Literal quote text",
+      "",
+      "[A task](comma:task/cnv_literal)",
+      "",
+      "Attached files in your workspace:",
+      "- report.txt (workspace file: /report.txt)",
+      "",
+      "<user-reminder>",
+      '<browser-element-inspection id="literal" />',
+      "<browser_element_context>literal context</browser_element_context>",
+      "</user-reminder>",
+    ].join("\n");
+    const command = "<salix-command>stop</salix-command>";
+    const { container } = render(
+      <ConversationThread
+        groupId="grp_1"
+        workspaceId="wsp_1"
+        messages={[
+          message("msg_literal", "user", text, { platformSource: "wechat" }),
+          message("msg_command", "user", command, { platformSource: "telegram" }),
+        ]}
+        onDiscard={noop}
+        onRetry={noop}
+      />
+    );
+    expect(
+      container.querySelector(
+        '[data-message-id="msg_literal"] .comma-chat-user-bubble-content'
+      )?.textContent
+    ).toBe(text);
+    expect(
+      container.querySelector(
+        '[data-message-id="msg_command"] .comma-chat-user-bubble-content'
+      )?.textContent
+    ).toBe(command);
+    expect(screen.queryByTestId("chat-message-quote")).toBeNull();
+    expect(container.querySelector('[data-testid^="chat-inline-task"]')).toBeNull();
+  });
+
+  it("identifies external user messages beside the copy action while keeping agent replies visible", async () => {
+    const { container } = render(
+      <ConversationThread
+        defaultAssistantActorRole="router"
+        groupId="grp_1"
+        workspaceId="wsp_1"
+        messages={[
+          message("msg_wechat_user", "user", "WeChat question", {
+            platformSource: "wechat",
+          }),
+          message("msg_wechat_reply", "assistant", "WeChat answer", {
+            actorRole: "router",
+            platformSource: "wechat",
+            threadRootMessageId: "msg_wechat_user",
+          }),
+          message("msg_telegram_reply", "assistant", "Telegram answer", {
+            actorRole: "router",
+            platformSource: "telegram",
+            threadRootMessageId: "msg_wechat_user",
+          }),
+          message("msg_home_user", "user", "Home question"),
+          message("msg_home_reply", "assistant", "Home answer"),
+        ]}
+        onDiscard={noop}
+        onRetry={noop}
+      />
+    );
+
+    await screen.findByText("WeChat answer");
+    await screen.findByText("Telegram answer");
+    const article = container.querySelector('[data-message-id="msg_wechat_user"]')!;
+    const actions = within(article as HTMLElement).getByTestId(
+      "chat-message-actions-msg_wechat_user"
+    );
+    expect(within(actions).getByText("WeChat", { exact: true })).toBeInTheDocument();
+    expect(
+      within(actions).getByRole("button", { name: "Copy message" })
+    ).toBeInTheDocument();
+    for (const id of [
+      "msg_wechat_reply",
+      "msg_telegram_reply",
+      "msg_home_user",
+      "msg_home_reply",
+    ]) {
+      expect(
+        container.querySelector(`[data-message-id="${id}"] [data-platform]`)
+      ).toBeNull();
+    }
+    expect(
+      container.querySelector('[data-message-id="msg_wechat_reply"]')
+    ).toHaveAttribute("data-message-group-last", "true");
+    expect(
+      container.querySelector('[data-message-id="msg_telegram_reply"]')
+    ).toHaveAttribute("data-message-group-first", "true");
+  });
+
   it("uses the same Worker colors in messages and Task details", async () => {
     vi.stubGlobal("crypto", process.getBuiltinModule("crypto").webcrypto);
     const agentId = "agt1_worker_1";

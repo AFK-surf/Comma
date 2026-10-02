@@ -87,6 +87,90 @@ defmodule SalixStore.ConfigJsonTest do
     "future_section" => %{"unknown" => true}
   }
 
+  describe "comma.apns" do
+    test "secret-backed profiles are selected independently and allow both Comma topics" do
+      sandbox = %{
+        "team_id" => "SANDBOXTEAM",
+        "key_id" => "SANDBOXKEY",
+        "private_key" => "test-only-pem",
+        "allowed_bundle_ids" => ["surf.comma.ios", "surf.comma.ios.dev"]
+      }
+
+      production =
+        Map.merge(sandbox, %{
+          "team_id" => "PRODTEAM",
+          "key_id" => "PRODKEY",
+          "legacy_bundle_id" => "surf.comma.ios"
+        })
+
+      json = %{"comma" => %{"apns" => %{"sandbox" => sandbox, "production" => production}}}
+      config = ConfigJson.apns_config(json)
+      assert config[:profiles]["sandbox"][:key_id] == "SANDBOXKEY"
+      assert config[:profiles]["production"][:key_id] == "PRODKEY"
+      assert config[:profiles]["production"][:private_key] == "test-only-pem"
+      assert config[:profiles]["sandbox"][:legacy_bundle_id] == nil
+      assert config[:profiles]["production"][:legacy_bundle_id] == "surf.comma.ios"
+      assert {:comma_core, :apns, config} in ConfigJson.app_env(json)
+    end
+
+    test "only absent structured configuration admits explicit local legacy mapping" do
+      legacy = [
+        team_id: "LEGACYTEAM",
+        key_id: "LEGACYKEY",
+        private_key: "test-only-pem",
+        bundle_id: "surf.comma.ios"
+      ]
+
+      assert ConfigJson.apns_config(%{}) == nil
+      config = ConfigJson.apns_config(%{}, legacy)
+      assert config[:profiles]["sandbox"][:legacy_bundle_id] == "surf.comma.ios"
+      assert config[:profiles]["production"][:allowed_bundle_ids] == ["surf.comma.ios"]
+      assert ConfigJson.apns_config(%{"comma" => %{"apns" => %{}}}, legacy) == [profiles: %{}]
+
+      assert_raise ArgumentError, fn ->
+        ConfigJson.apns_config(%{"comma" => %{"apns" => nil}}, legacy)
+      end
+
+      sandbox = %{
+        "team_id" => "TEAM",
+        "key_id" => "KEY",
+        "private_key" => "test-only-pem",
+        "allowed_bundle_ids" => ["surf.comma.ios.dev"]
+      }
+
+      config = ConfigJson.apns_config(%{"comma" => %{"apns" => %{"sandbox" => sandbox}}}, legacy)
+      assert config[:profiles]["production"] == nil
+      assert config[:profiles]["sandbox"][:legacy_bundle_id] == nil
+    end
+
+    test "malformed signing profiles fail without disclosing their secret values" do
+      secret = "test-secret-must-not-appear-in-error"
+
+      profile = %{
+        "team_id" => "TEAM",
+        "key_id" => "KEY",
+        "private_key" => secret,
+        "allowed_bundle_ids" => ["surf.comma.ios"]
+      }
+
+      for invalid <- [
+            Map.delete(profile, "key_id"),
+            Map.put(profile, "allowed_bundle_ids", ["other.apple.app"]),
+            Map.put(profile, "allowed_bundle_ids", []),
+            Map.put(profile, "legacy_bundle_id", "surf.comma.ios.dev"),
+            Map.put(profile, "privateKey", secret),
+            true
+          ] do
+        error =
+          assert_raise ArgumentError, fn ->
+            ConfigJson.apns_config(%{"comma" => %{"apns" => %{"production" => invalid}}})
+          end
+
+        refute Exception.message(error) =~ secret
+      end
+    end
+  end
+
   describe "comma.synchronicity" do
     for {name, base_url, normalized} <- [
           {"maps a complete integration config and normalizes the origin",

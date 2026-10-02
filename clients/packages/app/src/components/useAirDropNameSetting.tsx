@@ -26,7 +26,7 @@ export function useAirDropNameSetting({
 }: {
   pending: boolean;
   preferences: AppPreferences | null;
-  update: (patch: AppPreferencesPatch) => Promise<void>;
+  update: (patch: AppPreferencesPatch) => Promise<unknown>;
 }) {
   const m = useCommaMessages();
   const auth = useCommaAuth();

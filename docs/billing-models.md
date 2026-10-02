@@ -2,18 +2,18 @@
 
 ## Financial authority
 
-PostgreSQL owns grants, sources, payments, and redemptions. Active `credit_grants` own spendable credits.
-ClickHouse projections cannot gate resources, compensation, or issuance.
-`BillingCore.FeeControl.authorize/1` owns fee decisions, cache, and pending replies. Checks stop at request timeout.
-Enforcement reads current facts. Failed queries preserve other cache entries. Stale refreshes cannot replace newer results.
+PostgreSQL owns grants, sources, payments and redemptions. Active `credit_grants` own the balance.
+ClickHouse cannot gate resources, compensation or issuance.
+`BillingCore.FeeControl.authorize/1` owns current-fact admission, cache and pending replies, within request timeout.
+Failed queries preserve cache entries; stale refreshes cannot replace newer results. See the [paid-work contract](architecture/DOMAIN_CONCEPTS.md#paid-work-admission).
 
-Product plan/package keys and provider lookup keys are stable identities. Stripe IDs are mappings.
+Plan/package keys and provider lookup keys are stable. Stripe IDs are mappings.
 Migrations seed catalogs. Release tasks synchronize providers with dry-run, retry, and drift failure.
 Redelivery locks every event except `processed`. Domain writes and that marker commit together.
 Failed provider GETs roll back. Correct the cause and request redelivery. No sweep or delivery-progress guarantee exists.
 Reconciliation reads Stripe under Account/Subscription locks.
 
-Comma sells nine `comma_*` keys. Historical mappings resolve events.
+Comma uses stable `comma_*` keys and provider sale metadata. Historical mappings resolve events.
 Monthly/yearly Prices share one Product per package. One nondefault Comma portal manages payment methods, invoices, and cancellation only.
 Changes stay within the paid cadence. One lower target applies at next monthly or annual renewal.
 Selecting the current tier clears that target. A higher tier requires confirmation of Stripe's invoice preview.
@@ -79,12 +79,12 @@ Base URLs: absolute HTTP(S), no user info/query/fragment.
 Discovery rejects redirects. Endpoint changes require a fresh Key.
 Bounds: five pages, 1,000 choices, 2 MB/response, 15 seconds overall, 5 seconds/read.
 Discovery: no retries or per-model calls. Partial catalogs set `truncated`. Manual entry remains.
-Add model links TokenDance under API key using Responses. Discovery and saved reads normalize TokenDance names/vendors only.
+Desktop Add profile links TokenDance in one step. Discovery and saved reads normalize TokenDance names/vendors only.
 Clients render metadata. IDs and aliases remain unchanged.
 `supported_protocols`: `responses`, `chat_completions`, `anthropic`. Missing means unknown. Empty means no recognized protocol.
-Selection assumes Responses without filtering. Unsupported calls return provider errors.
-Main owns PKCE, callback state, and Keys. Discovery/save reuse Tenant templates.
-Authorization/selection: ten minutes each. Polling: 1/second.
+Main saves one Custom `chat_completions` profile serving each listed model that declares it or no protocol.
+Main owns PKCE, callback state, and Keys. The renderer receives only the status and the model metadata.
+Authorization: ten minutes. Polling: 1/second.
 Exit, cancellation, expiry, Session loss, and shutdown clear local state, preserving Keys.
 TokenDance bills users. Build identity sets `app://{urlScheme}` and the Key name.
 [Code](../clients/apps/electron/src/main/tokendance-authorization.ts).
@@ -109,16 +109,14 @@ A template referenced by a configured default cannot be deleted until that point
 Unset platform roles use built-in `default` (`gpt-test`). Selectors show one `Default (model)` and omit built-in fallback choices.
 Concrete platform-default templates remain selectable without following later pointer changes.
 
-Comma selectors show Default, vendor, model, and ascending reasoning efforts, including single efforts.
-Vendor metadata or model ID determines groups/logos. Unknown vendors use generic icons. Routing preserves vendors.
-Choices show the model display name or ID. Template names are aliases, shown after dashboard choices or as Comma subtitles for duplicates.
-Model/connection edits clear display metadata unless replacements are supplied.
+Comma Model & API lists profiles and gives each Agent one picker: models by family, effort, and account (automatic or one profile).
+A Worker on a Codex or Claude Code compute runtime picks among its plan's models, with no account. Earlier template choices show until replaced.
+Salix and BFT selectors show the model display name or ID. Template names are aliases. Model/connection edits clear display metadata unless replacements are supplied.
 `SalixAgent.ModelDiscovery` serves Comma, Salix, and BFT with each surface's authorization and credential scope.
 API-key discovery retains these bounds and manual entry on failure. Salix scrolls returned matches. BFT shows up to 50. Search uses returned data.
-The API key model list and editor exclude subscription templates. Agent menus use saved API-key templates and discovered subscription models with efforts.
 Discovery retains at most 32 efforts per Codex model.
-Model & API manages subscription accounts. Visits, retries, or account changes refresh catalogs through two calls, without polling.
-Failure preserves choices and allows retry. No account means no models.
+Comma Custom and Ollama profiles list the endpoint's models once, when they connect. Visits, retries, or profile changes reload the catalog, profiles, and Agents without polling.
+Failure preserves choices and allows retry. A model no enabled profile serves is not offered.
 
 Migration `20260922000001_agent_creation_defaults` copies Tenant templates into empty Agent choices in pages of 100 conditional writes.
 It preserves explicit choices, conflicts, deleted records, unrelated fields, Agents, Sessions, credentials, and Tenant configuration.
@@ -138,7 +136,7 @@ Files and environment variables cannot configure this policy.
 A matching Comma Router main-model call does not require a positive model-credit balance and does not debit credits.
 The owner checks the actual Agent against the Workspace Router, tenant, and billing account.
 Workers, tools, auxiliary calls, compute, storage, account status, permissions, and interaction budgets retain their existing rules.
-This list does not change model selection or the price catalog. Existing BYOK and subscription exemptions remain separate.
+Model selection and prices are unchanged. BYOK and subscription exemptions remain separate.
 
 The message entry checks the current Router model. Each Round checks its actual model again before provider dispatch.
 Rounds retain admitted exemptions through asynchronous completion. List changes affect later admissions only.
@@ -154,10 +152,10 @@ Policy failures reject platform calls without charging. Usage-buffer loss and sh
 
 Workspace-owner APIs at `/v1/comma/workspaces/:workspace_id/subscription-accounts` expose AccountPool import, versioned update/delete, quota refresh and OAuth.
 The owner enforces tenant scope, encryption, versions, and OAuth ownership. Credential-free responses set `Cache-Control: no-store`.
-UI pages: 25 accounts, no account/quota polling. JSON imports: two megabytes, cleared on category/workspace change or cancellation.
+UI pages: 25 accounts, no account/quota polling. JSON imports (BFT only): two megabytes, cleared on category/workspace change or cancellation.
 
-Codex web enrollment uses device codes. Claude accepts callback URLs or authorization codes.
-Start Codex with `POST /oauth`, `mode: "device"`. Check through `POST /oauth/:id` with empty `code`.
+Device codes: Codex web, Grok, Kimi Code, Copilot. Callback URLs or codes: Claude, Gemini.
+Start with `POST /oauth` (Codex: `mode: "device"`). Check through `POST /oauth/:id` with empty `code`.
 Device IDs stay inside encrypted OAuth attempts. The browser receives only the user code, verification URL, interval, and expiry.
 One open enrollment polls one indexed attempt, never the account list. Polling stops on completion, failure, cancellation, or expiry.
 Each provider check has a 30-second budget. The provider interval is at least five seconds, with at most 180 checks per 15-minute attempt.

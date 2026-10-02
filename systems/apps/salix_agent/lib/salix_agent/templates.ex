@@ -203,6 +203,225 @@ defmodule SalixAgent.Templates do
     end
   end
 
+  @doc """
+  Reuse the private template for a catalog choice, or create it.
+
+  A catalog choice is a model, a reasoning effort and whether pay-per-use
+  Profiles may serve it. The template carries no endpoint or credential; each
+  request picks a Profile (see `SalixAgent.AccountPool`).
+  """
+  def resolve_private_catalog(model_id, effort, allow_paid, tenant_id, profile_id \\ nil)
+
+  def resolve_private_catalog(model_id, effort, allow_paid, tenant_id, profile_id)
+      when is_binary(model_id) and is_boolean(allow_paid) do
+    with :ok <- validate_tenant(tenant_id),
+         {:ok, model} <- catalog_or_custom(model_id, tenant_id),
+         true <- is_nil(effort) or effort in model["efforts"],
+         true <-
+           is_nil(profile_id) or
+             SalixAgent.AccountPool.profile_serves?(tenant_id, profile_id, model_id) do
+      # Pinning an API key is choosing to pay for it: such a choice is stored
+      # and reported with allow_paid true, whatever the request said.
+      allow_paid =
+        allow_paid or
+          (is_binary(profile_id) and SalixAgent.AccountPool.key_profile?(tenant_id, profile_id))
+
+      SalixStore.Repo.transaction(
+        fn ->
+          with :ok <- lock_subscription_templates(tenant_id),
+               {:ok, templates} <- list_private(tenant_id) do
+            found =
+              templates
+              |> Enum.sort_by(& &1["template_id"])
+              |> Enum.find(fn template ->
+                config = template["provider_config"] || %{}
+
+                template["hidden"] != true and config["catalog_model"] == model_id and
+                  config["allow_paid"] == allow_paid and config["reasoning_effort"] == effort and
+                  config["profile_id"] == profile_id
+              end)
+
+            if found do
+              {:ok, found}
+            else
+              with {:ok, available} <- list_available(tenant_id),
+                   :ok <- ensure_catalog_bound(available, nil, 99) do
+                create_private(
+                  %{
+                    "name" => Enum.join([model["name"], effort || "default"], " · "),
+                    "model" => model_id,
+                    "model_display_name" => model["name"],
+                    "model_vendor" => model["vendor"],
+                    "provider" => model["vendor"],
+                    "provider_config" => %{
+                      "catalog_model" => model_id,
+                      "allow_paid" => allow_paid,
+                      "profile_id" => profile_id,
+                      "reasoning_effort" => effort
+                    },
+                    "max_tokens" => min(model["max_tokens"] || 32_000, 128_000),
+                    "context_tokens" => model["context_tokens"] || 0,
+                    "supports_images" => model["images"] == true
+                  },
+                  tenant_id
+                )
+              end
+            end
+          end
+        end,
+        timeout: 30_000
+      )
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_model_configuration}
+    end
+  end
+
+  def resolve_private_catalog(_, _, _, _, _), do: {:error, :invalid_model_configuration}
+
+  defp catalog_or_custom(model_id, tenant_id) do
+    case SalixAgent.Models.get(model_id) do
+      {:ok, model} -> {:ok, model}
+      _ -> SalixAgent.AccountPool.custom_model(tenant_id, model_id)
+    end
+  end
+
+  @doc """
+  Reuse the private template for a compute runtime's model choice, or create it.
+
+  A compute Worker (Codex or Claude Code in a VM) runs the model with the
+  runtime's own login, so the choice names only a model the runtime can run and
+  an effort. Compute dispatch reads `model`, `provider` and `reasoning_effort`
+  from it (`ExternalSessionStore.resolve_compute_runtime_model/3`). Each runtime
+  accepts the models the catalog routes through its subscription source. Pi is
+  not supported: it needs a Pi provider id, and the catalog vendor is not one.
+
+  The template is hidden: it carries no endpoint or credential, so no picker
+  offers it and template-id routes cannot pin it on another Agent.
+  """
+  def resolve_private_runtime(runtime_provider, model_id, effort, tenant_id)
+      when runtime_provider in ~w(codex claude) and is_binary(model_id) do
+    with :ok <- validate_tenant(tenant_id),
+         {:ok, model} <- SalixAgent.Models.get(model_id),
+         {:ok, request_model} <- runtime_request_model(runtime_provider, model),
+         true <- is_nil(effort) or effort in (model["efforts"] || []) do
+      SalixStore.Repo.transaction(
+        fn ->
+          with :ok <- lock_subscription_templates(tenant_id),
+               {:ok, templates} <- list_private(tenant_id) do
+            found =
+              templates
+              |> Enum.sort_by(& &1["template_id"])
+              |> Enum.find(fn template ->
+                config = template["provider_config"] || %{}
+
+                config["runtime_provider"] == runtime_provider and
+                  config["runtime_model"] == model_id and config["reasoning_effort"] == effort
+              end)
+
+            cond do
+              found ->
+                {:ok, found}
+
+              length(templates) >= 100 ->
+                {:error, :model_catalog_too_large}
+
+              true ->
+                create_private(
+                  %{
+                    "name" => Enum.join([model["name"], effort || "default"], " · "),
+                    "model" => request_model,
+                    "model_display_name" => model["name"],
+                    "model_vendor" => model["vendor"],
+                    "provider" => model["vendor"],
+                    "hidden" => true,
+                    "provider_config" => %{
+                      "runtime_provider" => runtime_provider,
+                      "runtime_model" => model_id,
+                      "reasoning_effort" => effort
+                    },
+                    "max_tokens" => min(model["max_tokens"] || 32_000, 128_000),
+                    "context_tokens" => model["context_tokens"] || 0,
+                    "supports_images" => model["images"] == true
+                  },
+                  tenant_id
+                )
+            end
+          end
+        end,
+        timeout: 30_000
+      )
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_model_configuration}
+    end
+  end
+
+  def resolve_private_runtime(_, _, _, _), do: {:error, :invalid_model_configuration}
+
+  # Codex and Claude Code run only models their own subscription serves; send
+  # the id that source uses.
+  defp runtime_request_model(source, model) do
+    case model["routes"] do
+      %{^source => %{"model" => request}} when is_binary(request) -> {:ok, request}
+      _ -> :error
+    end
+  end
+
+  @doc """
+  Run `fun` under the tenant's catalog template lock, the lock that
+  `resolve_private_catalog/5`, `resolve_private_runtime/4` and
+  `release_private_catalog/2` take. Resolve a catalog or runtime choice and
+  assign it to an Agent inside one call, so a concurrent
+  release cannot delete the template between the two. Returns `fun`'s result.
+  """
+  def with_catalog_lock(tenant_id, fun) when is_function(fun, 0) do
+    SalixStore.Repo.transaction(
+      fn ->
+        with :ok <- lock_subscription_templates(tenant_id), do: fun.()
+      end,
+      timeout: 30_000
+    )
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Delete a catalog or runtime choice that no Agent uses any more.
+
+  These choices are created on demand, so an unused one would only hold a
+  slot of the tenant's template budget. A template still referenced, or not
+  such a choice, is kept. Best effort: a failure leaves the template in place.
+  """
+  def release_private_catalog(nil, _tenant_id), do: :ok
+
+  def release_private_catalog(template_id, tenant_id) when is_binary(template_id) do
+    SalixStore.Repo.transaction(
+      fn ->
+        with :ok <- lock_subscription_templates(tenant_id),
+             {:ok, %{"provider_config" => config}} when is_map(config) <-
+               get(template_id, tenant_id),
+             true <- is_map_key(config, "catalog_model") or is_map_key(config, "runtime_model"),
+             :ok <- delete_private(template_id, tenant_id, 1000) do
+          :ok
+        end
+      end,
+      timeout: 30_000
+    )
+
+    :ok
+  end
+
   defp lock_subscription_templates(tenant_id) do
     with {:ok, _} <- SalixStore.Repo.query("SET LOCAL lock_timeout = '5s'", []),
          {:ok, _} <-
@@ -549,7 +768,23 @@ defmodule SalixAgent.Templates do
       "provider_type" => provider_type_from_config(rec["provider_config"])
     }
     |> Map.merge(SalixAgent.ModelPresentation.public(rec))
+    |> Map.merge(catalog_choice(rec["provider_config"]))
+    |> Map.merge(runtime_choice(rec["provider_config"]))
   end
+
+  defp runtime_choice(%{"runtime_model" => model, "runtime_provider" => provider}),
+    do: %{"runtime_model" => model, "runtime_provider" => provider}
+
+  defp runtime_choice(_), do: %{}
+
+  defp catalog_choice(%{"catalog_model" => model} = config),
+    do: %{
+      "catalog_model" => model,
+      "allow_paid" => config["allow_paid"] == true,
+      "profile_id" => config["profile_id"]
+    }
+
+  defp catalog_choice(_), do: %{}
 
   def admin_json(rec) do
     rec

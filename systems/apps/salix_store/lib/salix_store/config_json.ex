@@ -142,6 +142,7 @@ defmodule SalixStore.ConfigJson do
          end},
         {:salix_store, :s3_timeouts, s3_timeouts(json)},
         {:salix_agent, :decide, decide_config(json)},
+        {:comma_core, :apns, apns_config(json)},
 
         # logging (salix_store) — JSONL diagnostic log path; absent = disabled
         {:salix_store, :log_file, str(json, ~w(log file))},
@@ -235,6 +236,74 @@ defmodule SalixStore.ConfigJson do
     |> Kernel.++(sourced_context_env(json))
     |> Kernel.++(trajectory_eval_env(json))
     |> Enum.reject(fn {_app, _key, value} -> is_nil(value) end)
+  end
+
+  @doc "APNs profiles from the existing secret-backed config file; no environment inference."
+  def apns_config(json, legacy \\ []) do
+    comma = json_get(json, ["comma"])
+
+    if is_map(comma) and Map.has_key?(comma, "apns") and is_nil(comma["apns"]) do
+      raise ArgumentError, "comma.apns must be a profile object"
+    end
+
+    case json_get(json, ~w(comma apns)) do
+      nil ->
+        if legacy == [] do
+          nil
+        else
+          # Local compatibility for the original explicitly configured,
+          # dual-environment key. A structured section disables this fallback
+          # entirely, including for any environment it intentionally omits.
+          profile = [
+            team_id: legacy[:team_id],
+            key_id: legacy[:key_id],
+            private_key: legacy[:private_key],
+            legacy_bundle_id: legacy[:bundle_id],
+            allowed_bundle_ids: List.wrap(legacy[:bundle_id])
+          ]
+
+          [profiles: %{"sandbox" => profile, "production" => profile}]
+        end
+
+      %{} = section ->
+        unless Enum.all?(Map.keys(section), &(&1 in ~w(sandbox production))) do
+          raise ArgumentError, "comma.apns accepts only sandbox and production profiles"
+        end
+
+        profiles =
+          Map.new(section, fn {environment, profile} ->
+            {environment, apns_profile(profile)}
+          end)
+
+        [profiles: profiles]
+
+      _ ->
+        raise ArgumentError, "comma.apns must be a profile object"
+    end
+  end
+
+  defp apns_profile(profile) do
+    keys = ~w(team_id key_id private_key allowed_bundle_ids legacy_bundle_id)
+    allowed = if is_map(profile), do: profile["allowed_bundle_ids"]
+    legacy = if is_map(profile), do: profile["legacy_bundle_id"]
+
+    valid =
+      is_map(profile) and Enum.all?(Map.keys(profile), &(&1 in keys)) and
+        Enum.all?(~w(team_id key_id private_key), fn key ->
+          is_binary(profile[key]) and String.trim(profile[key]) != ""
+        end) and is_list(allowed) and allowed != [] and
+        Enum.all?(allowed, &(&1 in ~w(surf.comma.ios surf.comma.ios.dev))) and
+        (is_nil(legacy) or legacy in allowed)
+
+    unless valid do
+      # Never interpolate the profile: malformed private keys are still secrets.
+      raise ArgumentError,
+            "comma.apns profile requires signing credentials and allowed Comma bundle IDs"
+    end
+
+    for key <- [:team_id, :key_id, :private_key, :allowed_bundle_ids, :legacy_bundle_id],
+        Map.has_key?(profile, Atom.to_string(key)),
+        do: {key, profile[Atom.to_string(key)]}
   end
 
   defp decide_config(json) do

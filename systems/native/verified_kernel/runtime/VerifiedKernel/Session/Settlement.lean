@@ -111,9 +111,10 @@ private def guardPrepare (state binding : Term) : KernelM Term := do
   if !expected.isMap || binding.get (b "kind") != expected.get (b "kind") then return nil
   if binding.get (b "assistant_id") != (← field state "next_message_id") then return nil
   if !(← RoundQuery.bindingMatches state binding).truthy then return nil
+  let billing ← billingFailureReason state
   return .map [(b "type", b "session_event"), (b "session_id", ← field state "session_id"),
     (b "kind", b "runtime_failure_reply_attempted"), (b "source", b "internal_runtime"),
-    (b "event", if (← RoundQuery.failureReason state) == b "model" then binding.put (b "failure_reason") (b "model") else binding)]
+    (b "event", if (← RoundQuery.failureReason state) == b "model" then (binding.put (b "failure_reason") (b "model")).put (b "billing_reason") billing else binding)]
 
 /-- Restart owns cancellation of the committed attempt's orphaned local work.
 The caller excludes live dispatch owners first. Callback records remain present

@@ -406,8 +406,9 @@ defmodule SalixAgent.Loops.Capabilities do
   row (or a loop ref). The source id is `loop:<id>:<dedup_key>`, so a retry
   after a timeout dedupes on the delivery ledger.
   """
-  @spec deliver_notification(map(), String.t(), String.t()) :: {:ok, map()} | {:error, String.t()}
-  def deliver_notification(record, content, dedup) do
+  @spec deliver_notification(map(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, String.t()}
+  def deliver_notification(record, content, dedup, opts \\ []) do
     started = System.monotonic_time()
     loop_id = record["id"] || record[:loop_id]
     agent_id = record["agent_id"] || record[:agent_id]
@@ -428,12 +429,27 @@ defmodule SalixAgent.Loops.Capabilities do
 
     result =
       with :ok <- authorize_source(loop_id) do
-        SalixAgent.deliver(agent_id, payload,
-          source_message_id: "loop:" <> loop_id <> ":" <> dedup,
-          create: false,
-          session_check: :staging,
-          surface: "loop"
-        )
+        # A product that owns this Loop's wakes records them as its own matters
+        # and hands them to the agent through its one delivery path. Every
+        # other Loop wakes its Session directly.
+        # A lifecycle notice (paused, exited, failed) is about the Loop itself.
+        delivered =
+          if opts[:lifecycle] == true,
+            do: :default,
+            else: product_delivery(loop_id, content, dedup, payload[:trusted_origin])
+
+        case delivered do
+          :default ->
+            SalixAgent.deliver(agent_id, payload,
+              source_message_id: "loop:" <> loop_id <> ":" <> dedup,
+              create: false,
+              session_check: :staging,
+              surface: "loop"
+            )
+
+          result ->
+            result
+        end
       end
 
     outcome =
@@ -460,6 +476,18 @@ defmodule SalixAgent.Loops.Capabilities do
       {:error, reason} ->
         if undeliverable_target?(reason), do: Loops.mark_undeliverable(loop_id)
         {:error, "delivery failed: " <> (inspect(reason) |> String.slice(0, 256))}
+    end
+  end
+
+  defp product_delivery(loop_id, content, dedup, origin) do
+    module = Application.get_env(:salix_agent, :loop_authorization_adapter)
+
+    with true <- not is_nil(module) and function_exported?(module, :deliver, 4),
+         {:ok, row} <- SalixStore.Loops.get(loop_id) do
+      module.deliver(row, content, dedup, origin)
+    else
+      false -> :default
+      {:error, _} = error -> error
     end
   end
 

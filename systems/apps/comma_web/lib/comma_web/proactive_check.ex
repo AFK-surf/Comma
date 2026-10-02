@@ -17,7 +17,7 @@ defmodule CommaWeb.ProactiveCheck do
   require Logger
   alias Comma.{MemberSourceItems, Repo}
   alias Comma.Data.{MemberSourceItem, RecommendationProfile}
-  alias CommaWeb.{HomeMail, ProactiveRoutine, RecommendationRenderer}
+  alias CommaWeb.{HomeMail, ProactiveNotebook, ProactiveRoutine, RecommendationRenderer}
   alias CommaWeb.RecommendationRuntime
   alias SalixIM.{ConversationServer, Conversations, MailInteraction}
 
@@ -48,7 +48,11 @@ defmodule CommaWeb.ProactiveCheck do
            HomeMail.context(user, %{}, workspace["default_group_id"]) do
       case consume(workspace, ctx, home, profile) do
         {:ok, outcome} ->
-          Logger.info("proactive_check outcome=#{outcome}")
+          Logger.info(
+            "proactive_check outcome=#{outcome} locale=#{Comma.Accounts.locale(profile.user_id)}"
+          )
+
+          if outcome != :idle, do: ProactiveNotebook.enqueue(ctx.group_id, profile.user_id)
           :ok
 
         {:error, reason} = error ->
@@ -72,11 +76,13 @@ defmodule CommaWeb.ProactiveCheck do
     with {:ok, conversation} <- Conversations.get_group_conversation_record(ctx.group_id, home) do
       routed = MailInteraction.entries(conversation)
 
+      watched = watched_keys(ctx, owner)
+
       {earlier, fresh} =
         profile.id
         |> MemberSourceItems.pending(@judged_limit)
         |> Enum.map(&item/1)
-        |> Enum.split_with(&already_routed?(routed, &1))
+        |> Enum.split_with(&already_routed?(routed, watched, &1))
 
       settle(earlier, "routed_earlier")
       now = System.system_time(:millisecond)
@@ -94,14 +100,45 @@ defmodule CommaWeb.ProactiveCheck do
           # Pending items wait for the budget instead of being dropped.
           {:ok, :deferred}
 
+        match?(
+          {:closed, _},
+          MailInteraction.notification_budget(conversation, owner, now, "critical")
+        ) ->
+          # Not even a critical matter could notify today: judging would only
+          # spend a model call. Items wait for the daily cap to reopen.
+          {:ok, :deferred}
+
         true ->
-          judge_and_route(workspace, ctx, home, profile, conversation, fresh)
+          judge_and_route(workspace, ctx, home, profile, conversation, fresh, now)
       end
     end
   end
 
-  defp judge_and_route(workspace, ctx, home, profile, conversation, items) do
-    case judge(workspace, profile, ctx, home, items) do
+  defp judge_and_route(workspace, ctx, home, profile, conversation, items, now) do
+    judged = judge(workspace, profile, ctx, home, items)
+
+    # The Router could not notify about a non-critical item now. The items
+    # stay pending and are judged again once the notification spacing passed.
+    judged =
+      with {:ok, {_item, urgency, _message}} when urgency != "critical" <- judged,
+           {:closed, _} <- MailInteraction.notification_budget(conversation, profile.user_id, now) do
+        Logger.info("proactive_check deferred urgency=#{urgency} notification_budget=closed")
+        :deferred
+      else
+        _ -> judged
+      end
+
+    case judged do
+      :deferred ->
+        {:ok, :deferred}
+
+      # Like a Loop's defer: the evidence could not tell, so nothing settles.
+      # The items are judged again, a bounded number of times.
+      {:ok, {:unclear, item}} ->
+        # Only the unclear item spends a retry; the others simply wait.
+        retry([item])
+        {:ok, :deferred}
+
       {:ok, nil} ->
         settle(items, "quiet")
         {:ok, :quiet}
@@ -148,9 +185,10 @@ defmodule CommaWeb.ProactiveCheck do
         end
 
       {:error, :invalid_attention_decision} ->
-        # An unusable answer is not a reason to wake the Router. Stay quiet.
-        settle(items, "invalid")
-        {:ok, :quiet}
+        # An unusable answer decides nothing: the items keep waiting and are
+        # judged again, a bounded number of times, instead of being dropped.
+        retry(items)
+        {:ok, :deferred}
 
       {:error, _} = error ->
         error
@@ -163,6 +201,21 @@ defmodule CommaWeb.ProactiveCheck do
       |> then(&if(urgency, do: Map.put(&1, "urgency", urgency), else: &1))
 
     MemberSourceItems.settle(Enum.map(items, & &1["record"]), attention)
+  end
+
+  defp retry(items) do
+    now = System.system_time(:millisecond)
+
+    Enum.each(items, fn item ->
+      attempts = ((item["record"].attention || %{})["attempts"] || 0) + 1
+
+      attention =
+        if attempts >= MemberSourceItems.judge_attempts(),
+          do: %{"outcome" => "invalid", "at" => now},
+          else: %{"outcome" => "retry", "attempts" => attempts, "at" => now}
+
+      MemberSourceItems.settle([item["record"]], attention)
+    end)
   end
 
   # The consumer's view of one pooled item, with a candidate ID for the model.
@@ -186,12 +239,36 @@ defmodule CommaWeb.ProactiveCheck do
     }
   end
 
-  defp already_routed?(routed, item) do
+  defp already_routed?(routed, watched, item) do
     ref = reference(item)
+    key = MailInteraction.key(item["sourceId"], ref["source_ref"])
 
-    case routed[MailInteraction.key(item["sourceId"], ref["source_ref"])] do
-      %{"message_id" => message} -> message == ref["observation_id"]
-      _ -> false
+    # The owner's active watch follows this matter and wakes the Router itself.
+    observation = ref["observation_id"]
+
+    MapSet.member?(watched, key) or
+      match?(%{"message_id" => ^observation}, routed[key])
+  end
+
+  # Matter keys of the owner's active watches (at most 17 rows per agent).
+  defp watched_keys(ctx, owner) do
+    case SalixStore.Loops.proactive_monitors(ctx.agent_id) do
+      {:ok, rows} ->
+        for %{
+              "status" => "active",
+              "config" => %{"comma_proactive" => %{"user_id" => ^owner}} = config
+            } <-
+              rows,
+            is_binary(config["source_ref"]),
+            into: MapSet.new(),
+            do:
+              MailInteraction.key(
+                CommaWeb.Proactive.source_account(config["source"] || %{}),
+                config["source_ref"]
+              )
+
+      _ ->
+        MapSet.new()
     end
   end
 
@@ -240,6 +317,10 @@ defmodule CommaWeb.ProactiveCheck do
     item = Enum.find(items, &(&1["id"] == id))
 
     cond do
+      is_map(item) and urgency == "unclear" ->
+        Logger.info("proactive_attention urgency=unclear routed=false")
+        {:ok, {:unclear, item}}
+
       not is_map(item) or urgency not in RecommendationRenderer.attention_urgencies() or
         message == "" or byte_size(message) > 2_400 ->
         {:error, :invalid_attention_decision}

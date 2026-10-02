@@ -186,7 +186,6 @@ let projectionRevision = 0;
 // rows also exercise their archive control. A response is its own event-loop
 // turn, as a network reply is; batches never share one synchronous run.
 const api = {
-  generateChatSuggestions: async () => [],
   getTaskSummaries: async (groupId: string, ids: string[]) => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const items = new Map(

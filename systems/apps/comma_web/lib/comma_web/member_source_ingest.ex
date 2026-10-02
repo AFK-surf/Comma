@@ -97,6 +97,8 @@ defmodule CommaWeb.MemberSourceIngest do
 
         {:error, reason} ->
           Logger.warning("member_source_ingest failed reason=#{inspect(reason, limit: 3)}")
+          # The notebook shows the failed read.
+          CommaWeb.ProactiveNotebook.enqueue(group, owner)
       end
 
       # The running collection is incomplete itself, so its successor is unique
@@ -138,6 +140,8 @@ defmodule CommaWeb.MemberSourceIngest do
       # messages. Arrivals that Routine records wait for the next chain run.
       if opts[:proactive] == true do
         MemberSourceTriggers.ensure(workspace, profile.id)
+        # The notebook shows each source's latest read.
+        CommaWeb.ProactiveNotebook.enqueue(workspace["default_group_id"], owner)
 
         if MemberSourceItems.pending?(profile.id),
           do: with({:ok, _job} <- ProactiveCheck.enqueue(profile.id), do: {:ok, counts}),

@@ -258,105 +258,6 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginComponents do
   end
 
   attr(:id, :string, required: true)
-  attr(:plugin, :map, required: true)
-  attr(:close_event, :string, required: true)
-  attr(:edit_event, :string, default: nil)
-  attr(:editable, :boolean, default: false)
-  attr(:state_label, :string, default: nil)
-  attr(:setup_links, :list, default: [])
-  slot(:setup_status)
-
-  def plugin_details_drawer(assigns) do
-    assigns = assign(assigns, :ref_groups, localized_ref_groups())
-
-    ~H"""
-    <.side_panel id={@id} show size="md" on_cancel={JS.push(@close_event)}>
-      <:title>{@plugin["name"] || @plugin["plugin_id"]}</:title>
-      <div class="space-y-6">
-        <div>
-          <p class="text-sm leading-6 text-neutral-600">
-            {@plugin["description"] || gettext("No description")}
-          </p>
-          <div class="mt-3 flex flex-wrap items-center gap-3">
-            <.badge color={scope_color(@plugin)}>{scope_label(@plugin)}</.badge>
-            <span :if={@state_label} class="text-xs font-medium text-neutral-600">{@state_label}</span>
-          </div>
-        </div>
-
-        <div>
-          <h3 class="text-xs font-medium uppercase text-neutral-500">{gettext("Plugin ID")}</h3>
-          <div class="mt-2 flex items-center gap-2">
-            <code id={"#{@id}-plugin-id"} class="min-w-0 flex-1 break-all rounded-md bg-neutral-100 px-2 py-1.5 text-xs text-neutral-700">
-              {@plugin["plugin_id"]}
-            </code>
-            <button
-              id={"#{@id}-copy-id"}
-              type="button"
-              phx-hook="CopyToClipboard"
-              data-copy-target={"##{@id}-plugin-id"}
-              class="rounded-md px-2 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
-            >
-              {gettext("Copy")}
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <h3 class="text-xs font-medium uppercase text-neutral-500">{gettext("Capabilities")}</h3>
-          <div class="mt-2 divide-y divide-neutral-200 border-y border-neutral-200">
-            <div
-              :for={{key, label, _help} <- @ref_groups}
-              :if={ref_entries(@plugin, key) != []}
-              class="py-3"
-            >
-              <div class="text-xs font-medium text-neutral-700">{label}</div>
-              <div class="mt-2 flex flex-wrap gap-1.5">
-                <code
-                  :for={entry <- ref_entries(@plugin, key)}
-                  class="max-w-full break-all rounded-md bg-neutral-100 px-2 py-1 text-xs text-neutral-700"
-                >
-                  {ref_label(entry)}
-                </code>
-              </div>
-            </div>
-            <div :if={capability_summaries(@plugin) == []} class="py-4 text-xs text-neutral-500">
-              {gettext("No capability references")}
-            </div>
-          </div>
-        </div>
-
-        <div :if={@setup_links != []}>
-          <h3 class="text-xs font-medium uppercase text-neutral-500">{gettext("Setup")}</h3>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <.button
-              :for={link <- @setup_links}
-              size="sm"
-              navigate={link[:navigate]}
-              href={link[:href]}
-            >
-              {link.label}
-            </.button>
-          </div>
-        </div>
-
-        {render_slot(@setup_status)}
-      </div>
-      <:footer>
-        <.button
-          :if={@editable and @edit_event}
-          type="button"
-          phx-click={@edit_event}
-          phx-value-id={@plugin["plugin_id"]}
-        >
-          <.icon name="pencil" class="h-3.5 w-3.5" />
-          {gettext("Edit plugin")}
-        </.button>
-      </:footer>
-    </.side_panel>
-    """
-  end
-
-  attr(:id, :string, required: true)
   attr(:refs_json, :string, required: true)
 
   defp plugin_refs_editor(assigns) do
@@ -436,60 +337,9 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginComponents do
     """
   end
 
-  def capability_summaries(definition) when is_map(definition) do
-    refs = definition["refs"] || %{}
-
-    [
-      ref_count_label(refs["tool_refs"], :tool),
-      ref_count_label(refs["skill_refs"], :skill),
-      ref_count_label(refs["mcp_refs"], :mcp),
-      ref_count_label(refs["oauth_requirements"], :oauth),
-      ref_count_label(refs["im_connect_requirements"], :messaging)
-    ]
-    |> Enum.reject(&is_nil/1)
-  end
-
-  def scope_label(%{"owner_scope" => "system"}), do: gettext("System")
-  def scope_label(%{"owner_scope" => "tenant"}), do: gettext("Organization")
-  def scope_label(%{"owner_scope" => "group"}), do: gettext("Project")
-  def scope_label(_definition), do: gettext("Unknown")
-
-  defp scope_color(%{"owner_scope" => "tenant"}), do: "brand"
-  defp scope_color(%{"owner_scope" => "group"}), do: "green"
-  defp scope_color(_definition), do: "neutral"
-
-  defp ref_count_label(value, type) do
-    case value |> List.wrap() |> length() do
-      0 -> nil
-      count -> ref_count_text(type, count)
-    end
-  end
-
-  defp ref_count_text(:tool, count),
-    do: ngettext("1 tool", "%{count} tools", count, count: count)
-
-  defp ref_count_text(:skill, count),
-    do: ngettext("1 skill", "%{count} skills", count, count: count)
-
-  defp ref_count_text(:mcp, count),
-    do: ngettext("1 MCP ref", "%{count} MCP refs", count, count: count)
-
-  defp ref_count_text(:oauth, count),
-    do: ngettext("1 OAuth requirement", "%{count} OAuth requirements", count, count: count)
-
-  defp ref_count_text(:messaging, count),
-    do:
-      ngettext(
-        "1 messaging requirement",
-        "%{count} messaging requirements",
-        count,
-        count: count
-      )
-
   defp editor_title(%{mode: :edit, plugin: plugin}),
     do: gettext("Edit %{name}", name: plugin["name"] || plugin["plugin_id"])
 
-  defp editor_title(%{owner_scope: "tenant"}), do: gettext("New organization plugin")
   defp editor_title(_panel), do: gettext("New project plugin")
 
   defp panel_key(%{mode: :edit, plugin: plugin}), do: "edit-#{plugin["plugin_id"]}"
@@ -514,11 +364,4 @@ defmodule BridgeForTeamsWeb.Dashboard.PluginComponents do
       _ -> []
     end
   end
-
-  defp ref_entries(plugin, key),
-    do: plugin |> Map.get("refs", %{}) |> Map.get(key, []) |> List.wrap()
-
-  defp ref_label(entry) when is_binary(entry), do: entry
-  defp ref_label(entry) when is_map(entry), do: Jason.encode!(entry)
-  defp ref_label(entry), do: to_string(entry)
 end

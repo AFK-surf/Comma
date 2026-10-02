@@ -58,6 +58,10 @@ defmodule SalixAgent.ToolPolicy do
   A Worker runs one fresh session per Task, without other history. Do not micromanage the Workers - they are powered by highly intelligent AI and can figure out the right decision themselves. Your job is to provide the user's intent, the relevant context, and goals, not to guide them step by step. Worker reports arrive as ordinary Task messages.
   """
 
+  @guest_router_prompt """
+  This workspace is a guest trial. It has no Worker agents, Tasks, Cloud VM, devices or connected accounts, and none can be created. Do the work yourself with the tools you have and answer in this chat. When a request needs a missing capability, say that signing up unlocks it and keeps this chat.
+  """
+
   @worker_identity_prompt """
   You are a Worker agent in one Comma workspace, running in the Salix agent runtime.
 
@@ -355,6 +359,7 @@ defmodule SalixAgent.ToolPolicy do
       ) do
     [
       identity_prompt(role),
+      guest_prompt(tool_disclosure),
       @common_system_prompt,
       source_prompt(role, runtime_kind),
       worker_result_presentation(role, tool_disclosure),
@@ -411,6 +416,9 @@ defmodule SalixAgent.ToolPolicy do
   # cache prefixes (docs/verification.md).
   defp router_audience_prompt(role) when role in ["router", "worker"], do: @router_audience_prompt
   defp router_audience_prompt(_role), do: nil
+
+  defp guest_prompt(%{"guest_policy" => "restricted"}), do: @guest_router_prompt
+  defp guest_prompt(_tool_disclosure), do: nil
 
   defp identity_prompt("router"), do: @router_identity_prompt
   defp identity_prompt("meeting"), do: @generic_identity_prompt

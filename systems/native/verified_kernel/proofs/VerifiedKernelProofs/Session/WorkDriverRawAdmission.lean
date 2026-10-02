@@ -63,7 +63,7 @@ theorem input_workspace_admission_observations {context : Context}
     rw [effect_captured _ _ _ _ (by rfl)] at trace ⊢
     change AdmissionTrace (issue context (Command.finish (.tuple [a "error", reason]))) final at trace
     change ObservationTrace (issue context (Command.finish (.tuple [a "error", reason]))) final
-    rw [trace.fixed (by simp [Command.finish, issue, a])]
+    rw [trace.fixed (by simp [issue_finish, a])]
     exact .done _
 
 theorem effect_rejected (context : Context) (continuation request result : Term)

@@ -20,7 +20,14 @@ defmodule SalixWeb.CloudVM.DurableArchive do
   @restore_budget_ms 45 * 60_000
   @r2_upload_concurrency 8
 
-  def export(%Client{} = client, sandbox_id, group_id, operation, progress \\ fn _ -> :ok end) do
+  def export(
+        %Client{} = client,
+        sandbox_id,
+        group_id,
+        operation,
+        progress \\ fn _ -> :ok end,
+        scope \\ "full"
+      ) do
     started_at = System.monotonic_time(:millisecond)
 
     format =
@@ -32,10 +39,11 @@ defmodule SalixWeb.CloudVM.DurableArchive do
       with :ok <- progress.(%{"phase" => "starting", "packed_bytes" => 0, "uploaded_bytes" => 0}),
            {:ok, transfers} <- stream_upload_transfers(format, group_id, operation),
            {:ok, _} <-
-             Client.archive_export(client, sandbox_id, operation, :post, format, transfers),
+             Client.archive_export(client, sandbox_id, operation, :post, format, transfers, scope),
            {:ok, %{"phase" => "exported", "bytes" => bytes, "sessions" => sessions} = exported} <-
              await_export(client, sandbox_id, group_id, operation, @polls, progress),
            true <- (exported["format"] || "tar_gz") == format,
+           true <- (exported["scope"] || "full") == scope,
            true <-
              is_integer(bytes) and bytes > 0 and bytes <= @max_bytes and
                is_integer(sessions) and sessions >= 0,
@@ -65,6 +73,7 @@ defmodule SalixWeb.CloudVM.DurableArchive do
                else: "connector_tar_gz_chunks"
              ),
            "storage" => storage,
+           "scope" => scope,
            "operation" => operation,
            "byte_size" => bytes,
            "chunk_size" => @chunk_size,
@@ -412,21 +421,23 @@ defmodule SalixWeb.CloudVM.DurableArchive do
     "compute/cloudflare-archives/#{URI.encode(group_id)}/#{URI.encode(operation)}/"
   end
 
-  def valid_manifest?(%{
-        "type" => type,
-        "storage" => storage,
-        "operation" => operation,
-        "byte_size" => bytes,
-        "chunk_size" => @chunk_size,
-        "chunk_count" => count,
-        "sessions" => sessions
-      }) do
+  def valid_manifest?(
+        %{
+          "type" => type,
+          "storage" => storage,
+          "operation" => operation,
+          "byte_size" => bytes,
+          "chunk_size" => @chunk_size,
+          "chunk_count" => count,
+          "sessions" => sessions
+        } = archive
+      ) do
     type in ["connector_tar_gz_chunks", "connector_tar_zst_chunks"] and
       storage in ["salix_s3", "r2"] and is_binary(operation) and operation != "" and
       is_integer(bytes) and bytes > 0 and
       bytes <= @max_bytes and is_integer(count) and
       count == div(bytes + @chunk_size - 1, @chunk_size) and
-      is_integer(sessions) and sessions >= 0
+      is_integer(sessions) and sessions >= 0 and archive["scope"] in [nil, "full", "recovery"]
   end
 
   def valid_manifest?(_), do: false
@@ -452,7 +463,7 @@ defmodule SalixWeb.CloudVM.DurableArchive do
     end
   end
 
-  def check_chunks(archive, group_id) do
+  def check_chunks(archive, group_id, check \\ fn -> :ok end) do
     if valid_manifest?(archive) do
       %{
         "operation" => operation,
@@ -466,12 +477,14 @@ defmodule SalixWeb.CloudVM.DurableArchive do
           expected = min(chunk_size, bytes - index * chunk_size)
 
           result =
-            if archive["storage"] == "r2" do
-              ArchiveR2.head(chunk_key(group_id, operation, index))
-            else
-              case S3.head(chunk_key(group_id, operation, index)) do
-                {:ok, %{size: size}} -> {:ok, size}
-                error -> error
+            with :ok <- check.() do
+              if archive["storage"] == "r2" do
+                ArchiveR2.head(chunk_key(group_id, operation, index))
+              else
+                case S3.head(chunk_key(group_id, operation, index)) do
+                  {:ok, %{size: size}} -> {:ok, size}
+                  error -> error
+                end
               end
             end
 
@@ -483,7 +496,7 @@ defmodule SalixWeb.CloudVM.DurableArchive do
         end)
 
       if archive["storage"] == "r2" and match?({:error, _}, result) and
-           s3_generation_complete?(archive, group_id),
+           s3_generation_complete?(archive, group_id, check),
          do: :ok,
          else: result
     else
@@ -499,7 +512,18 @@ defmodule SalixWeb.CloudVM.DurableArchive do
         opts \\ []
       )
       when type in ["connector_tar_gz_chunks", "connector_tar_zst_chunks"] do
-    deadline = System.monotonic_time(:millisecond) + @restore_budget_ms
+    started = System.monotonic_time(:millisecond)
+
+    remaining =
+      case Keyword.get(opts, :deadline_ms) do
+        deadline_ms when is_integer(deadline_ms) ->
+          min(@restore_budget_ms, deadline_ms - System.system_time(:millisecond))
+
+        _ ->
+          @restore_budget_ms
+      end
+
+    deadline = started + remaining
 
     result =
       with true <- valid_manifest?(archive),
@@ -525,7 +549,7 @@ defmodule SalixWeb.CloudVM.DurableArchive do
       end
 
     ArchiveDiagnostics.observe(group_id, archive["operation"], "restore", %{
-      "salix_duration_ms" => System.monotonic_time(:millisecond) + @restore_budget_ms - deadline,
+      "salix_duration_ms" => System.monotonic_time(:millisecond) - started,
       "outcome" => if(result == :ok, do: "ok", else: "error")
     })
 
@@ -582,8 +606,10 @@ defmodule SalixWeb.CloudVM.DurableArchive do
            "operation" => operation,
            "action" => "status"
          }) do
-      {:ok, %{"phase" => "restored", "next_offset" => ^bytes, "sessions" => ^sessions}} ->
-        if require_new, do: {:error, :durable_archive_already_restored}, else: :ok
+      {:ok, %{"phase" => "restored", "next_offset" => ^bytes, "sessions" => ^sessions} = receipt} ->
+        with :ok <- confirm_restore_scope(archive, receipt) do
+          if require_new, do: {:error, :durable_archive_already_restored}, else: :ok
+        end
 
       {:ok, %{"phase" => "restored"}} ->
         {:error, :durable_archive_restore_mismatch}
@@ -668,7 +694,7 @@ defmodule SalixWeb.CloudVM.DurableArchive do
       with :ok <- within_restore_budget(deadline),
            {:ok, parts} <- signed_restore_parts(group_id, operation, bytes, count),
            :ok <- within_restore_budget(deadline),
-           {:ok, %{"phase" => "restored", "bytes" => ^bytes, "sessions" => ^sessions}} <-
+           {:ok, %{"phase" => "restored", "bytes" => ^bytes, "sessions" => ^sessions} = receipt} <-
              observed_import(client, sandbox_id, group_id, %{
                "operation" => operation,
                "action" => "stream",
@@ -677,7 +703,8 @@ defmodule SalixWeb.CloudVM.DurableArchive do
                "sessions" => sessions,
                "parts" => parts,
                "runtime_paths" => []
-             }) do
+             }),
+           :ok <- confirm_restore_scope(archive, receipt) do
         :ok
       else
         {:error, _} = error ->
@@ -685,8 +712,9 @@ defmodule SalixWeb.CloudVM.DurableArchive do
                  "operation" => operation,
                  "action" => "status"
                }) do
-            {:ok, %{"phase" => "restored", "next_offset" => ^bytes, "sessions" => ^sessions}} ->
-              :ok
+            {:ok,
+             %{"phase" => "restored", "next_offset" => ^bytes, "sessions" => ^sessions} = receipt} ->
+              confirm_restore_scope(archive, receipt)
 
             _ ->
               error
@@ -755,7 +783,7 @@ defmodule SalixWeb.CloudVM.DurableArchive do
            end),
          :ok <- on_transfer_complete.(),
          :ok <- within_restore_budget(deadline),
-         {:ok, %{"phase" => "restored", "bytes" => ^bytes, "sessions" => ^sessions}} <-
+         {:ok, %{"phase" => "restored", "bytes" => ^bytes, "sessions" => ^sessions} = receipt} <-
            observed_import(client, sandbox_id, group_id, %{
              "operation" => operation,
              "action" => "finish",
@@ -764,7 +792,8 @@ defmodule SalixWeb.CloudVM.DurableArchive do
              "bytes" => bytes,
              "sessions" => sessions,
              "runtime_paths" => []
-           }) do
+           }),
+         :ok <- confirm_restore_scope(archive, receipt) do
       :ok
     else
       {:ok, _} -> {:error, :durable_archive_restore_mismatch}
@@ -816,15 +845,23 @@ defmodule SalixWeb.CloudVM.DurableArchive do
     end)
   end
 
-  defp s3_generation_complete?(archive, group_id) do
+  defp s3_generation_complete?(archive, group_id, check \\ fn -> :ok end) do
     %{"operation" => operation, "byte_size" => bytes, "chunk_count" => count} = archive
 
     Enum.all?(0..(count - 1), fn index ->
-      case S3.head(chunk_key(group_id, operation, index)) do
-        {:ok, %{size: size}} -> size == min(@chunk_size, bytes - index * @chunk_size)
+      with :ok <- check.(),
+           {:ok, %{size: size}} <- S3.head(chunk_key(group_id, operation, index)) do
+        size == min(@chunk_size, bytes - index * @chunk_size)
+      else
         _ -> false
       end
     end)
+  end
+
+  defp confirm_restore_scope(archive, receipt) do
+    if (archive["scope"] || "full") == (receipt["scope"] || "full"),
+      do: :ok,
+      else: {:error, :durable_archive_restore_mismatch}
   end
 
   defp within_restore_budget(deadline) do

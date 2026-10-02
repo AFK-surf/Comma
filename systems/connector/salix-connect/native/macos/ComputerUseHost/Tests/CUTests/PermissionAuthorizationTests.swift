@@ -3,19 +3,37 @@ import CUShared
 @testable import CommaComputerUseDaemon
 
 final class PermissionAuthorizationTests: XCTestCase {
-    func testNestedHelperGuidesScreenRecordingToTheContainingApp() {
-        let app = URL(fileURLWithPath: "/Applications/Comma.app")
-        let helper = app.appendingPathComponent(
-            "Contents/Resources/native/darwin/arm64/native/macos/Comma Computer Use.app"
-        )
-        XCTAssertEqual(permissionAuthorizationAppURL(for: .accessibility, helperBundleURL: helper), helper)
-        XCTAssertEqual(permissionAuthorizationAppURL(for: .screenRecording, helperBundleURL: helper).path, app.path)
-    }
+    func testInstallsOutsideContainingAppAndUpdatesWithoutChangingIdentity() throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? files.removeItem(at: root) }
+        let source = root.appendingPathComponent("Comma.app/Contents/Resources/Comma Computer Use.app")
+        let directory = root.appendingPathComponent("Application Support/Computer Use")
+        let codeFiles = ["Contents/MacOS/CommaComputerUseDaemon", "Contents/Info.plist",
+                         "Contents/_CodeSignature/CodeResources"]
+        for path in codeFiles {
+            let file = source.appendingPathComponent(path)
+            try files.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("original".utf8).write(to: file)
+        }
+        XCTAssertTrue(StandaloneApplication.isNested(source))
+        let installed = try StandaloneApplication.install(source: source, directory: directory)
+        XCTAssertFalse(StandaloneApplication.isNested(installed))
+        XCTAssertEqual(try Data(contentsOf: installed.appendingPathComponent(codeFiles[0])), Data("original".utf8))
+        let before = try files.attributesOfItem(atPath: installed.path)[.modificationDate] as? Date
+        XCTAssertEqual(try StandaloneApplication.install(source: source, directory: directory), installed)
+        XCTAssertEqual(try files.attributesOfItem(atPath: installed.path)[.modificationDate] as? Date, before)
 
-    func testStandaloneHelperGuidesBothPermissionsToItself() {
-        let helper = URL(fileURLWithPath: "/Applications/Comma Computer Use.app")
-        XCTAssertEqual(permissionAuthorizationAppURL(for: .accessibility, helperBundleURL: helper), helper)
-        XCTAssertEqual(permissionAuthorizationAppURL(for: .screenRecording, helperBundleURL: helper), helper)
+        let unrelated = directory.appendingPathComponent("user-data")
+        try Data("retained".utf8).write(to: unrelated)
+        try Data("updated".utf8).write(to: source.appendingPathComponent(codeFiles[0]))
+        XCTAssertEqual(try StandaloneApplication.install(source: source, directory: directory), installed)
+        XCTAssertEqual(try Data(contentsOf: installed.appendingPathComponent(codeFiles[0])), Data("updated".utf8))
+        XCTAssertEqual(try Data(contentsOf: unrelated), Data("retained".utf8))
+
+        try files.removeItem(at: source)
+        XCTAssertThrowsError(try StandaloneApplication.install(source: source, directory: directory))
+        XCTAssertEqual(try Data(contentsOf: installed.appendingPathComponent(codeFiles[0])), Data("updated".utf8))
     }
 
     @MainActor

@@ -3,7 +3,6 @@ defmodule BridgeForTeams.ConversationsTest do
 
   alias BridgeForTeams.{
     Accounts,
-    Agents,
     Conversations,
     Memberships,
     Observability,
@@ -141,42 +140,6 @@ defmodule BridgeForTeams.ConversationsTest do
          "worker" => %{
            "activity" => %{"kind" => "running", "description" => "handling task"}
          }
-       }}
-    end
-  end
-
-  defmodule RouterProjectionClient do
-    @moduledoc false
-
-    def get_agent_projection(agent_id, _tenant_id) do
-      {:ok,
-       %{
-         "agent_id" => agent_id,
-         "role" => "router",
-         "router_session_id" => "ses1_0000000000000000001"
-       }}
-    end
-  end
-
-  defmodule WorkerProjectionClient do
-    use BridgeForTeams.TestSupport.CanonicalAgentClient
-
-    @moduledoc false
-
-    def get_group_conversation(_group_id, conversation_id) do
-      agent_id = Process.get(:conversation_session_worker_agent_id)
-
-      {:ok,
-       %{
-         "conversation_id" => conversation_id,
-         "participants" => [
-           %{
-             "participant_id" => "worker",
-             "actor_type" => "agent",
-             "agent_id" => agent_id,
-             "payload" => %{"session_id" => "ses1_0000000000000000002"}
-           }
-         ]
        }}
     end
   end
@@ -652,32 +615,6 @@ defmodule BridgeForTeams.ConversationsTest do
              )
 
     assert status["activity"]["kind"] == "running"
-  end
-
-  # Worker conversations use their participant session; routers use their one
-  # persisted group session regardless of conversation.
-  test "conversation_session_ids covers the worker and router session shapes", %{
-    project: project,
-    agent: agent
-  } do
-    Process.put(:conversation_session_worker_agent_id, agent.salix_agent_id)
-    with_client(WorkerProjectionClient)
-
-    assert Conversations.conversation_session_ids(project, agent, "conv-1") == [
-             "ses1_0000000000000000002"
-           ]
-
-    assert Conversations.conversation_session_ids(project, nil, "conv-1") == [
-             "ses1_0000000000000000002"
-           ]
-
-    router = Enum.find(Agents.list_agents(project.id), &(&1.role == "router"))
-    with_client(RouterProjectionClient)
-
-    assert Conversations.conversation_session_ids(project, router, "conv-1") ==
-             ["ses1_0000000000000000001"]
-
-    assert Conversations.conversation_session_ids(project, agent, nil) == []
   end
 
   defmodule ActivitySurfaceClient do

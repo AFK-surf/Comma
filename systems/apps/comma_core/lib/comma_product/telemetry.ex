@@ -18,6 +18,10 @@ defmodule CommaProduct.Telemetry do
     test_email_delivery: "other",
     email_delivery: "other",
     google_desktop_exchange: "google",
+    # APNs latency and rejection distinguish provider unavailability from Task execution.
+    apns_delivery: "apns",
+    # Apple key-fetch latency/failures explain blocked Sign in with Apple requests.
+    apple_jwks: "apple",
     deliver: "other",
     salix_boundary: "other",
     synchronicity_provision: "synchronicity",
@@ -60,7 +64,7 @@ defmodule CommaProduct.Telemetry do
   }
   @operations @operation_providers |> Map.keys() |> Enum.map(&Atom.to_string/1)
   @providers @operation_providers |> Map.values() |> Enum.uniq() |> Kernel.++(["s3", "other"])
-  @queues ~w(comma_external comma_recommendations comma_recommendation_control other)
+  @queues ~w(comma_external comma_recommendations comma_recommendation_control comma_notifications other)
   @recommendation_triggers ~w(manual schedule agent_tool other)
   @recommendation_outcomes ~w(requested published superseded failed rate_limited other)
   @recommendation_variants ~w(generic member other)

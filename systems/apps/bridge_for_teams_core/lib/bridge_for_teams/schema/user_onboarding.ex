@@ -15,7 +15,10 @@ defmodule BridgeForTeams.Schema.UserOnboarding do
   @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
 
   @statuses ~w(in_progress completed skipped)
-  @steps ~w(capabilities profile integrations tasks)
+  # Rows written before the fourth "tasks" step was retired may still store
+  # `current_step: "tasks"`; they load unchanged (inclusion is validated only
+  # on change) and the wizard resumes them on the last remaining step.
+  @steps ~w(capabilities profile integrations)
 
   schema "user_onboardings" do
     field :status, :string, default: "in_progress"

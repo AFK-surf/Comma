@@ -75,7 +75,6 @@ defmodule BridgeForTeams.Salix.Erpc do
   @meeting_calendar_policy Salix.Bindings.MeetingCalendarPolicy
   @meeting_calendar_status Salix.Bindings.MeetingCalendarStatus
   @meeting_summary_replay Salix.Bindings.MeetingSummaryReplay
-  @first_message_timeout_ms 25_000
   @agent SalixAgent
   @agent_actor SalixAgent.AgentActor
   @agent_billing SalixAgent.Billing
@@ -360,7 +359,15 @@ defmodule BridgeForTeams.Salix.Erpc do
 
   @impl true
   def list_group_im_connects(group_id, provider \\ nil),
-    do: call(@provider_connects, :list_group_im_connects, [group_id, provider], hint: group_id)
+    do: list_group_im_connects(group_id, provider, [])
+
+  @impl true
+  def list_group_im_connects(group_id, provider, opts),
+    do:
+      call(@provider_connects, :list_group_im_connects, [group_id, provider],
+        hint: group_id,
+        timeout: Keyword.get(opts, :timeout, @default_timeout)
+      )
 
   @impl true
   def slack_manifest(app_name),
@@ -468,14 +475,6 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
-  def feishu_first_message(params),
-    do:
-      call(@feishu_checks, :first_message, [params],
-        hint: params["connect_id"] || params[:connect_id],
-        timeout: @first_message_timeout_ms
-      )
-
-  @impl true
   def disable_im_connect(tenant_id, group_id, connect_id),
     do:
       call(@provider_connects, :disable_im_connect, [tenant_id, group_id, connect_id],
@@ -502,39 +501,9 @@ defmodule BridgeForTeams.Salix.Erpc do
 
   # ---- Slack Triage Workbench ----
   @impl true
-  def triage_list_buckets(namespace, cursor, limit),
-    do:
-      call(@triage_read_model, :list_buckets, [namespace, cursor, limit],
-        hint: namespace,
-        timeout: @triage_read_timeout
-      )
-
-  @impl true
-  def triage_get_bucket(namespace, bucket_key),
-    do:
-      call(@triage_read_model, :get_bucket, [namespace, bucket_key],
-        hint: namespace,
-        timeout: @triage_read_timeout
-      )
-
-  # The receipt prefix is global (no receipt carries a namespace), so this scan
-  # takes no placement hint.
-  @impl true
-  def triage_list_receipts(cursor),
-    do: call(@triage_read_model, :list_receipts_page, [cursor], timeout: @triage_read_timeout)
-
-  @impl true
   def triage_recent_window(namespace, since_ms, opts),
     do:
       call(@triage_read_model, :recent_window, [namespace, since_ms, opts],
-        hint: namespace,
-        timeout: @triage_read_timeout
-      )
-
-  @impl true
-  def triage_recent_processing(namespace, since_ms, opts),
-    do:
-      call(@triage_read_model, :recent_processing, [namespace, since_ms, opts],
         hint: namespace,
         timeout: @triage_read_timeout
       )
@@ -572,17 +541,6 @@ defmodule BridgeForTeams.Salix.Erpc do
       call(SalixIM.Triage.SourcePresentation, :read, [group_id, receipt_refs],
         hint: group_id,
         timeout: 8_000
-      )
-
-  @impl true
-  def triage_model_debug(project, group, agent, kind, id),
-    do:
-      call(
-        @triage_read_model,
-        :model_debug,
-        [SalixStore.TriageKeys.default_namespace(), project, group, agent, kind, id],
-        hint: group,
-        timeout: @triage_read_timeout
       )
 
   @impl true

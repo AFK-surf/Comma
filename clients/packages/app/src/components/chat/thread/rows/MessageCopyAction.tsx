@@ -3,6 +3,7 @@ import { CheckIcon, CopyIcon, Tooltip, toast } from "@comma/ui";
 import { memo, useEffect, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { copyTextToClipboard } from "../inline/linkActions";
+import { MessagePlatformBadge } from "../../MessagePlatformBadge";
 
 // Shared id so copying several messages in a row updates one toast in place
 // instead of stacking, and a failure replaces the success it invalidates.
@@ -12,10 +13,12 @@ export const MessageCopyAction = memo(function MessageCopyAction({
   ariaLabel,
   copyText,
   messageId,
+  platform,
 }: {
   ariaLabel: string;
   copyText: string;
   messageId: string;
+  platform?: string | undefined;
 }) {
   const messagesApi = useCommaMessages();
   const [copied, setCopied] = useState(false);
@@ -62,6 +65,7 @@ export const MessageCopyAction = memo(function MessageCopyAction({
       className="comma-chat-message-actions"
       data-testid={`chat-message-actions-${messageId}`}
     >
+      <MessagePlatformBadge platform={platform} />
       <Tooltip content={messagesApi.common_copy()} placement="bottom">
         <AriaButton
           aria-label={copied ? messagesApi.chat_copied() : ariaLabel}

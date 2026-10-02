@@ -104,6 +104,11 @@ const inFlightOperationSchema = z.discriminatedUnion("kind", [
     expectedSessionId: z.literal("none"),
     kind: z.literal("verify_google_link"),
   }),
+  z.strictObject({
+    authAttemptId: boundedIdSchema,
+    expectedSessionId: z.literal("none"),
+    kind: z.literal("start_guest_session"),
+  }),
 ]);
 
 const coordinationHeaderShape = {

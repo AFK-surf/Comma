@@ -75,7 +75,7 @@ defmodule Comma.Accounts.Identity do
       :email_verified,
       :last_authenticated_at
     ])
-    |> validate_inclusion(:provider, ["google", "ssh"])
+    |> validate_inclusion(:provider, ["google", "apple", "ssh"])
     |> validate_length(:issuer, min: 1, max: 500)
     |> validate_length(:subject, min: 1, max: 500)
     |> validate_length(:email_snapshot, max: 320)
@@ -87,6 +87,7 @@ defmodule Comma.Accounts.Identity do
     |> unique_constraint([:user_id, :provider],
       name: :comma_user_identities_user_provider_unique
     )
+    |> unique_constraint([:user_id, :provider], name: :comma_user_identities_apple_owner_unique)
     |> check_constraint(:provider, name: :comma_user_identities_provider_valid)
     |> check_constraint(:email_snapshot, name: :comma_user_identities_email_normalized)
     |> check_constraint(:hosted_domain, name: :comma_user_identities_hosted_domain_normalized)

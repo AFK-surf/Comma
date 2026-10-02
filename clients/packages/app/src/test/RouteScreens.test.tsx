@@ -1,11 +1,13 @@
 import userEvent from "@testing-library/user-event";
-import { act, render, screen, waitFor } from "@comma/test-utils/render";
+import { act, render, renderHook, screen, waitFor } from "@comma/test-utils/render";
 import { Toaster } from "@comma/ui";
 import { createContext, useContext } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeRoute } from "../components/RouteScreens";
 import type { ChatMessage } from "../components/chat/model/conversationChannel";
 import { ChatSidebarProvider } from "../components/chat-sidebar/ChatSidebarContext";
+import { announceOnboardingHandoff } from "../components/onboarding/onboardingHandoff";
+import { useHoldOnboardingOpen } from "../components/onboarding/onboardingPresence";
 
 const analytics = vi.hoisted(() => ({ begin: vi.fn(), finish: vi.fn() }));
 vi.mock("../analytics/client", () => ({
@@ -18,6 +20,8 @@ vi.mock("../analytics/client", () => ({
 }));
 
 const harness = vi.hoisted(() => ({
+  /** The chat API Home's rails read; the Routines read is opt-in per test. */
+  chatApi: {} as Record<string, unknown>,
   chatState: { status: "loading" } as
     | { status: "loading" }
     | { status: "hidden" }
@@ -108,7 +112,7 @@ vi.mock("../components/home/HomeTasksRail", () => ({
 
 vi.mock("../components/chat/ChatProvider", () => ({
   isStaleChatSessionError: () => false,
-  useChatApi: () => ({}),
+  useChatApi: () => harness.chatApi,
   useChatRegistry: () => ({
     beginAttempt: () => {
       const leases: { release(): void }[] = [];
@@ -201,6 +205,7 @@ describe("HomeRoute startup draft", () => {
     analytics.begin.mockClear();
     analytics.finish.mockClear();
     harness.chatState = { status: "loading" };
+    harness.chatApi = {};
     harness.homeConversationTarget = undefined;
     harness.conversationChannel.send.mockReset();
     harness.conversationChannel.setDraft.mockReset();
@@ -487,6 +492,87 @@ describe("HomeRoute startup draft", () => {
     expect(
       screen.queryByRole("heading", { name: "What do you want to do" })
     ).toBeNull();
+  });
+
+  it("holds workspace feedback back while the onboarding covers Home", async () => {
+    vi.useFakeTimers();
+    harness.chatState = {
+      groupId: "grp_reserved",
+      retryAfterSeconds: 2,
+      status: "provisioning",
+      workspaceId: "wsp_reserved",
+    };
+    const onboarding = renderHook(() => useHoldOnboardingOpen());
+    const view = render(homeUi());
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.queryByTestId("workspace-resolution")).toBeNull();
+      expect(harness.retryWorkspaceChat).not.toHaveBeenCalled();
+
+      // Home's automatic retries may have run out under a long onboarding:
+      // once it closes, Home asks again at once rather than stay stuck.
+      onboarding.unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(harness.retryWorkspaceChat).toHaveBeenCalledOnce();
+      expect(screen.queryByTestId("workspace-resolution")).toBeNull();
+
+      // Still preparing after that: Home says so itself.
+      harness.chatState = { status: "loading" };
+      view.rerender(homeUi());
+      harness.chatState = {
+        groupId: "grp_reserved",
+        retryAfterSeconds: 2,
+        status: "provisioning",
+        workspaceId: "wsp_reserved",
+      };
+      view.rerender(homeUi());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByTestId("workspace-resolution")).toHaveTextContent(
+        "Preparing your workspace. You can chat when it is ready."
+      );
+      expect(harness.retryWorkspaceChat).toHaveBeenCalledOnce();
+    } finally {
+      view.unmount();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads the Routines only once the onboarding has closed", async () => {
+    harness.chatState = readyState();
+    // The onboarding's apps step starts the Routines with every app it
+    // connected; read under it, they would start before any app is connected.
+    const getRecommendations = vi.fn(() => new Promise(() => undefined));
+    harness.chatApi = { getRecommendations };
+    const onboarding = renderHook(() => useHoldOnboardingOpen());
+    render(homeUi());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getRecommendations).not.toHaveBeenCalled();
+
+    // Closed: the rail and the composer's mentions read them as usual.
+    onboarding.unmount();
+    await waitFor(() => expect(getRecommendations).toHaveBeenCalled());
+  });
+
+  it("lands the onboarding's Start chatting on the Home composer", async () => {
+    harness.chatState = readyState();
+    render(homeUi());
+    const editor = screen.getByRole("textbox", { name: "AI prompt" });
+    expect(editor).not.toHaveFocus();
+
+    act(() => announceOnboardingHandoff());
+
+    await waitFor(() => expect(editor).toHaveFocus());
   });
 
   it("hides the unavailable access control in the compact startup composer", () => {

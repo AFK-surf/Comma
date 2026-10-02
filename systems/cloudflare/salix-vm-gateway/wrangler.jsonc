@@ -19,13 +19,15 @@
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./Dockerfile",
+      "image": "./.build/Dockerfile",
+      "image_build_context": ".",
       "instance_type": "lite",
       "max_instances": 5,
     },
     {
       "class_name": "SandboxStandard1",
-      "image": "./Dockerfile",
+      "image": "./.build/Dockerfile",
+      "image_build_context": ".",
       "instance_type": "standard-1",
       "max_instances": 5,
     },
@@ -82,7 +84,8 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "image": "./Dockerfile",
+          "image": "./.build/Dockerfile",
+          "image_build_context": ".",
           "instance_type": "standard-2",
           "max_instances": 32,
           "ssh": { "enabled": true },
@@ -95,7 +98,8 @@
         },
         {
           "class_name": "SandboxStandard1",
-          "image": "./Dockerfile",
+          "image": "./.build/Dockerfile",
+          "image_build_context": ".",
           "instance_type": "standard-1",
           "max_instances": 512,
         },
@@ -172,7 +176,8 @@
       "containers": [
         {
           "class_name": "Sandbox",
-          "image": "./Dockerfile",
+          "image": "./.build/Dockerfile",
+          "image_build_context": ".",
           "instance_type": "standard-2",
           "max_instances": 32,
           "ssh": { "enabled": true },
@@ -185,7 +190,8 @@
         },
         {
           "class_name": "SandboxStandard1",
-          "image": "./Dockerfile",
+          "image": "./.build/Dockerfile",
+          "image_build_context": ".",
           "instance_type": "standard-1",
           "max_instances": 512,
         },

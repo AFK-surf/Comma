@@ -44,6 +44,7 @@ it("preserves the installed menu while route commands and focus change", () => {
     dispatch,
     openMain: vi.fn(),
     openSideChat: vi.fn(),
+    sideChatEnabled: () => true,
   });
   const menu = host.setMenu.mock.calls[0]![0];
   expect(menu.getMenuItemById("side-chat-background-debug")).toBeUndefined();
@@ -79,11 +80,28 @@ it("opens Side Chat background controls from the development menu", () => {
     dispatch: vi.fn(),
     openMain: vi.fn(),
     openSideChat: vi.fn(),
+    sideChatEnabled: () => true,
     openSideChatBackground,
   });
   const menu = host.setMenu.mock.calls[0]![0];
   menu.getMenuItemById("side-chat-background-debug").click();
   expect(openSideChatBackground).toHaveBeenCalledOnce();
+});
+
+it("hides Open Side Chat while Side Chat is turned off", () => {
+  let enabled = false;
+  const menuControl = installApplicationMenu({
+    isMainFocused: () => true,
+    dispatch: vi.fn(),
+    openMain: vi.fn(),
+    openSideChat: vi.fn(),
+    sideChatEnabled: () => enabled,
+  });
+  const menu = host.setMenu.mock.calls.at(-1)![0];
+  expect(menu.getMenuItemById("open-side-chat").visible).toBe(false);
+  enabled = true;
+  menuControl.update();
+  expect(menu.getMenuItemById("open-side-chat").visible).toBe(true);
 });
 
 const settingsPresentation = (accelerator: string) => ({

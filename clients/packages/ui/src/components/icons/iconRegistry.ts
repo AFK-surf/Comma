@@ -131,6 +131,48 @@ export const iconRegistry = [
     figmaSource: "Model providers / Central Icons catalog",
   },
   {
+    exportName: "ZaiBrandIcon",
+    centralName: "IconZai",
+    variant: filled,
+    source: "central",
+    figmaSource: "Model providers / Central Icons catalog",
+  },
+  {
+    exportName: "NvidiaBrandIcon",
+    centralName: "IconNvidia",
+    variant: filled,
+    source: "central",
+    figmaSource: "Model providers / Central Icons catalog",
+  },
+  {
+    exportName: "OllamaBrandIcon",
+    centralName: "IconOllama",
+    variant: filled,
+    source: "central",
+    figmaSource: "Model providers / Central Icons catalog",
+  },
+  {
+    exportName: "OpencodeBrandIcon",
+    centralName: "IconOpencode",
+    variant: filled,
+    source: "central",
+    figmaSource: "Model providers / Central Icons catalog",
+  },
+  {
+    exportName: "VercelBrandIcon",
+    centralName: "IconVercel",
+    variant: filled,
+    source: "central",
+    figmaSource: "Model providers / Central Icons catalog",
+  },
+  {
+    exportName: "CopilotBrandIcon",
+    centralName: "IconCopilot",
+    variant: filled,
+    source: "central",
+    figmaSource: "Model providers / Central Icons catalog",
+  },
+  {
     exportName: "OpenAiIcon",
     centralName: "IconOpenai",
     variant: filled,
@@ -478,6 +520,18 @@ export const iconRegistry = [
     centralName: "IconWechat",
     // Central draws this platform mark fill-only in every package, like the
     // other brand marks; it only ever sits beside them.
+    variant: outlined,
+    source: "central",
+  },
+  {
+    exportName: "DiscordBrandIcon",
+    centralName: "IconDiscord",
+    variant: outlined,
+    source: "central",
+  },
+  {
+    exportName: "ChatBubbleIcon",
+    centralName: "IconChatBubble7",
     variant: outlined,
     source: "central",
   },

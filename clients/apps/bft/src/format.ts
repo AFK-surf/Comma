@@ -7,10 +7,30 @@ const compactFormat = new Intl.NumberFormat(locale, {
   notation: "compact",
   maximumFractionDigits: 1,
 });
+const timeFormat = new Intl.DateTimeFormat(locale, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+const dateTimeFormat = new Intl.DateTimeFormat(locale, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 const relativeFormat = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
 
 export const formatInteger = (value: number) => integerFormat.format(value);
 export const formatCompact = (value: number) => compactFormat.format(value);
+
+/** Wall-clock time of day (`3:45 PM`, `15:45`), or `undefined` for a bad timestamp. */
+export function formatTime(iso: string) {
+  const time = Date.parse(iso);
+  return Number.isNaN(time) ? undefined : timeFormat.format(time);
+}
+
+/** Local date and time of a unix-millisecond instant (`Oct 1, 3:45 PM`). */
+export const formatDateTime = (ms: number | null) =>
+  ms === null ? "—" : dateTimeFormat.format(ms);
 
 const relativeUnits: [Intl.RelativeTimeFormatUnit, number][] = [
   ["year", 365 * 24 * 3600],
@@ -42,4 +62,21 @@ export function initials(name: string | null, email: string | null) {
       .join("");
   }
   return email?.trim()[0]?.toUpperCase() ?? "?";
+}
+
+/** `needs_review` -> `Needs review`; the fallback for values without a label. */
+export function humanize(value: string) {
+  const words = value.replace(/[_-]+/g, " ").trim();
+  return words ? `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}` : value;
+}
+
+const byteUnits = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+
+/** `17179869184` -> `16.0 GiB`, as devices report their memory. */
+export function formatBytes(bytes: number) {
+  const exponent = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    byteUnits.length - 1
+  );
+  return `${(bytes / 1024 ** exponent).toFixed(1)} ${byteUnits[exponent] ?? "B"}`;
 }

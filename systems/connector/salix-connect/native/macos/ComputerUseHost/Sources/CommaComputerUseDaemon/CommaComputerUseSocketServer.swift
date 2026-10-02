@@ -7,6 +7,7 @@ final class CommaComputerUseSocketServer {
     private var isRunning = false
     private let socketPath: String
     private let authToken: String
+    private let stopLock = NSLock()
     private let activeConnectionsLock = NSLock()
     private var activeConnections: Set<Int32> = []
 
@@ -236,12 +237,15 @@ final class CommaComputerUseSocketServer {
     }
 
     private func stopAcceptingConnections() {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        // Final process cleanup can follow the shutdown response. A replacement
+        // may already own this path after the first stop releases it.
+        guard serverSocket >= 0 else { return }
         isRunning = false
-        if serverSocket >= 0 {
-            shutdown(serverSocket, SHUT_RDWR)
-            close(serverSocket)
-            serverSocket = -1
-        }
+        shutdown(serverSocket, SHUT_RDWR)
+        close(serverSocket)
+        serverSocket = -1
         unlink(socketPath)
     }
 }

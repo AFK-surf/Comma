@@ -1,10 +1,19 @@
 import { ChevronRightSmallIcon, ExclamationTriangleIcon, ScrollArea } from "@comma/ui";
-import type { BftOverview, BftProjectStatus } from "./api";
+import { useState } from "react";
+import type {
+  BftOnboarding,
+  BftOnboardingStep,
+  BftOverview,
+  BftProjectStatus,
+} from "./api";
+import { writeErrorMessage } from "./dialogs";
 import { formatCompact, formatInteger, formatRelative } from "./format";
+import { MetricCards } from "./MetricCards";
 import { messages } from "./messages";
-import { orgHref } from "./navSpec";
+import { orgHref, projectHref } from "./navSpec";
+import { spaLinkClick } from "./router";
 import { ErrorState, Skeleton } from "./states";
-import type { Resource } from "./resource";
+import { useApi, useResource, type Resource } from "./resource";
 
 const t = messages.overview;
 
@@ -13,11 +22,13 @@ export function OverviewPage({
   orgName,
   overview,
   onRetry,
+  canViewHealth = false,
 }: {
   org: string;
   orgName: string | undefined;
   overview: Resource<BftOverview>;
   onRetry: () => void;
+  canViewHealth?: boolean;
 }) {
   return (
     <div className="bft-page">
@@ -27,10 +38,14 @@ export function OverviewPage({
           <p>{orgName ? t.description(orgName) : <Skeleton width={220} />}</p>
         </div>
         <div className="bft-page-actions">
-          <a className="bft-btn" href={orgHref(org, "/members")}>
+          <a className="bft-btn" href={orgHref(org, "/members")} onClick={spaLinkClick}>
             {t.inviteMembers}
           </a>
-          <a className="bft-btn bft-btn-primary" href={orgHref(org, "/projects")}>
+          <a
+            className="bft-btn bft-btn-primary"
+            href={orgHref(org, "/projects")}
+            onClick={spaLinkClick}
+          >
             {t.createAgentSwarm}
           </a>
         </div>
@@ -42,6 +57,7 @@ export function OverviewPage({
       ) : (
         <div className="bft-overview-grid">
           <div className="bft-overview-main">
+            <OnboardingPanel org={org} />
             <Metrics
               overview={overview.state === "ready" ? overview.data : undefined}
             />
@@ -65,7 +81,7 @@ export function OverviewPage({
               org={org}
               runners={overview.state === "ready" ? overview.data.runners : undefined}
             />
-            <QuickActions org={org} />
+            <QuickActions canViewHealth={canViewHealth} org={org} />
           </ScrollArea>
         </div>
       )}
@@ -73,46 +89,163 @@ export function OverviewPage({
   );
 }
 
-function Metrics({ overview }: { overview: BftOverview | undefined }) {
-  const cards = overview
-    ? [
-        {
-          label: t.metricAgentSwarms,
-          value: formatInteger(overview.project_count),
-          detail: t.metricInUse(overview.used_project_count),
-        },
-        {
-          label: t.metricConversations,
-          value: formatInteger(overview.conversation_count),
-        },
-        {
-          label: t.metricTokens,
-          value: formatCompact(overview.token_totals.total),
-          title: formatInteger(overview.token_totals.total),
-        },
-        { label: t.metricMembers, value: formatInteger(overview.member_count) },
-      ]
-    : undefined;
+/**
+ * The first-run checklist: the steps still to do, each with a link to the
+ * page where it happens. The LiveView shell shows the same steps on Agent
+ * Swarm pages; skipping here ends it there too. Nothing shows while it loads,
+ * after it was skipped or finished, or when it cannot be read.
+ */
+function OnboardingPanel({ org }: { org: string }) {
+  const api = useApi();
+  const [resource] = useResource(`onboarding:${org}`, (signal) =>
+    api.onboarding(org, signal)
+  );
+  const [closed, setClosed] = useState<BftOnboarding>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const data = closed ?? (resource.state === "ready" ? resource.data : undefined);
+  if (!data?.active || data.steps.length === 0) return null;
+
+  const done = data.steps.filter((step) => step.done).length;
+  const complete = done === data.steps.length;
+  const dismiss = () => {
+    setBusy(true);
+    setError(undefined);
+    api.dismissOnboarding(org).then(setClosed, (caught: unknown) => {
+      setBusy(false);
+      setError(writeErrorMessage(caught));
+    });
+  };
+
   return (
-    <div className="bft-metrics">
-      {cards
-        ? cards.map((card) => (
-            <section className="bft-metric" key={card.label}>
-              <h2 className="bft-metric-label">{card.label}</h2>
-              <p className="bft-metric-value" title={card.title}>
-                {card.value}
-              </p>
-              <p className="bft-metric-detail">{card.detail ?? " "}</p>
-            </section>
-          ))
-        : Array.from({ length: 4 }, (_, index) => (
-            <div aria-busy="true" className="bft-metric" key={index}>
-              <Skeleton width="60%" />
-              <Skeleton height={22} width="40%" />
-              <Skeleton width="50%" />
-            </div>
-          ))}
-    </div>
+    <section
+      aria-labelledby="bft-onboarding-title"
+      className="bft-panel bft-onboarding"
+    >
+      <div className="bft-panel-header">
+        <h2 id="bft-onboarding-title">
+          {complete ? t.onboardingComplete : t.onboardingTitle}
+        </h2>
+        <span className="bft-count">
+          {t.onboardingProgress(done, data.steps.length)}
+        </span>
+        <button
+          className={
+            complete ? "bft-btn bft-btn-sm bft-btn-primary" : "bft-btn bft-btn-sm"
+          }
+          disabled={busy}
+          onClick={dismiss}
+          title={complete ? undefined : t.onboardingSkipHint}
+          type="button"
+        >
+          {complete ? t.onboardingFinish : t.onboardingSkip}
+        </button>
+      </div>
+      {error ? (
+        <p className="bft-dialog-error bft-onboarding-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <ol className="bft-list">
+        {data.steps.map((step) => (
+          <OnboardingStep
+            blocked={
+              step.id === "connect" &&
+              !step.done &&
+              data.oauth_configured === false &&
+              !data.steps.some((other) => other.id === "oauth" && other.done)
+            }
+            done={step.done}
+            firstProject={data.first_project_id}
+            id={step.id}
+            key={step.id}
+            manager={data.steps.some((other) => other.id === "oauth")}
+            org={org}
+          />
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function OnboardingStep({
+  org,
+  id,
+  done,
+  blocked,
+  manager,
+  firstProject,
+}: {
+  org: string;
+  id: BftOnboardingStep;
+  done: boolean;
+  blocked: boolean;
+  manager: boolean;
+  firstProject: string | null;
+}) {
+  const copy = t.onboardingSteps[id];
+  // Connections is an Agent Swarm page outside the SPA: a full page load.
+  const [href, spa] =
+    id === "swarm"
+      ? [orgHref(org, "/projects"), true]
+      : id === "oauth"
+        ? [orgHref(org, "/settings/integrations"), true]
+        : firstProject
+          ? [projectHref(org, firstProject, "/connections"), false]
+          : [orgHref(org, "/projects"), true];
+
+  return (
+    <li className="bft-onboarding-step" data-done={done || undefined} data-step={id}>
+      <span className="bft-onboarding-copy">
+        <span className="bft-onboarding-step-title">{copy.title}</span>
+        <span className="bft-onboarding-step-body">
+          {blocked
+            ? manager
+              ? t.onboardingBlockedAdmin
+              : t.onboardingBlockedMember
+            : copy.body}
+        </span>
+      </span>
+      {done ? (
+        <span className="bft-status" data-tone="ok">
+          {t.onboardingStepDone}
+        </span>
+      ) : blocked ? null : (
+        <a
+          className="bft-link bft-onboarding-action"
+          href={href}
+          onClick={spa ? spaLinkClick : undefined}
+        >
+          {copy.action}
+        </a>
+      )}
+    </li>
+  );
+}
+
+function Metrics({ overview }: { overview: BftOverview | undefined }) {
+  return (
+    <MetricCards
+      cards={
+        overview && [
+          {
+            label: t.metricAgentSwarms,
+            value: formatInteger(overview.project_count),
+            detail: t.metricInUse(overview.used_project_count),
+          },
+          {
+            label: t.metricConversations,
+            value: formatInteger(overview.conversation_count),
+          },
+          {
+            label: t.metricTokens,
+            value: formatCompact(overview.token_totals.total),
+            title: formatInteger(overview.token_totals.total),
+          },
+          { label: t.metricMembers, value: formatInteger(overview.member_count) },
+        ]
+      }
+    />
   );
 }
 
@@ -129,7 +262,11 @@ function SwarmsPanel({
     <section aria-labelledby="bft-swarms-title" className="bft-panel bft-panel-table">
       <div className="bft-panel-header">
         <h2 id="bft-swarms-title">{t.swarmsTitle}</h2>
-        <a className="bft-link bft-panel-link" href={orgHref(org, "/projects")}>
+        <a
+          className="bft-link bft-panel-link"
+          href={orgHref(org, "/projects")}
+          onClick={spaLinkClick}
+        >
           {t.swarmsViewAll}
         </a>
       </div>
@@ -178,7 +315,8 @@ function SwarmsPanel({
                   <td className="bft-col-name">
                     <a
                       className="bft-link"
-                      href={orgHref(org, `/projects/${encodeURIComponent(project.id)}`)}
+                      href={projectHref(org, project.id)}
+                      onClick={spaLinkClick}
                       title={project.name}
                     >
                       {project.name}
@@ -261,7 +399,8 @@ function AttentionPanel({ items }: { items: BftOverview["attention"] | undefined
   );
 }
 
-function RunnersPanel({
+/** Online runners with a meter; shared with the Health page. */
+export function RunnersPanel({
   org,
   runners,
 }: {
@@ -273,7 +412,11 @@ function RunnersPanel({
     <section aria-labelledby="bft-runners-title" className="bft-panel">
       <div className="bft-panel-header">
         <h2 id="bft-runners-title">{t.runnersTitle}</h2>
-        <a className="bft-link bft-panel-link" href={orgHref(org, "/fin")}>
+        <a
+          className="bft-link bft-panel-link"
+          href={orgHref(org, "/fin")}
+          onClick={spaLinkClick}
+        >
           {t.runnersManage}
         </a>
       </div>
@@ -299,13 +442,20 @@ function RunnersPanel({
   );
 }
 
-function QuickActions({ org }: { org: string }) {
-  const actions = [
-    { label: t.quickInvite, href: orgHref(org, "/members") },
+function QuickActions({ org, canViewHealth }: { org: string; canViewHealth: boolean }) {
+  const actions: { label: string; href: string; spa?: boolean }[] = [
+    { label: t.quickInvite, href: orgHref(org, "/members"), spa: true },
     { label: t.quickConnectSlack, href: orgHref(org, "/settings/oauth") },
-    { label: t.quickAddRunner, href: orgHref(org, "/fin") },
-    { label: t.quickAuditLog, href: orgHref(org, "/operations/audit") },
+    { label: t.quickAddRunner, href: orgHref(org, "/fin"), spa: true },
   ];
+  // The audit log lives on the owner/admin Health page.
+  if (canViewHealth) {
+    actions.push({
+      label: t.quickAuditLog,
+      href: orgHref(org, "/operations"),
+      spa: true,
+    });
+  }
   return (
     <section aria-labelledby="bft-quick-title" className="bft-panel">
       <div className="bft-panel-header">
@@ -314,7 +464,11 @@ function QuickActions({ org }: { org: string }) {
       <ul className="bft-list">
         {actions.map((action) => (
           <li key={action.href + action.label}>
-            <a className="bft-quick-action" href={action.href}>
+            <a
+              className="bft-quick-action"
+              href={action.href}
+              onClick={action.spa ? spaLinkClick : undefined}
+            >
               <span className="bft-truncate">{action.label}</span>
               <ChevronRightSmallIcon className="bft-row-chevron" />
             </a>

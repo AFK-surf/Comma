@@ -16,6 +16,8 @@ defmodule Comma.MemberSourceItems do
   alias Comma.Data.{MemberSourceItem, MemberSourceState, RecommendationProfile, Workspace}
 
   @retention_days 5
+  # An unusable judgment keeps an item waiting for at most this many attempts.
+  @judge_attempts 3
   @per_source_limit 400
   # A still-present item refreshes its last-seen time a few times a day, not on
   # every collection, so retention does not rewrite every row on every check.
@@ -23,6 +25,7 @@ defmodule Comma.MemberSourceItems do
   @content ~w(toolkit url app title excerpt context prompt_context relationship recipient facts provider_ids fingerprint)a
 
   def retention_days, do: @retention_days
+  def judge_attempts, do: @judge_attempts
 
   @doc """
   Records one collection and deletes the items and states of sources the
@@ -200,6 +203,29 @@ defmodule Comma.MemberSourceItems do
     |> Repo.all()
   end
 
+  @doc "The profile's source states, in a stable display order."
+  def states(profile_id) do
+    from(s in MemberSourceState,
+      where: s.profile_id == ^profile_id,
+      order_by: [asc: s.app, asc: s.source_id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Up to `limit` items that a consumer judged, latest judgment first. The pool
+  holds at most #{@per_source_limit} items per source for #{@retention_days}
+  days, so the read is bounded by the owner's enabled sources.
+  """
+  def judged(profile_id, limit) when is_integer(limit) and limit > 0 do
+    from(i in MemberSourceItem,
+      where: i.profile_id == ^profile_id and not is_nil(i.attention),
+      order_by: [desc: fragment("(?->>'at')::bigint", i.attention), desc: i.id],
+      limit: ^limit
+    )
+    |> Repo.all()
+  end
+
   @doc "Records the provider trigger that signals changes of one source."
   def put_trigger(%MemberSourceState{id: id}, trigger_id) when is_binary(trigger_id) do
     from(s in MemberSourceState, where: s.id == ^id)
@@ -337,7 +363,11 @@ defmodule Comma.MemberSourceItems do
       join: s in MemberSourceState,
       on: s.profile_id == i.profile_id and s.source_id == i.source_id,
       where:
-        i.profile_id == ^profile_id and is_nil(i.attention) and not i.baseline and
+        i.profile_id == ^profile_id and
+          (is_nil(i.attention) or
+             (fragment("?->>'outcome'", i.attention) == "retry" and
+                fragment("(?->>'attempts')::int", i.attention) < ^@judge_attempts)) and
+          not i.baseline and
           fragment("? = ANY(?)", i.item_key, s.current_keys) and
           (is_nil(s.failure) or s.attempted_at <= s.collected_at)
     )
@@ -348,8 +378,9 @@ defmodule Comma.MemberSourceItems do
 
   @doc "Up to `limit` arrived or changed items without an outcome, taken from the sources in turn."
   def pending(profile_id, limit) do
+    # Items retried after an unusable judgment come after new arrivals.
     from(i in pending_items(profile_id),
-      order_by: [asc: i.changed_at, asc: i.id],
+      order_by: [asc: not is_nil(i.attention), asc: i.changed_at, asc: i.id],
       limit: ^(limit * 3)
     )
     |> Repo.all()

@@ -5,7 +5,7 @@ defmodule SalixAgent.SubscriptionLog do
   @ids ~w(tenant_id agent_id session_id account_id worker_request_id)a
   @numbers ~w(timeout_ms candidate_count ready_count cooling_count retry_after_ms duration_ms host_frames host_bytes host_first_frame_ms active_calls http_status)a
   @codes ~w(not_found conflict unavailable not_configured authorization_unavailable invalid_input request_too_large worker_busy worker_unavailable worker_down worker_timeout worker_first_event_timeout worker_idle_timeout worker_cancelled worker_operation_failed model_required invalid_provider provider_mismatch invalid_request invalid_credential prepare_failed quota_unavailable reset_unavailable reset_pending reset_in_progress exchange_failed subscription_request_failed upstream_stream_failed context_length_exceeded account_proxy_timeout response_too_large invalid_protocol caller_cancelled exception storage_error provider_error unknown)
-  @operations ~w(/normalize /prepare /quota /quota/reset /oauth/begin /oauth/device/begin /oauth/device/poll /oauth/exchange /v1/responses /v1/responses/compact /v1/messages /v1/images/generations /v1/images/edits)
+  @operations ~w(/normalize /prepare /quota /quota/reset /oauth/begin /oauth/device/begin /oauth/device/poll /oauth/exchange /v1/responses /v1/responses/compact /v1/messages /v1/chat/completions /v1/images/generations /v1/images/edits)
 
   def emit(event, fields \\ []) do
     fields = sanitize(fields)
@@ -104,8 +104,8 @@ defmodule SalixAgent.SubscriptionLog do
       {key, value} when key in @numbers and is_integer(value) and value >= 0 ->
         [{key, value}]
 
-      {:provider, value} when value in ["codex", "claude"] ->
-        [provider: value]
+      {:provider, value} ->
+        if SalixAgent.AccountPool.provider?(value), do: [provider: value], else: []
 
       {:stream, value} when is_boolean(value) ->
         [stream: value]

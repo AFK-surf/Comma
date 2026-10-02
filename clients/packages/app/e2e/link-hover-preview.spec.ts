@@ -139,6 +139,66 @@ test("a rich link opens on the card's skeleton and settles into the card", async
   }
 });
 
+test("a link the server cannot read settles on the generic card and stays there on re-hover", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub({
+    assistantReply: `请看 [pull request](${githubHref}) 这个 PR。`,
+  });
+  let previewRequests = 0;
+
+  try {
+    // A GitHub PR the connected account cannot see: the provider read fails
+    // and the server answers 503.
+    await page.route("**/recommendations/link-preview**", async (route) => {
+      previewRequests += 1;
+      await route.fulfill({ status: 503, json: { error: "workspace_unavailable" } });
+    });
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "comma-link-preview-failed@comma.local",
+      token: "comma_sess_link_preview_failed",
+    });
+    await page.goto("/");
+
+    const content = page.getByRole("region", { name: "Content" });
+    const prompt = content.getByRole("textbox", { name: "AI prompt" });
+    await prompt.fill("看下 PR");
+    await content.getByRole("button", { name: "Send" }).click();
+
+    const link = content.getByRole("link", { name: "pull request" });
+    await expect(link).toBeVisible();
+
+    const hoverCard = page.getByRole("tooltip");
+    const skeleton = page.getByTestId("recommendation-link-card-skeleton");
+    await expect(async () => {
+      await prompt.hover();
+      await link.hover();
+      await expect(hoverCard).toContainText(
+        "GitHub · github.com/AFK-surf/Comma/pull/845",
+        {
+          timeout: 1500,
+        }
+      );
+    }).toPass();
+    await expect(skeleton).toHaveCount(0);
+    expect(previewRequests).toBe(1);
+
+    // The failure is remembered: hovering again opens straight on the generic
+    // card, with no skeleton and no second request.
+    await prompt.hover();
+    await expect(hoverCard).toHaveCount(0);
+    await link.hover();
+    await expect(hoverCard).toContainText(
+      "GitHub · github.com/AFK-surf/Comma/pull/845"
+    );
+    await expect(skeleton).toHaveCount(0);
+    expect(previewRequests).toBe(1);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("an open link menu blocks hover previews without intercepting another right click", async ({
   page,
 }) => {

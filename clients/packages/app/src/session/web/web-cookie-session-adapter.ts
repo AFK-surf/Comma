@@ -2,9 +2,14 @@ import {
   createSessionOperationError,
   createSessionOperationErrorOrUnknown,
   createSessionProblem,
+  GuestPowAbortedError,
+  guestAvailabilityRemoteSchema,
   mergeSessionSnapshot,
   sessionExpectation,
+  sessionPrincipalKind,
   sessionProductLease,
+  solveGuestPow,
+  type GuestPowSolution,
   type SessionAbsenceExpectation,
   type SessionAuthAttemptRef,
   type SessionLifecycleExpectation,
@@ -49,6 +54,8 @@ const backgroundReconcileDelaysMs = [1_000, 3_000, 10_000, 30_000] as const;
 const webSessionUserSchema = z.object({
   email: z.string().email(),
   id: z.string().min(1).max(256),
+  // Older servers omit the kind; any value other than "guest" is registered.
+  kind: z.string().max(64).nullable().optional(),
   name: z.string().min(1).max(512).nullable().optional(),
   status: z.string().min(1).max(64).nullable().optional(),
 });
@@ -89,6 +96,31 @@ const webGoogleCompletionSchema = z.union([
 const signedOutResponseSchema = z.object({
   signed_out: z.literal(true),
 });
+
+// WebCrypto digests are asynchronous; this many run in parallel per batch.
+const guestPowBatchSize = 256;
+
+// The Cookie transport keeps the claim in an HttpOnly Cookie; the body only
+// says how long it stays redeemable.
+const guestHandoffCookieResponseSchema = z.object({
+  claim: z.never().optional(),
+  expires_at: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+
+const guestImportResponseSchema = z.object({
+  import_id: z.string().min(1).max(256),
+});
+
+const guestImportMarkerSchema = z.strictObject({
+  expiresAtEpochSeconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+
+// Used when a handoff response cannot say when its claim expires.
+const guestClaimFallbackLifetimeSeconds = 60 * 60;
+
+export function webGuestImportMarkerStorageKey(canonicalApiOrigin: string) {
+  return `comma.guestImportPending.v1:${canonicalApiOrigin}`;
+}
 
 const unauthorizedResponseSchema = z.object({
   error: z.literal("unauthorized"),
@@ -173,7 +205,7 @@ type AdoptedCookieProjection = {
 type LocalAuthAttempt = {
   attempt: SessionAuthAttemptRef;
   challengeId?: string | undefined;
-  kind: "email" | "google";
+  kind: "email" | "google" | "guest";
   operationEpoch: number;
 };
 
@@ -191,6 +223,9 @@ export class WebCookieSessionAdapter {
   private readonly coordinationLockName: string;
   private readonly coordinationStorageKey: string;
   private readonly coordinationSenderId: string;
+  private readonly guestImportListeners = new Set<() => void>();
+  private readonly guestImportMarkerKey: string;
+  private guestImportRedemption: Promise<void> | undefined;
   private readonly listeners = new Set<SnapshotListener>();
   private readonly ports: WebSessionHostPorts;
   private adoptedCookie: AdoptedCookieProjection | undefined;
@@ -214,6 +249,7 @@ export class WebCookieSessionAdapter {
     );
     this.coordinationLockName = webSessionCoordinationLockName(this.canonicalApiOrigin);
     this.broadcastName = webSessionCoordinationBroadcastName(this.canonicalApiOrigin);
+    this.guestImportMarkerKey = webGuestImportMarkerStorageKey(this.canonicalApiOrigin);
     this.broadcast = input.ports.broadcast.open(this.broadcastName);
     this.snapshot = {
       authority: {
@@ -244,6 +280,7 @@ export class WebCookieSessionAdapter {
     this.broadcast.close();
     this.revokeProductLease();
     this.listeners.clear();
+    this.guestImportListeners.clear();
   }
 
   getSnapshot(): Promise<SessionLifecycleSnapshot> {
@@ -635,6 +672,264 @@ export class WebCookieSessionAdapter {
       unauthorizedCode: "invalid_challenge",
       settle: (value) => ({ kind: "signed_in", projection: value }),
     });
+  }
+
+  /** Whether the server offers guest sessions. Any failure reads as off. */
+  async guestAvailability(): Promise<boolean> {
+    try {
+      const response = await this.fetchGuestStatus();
+      if (!response.ok) return false;
+      const parsed = guestAvailabilityRemoteSchema.safeParse(response.body);
+      return parsed.success && parsed.data.enabled;
+    } catch {
+      return false;
+    }
+  }
+
+  async startGuestSession(input: {
+    expected: SessionAbsenceExpectation;
+  }): Promise<SessionOperationResult<SignedInSessionSnapshot, "start_guest_session">> {
+    const operation = "start_guest_session" as const;
+    const epoch = this.nextOperationEpoch();
+    const attempt = this.newAuthAttempt(input.expected);
+
+    if (!this.canStartAuthentication(input.expected)) {
+      return this.failure(operation, "conflict");
+    }
+
+    try {
+      return await this.withCoordinationLock(async () => {
+        const record = this.ensureSettledRecordForIntent();
+        if (!this.canCommitAuthAttempt(record, input.expected)) {
+          return this.failure(operation, "conflict");
+        }
+
+        this.authAttempt = { attempt, kind: "guest", operationEpoch: epoch };
+        this.publishTransient("authenticating");
+
+        // One solved challenge creates at most one guest. A challenge can
+        // expire or the required difficulty can rise before the create
+        // request, so a rejected proof is retried once with a fresh one.
+        let settled: Extract<
+          WebSessionCoordinationRecord,
+          { kind: "authenticating" | "stable" }
+        > = record;
+        for (let round = 0; ; round += 1) {
+          const solved = await this.solveGuestChallenge();
+          if (!solved.ok) {
+            this.authAttempt = undefined;
+            this.publishSignedOut("no_session");
+            return this.failure(operation, solved.code);
+          }
+
+          const marker = this.writeInFlight(settled, epoch, {
+            authAttemptId: attempt.attemptId,
+            expectedSessionId: "none",
+            kind: "start_guest_session",
+          });
+
+          let response: WebLifecycleResponse;
+          try {
+            response = await this.fetchLifecycle(
+              "POST",
+              "/v1/comma/auth/guest",
+              "none",
+              { ...webSessionClientMetadata(), pow: solved.value }
+            );
+          } catch {
+            // The server may have set a guest Cookie; recovery probes it.
+            this.authAttempt = undefined;
+            this.publishIndeterminate("credential_mutation_uncertain", "authenticate");
+            return this.failure(operation, "credential_mutation_uncertain");
+          }
+
+          if (response.ok) {
+            const projection = await parseJson(response, webSessionProjectionSchema);
+            if (projection) {
+              const stable = this.writeNext(
+                marker,
+                {
+                  kind: "stable",
+                  state: { kind: "present", sessionId: projection.session_id },
+                },
+                marker.cookieGeneration + 1
+              );
+              this.authAttempt = undefined;
+              this.adoptRecord(stable);
+              const snapshot = this.publishSignedIn(projection);
+              this.publishHint(stable);
+              return { ok: true, value: snapshot };
+            }
+            this.authAttempt = undefined;
+            this.adoptRecord(this.restoreAfterResponse(marker));
+            this.publishIndeterminate("protocol_mismatch", "authenticate");
+            return this.failure(operation, "protocol_mismatch");
+          }
+
+          // A rejected start leaves no Cookie behind.
+          const absent = this.writeNext(marker, {
+            kind: "stable",
+            state: { kind: "absent" },
+          });
+          this.adoptRecord(absent);
+          if (round === 0 && (await isGuestPowRejection(response))) {
+            settled = absent;
+            continue;
+          }
+          this.authAttempt = undefined;
+          this.publishSignedOut("no_session");
+          return this.failure(operation, await classifyGuestStartResponse(response));
+        }
+      });
+    } catch (error) {
+      return this.handleOperationFailure(operation, error, epoch);
+    }
+  }
+
+  /**
+   * The guest status and challenge. It is a signed-out lifecycle request, so
+   * it carries the Cookie transport headers with no expected Session.
+   */
+  private fetchGuestStatus(): Promise<WebLifecycleResponse> {
+    return this.fetchLifecycle("GET", "/v1/comma/auth/guest", "none");
+  }
+
+  /** Fetches a fresh guest challenge and solves it. Neither step has side effects. */
+  private async solveGuestChallenge(): Promise<
+    | { ok: true; value: GuestPowSolution }
+    | {
+        code: SessionOperationErrorCodeFor<"start_guest_session">;
+        ok: false;
+      }
+  > {
+    let response: WebLifecycleResponse;
+    try {
+      response = await this.fetchGuestStatus();
+    } catch {
+      return { code: "network_unavailable", ok: false };
+    }
+
+    if (!response.ok) {
+      return { code: await classifyGuestStartResponse(response), ok: false };
+    }
+    const availability = await parseJson(response, guestAvailabilityRemoteSchema);
+    if (!availability) return { code: "protocol_mismatch", ok: false };
+    if (!availability.enabled) return { code: "unsupported", ok: false };
+    if (!availability.pow) return { code: "protocol_mismatch", ok: false };
+
+    try {
+      const disposed = () => this.disposed;
+      const value = await solveGuestPow({
+        batchSize: guestPowBatchSize,
+        challenge: availability.pow.challenge,
+        difficulty: availability.pow.difficulty,
+        digestBatch: webGuestPowDigestBatch,
+        signal: {
+          get aborted() {
+            return disposed();
+          },
+        },
+      });
+      return { ok: true, value };
+    } catch (error) {
+      return {
+        code: error instanceof GuestPowAbortedError ? "cancelled" : "unknown",
+        ok: false,
+      };
+    }
+  }
+
+  /**
+   * Ends the current guest Session. The server clears the Session Cookie and
+   * sets an HttpOnly claim Cookie; this tab records only that an import is
+   * pending, so the next registered sign-in redeems the claim.
+   */
+  async beginGuestSignUp(input: {
+    expected: SessionLifecycleExpectation;
+  }): Promise<SessionOperationResult<SignedOutSessionSnapshot, "begin_guest_sign_up">> {
+    const operation = "begin_guest_sign_up" as const;
+    const epoch = this.nextOperationEpoch();
+    if (
+      this.snapshot.phase !== "signed_in" ||
+      sessionPrincipalKind(this.snapshot.principal) !== "guest" ||
+      !this.localExpectationMatches(input.expected)
+    ) {
+      return this.failure(operation, "conflict");
+    }
+    const expectedSessionId = this.snapshot.session.sessionId;
+
+    try {
+      return await this.withCoordinationLock(async () => {
+        const record = this.ensureSettledRecordForIntent();
+        if (!this.recordMatchesCurrentLease(record, expectedSessionId)) {
+          return this.failure(operation, "conflict");
+        }
+
+        // The handoff clears the Session Cookie exactly like sign-out.
+        const marker = this.writeInFlight(record, epoch, {
+          expectedSessionId,
+          kind: "sign_out",
+        });
+        // Written first: a lost response may still have set the claim Cookie.
+        // A redemption without that Cookie is rejected and clears the marker.
+        this.writeGuestImportMarker(
+          Math.floor(this.ports.now() / 1_000) + guestClaimFallbackLifetimeSeconds
+        );
+
+        let response: WebLifecycleResponse;
+        try {
+          response = await this.fetchLifecycle(
+            "POST",
+            "/v1/comma/auth/guest/handoff",
+            expectedSessionId,
+            {}
+          );
+        } catch {
+          this.restoreAfterResponse(marker);
+          return this.failure(operation, "network_unavailable");
+        }
+
+        if (response.ok) {
+          const parsed = await parseJson(response, guestHandoffCookieResponseSchema);
+          if (parsed) this.writeGuestImportMarker(parsed.expires_at);
+          return {
+            ok: true,
+            value: this.settleSignedOut(marker, "guest_handoff"),
+          };
+        }
+
+        this.clearGuestImportMarker();
+        if (
+          response.status === 401 &&
+          (await parseJson(response, unauthorizedResponseSchema))
+        ) {
+          return {
+            ok: true,
+            value: this.settleSignedOut(marker, "unauthorized"),
+          };
+        }
+        this.restoreAfterResponse(marker);
+        return this.failure(
+          operation,
+          response.status === 429
+            ? "rate_limited"
+            : response.status >= 500
+              ? "provider_unavailable"
+              : response.status === 403
+                ? "conflict"
+                : "unknown"
+        );
+      });
+    } catch (error) {
+      return this.handleOperationFailure(operation, error, epoch);
+    }
+  }
+
+  subscribeGuestImported(listener: () => void) {
+    this.guestImportListeners.add(listener);
+    return () => {
+      this.guestImportListeners.delete(listener);
+    };
   }
 
   async cancelAuthAttempt(input: {
@@ -1556,6 +1851,13 @@ export class WebCookieSessionAdapter {
     epoch: number,
     reason: "unauthorized" | "user_signed_out"
   ): SessionOperationResult<SignedOutSessionSnapshot, "sign_out"> {
+    return { ok: true, value: this.settleSignedOut(marker, reason) };
+  }
+
+  private settleSignedOut(
+    marker: Extract<WebSessionCoordinationRecord, { kind: "in_flight" }>,
+    reason: "guest_handoff" | "unauthorized" | "user_signed_out"
+  ): SignedOutSessionSnapshot {
     const nextGeneration =
       marker.operation.kind === "sign_out"
         ? marker.cookieGeneration + 1
@@ -1572,7 +1874,7 @@ export class WebCookieSessionAdapter {
     this.adoptRecord(stable);
     const snapshot = this.publishSignedOut(reason);
     this.publishHint(stable);
-    return { ok: true, value: snapshot };
+    return snapshot;
   }
 
   private writeInFlight(
@@ -1691,7 +1993,7 @@ export class WebCookieSessionAdapter {
     method: "GET" | "POST",
     path: string,
     expectedSessionId: string,
-    body?: Record<string, string>
+    body?: Record<string, unknown>
   ) {
     const controller = new AbortController();
     const timeout = this.ports.schedule(() => {
@@ -1742,11 +2044,13 @@ export class WebCookieSessionAdapter {
       this.productController = new AbortController();
     }
 
+    const guest = projection.user.kind === "guest";
     const next = this.publish({
       phase: "signed_in",
       principal: {
         ...(projection.user.name ? { displayName: projection.user.name } : {}),
         email: projection.user.email,
+        ...(guest ? { kind: "guest" as const } : {}),
         userId: projection.user.id,
       },
       session: {
@@ -1758,11 +2062,116 @@ export class WebCookieSessionAdapter {
     if (next.phase !== "signed_in") {
       throw new Error("Expected a signed-in Web Session snapshot.");
     }
+    if (!guest) this.redeemGuestImport();
     return next;
   }
 
+  /**
+   * Redeems a guest claim Cookie left by a handoff once a registered Session
+   * is current. Transient failures keep the marker for the next sign-in or
+   * reconcile; a rejected or expired claim clears it.
+   */
+  private redeemGuestImport() {
+    if (this.guestImportRedemption) return;
+    const marker = this.readGuestImportMarker();
+    if (!marker) return;
+    if (marker.expiresAtEpochSeconds * 1_000 <= this.ports.now()) {
+      this.clearGuestImportMarker();
+      return;
+    }
+    const lease = this.getProductLease();
+    if (!lease) return;
+    const redemption = this.runGuestImport(lease)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.guestImportRedemption === redemption) {
+          this.guestImportRedemption = undefined;
+        }
+      });
+    this.guestImportRedemption = redemption;
+  }
+
+  private async runGuestImport(lease: WebCookieSessionProductLease) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    lease.signal.addEventListener("abort", abort, { once: true });
+    const timeout = this.ports.schedule(abort, remoteOperationTimeoutMs);
+    let response: Response;
+    try {
+      // Cookie transport: the server reads and clears the claim Cookie.
+      response = await this.ports.fetch(
+        joinUrl(this.baseUrl, "/v1/comma/guest-imports"),
+        {
+          body: "{}",
+          credentials: "include",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            "x-comma-expected-auth-session-id": lease.sessionId,
+            "x-comma-session-lifecycle-version": webSessionLifecycleVersion,
+            "x-comma-session-transport": "cookie",
+          },
+          method: "POST",
+          signal: controller.signal,
+        }
+      );
+    } catch {
+      return;
+    } finally {
+      this.ports.unschedule(timeout);
+      lease.signal.removeEventListener("abort", abort);
+    }
+
+    if (response.ok) {
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = undefined;
+      }
+      this.clearGuestImportMarker();
+      if (guestImportResponseSchema.safeParse(body).success && !this.disposed) {
+        for (const listener of this.guestImportListeners) listener();
+      }
+      return;
+    }
+    if (response.status === 404) {
+      this.clearGuestImportMarker();
+    }
+  }
+
+  private readGuestImportMarker() {
+    try {
+      const raw = this.ports.storage.read(this.guestImportMarkerKey);
+      if (!raw) return undefined;
+      const parsed = guestImportMarkerSchema.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private writeGuestImportMarker(expiresAtEpochSeconds: number) {
+    try {
+      this.ports.storage.write(
+        this.guestImportMarkerKey,
+        JSON.stringify({ expiresAtEpochSeconds })
+      );
+    } catch {
+      // Without storage the claim Cookie simply expires unredeemed.
+    }
+  }
+
+  private clearGuestImportMarker() {
+    try {
+      this.ports.storage.write(this.guestImportMarkerKey, "");
+    } catch {
+      // A stale marker is dropped by the next rejected redemption.
+    }
+  }
+
   private publishSignedOut(
-    reason: "no_session" | "unauthorized" | "user_signed_out"
+    reason: "guest_handoff" | "no_session" | "unauthorized" | "user_signed_out"
   ): SignedOutSessionSnapshot {
     this.revokeProductLease();
     const next = this.publish({
@@ -2239,6 +2648,34 @@ function webSessionClientMetadata() {
 
 function classifyNetworkFailure(_error: unknown): "network_unavailable" {
   return "network_unavailable";
+}
+
+const guestPowTextEncoder = new TextEncoder();
+
+async function webGuestPowDigestBatch(inputs: readonly string[]) {
+  const digests = await Promise.all(
+    inputs.map((input) =>
+      crypto.subtle.digest("SHA-256", guestPowTextEncoder.encode(input))
+    )
+  );
+  return digests.map((digest) => new Uint8Array(digest));
+}
+
+async function isGuestPowRejection(response: WebLifecycleResponse) {
+  const error = await parseJson(response, z.object({ error: z.string() }));
+  return response.status === 400 && error?.error === "guest_pow_invalid";
+}
+
+async function classifyGuestStartResponse(
+  response: WebLifecycleResponse
+): Promise<"provider_unavailable" | "rate_limited" | "unknown" | "unsupported"> {
+  const error = await parseJson(response, z.object({ error: z.string() }));
+  if (response.status === 404 && error?.error === "guest_mode_disabled") {
+    return "unsupported";
+  }
+  if (response.status === 429) return "rate_limited";
+  if (response.status >= 500) return "provider_unavailable";
+  return "unknown";
 }
 
 function classifyAuthStartResponse(

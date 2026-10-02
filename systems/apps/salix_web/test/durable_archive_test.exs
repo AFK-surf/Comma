@@ -69,6 +69,67 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
              DurableArchive.read_chunks(archive, group_id, fn _, _ -> :ok end)
   end
 
+  test "a restored receipt cannot confirm an archive with a different retention scope" do
+    gateway = start_supervised!(MockCloudflareGateway)
+    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
+
+    archive = %{
+      "type" => "connector_tar_gz_chunks",
+      "storage" => "salix_s3",
+      "operation" => "scope-owned",
+      "byte_size" => 3,
+      "chunk_size" => 4 * 1024 * 1024,
+      "chunk_count" => 1,
+      "sessions" => 0,
+      "scope" => "full"
+    }
+
+    :ok =
+      MockCloudflareGateway.set_import(gateway, "scope-target", %{
+        "phase" => "restored",
+        "next_offset" => 3,
+        "sessions" => 0,
+        "scope" => "recovery"
+      })
+
+    assert {:error, :durable_archive_restore_mismatch} =
+             DurableArchive.restore(client, "scope-target", "group-owned", archive)
+
+    assert :ok =
+             DurableArchive.restore(
+               client,
+               "scope-target",
+               "group-owned",
+               Map.put(archive, "scope", "recovery")
+             )
+
+    refute Enum.any?(
+             MockCloudflareGateway.calls(gateway),
+             &(&1.body["action"] in ["part", "finish"])
+           )
+  end
+
+  test "archive verification stops when its owning release budget expires" do
+    archive = %{
+      "type" => "connector_tar_gz_chunks",
+      "storage" => "salix_s3",
+      "operation" => "budget-owned",
+      "byte_size" => 3,
+      "chunk_size" => 4 * 1024 * 1024,
+      "chunk_count" => 1,
+      "sessions" => 0
+    }
+
+    assert {:ok, _} = S3.put(DurableArchive.chunk_key("group-owned", "budget-owned", 0), "abc")
+
+    assert {:error, :image_release_drain_timeout} =
+             DurableArchive.check_chunks(archive, "group-owned", fn ->
+               {:error, :image_release_drain_timeout}
+             end)
+
+    assert :ok = DurableArchive.check_chunks(archive, "group-owned")
+  end
+
   test "GC deletes only a retired generation and keeps the current archive after retirement" do
     tenant = SalixStore.Ids.new_tenant_id()
     group = SalixStore.Ids.new_group_id(tenant)
@@ -109,7 +170,14 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
 
   test "a lost finish response resumes from the restored receipt without replaying parts" do
     gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
+
+    client =
+      Client.new(
+        base_url: MockCloudflareGateway.base_url(gateway),
+        secret: "test-secret",
+        max_retries: 0
+      )
+
     group = "group-owned"
     operation = "restore-once"
     data = "archive-body"
@@ -125,18 +193,27 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
     }
 
     assert {:ok, _} = S3.put(DurableArchive.chunk_key(group, operation, 0), data)
-    assert :ok = DurableArchive.restore(client, "sandbox-owned", group, archive)
-    assert :ok = DurableArchive.restore(client, "sandbox-owned", group, archive)
+    :ok = MockCloudflareGateway.lose_next_import_finish_response(gateway)
+    assert {:error, _} = DurableArchive.restore(client, "sandbox-owned", group, archive)
+    expired = System.system_time(:millisecond) - 1
+
+    assert :ok =
+             DurableArchive.restore(client, "sandbox-owned", group, archive, deadline_ms: expired)
+
+    assert {:error, :durable_archive_restore_expired} =
+             DurableArchive.restore(client, "another-target", group, archive,
+               deadline_ms: expired
+             )
 
     actions =
       MockCloudflareGateway.calls(gateway)
       |> Enum.filter(&(&1.op == :migration_import))
       |> Enum.map(& &1.body["action"])
 
-    assert actions == ["status", "part", "finish", "status"]
+    assert actions == ["status", "part", "finish", "status", "status"]
   end
 
-  test "a partially restored target is replaced before retrying the retained archive" do
+  test "a partial restore preserves the target and retained archive without execution sealing" do
     gateway = start_supervised!(MockCloudflareGateway)
     client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
     group = "group-owned"
@@ -156,7 +233,7 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
     assert {:ok, _} = S3.put(DurableArchive.chunk_key(group, operation, 0), data)
     :ok = MockCloudflareGateway.set_import(gateway, "sandbox-owned", %{"phase" => "restoring"})
 
-    assert {:ok, %{attachment: nil}} =
+    assert {:error, :durable_archive_partial_target} =
              SalixWeb.ComputeProviders.Cloudflare.ensure(
                %{"provider_resource_id" => "sandbox-owned", "group_id" => group},
                %{},
@@ -165,18 +242,14 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
                attach: false
              )
 
-    ops = MockCloudflareGateway.calls(gateway) |> Enum.map(& &1.op)
+    refute Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
+    assert {:ok, %{body: ^data}} = S3.get(DurableArchive.chunk_key(group, operation, 0))
 
-    assert ops == [
-             :ensure,
-             :migration_import,
-             :destroy,
-             :ensure,
-             :migration_import,
-             :migration_import,
-             :migration_import,
-             :readyz
-           ]
+    assert {:ok, %{"phase" => "restoring"}} =
+             Client.archive_import(client, "sandbox-owned", %{
+               "action" => "status",
+               "operation" => operation
+             })
   end
 
   test "Connector export uses signed R2 parts without relaying bytes through Salix" do

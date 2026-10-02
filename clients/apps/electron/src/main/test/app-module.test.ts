@@ -271,7 +271,10 @@ describe("Electron main composition root", () => {
       decorateAppPreferencesProvider: (provider) => ({
         close: closeAppPreferences,
         initializeClientSettings: (input) => provider.initializeClientSettings(input),
+        openLoginItemsSettings: (input) => provider.openLoginItemsSettings(input),
         openNotificationSettings: (input) => provider.openNotificationSettings(input),
+        requestNotificationAuthorization: (input) =>
+          provider.requestNotificationAuthorization(input),
         state: (input) => provider.state(input),
         update: (input) => provider.update(input),
       }),
@@ -1285,6 +1288,7 @@ function createTestElectronMainContext(
   return createElectronMainContext({
     appPreferencesFilePath: tempAppPreferencesPath(),
     appPreferencesPlatform: {
+      authorizeSystemNotifications: vi.fn(async () => true),
       getLaunchAtLogin: vi.fn(() => ({ enabled: false })),
       getSystemNotificationsStatus: vi.fn(() => "available" as const),
       setLaunchAtLogin: vi.fn((enabled: boolean) => ({ enabled })),
@@ -1360,6 +1364,7 @@ function createSideChatProvider() {
     setContentSize: vi.fn(() => ({ revision: 0 })),
     setInteractiveProgress: vi.fn(() => ({ revision: 0 })),
     updateDebugSettings: vi.fn(() => defaultSideChatDebugSettings),
+    setEnabled: vi.fn(),
     updateShortcut: vi.fn(() => defaultSideChatShortcut),
   };
 }

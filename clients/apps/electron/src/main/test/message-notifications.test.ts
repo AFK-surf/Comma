@@ -50,6 +50,7 @@ function message(overrides: Partial<ChatMessage> = {}): ChatMessage {
 
 function createHarness({
   deliver = true,
+  locale,
   isAppFocused = false,
   isSupported = true,
   notificationSound = true,
@@ -65,6 +66,7 @@ function createHarness({
   notifyRouterMessages?: boolean;
   replyError?: Error;
   systemNotifications?: boolean;
+  locale?: () => "en" | "zh-CN";
 } = {}) {
   const shown: MessageNotificationShowInput[] = [];
   const emitted: MessageNotificationEmission[] = [];
@@ -79,6 +81,7 @@ function createHarness({
   const warn = vi.fn();
   const service = new MessageNotificationsService({
     emitEvent: (payload) => emitted.push(payload),
+    ...(locale ? { locale } : {}),
     log: { warn },
     onDeliveryRefused,
     platform: {
@@ -158,6 +161,25 @@ describe("MessageNotificationsService", () => {
     expect(emitted).toEqual([]);
   });
 
+  it("writes each banner in Main's current app language", async () => {
+    let language: "en" | "zh-CN" = "en";
+    const { service, shown } = createHarness({ locale: () => language });
+
+    await service.handleAppendedMessages({
+      conversation: conversation(),
+      messages: [message()],
+      target,
+    });
+    language = "zh-CN";
+    await service.handleAppendedMessages({
+      conversation: conversation(),
+      messages: [message({ messageId: "msg_2" })],
+      target,
+    });
+
+    expect(shown.map((banner) => banner.replyPlaceholder)).toEqual(["Reply", "回复"]);
+  });
+
   it("notifies for a Router-attributed message in an agent task under the task title", async () => {
     const { service, shown } = createHarness();
 
@@ -174,9 +196,15 @@ describe("MessageNotificationsService", () => {
   it.each([
     ["a worker message", { actorRole: "worker" as const }],
     ["a user message", { role: "user" }],
+    ["an incoming WeChat message", { platformSource: "wechat", role: "user" }],
+    ["an outgoing Telegram message", { platformSource: "telegram" }],
+    [
+      "a Router-attributed external reply",
+      { actorRole: "router" as const, platformSource: "signal" },
+    ],
     ["an empty assistant message", { text: "   " }],
   ])("ignores %s", async (_label, overrides) => {
-    const { emitted, service, shown } = createHarness();
+    const { emitted, service, setBadgeCount, shown } = createHarness();
 
     await service.handleAppendedMessages({
       conversation: conversation(),
@@ -186,6 +214,7 @@ describe("MessageNotificationsService", () => {
 
     expect(shown).toEqual([]);
     expect(emitted).toEqual([]);
+    expect(setBadgeCount).not.toHaveBeenCalled();
   });
 
   it("ignores an unattributed assistant message outside the Home chat", async () => {

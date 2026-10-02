@@ -117,6 +117,98 @@ describe("BridgeConversationChannel", () => {
     channel.stop();
   });
 
+  it("preserves platform sources and reply relationships through metadata-only native updates", async () => {
+    let stateListener: ((snapshot: ChatRuntimeSnapshot) => void) | undefined;
+    const incoming = {
+      ...message("message-incoming", "Hello from WeChat"),
+      platformSource: "wechat",
+      role: "user",
+    };
+    const reply = {
+      ...message("message-reply", "Reply on Telegram"),
+      platformSource: "telegram",
+    };
+    const projected = snapshot("", {
+      messages: [incoming, reply],
+      serverMessages: [incoming, reply],
+    });
+    installNativeBridgeMock({
+      chat: {
+        retain: vi.fn(async () => ({ revision: 1 })) as never,
+        state: {
+          get: vi.fn(async () => projected),
+          subscribe: vi.fn((listener: (next: ChatRuntimeSnapshot) => void) => {
+            stateListener = listener;
+            listener(projected);
+            return vi.fn();
+          }),
+        } as never,
+      },
+      platform: "electron",
+      self: { role: "main-window", windowId: "renderer-1" },
+    });
+    const channel = new BridgeConversationChannel({
+      conversationId: "conversation-1",
+      groupId: "grp_test",
+      workspaceId: "workspace-1",
+    });
+
+    channel.start();
+    await vi.waitFor(() => expect(channel.getSnapshot().status).toBe("ready"));
+    const initial = channel.getSnapshot();
+    expect(initial.messages.map((item) => item.platformSource)).toEqual([
+      "wechat",
+      "telegram",
+    ]);
+    expect(initial.serverMessages.map((item) => item.platformSource)).toEqual([
+      "wechat",
+      "telegram",
+    ]);
+
+    const updatedReply = { ...reply, platformSource: "signal" };
+    stateListener?.(
+      snapshot("", {
+        messages: [incoming, updatedReply],
+        revision: 2,
+        serverMessages: [incoming, updatedReply],
+      })
+    );
+    expect(channel.getSnapshot().messages[1]?.platformSource).toBe("signal");
+    expect(channel.getSnapshot().serverMessages[1]?.platformSource).toBe("signal");
+
+    const linkedReply = { ...updatedReply, replyToMessageId: incoming.messageId };
+    stateListener?.(
+      snapshot("", {
+        messages: [incoming, linkedReply],
+        revision: 3,
+        serverMessages: [incoming, linkedReply],
+      })
+    );
+    expect(channel.getSnapshot().messages[1]?.replyToMessageId).toBe(
+      incoming.messageId
+    );
+    expect(channel.getSnapshot().serverMessages[1]?.replyToMessageId).toBe(
+      incoming.messageId
+    );
+
+    const threadedReply = { ...linkedReply, threadRootMessageId: incoming.messageId };
+    stateListener?.(
+      snapshot("", {
+        messages: [incoming, threadedReply],
+        revision: 4,
+        serverMessages: [incoming, threadedReply],
+      })
+    );
+    expect(channel.getSnapshot().messages[1]?.threadRootMessageId).toBe(
+      incoming.messageId
+    );
+    expect(channel.getSnapshot().serverMessages[1]?.threadRootMessageId).toBe(
+      incoming.messageId
+    );
+    expect(channel.getSnapshot().messages[0]).toBe(initial.messages[0]);
+    channel.stop();
+  });
+
   it("preserves the canonical Task review version through the Electron Chat projection", async () => {
     const readyForReview = snapshot("");
     readyForReview.sessions[0]!.state.conversation = {

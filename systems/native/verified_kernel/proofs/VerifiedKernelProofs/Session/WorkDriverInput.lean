@@ -16,17 +16,17 @@ theorem input_issue_terminal {context : Context} {args result : Term} {journal r
     QueryTerminal (issue context result) := by
   rcases input_start call with duplicate | saturated | invalidInput | ⟨batch, started, _, _⟩
   · rw [duplicate]
-    simp [QueryTerminal, Command.duplicateInput, Command.perform, issue, a]
+    simp [QueryTerminal, issue_duplicateInput, a]
   · rw [saturated]
-    simp [QueryTerminal, Command.finish, issue, a]
+    simp [QueryTerminal, issue_finish, a]
   · rw [invalidInput]
-    simp [QueryTerminal, Command.finish, issue, a]
+    simp [QueryTerminal, issue_finish, a]
   · have fixed := input_write_unchanged (continuation := inputWriteContinuation batch) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_input_write, fixed]
       simp [QueryTerminal, preparedWrite, a]
     · rw [workspaceStart]
-      simp [QueryTerminal, Command.perform, issue, a]
+      simp [QueryTerminal, issue_workspace, a]
 
 theorem input_query_observation_resource {context : Context} {args checkpoint saved request : Term}
     {observations : List Term}
@@ -92,11 +92,11 @@ theorem input_initial_write {context : Context} {args checkpoint saved : Term}
   have actual := issued.symm
   rcases input_start call with duplicate | saturated | invalidInput | ⟨original, started, _, _⟩
   · rw [duplicate] at actual
-    simp [Command.duplicateInput, Command.perform, issue, a] at actual
+    simp [issue_duplicateInput, a] at actual
   · rw [saturated] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · rw [invalidInput] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · have fixed := input_write_unchanged (continuation := inputWriteContinuation original) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_input_write, fixed] at actual
@@ -106,7 +106,7 @@ theorem input_initial_write {context : Context} {args checkpoint saved : Term}
       subst batch
       exact ⟨journal, result, rest, call, Or.inl direct, savedEq.symm⟩
     · rw [workspaceStart] at actual
-      simp [Command.perform, issue, a] at actual
+      simp [issue_workspace, a] at actual
 
 theorem input_initial_workspace {context : Context} {args checkpoint saved request : Term}
     {observations : List Term}
@@ -126,11 +126,11 @@ theorem input_initial_workspace {context : Context} {args checkpoint saved reque
   have actual := issued.symm
   rcases input_start call with duplicate | saturated | invalidInput | ⟨batch, started, _, _⟩
   · rw [duplicate] at actual
-    simp [Command.duplicateInput, Command.perform, issue, a] at actual
+    simp [issue_duplicateInput, a] at actual
   · rw [saturated] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · rw [invalidInput] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · have fixed := input_write_unchanged (continuation := inputWriteContinuation batch) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_input_write, fixed] at actual
@@ -175,8 +175,8 @@ theorem input_workspace_write {context : Context} {args initial saved operation 
   | error reason =>
     rw [effect_captured _ _ _ _ (by rfl)] at trace
     change ObservationTrace (issue context (Command.finish (.tuple [a "error", reason]))) _ at trace
-    have issued := trace.fixed (by simp [Command.finish, issue, a])
-    simp [Command.finish, issue, a] at issued
+    have issued := trace.fixed (by simp [issue_finish, a])
+    simp [issue_finish, a] at issued
 
 inductive InputAdmissionTrace (context : Context) (args checkpoint : Term) (observations : List Term) :
     Output → Prop where

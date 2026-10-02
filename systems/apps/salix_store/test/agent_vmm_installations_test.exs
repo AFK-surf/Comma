@@ -39,6 +39,237 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     :ok
   end
 
+  test "lost and concurrent install requests create only the original environment" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    create = fn ->
+      Agent.update(calls, &(&1 + 1))
+
+      Compute.ensure_environment(%{
+        id: "request-env-" <> Ecto.UUID.generate(),
+        tenant_id: "tenant",
+        owner_type: "project",
+        owner_id: "project",
+        pool_id: "pool"
+      })
+    end
+
+    attrs = Map.delete(request_attrs(), :environment_id)
+
+    requests =
+      for _ <- 1..2,
+          do:
+            Task.async(fn -> AgentVMMInstallations.request(attrs, create_environment: create) end)
+
+    [first, second] = Enum.map(requests, &Task.await/1)
+    assert {:ok, a} = first
+    assert {:ok, b} = second
+    assert a.operation.id == b.operation.id
+    assert a.operation.environment_id == b.operation.environment_id
+    assert {:ok, retried} = AgentVMMInstallations.request(attrs, create_environment: create)
+    assert retried.operation.environment_id == a.operation.environment_id
+    assert Repo.aggregate(Compute.Environment, :count) == 1
+    assert Agent.get(calls, & &1) == 1
+  end
+
+  test "ordinary owner commit rechecks a Session that became inactive after initial validation" do
+    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
+
+    options = [
+      expected_authorization: descriptor.operation,
+      authorize: fn -> {:error, :not_found} end
+    ]
+
+    for mutate <- [
+          fn -> AgentVMMInstallations.retry(descriptor.operation.id, options) end,
+          fn -> AgentVMMInstallations.revoke(descriptor.operation.id, options) end,
+          fn ->
+            AgentVMMInstallations.configure_registration(descriptor.operation.id, true, options)
+          end,
+          fn -> AgentVMMInstallations.initialize_workload(descriptor.operation.id, options) end
+        ] do
+      assert {:error, :authorization_changed} = mutate.()
+    end
+
+    assert Repo.get!(Operation, descriptor.operation.id).revision == descriptor.operation.revision
+  end
+
+  test "ordinary mutations reject a delivery change after the caller observes authorization" do
+    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
+    expected = descriptor.operation
+
+    {1, _} =
+      Repo.update_all(from(o in Operation, where: o.id == ^expected.id),
+        set: [delivery_target_id: "replacement-session"]
+      )
+
+    options = [expected_authorization: expected]
+    assert {:error, :authorization_changed} = AgentVMMInstallations.retry(expected.id, options)
+    assert {:error, :authorization_changed} = AgentVMMInstallations.revoke(expected.id, options)
+
+    assert {:error, :authorization_changed} =
+             AgentVMMInstallations.configure_registration(expected.id, true, options)
+
+    assert {:error, :authorization_changed} =
+             AgentVMMInstallations.initialize_workload(expected.id, options)
+
+    current = Repo.get!(Operation, expected.id)
+    assert current.authorization_status == "requested"
+    assert current.delivery_target_id == "replacement-session"
+    assert current.ticket_generation == expected.ticket_generation
+  end
+
+  test "dedicated possession proof recovers the original installation once and fences old management" do
+    {identity, private_key} = recovery_identity()
+
+    attrs =
+      Map.merge(request_attrs(), %{
+        surface: "comma",
+        delivery_target_type: "comma_main_device",
+        delivery_target_id: "old-session",
+        authorizing_subject_id: "original-subject",
+        authorizing_audience: "https://api.example.test"
+      })
+
+    assert {:ok, descriptor} = AgentVMMInstallations.request(attrs)
+
+    assert {:ok, exchanged} =
+             exchange(descriptor.operation.id, descriptor.one_time_secret, identity)
+
+    assert {:ok, original} =
+             AgentVMMInstallations.acknowledge(
+               descriptor.operation.id,
+               descriptor.one_time_secret,
+               exchanged.host_identity_digest
+             )
+
+    authority = recovery_authority()
+    options = [authorize: fn -> :ok end]
+
+    assert {:ok, issued} =
+             AgentVMMInstallations.recovery_challenge(original.id, authority, options)
+
+    assert {:ok, wire} = SalixStore.AgentVMMRecovery.wire(issued.challenge)
+    proof = recovery_proof(identity, private_key, issued.challenge["nonce"], wire)
+
+    assert {:error, :invalid_recovery_proof} =
+             AgentVMMInstallations.recover(
+               original.id,
+               authority,
+               %{proof | "root_key_revision" => 2},
+               true,
+               options
+             )
+
+    assert {:ok, preview} =
+             AgentVMMInstallations.recover(original.id, authority, proof, false, options)
+
+    assert preview.delivery_target_id == "old-session"
+
+    assert {:ok, recovered} =
+             AgentVMMInstallations.recover(original.id, authority, proof, true, options)
+
+    assert recovered.delivery_target_id == "new-session"
+    assert recovered.registration_id == original.registration_id
+    assert recovered.environment_id == original.environment_id
+    assert recovered.authorization_status == "handed_off"
+
+    assert {:error, :invalid_recovery_challenge} =
+             AgentVMMInstallations.recover(original.id, authority, proof, true, options)
+
+    assert {:error, :authorization_changed} =
+             AgentVMMInstallations.configure_registration(original.id, false,
+               expected_authorization: original
+             )
+
+    assert {:error, :authorization_changed} =
+             AgentVMMInstallations.revoke(original.id, expected_authorization: original)
+
+    assert {:error, :authorization_changed} =
+             AgentVMMInstallations.initialize_workload(original.id,
+               expected_authorization: original
+             )
+
+    assert {:error, :not_found} =
+             AgentVMMInstallations.recovery_challenge(
+               original.id,
+               %{authority | subject: "another-subject"},
+               options
+             )
+
+    assert {:error, :not_found} =
+             AgentVMMInstallations.recovery_challenge(
+               original.id,
+               %{authority | audience: "https://other.example.test"},
+               options
+             )
+
+    assert {:error, :not_found} =
+             AgentVMMInstallations.recovery_challenge(original.id, authority,
+               authorize: fn -> {:error, :forbidden} end
+             )
+  end
+
+  test "legacy recovery requires an original Session relationship and expires without transferring authority" do
+    {identity, private_key} = recovery_identity()
+
+    attrs =
+      Map.merge(request_attrs(), %{
+        surface: "comma",
+        delivery_target_type: "comma_main_device",
+        delivery_target_id: "old-session"
+      })
+
+    assert {:ok, descriptor} = AgentVMMInstallations.request(attrs)
+
+    assert {:ok, exchanged} =
+             exchange(descriptor.operation.id, descriptor.one_time_secret, identity)
+
+    assert {:ok, original} =
+             AgentVMMInstallations.acknowledge(
+               descriptor.operation.id,
+               descriptor.one_time_secret,
+               exchanged.host_identity_digest
+             )
+
+    authority = recovery_authority()
+    unknown = [authorize: fn -> :ok end, original_subject: fn _, _ -> {:error, :not_found} end]
+
+    assert {:error, :original_subject_unknown} =
+             AgentVMMInstallations.recovery_challenge(original.id, authority, unknown)
+
+    assert Repo.get!(Operation, original.id).authorizing_subject_id == nil
+    now = DateTime.utc_now()
+
+    known = [
+      authorize: fn -> :ok end,
+      original_subject: fn "comma_main_device", "old-session" -> {:ok, "original-subject"} end,
+      now: now
+    ]
+
+    assert {:ok, candidates} =
+             AgentVMMInstallations.recovery_candidates(
+               [original.registration_id, "unrelated"],
+               authority,
+               known
+             )
+
+    assert [issued] = candidates
+    assert Repo.get!(Operation, original.id).authorizing_subject_id == "original-subject"
+    assert {:ok, wire} = SalixStore.AgentVMMRecovery.wire(issued.challenge)
+    proof = recovery_proof(identity, private_key, issued.challenge["nonce"], wire)
+    expired = Keyword.put(known, :now, DateTime.add(now, 120, :second))
+
+    assert {:error, :invalid_recovery_challenge} =
+             AgentVMMInstallations.recover(original.id, authority, proof, true, expired)
+
+    assert Repo.get!(Operation, original.id).delivery_target_id == "old-session"
+    assert {:ok, _} = AgentVMMInstallations.revoke(original.id)
+
+    assert {:error, :recovery_target_unavailable} =
+             AgentVMMInstallations.recovery_challenge(original.id, authority, known)
+  end
+
   test "idempotent request rotates only the current secret and preserves identities" do
     assert {:ok, first} = AgentVMMInstallations.request(request_attrs())
     assert {:ok, second} = AgentVMMInstallations.request(request_attrs())
@@ -467,7 +698,7 @@ defmodule SalixStore.AgentVMMInstallationsTest do
           status: "available",
           observation: %{
             "gateway_instance_id" => "gateway-a",
-            "connection_epoch" => "epoch-a",
+            "connection_epoch" => "1",
             "inventory_watermark" => 1,
             "inventory_snapshot_bounded" => true,
             "admission" => "closed"
@@ -483,7 +714,7 @@ defmodule SalixStore.AgentVMMInstallationsTest do
         set: [
           observation: %{
             "gateway_instance_id" => "gateway-a",
-            "connection_epoch" => "epoch-a",
+            "connection_epoch" => "1",
             "inventory_watermark" => 1,
             "inventory_snapshot_bounded" => true,
             "admission" => "accepting"
@@ -493,6 +724,31 @@ defmodule SalixStore.AgentVMMInstallationsTest do
 
     assert {:ok, ready} = AgentVMMInstallations.get(descriptor.operation.id)
     assert ready.status == "ready"
+
+    {1, _} =
+      Repo.update_all(Compute.ProviderBinding,
+        set: [
+          observation: %{
+            "gateway_instance_id" => "gateway-a",
+            "connection_epoch" => "epoch-a",
+            "admission" => "accepting"
+          }
+        ]
+      )
+
+    assert {:ok, invalid} = AgentVMMInstallations.get(descriptor.operation.id)
+    assert invalid.status == "action_required"
+
+    {1, _} =
+      Repo.update_all(Compute.ProviderBinding,
+        set: [
+          observation: %{
+            "gateway_instance_id" => "gateway-a",
+            "connection_epoch" => "1",
+            "admission" => "accepting"
+          }
+        ]
+      )
 
     binding =
       Repo.get_by!(Compute.ProviderBinding, provider_ref: descriptor.operation.registration_id)
@@ -705,6 +961,53 @@ defmodule SalixStore.AgentVMMInstallationsTest do
       device_id: "host-device",
       root_public_key: String.duplicate("k", 33),
       root_key_revision: 1
+    }
+  end
+
+  test "the fixed purpose proof uses the native canonical wire including UTF-8 bindings" do
+    vector =
+      __DIR__ |> Path.join("testdata/comma_recovery_wire.json") |> File.read!() |> Jason.decode!()
+
+    assert {:ok, wire} = SalixStore.AgentVMMRecovery.wire(vector["challenge"])
+    assert wire == vector["wire"]
+  end
+
+  defp recovery_authority do
+    %{
+      tenant_id: "tenant",
+      group_id: "group",
+      scope_key: "project",
+      subject: "original-subject",
+      audience: "https://api.example.test",
+      session_id: "new-session"
+    }
+  end
+
+  defp recovery_identity do
+    {<<4, x::binary-size(32), y::binary-size(32)>>, private_key} =
+      :crypto.generate_key(:ecdh, :secp256r1)
+
+    key = <<2 + Bitwise.band(:binary.last(y), 1), x::binary>>
+    {%{device_id: "host-device", root_public_key: key, root_key_revision: 1}, private_key}
+  end
+
+  defp recovery_proof(identity, private_key, nonce, wire) do
+    der = :crypto.sign(:ecdsa, :sha256, wire, [private_key, :secp256r1])
+    <<0x30, _size, 0x02, r_size, rest::binary>> = der
+    <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
+    r = :binary.decode_unsigned(r)
+    s = :binary.decode_unsigned(s)
+    order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+    signature =
+      <<r::unsigned-big-integer-size(256), min(s, order - s)::unsigned-big-integer-size(256)>>
+
+    %{
+      "nonce" => nonce,
+      "signature" => Base.encode64(signature),
+      "device_id" => identity.device_id,
+      "root_public_key" => Base.encode64(identity.root_public_key),
+      "root_key_revision" => identity.root_key_revision
     }
   end
 

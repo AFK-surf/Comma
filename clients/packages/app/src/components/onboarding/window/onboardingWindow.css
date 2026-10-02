@@ -1,0 +1,8 @@
+/* The onboarding window is a transparent sheet over the desktop. Its page paints
+   nothing of its own, from the first frame: the experience draws the veil and
+   the light, and the desktop shows wherever they do not. */
+html[data-comma-window-role="onboarding"],
+body[data-comma-window-role="onboarding"],
+html[data-comma-window-role="onboarding"] #root {
+  background: transparent;
+}

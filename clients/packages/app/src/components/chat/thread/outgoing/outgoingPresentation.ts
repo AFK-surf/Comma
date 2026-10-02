@@ -36,13 +36,15 @@ export function resolveOutgoingPresentations(
     const lockedMessage = lockedTurnKey
       ? messages.find(
           (message) =>
-            message.role === "user" && messageTurnKey(message) === lockedTurnKey
+            message.role === "user" &&
+            messageTurnKey(message) === lockedTurnKey &&
+            !message.platformSource
         )
       : undefined;
     const message =
       lockedMessage ??
       messages.find((candidate) => {
-        if (candidate.role !== "user") return false;
+        if (candidate.role !== "user" || candidate.platformSource) return false;
         const turnKey = messageTurnKey(candidate);
         return !launch.existingTurnKeys.has(turnKey) && !claimedTurnKeys.has(turnKey);
       });

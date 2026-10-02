@@ -23,6 +23,8 @@ type StateStore interface {
 	Load(context.Context) (Record, error)
 	Create(context.Context, State) (Record, error)
 	Update(context.Context, Record) (Record, error)
+	Archive(context.Context, State) error
+	Archived(context.Context, string) (State, error)
 }
 
 type Runner interface {
@@ -169,4 +171,59 @@ func redactAll(s string) string {
 		s = pattern.re.ReplaceAllString(s, pattern.replacement)
 	}
 	return s
+}
+
+// The archive preserves a replaced transaction's facts. It never owns execution.
+func (s KubectlStore) Archive(ctx context.Context, state State) error {
+	name := JobName(state.ReleaseID, "previous", 1)
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	body, err := s.Runner.Run(ctx, nil, "-n", s.Namespace, "get", "configmap/"+name, "-o", "json")
+	if err == nil {
+		var cm configMap
+		var flags struct {
+			Immutable bool `json:"immutable"`
+		}
+		if json.Unmarshal(body, &cm) != nil || json.Unmarshal(body, &flags) != nil || !flags.Immutable {
+			return errors.New("previous release record differs")
+		}
+		var previous State
+		if err = json.Unmarshal([]byte(cm.Data["state.json"]), &previous); err != nil {
+			return err
+		}
+		// Repeated recovery updates diagnostic time without changing release facts.
+		state.UpdatedAt = previous.UpdatedAt
+		encoded, err = json.Marshal(state)
+		if err != nil || cm.Data["state.json"] != string(encoded) {
+			return errors.New("previous release record differs")
+		}
+		return nil
+	}
+	if !containsNotFound(err.Error()) {
+		return err
+	}
+	manifest := map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": name, "namespace": s.Namespace}, "immutable": true, "data": map[string]string{"state.json": string(encoded)}}
+	body, err = json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	_, err = s.Runner.Run(ctx, body, "-n", s.Namespace, "create", "-f", "-")
+	return err
+}
+
+func (s KubectlStore) Archived(ctx context.Context, releaseID string) (State, error) {
+	body, err := s.Runner.Run(ctx, nil, "-n", s.Namespace, "get", "configmap/"+JobName(releaseID, "previous", 1), "-o", "json")
+	if err != nil {
+		return State{}, err
+	}
+	record, err := decodeRecord(body)
+	if err != nil {
+		return State{}, err
+	}
+	if record.State.ReleaseID != releaseID {
+		return State{}, errors.New("previous release identity differs")
+	}
+	return record.State, nil
 }

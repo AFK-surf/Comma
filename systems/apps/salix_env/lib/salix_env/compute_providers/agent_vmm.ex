@@ -1561,14 +1561,15 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   end
 
   defp enqueue_runtime_session(allocation, workload) do
-    with {:ok, allocation} <- ensure_runtime_execution_identity(allocation, workload) do
-      enqueue(
-        allocation,
-        workload,
-        "runtime.open_session",
-        "desired_state",
-        %{}
-      )
+    case ensure_runtime_execution_identity(allocation, workload) do
+      {:ok, current} ->
+        enqueue(current, workload, "runtime.open_session", "desired_state", %{})
+
+      {:error, :awaiting_connection_observation} ->
+        {:ok, %{outcome: :pending, resource: allocation}}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -1648,6 +1649,12 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
               error
           end
         end
+      else
+        {:error, :awaiting_connection_observation} ->
+          {:ok, %{outcome: :pending, resource: current}}
+
+        {:error, _} = error ->
+          error
       end
     end
   end
@@ -1735,27 +1742,17 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
 
   defp connection_epoch(allocation) do
     case Repo.get(Compute.ProviderBinding, allocation.provider_binding_id) do
-      %Compute.ProviderBinding{observation: %{"connection_epoch" => epoch}} ->
-        canonical_uint64(epoch)
+      %Compute.ProviderBinding{observation: %{"connection_epoch" => epoch}}
+      when not is_nil(epoch) ->
+        SalixStore.ComputeContract.connection_epoch(epoch)
 
-      _ ->
-        {:error, :invalid_connection_epoch}
+      %Compute.ProviderBinding{} ->
+        {:error, :awaiting_connection_observation}
+
+      nil ->
+        {:error, :not_found}
     end
   end
-
-  defp canonical_uint64(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {parsed, ""} when parsed in 1..18_446_744_073_709_551_615 ->
-        if Integer.to_string(parsed) == value,
-          do: {:ok, value},
-          else: {:error, :invalid_connection_epoch}
-
-      _ ->
-        {:error, :invalid_connection_epoch}
-    end
-  end
-
-  defp canonical_uint64(_), do: {:error, :invalid_connection_epoch}
 
   defp authority_covers_image_import?(%DateTime{} = expires_at) do
     DateTime.compare(

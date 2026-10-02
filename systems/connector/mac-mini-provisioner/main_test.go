@@ -974,7 +974,7 @@ printf '%s\n' '{"operationId":"local-control","outcome":"succeeded"}'
 		}},
 		"next_cursor": "operation-1",
 	}}
-	if err := applyAgentVMMControls(runOptions{start: true}, config, statusPath, heartbeat); err != nil {
+	if err := applyAgentVMMControls(runOptions{start: true}, config, root, statusPath, heartbeat); err != nil {
 		t.Fatal(err)
 	}
 	if got := stringValue(config["_agent_vmm_control_cursor"]); got != "operation-1" {
@@ -988,7 +988,7 @@ printf '%s\n' '{"operationId":"local-control","outcome":"succeeded"}'
 		t.Fatalf("unexpected control status: %s", status)
 	}
 
-	if err := applyAgentVMMControls(runOptions{start: true}, config, statusPath, map[string]any{"agent_vmm_controls": map[string]any{"version": 1, "items": []any{}, "next_cursor": nil}}); err != nil {
+	if err := applyAgentVMMControls(runOptions{start: true}, config, root, statusPath, map[string]any{"agent_vmm_controls": map[string]any{"version": 1, "items": []any{}, "next_cursor": nil}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := config["_agent_vmm_control_cursor"]; exists {
@@ -1002,7 +1002,7 @@ func TestEmptyAgentVMMControlsDoNotRequireAVMMHelper(t *testing.T) {
 		"version": 1, "items": []any{}, "next_cursor": nil,
 	}}
 
-	if err := applyAgentVMMControls(runOptions{start: true}, config, filepath.Join(t.TempDir(), "status.json"), heartbeat); err != nil {
+	if err := applyAgentVMMControls(runOptions{start: true}, config, t.TempDir(), filepath.Join(t.TempDir(), "status.json"), heartbeat); err != nil {
 		t.Fatalf("empty control page failed without a VMM helper: %v", err)
 	}
 	if _, exists := config["_agent_vmm_control_cursor"]; exists {
@@ -2040,5 +2040,43 @@ func TestBuildLaunchDefaultsConnectorRootFromRequestID(t *testing.T) {
 	}
 	if want := filepath.Join(root, "work", "agents", "bft_3f2c_req"); plan.root != want {
 		t.Fatalf("root = %q, want %q", plan.root, want)
+	}
+}
+
+func TestLocallyDisposedControlReportsOnceAndOtherRegistrationStillApplies(t *testing.T) {
+	root := t.TempDir()
+	helper := filepath.Join(root, "lifecycle")
+	calls := filepath.Join(root, "calls")
+	writeExecutable(t, helper, `#!/bin/sh
+printf '%s\n' "$3" >> "`+calls+`"
+if [ "$3" = registration-A ]; then
+printf '%s\n' '{"requestId":"operation-A-r3","failureCode":"local_disposed","retryable":false,"outcome":"failed"}'
+exit 1
+fi
+printf '%s\n' '{"outcome":"succeeded"}'
+`)
+	config := testAgentVMMConfig(helper)
+	heartbeat := map[string]any{"agent_vmm_controls": map[string]any{"version": 1, "items": []any{
+		map[string]any{"operation_id": "operation-A", "registration_id": "registration-A", "registration_revision": 3, "state": "enabled"},
+		map[string]any{"operation_id": "operation-B", "registration_id": "registration-B", "registration_revision": 3, "state": "enabled"},
+	}, "next_cursor": "operation-B"}}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := applyAgentVMMControls(runOptions{start: true}, config, root, filepath.Join(root, "status.json"), heartbeat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result) != "registration-A\nregistration-B\nregistration-B\n" {
+		t.Fatalf("controls=%s", result)
+	}
+	reports, err := agentVMMInstallFailureReports(root)
+	if err != nil || len(reports) != 1 || stringValue(mapFromValue(reports[0])["failure_code"]) != "agent_vmm.local_disposed" {
+		t.Fatalf("reports=%v err=%v", reports, err)
+	}
+	if stringValue(config["_agent_vmm_control_cursor"]) != "operation-B" {
+		t.Fatal("terminal A blocked B page advancement")
 	}
 }

@@ -37,13 +37,25 @@ export function CreditWarningNotice({
   return (
     <div ref={frame} className="comma-chat-credit-warning-frame">
       <CreditNotice
-        tone={warning.threshold === 50 ? "info" : "warning"}
+        tone={
+          warning.threshold === 0
+            ? "error"
+            : warning.threshold === 50
+              ? "info"
+              : "warning"
+        }
         testId="chat-credit-warning"
-        title={messages.billing_low_credits_title({ percent: warning.percent })}
+        title={
+          warning.threshold === 0
+            ? messages.billing_out_of_credits_title()
+            : messages.billing_low_credits_title({ percent: warning.percent })
+        }
         detail={
-          warning.threshold === 50
-            ? messages.billing_credits_reminder_detail()
-            : messages.billing_low_credits_detail()
+          warning.threshold === 0
+            ? messages.billing_out_of_credits_detail()
+            : warning.threshold === 50
+              ? messages.billing_credits_reminder_detail()
+              : messages.billing_low_credits_detail()
         }
         actions={
           <>

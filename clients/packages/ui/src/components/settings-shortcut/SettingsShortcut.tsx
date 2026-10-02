@@ -11,6 +11,7 @@ import { cx } from "../utils";
 
 export type SettingsShortcutKey =
   | "space"
+  | "comma"
   | "a"
   | "b"
   | "c"
@@ -73,6 +74,7 @@ export interface SettingsShortcutProps {
 
 const physicalShortcutKey = (code: string): SettingsShortcutKey | undefined => {
   if (code === "Space") return "space";
+  if (code === "Comma") return "comma";
   const letter = /^Key([A-Z])$/.exec(code)?.[1];
   if (letter) return letter.toLocaleLowerCase() as SettingsShortcutKey;
 
@@ -80,12 +82,15 @@ const physicalShortcutKey = (code: string): SettingsShortcutKey | undefined => {
   return digit as SettingsShortcutKey | undefined;
 };
 
+const keyText = (key: SettingsShortcutKey) =>
+  key === "space" ? "Space" : key === "comma" ? "," : key.toLocaleUpperCase();
+
 const shortcutParts = ({ key, modifiers }: SettingsShortcutValue) => [
   ...(modifiers.control ? ["Ctrl"] : []),
   ...(modifiers.alt ? ["Alt"] : []),
   ...(modifiers.shift ? ["Shift"] : []),
   ...(modifiers.meta ? ["Cmd"] : []),
-  key === "space" ? "Space" : key.toLocaleUpperCase(),
+  keyText(key),
 ];
 
 interface ShortcutKeycap {
@@ -114,7 +119,7 @@ const modifierKeycaps = (
 
 const shortcutKeycaps = ({ key, modifiers }: SettingsShortcutValue) => [
   ...modifierKeycaps(modifiers),
-  { id: `key-${key}`, text: key === "space" ? "Space" : key.toLocaleUpperCase() },
+  { id: `key-${key}`, text: keyText(key) },
 ];
 
 const emptyShortcutKeycaps: ShortcutKeycap[] = [

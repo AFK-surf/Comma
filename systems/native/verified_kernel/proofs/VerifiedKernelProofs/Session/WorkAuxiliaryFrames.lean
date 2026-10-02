@@ -486,10 +486,13 @@ theorem afterEvent_auxiliary_frame_step {previous next e t : Term} {j r : List T
     afterEvent previous next e j = .ok (t, r) ↔ Except.ok (t, r) = afterEvent previous next e j ∧ AuxiliaryFrame next t :=
   step_iff afterEvent_auxiliary_frame
 
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). This is much
+cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_auxiliary_frame {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     AuxiliaryFrame s t := by
-  unfold runtimeAppend at h
-  auxiliary_frame_walk h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
+  exact auxiliary_frame_trans (appendFields_auxiliary_frame appended) (auxiliary_frame_trans (write_auxiliary_frame written rfl rfl)
+    (auxiliary_frame_trans (bumpHwm_auxiliary_frame bumped) (resetFresh_auxiliary_frame reset)))
 
 theorem runtimeAppend_auxiliary_frame_step {s e t : Term} {j r : List Term} :
     runtimeAppend s e j = .ok (t, r) ↔ Except.ok (t, r) = runtimeAppend s e j ∧ AuxiliaryFrame s t :=
@@ -504,10 +507,14 @@ theorem transcriptRuntime_auxiliary_frame_step {s e t : Term} {j r : List Term} 
     transcriptRuntime s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptRuntime s e j ∧ AuxiliaryFrame s t :=
   step_iff transcriptRuntime_auxiliary_frame
 
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). This is
+much cheaper than a walk over every branch of `transcriptDelivery`. -/
 theorem transcriptDelivery_auxiliary_frame {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : AuxiliaryFrame s t := by
-  unfold transcriptDelivery at h
-  auxiliary_frame_walk h
+  rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
+  · exact auxiliary_frame_refl _
+  · exact auxiliary_frame_trans (appendFields_auxiliary_frame appended) (auxiliary_frame_trans (write_auxiliary_frame written rfl rfl)
+      (auxiliary_frame_trans (addObligation_auxiliary_frame obligated) (auxiliary_frame_trans (bumpHwm_auxiliary_frame bumped) (resetFresh_auxiliary_frame reset))))
 
 theorem transcriptDelivery_auxiliary_frame_step {s e t : Term} {j r : List Term} :
     transcriptDelivery s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptDelivery s e j ∧ AuxiliaryFrame s t :=

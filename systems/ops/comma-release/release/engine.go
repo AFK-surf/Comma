@@ -25,6 +25,7 @@ type JobSpec struct {
 type Platform interface {
 	Preflight(context.Context, []byte) (string, error)
 	CurrentHelmRevision(context.Context) (int, error)
+	CheckRepairInstallation(context.Context) error
 	EnsureBundle(context.Context, string, []byte) (string, error)
 	RunPlan(context.Context, State) (Plan, error)
 	RunJob(context.Context, JobSpec) error
@@ -676,7 +677,7 @@ func (e Engine) Recover(ctx context.Context, expectedReleaseID ...string) (State
 		return record.State, fmt.Errorf("abort release attempts: %w", err)
 	}
 	markAbortableAttemptsAborted(&record.State)
-	if recoveryNeedsHelmRollback(failedPhase) {
+	if recoveryNeedsHelmRollback(failedPhase) || record.State.RepairFrom != "" {
 		if err = e.Platform.Restore(ctx, record.State); err != nil {
 			return record.State, fmt.Errorf("restore Helm snapshot revision: %w", err)
 		}
@@ -978,6 +979,9 @@ func (e Engine) runPlan(ctx context.Context, record *Record) (Plan, error) {
 		}
 	}
 	plan, err := e.Platform.RunPlan(ctx, record.State)
+	if err == nil && record.State.RepairFrom != "" {
+		err = e.validateRepairPlan(ctx, record.State, plan)
+	}
 	if err != nil {
 		record.State.Attempts[attemptIndex].Status = "failed"
 		record.State.LastError = "plan failed"
@@ -1061,3 +1065,98 @@ func replaceableTerminal(state State) bool {
 }
 
 func Encode(v any) []byte { body, _ := json.Marshal(v); return body }
+
+// PrepareRepair replaces only a failed online transaction before cutover.
+// Its snapshot remains a restoration target, not a claim of service health.
+func (e Engine) PrepareRepair(ctx context.Context, environment, releaseID, image string, bundle []byte, previousID string) (State, error) {
+	if environment == "" || releaseID == "" || image == "" || previousID == "" || releaseID == previousID {
+		return State{}, errors.New("repair requires a new release ID and the recorded previous release ID")
+	}
+	valuesDigest, err := e.Platform.Preflight(ctx, bundle)
+	if err != nil {
+		return State{}, err
+	}
+	record, err := e.Store.Load(ctx)
+	if err != nil {
+		return State{}, err
+	}
+	name := BundleName(bundle)
+	if record.State.ReleaseID == releaseID && record.State.RepairFrom == previousID {
+		if record.State.Environment != environment || record.State.Image != image || record.State.BundleName != name || record.State.Artifacts.ChartReference != e.ChartReference || record.State.Artifacts.ChartDigest != e.ChartDigest || record.State.Artifacts.ValuesDigest != valuesDigest {
+			return State{}, errors.New("repair candidate drift")
+		}
+		if record.State.Phase != PhasePrepared {
+			return record.State, nil
+		}
+	} else {
+		old := record.State
+		if old.ReleaseID != previousID || old.Environment != environment {
+			return State{}, errors.New("repair fence mismatch")
+		}
+		if old.Phase != PhaseRecovering || old.RequiredMode != ModeOnline || old.CutoverMayHaveStarted || old.RequiresExclusiveDeployment() || e.RequireLifecycleWriterEpoch {
+			return State{}, errors.New("repair requires a recovering pre-cutover online release without a lifecycle hard cut")
+		}
+		if err = e.Platform.CheckRepairInstallation(ctx); err != nil {
+			return State{}, err
+		}
+		if err = e.Platform.AbortAttempts(ctx, old); err != nil {
+			return State{}, err
+		}
+		if hasAbortableAttempts(old) {
+			markAbortableAttemptsAborted(&record.State)
+			record, err = e.Store.Update(ctx, record)
+			if err != nil {
+				return State{}, err
+			}
+			old = record.State
+		}
+		if err = e.Store.Archive(ctx, old); err != nil {
+			return State{}, err
+		}
+		actual, bundleErr := e.Platform.EnsureBundle(ctx, name, bundle)
+		if bundleErr != nil {
+			return State{}, bundleErr
+		}
+		if actual != name {
+			return State{}, errors.New("content-addressed bundle name mismatch")
+		}
+		next := NewState(environment, releaseID, image, old.Helm.SnapshotRevision, e.now())
+		next.RepairFrom = previousID
+		next.BundleName = name
+		next.Artifacts = ArtifactFacts{ImageDigest: image, ChartReference: e.ChartReference, ChartDigest: e.ChartDigest, ValuesDigest: valuesDigest}
+		record.State = next
+		record, err = e.Store.Update(ctx, record)
+		if err != nil {
+			return State{}, err
+		}
+	}
+	plan, err := e.runPlan(ctx, &record)
+	if err != nil {
+		return record.State, err
+	}
+	record.State, err = Reduce(record.State, EventPlan, &plan, e.now())
+	if err != nil {
+		return record.State, err
+	}
+	return e.save(ctx, record)
+}
+
+func (e Engine) validateRepairPlan(ctx context.Context, state State, plan Plan) error {
+	if err := state.ValidatePlan(plan); err != nil {
+		return err
+	}
+	old, err := e.Store.Archived(ctx, state.RepairFrom)
+	if err != nil {
+		return err
+	}
+	for _, attempt := range old.Attempts {
+		if attempt.Status == "complete" && attempt.Stage != "plan" {
+			for _, id := range attempt.AllowedStepIDs {
+				if slices.Contains(plan.CorePending(), id) {
+					return errors.New("repair plan repeats a completed migration")
+				}
+			}
+		}
+	}
+	return nil
+}

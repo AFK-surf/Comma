@@ -219,7 +219,7 @@ defmodule CommaWeb.RecommendationRuntimeTest do
       })
 
     workspace = create_ready_workspace!(user)
-    assert {:ok, _} = RecommendationRuntime.ensure(user, %{}, workspace, "Asia/Singapore", "en")
+    assert {:ok, _} = RecommendationRuntime.ensure(user, %{}, workspace, "Asia/Singapore")
     assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])
     {user, workspace, profile}
   end

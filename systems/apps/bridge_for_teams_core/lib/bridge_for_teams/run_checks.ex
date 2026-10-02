@@ -980,7 +980,7 @@ defmodule BridgeForTeams.RunChecks do
       label: "First message round-trips (@Bridge -> reply)",
       status: :skipped,
       reason_class: :not_connected,
-      next_action: "Create a Feishu connect before sending a first-message smoke.",
+      next_action: "Create a Feishu connect before sending a first message.",
       evidence: %{"auto_run" => false}
     })
   end
@@ -992,7 +992,7 @@ defmodule BridgeForTeams.RunChecks do
       status: :needs_manual,
       reason_class: :explicit_admin_action_required,
       next_action:
-        "Use the explicit test-message action, or send a real @Bridge message in the target Feishu group and watch for a reply.",
+        "Send a real @Bridge message in the target Feishu group and watch for a reply.",
       evidence: %{
         "connect_id" => connect["connect_id"],
         "auto_run" => false,

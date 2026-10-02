@@ -256,6 +256,32 @@ defmodule CommaWeb.NativePluginConnectionsTest do
     assert {:ok, %{"sources" => [%{"state" => "ready", "kind" => "managed_oauth"}]}} =
              PluginConnections.personal_sources(user, %{}, w["id"], "slack")
 
+    # A grant made before the plugin required search:read keeps working for
+    # MCP, but only a reconnect can widen it for Routine.
+    oauth =
+      w["default_group_id"]
+      |> Salix.Control.OAuthBindings.list()
+      |> Enum.find(&(&1["provider"] == "slack"))
+
+    {:ok, stored} = SalixStore.OAuth.get(oauth["connection_id"])
+    older = Map.update!(stored, "scopes", &List.delete(&1, "search:read"))
+    :ok = SalixStore.OAuth.put(oauth["connection_id"], older)
+
+    assert {:ok, %{"sources" => [%{"state" => "needs_reauthorization"}]}} =
+             PluginConnections.personal_sources(user, %{}, w["id"], "slack")
+
+    # A grant the provider revoked also asks for a reconnect, not a first connect.
+    :ok =
+      SalixStore.OAuth.put(
+        oauth["connection_id"],
+        Map.put(stored, "status", "reauthorization_required")
+      )
+
+    assert {:ok, %{"sources" => [%{"state" => "needs_reauthorization"}]}} =
+             PluginConnections.personal_sources(user, %{}, w["id"], "slack")
+
+    :ok = SalixStore.OAuth.put(oauth["connection_id"], stored)
+
     assert {:ok, reconnect} =
              PluginConnections.reauthorize(user, %{}, w["id"], "slack", %{
                "connection_id" => "slack-managed"
@@ -893,6 +919,77 @@ defmodule CommaWeb.NativePluginConnectionsTest do
              CommaWeb.RecommendationRuntime.sync_sources(profile.id)
 
     assert Repo.get!(RecommendationProfile, profile.id).sources == [old]
+  end
+
+  test "the backfill stamps a legacy grant only in a single-member Workspace", %{
+    user: user,
+    workspace: w
+  } do
+    Application.put_env(:salix_web, :composio_settings_mod, UnconfiguredComposio)
+    assert {:ok, _} = Comma.Recommendations.get(user, %{}, w["id"])
+    assert {:ok, profile} = Comma.Recommendations.get_runtime_profile(w["id"], user["id"])
+
+    assert {:ok, install} = PluginConnections.install(user, %{}, w["id"], "slack")
+
+    SalixWeb.OAuthFlow.handle_callback("slack", %{
+      "state" => provider_state(install),
+      "code" => "test"
+    })
+
+    assert {:ok, _completed} = verify(user, w, "slack", install)
+    assert {:ok, [source]} = CommaWeb.RecommendationSources.discover(w)
+    assert {:ok, _} = Comma.Recommendations.reconcile_discovered_sources(profile.id, [source])
+
+    oauth =
+      w["default_group_id"]
+      |> Salix.Control.OAuthBindings.list()
+      |> Enum.find(&(&1["provider"] == "slack"))
+
+    # A connection from before #1919 carries no member stamp.
+    {:ok, stamped} = SalixStore.OAuth.get(oauth["connection_id"])
+    legacy = Map.delete(stamped, "comma_member")
+    :ok = SalixStore.OAuth.put(oauth["connection_id"], legacy)
+
+    assert {:error, :member_identity_unavailable} =
+             CommaWeb.RecommendationMemberIdentity.resolve(w, user["id"], source)
+
+    # The default run only lists what it would repair.
+    assert {:ok, %{"dry_run" => true, "candidates" => [%{"app" => "slack"}], "stamped" => 0}} =
+             CommaWeb.MemberIdentityBackfill.run()
+
+    assert {:ok, ^legacy} = SalixStore.OAuth.get(oauth["connection_id"])
+
+    assert {:ok, %{"stamped" => 1, "failed" => 0}} =
+             CommaWeb.MemberIdentityBackfill.run(dry_run: false)
+
+    assert {:ok, identity} = CommaWeb.RecommendationMemberIdentity.resolve(w, user["id"], source)
+    assert identity["provider_user_id"] == "UCOMMALOCAL"
+
+    # Stamped connections are done; a second run has nothing to repair.
+    assert {:ok, %{"candidates" => []}} = CommaWeb.MemberIdentityBackfill.run(dry_run: false)
+
+    # A bounded page names where the next one starts.
+    assert {:ok, %{"next_after" => next_after}} = CommaWeb.MemberIdentityBackfill.run(limit: 1)
+    assert is_binary(next_after)
+
+    assert {:ok, %{"candidates" => [], "next_after" => nil}} =
+             CommaWeb.MemberIdentityBackfill.run(after: next_after)
+
+    # Another member could have authorized a connection in a shared Workspace.
+    :ok = SalixStore.OAuth.put(oauth["connection_id"], legacy)
+    {:ok, other} = Comma.Accounts.create_user(%{"email" => "other-member@comma.test"})
+
+    %Comma.Data.WorkspaceMembership{}
+    |> Comma.Data.WorkspaceMembership.changeset(%{
+      workspace_id: w["id"],
+      user_id: other["id"],
+      role: "member",
+      status: "removed"
+    })
+    |> Repo.insert!()
+
+    assert {:ok, %{"candidates" => []}} = CommaWeb.MemberIdentityBackfill.run(dry_run: false)
+    assert {:ok, ^legacy} = SalixStore.OAuth.get(oauth["connection_id"])
   end
 
   defp provider_state(install),

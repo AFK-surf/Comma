@@ -318,6 +318,52 @@ defmodule SalixLlm.ProviderTest do
     refute Map.has_key?(req.headers, "x-api-key")
   end
 
+  # The subscription worker has no Grok compaction. The route says so, and the
+  # caller falls back to summary compaction without a request or a cooldown.
+  test "a Grok subscription route has no native compaction" do
+    tenant = SalixStore.Ids.new_tenant_id()
+
+    {:ok, grok} =
+      SalixAgent.AccountPool.resolve_config(
+        %{"account_pool" => "grok", "model" => "grok-4.3"},
+        tenant
+      )
+
+    grok = Map.put(grok, "transport", fn _, _ -> flunk("compaction must not be sent") end)
+
+    assert {:unsupported, :route} =
+             Provider.compact_context([%{role: "user", content: "x"}], [], grok)
+
+    {:ok, codex} =
+      SalixAgent.AccountPool.resolve_config(
+        %{"account_pool" => "codex", "model" => "gpt-5.5"},
+        tenant
+      )
+
+    refute Map.has_key?(codex, "native_compaction")
+  end
+
+  # A keyless endpoint (Ollama, a self-hosted gateway) gets no auth header at
+  # all; before, it got `Authorization: Bearer ` or an empty `x-api-key`.
+  test "no credential sends no auth header", %{base: base} do
+    MockServer.set("/chat/completions", %{
+      "choices" => [%{"message" => %{"content" => "chat"}, "finish_reason" => "stop"}]
+    })
+
+    MockServer.set("/v1/messages", %{
+      "content" => [%{"type" => "text", "text" => "anth"}],
+      "stop_reason" => "end_turn"
+    })
+
+    for {protocol, text} <- [{"chat_completions", "chat"}, {"anthropic", "anth"}] do
+      llm = %{"protocol" => protocol, "base_url" => base, "model" => "llama3.2:3b"}
+      assert {:final, ^text} = Provider.complete([%{role: "user", content: "hi"}], [], llm)
+      req = MockServer.last()
+      refute Map.has_key?(req.headers, "authorization")
+      refute Map.has_key?(req.headers, "x-api-key")
+    end
+  end
+
   test "chat-completions protocol (willow default): /chat/completions with Bearer", %{base: base} do
     MockServer.set("/chat/completions", %{
       "choices" => [%{"message" => %{"content" => "chat"}, "finish_reason" => "stop"}]

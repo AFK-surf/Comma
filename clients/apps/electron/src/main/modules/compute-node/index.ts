@@ -1,26 +1,46 @@
+import { ComputeNodeCommandError } from "./command";
+import {
+  absentObservation,
+  type ComputeNodeRuntimeAdapter,
+  type ComputeNodeRuntimeObservation,
+} from "./runtime-adapter";
+export {
+  ComputeNodeCommandError,
+  defaultAgentVMMHostLifecyclePath,
+  runCommand,
+} from "./command";
+export {
+  AgentVMMCommandAdapter,
+  type ComputeNodeRuntimeAdapter,
+  type ComputeNodeRuntimeObservation,
+} from "./runtime-adapter";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { HostPreparation, HostPreparationState } from "./host-preparation";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { sessionProductLease } from "@comma/session-contract";
 import type {
   ComputeNodeConfigureInput,
   ComputeNodeExpectedBinding,
   ComputeNodeOperation,
   ComputeNodeState,
 } from "@comma/native-bridge";
-import { computeNodeStateSchema } from "@comma/native-bridge";
 import { z } from "zod";
-import type { ElectronMainSessionService } from "../session";
+import { readIntentFile } from "./intent-file";
+import {
+  computeNodeOperationSchema,
+  computeNodeStateSchema,
+} from "@comma/native-bridge";
 
 class ComputeNodeBindingChangedError extends Error {}
+export class ComputeNodeSessionChangedError extends Error {
+  constructor() {
+    super("The compute node session changed. Review the current node.");
+  }
+}
 
 export type ComputeNodeWorkActivity = "idle" | "active" | "unknown";
 
-const WORK_ACTIVITY_TIMEOUT_MS = 2_000;
-const COMMA_AGENT_VMM_SERVICE_ARGS = ["--service-type", "agent"] as const;
 import {
   ComputeNodeAuthorizationNotFoundError,
   type ComputeNodeInstallAuthorizationOwner,
@@ -30,96 +50,81 @@ export {
   type ComputeNodeInstallAuthorizationOwner,
 } from "./install-authorization";
 
-/**
- * Shared product-neutral install location for the signed Agent VMM Host.app.
- * The desktop client and the macOS provisioner must resolve the same path;
- * neither side may depend on a Debug App or a user-selected bundle path.
- */
-export function defaultAgentVMMHostLifecyclePath(home = homedir()): string {
-  return join(
-    home,
-    "Library",
-    "Application Support",
-    "Agent VMM Host",
-    "current",
-    "Agent VMM Host.app",
-    "Contents",
-    "Helpers",
-    "agent-vmm-lifecycle"
-  );
-}
-
-export interface ComputeNodeWorkloadObservation {
-  activity: ComputeNodeWorkActivity;
-  readable: boolean;
-}
-
-export interface ComputeNodeWorkloadObservationOwner {
-  observe(registrationId?: string): Promise<ComputeNodeWorkloadObservation>;
-}
-
-export interface ComputeNodeRuntimeObservation {
-  connector: ComputeNodeState["observed"]["connector"];
-  host: ComputeNodeState["observed"]["host"];
-  readability: ComputeNodeState["observed"]["readability"];
-  salix: ComputeNodeState["observed"]["salix"];
-}
-
-export interface ComputeNodeRuntimeAdapter {
-  drain(requestId?: string, registrationId?: string): Promise<void>;
-  enable(requestId?: string, registrationId?: string): Promise<void>;
-  install(requestId?: string, descriptor?: string): Promise<void>;
-  observe(registrationId?: string): Promise<ComputeNodeRuntimeObservation>;
-  remove(requestId?: string, registrationId?: string): Promise<void>;
-  resume(operationId: string, requestId?: string): Promise<void>;
-  repair(requestId?: string): Promise<void>;
-}
-
-interface PersistedIntent {
-  desiredEnabled: boolean;
-  installOperationId?: string;
-  installAppliedOperationId?: string;
-  registrationId?: string;
-  workspaceId?: string;
-  operation?: ComputeNodeOperation;
-  remoteRevocationConfirmed?: boolean;
-  revision: number;
-  version: 1 | 2 | 3;
-}
+const savedId = z.string().min(1).max(200);
+const persistedIntentSchema = z.strictObject({
+  desiredEnabled: z.boolean(),
+  installOperationId: savedId.optional(),
+  installAppliedOperationId: savedId.optional(),
+  registrationId: savedId.optional(),
+  workspaceId: savedId.optional(),
+  operation: computeNodeOperationSchema.optional(),
+  remoteRevocationConfirmed: z.boolean().optional(),
+  initializationPending: z.boolean().optional(),
+  receiptMissing: z.boolean().optional(),
+  recoveryPending: z
+    .strictObject({
+      operationId: savedId,
+      workspaceId: savedId,
+      registrationId: savedId,
+      environmentId: savedId,
+    })
+    .optional(),
+  revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+  accountOwner: z
+    .strictObject({ audience: z.string().min(1).max(2048), subject: savedId })
+    .optional(),
+});
+type PersistedIntent = z.infer<typeof persistedIntentSchema>;
 
 export interface ComputeNodeServiceOptions {
   adapter: ComputeNodeRuntimeAdapter;
   preparation?: HostPreparation;
   filePath: string;
   onStateChanged?: ((state: ComputeNodeState) => void) | undefined;
-  workloadObservation?: ComputeNodeWorkloadObservationOwner | undefined;
   installAuthorization?: ComputeNodeInstallAuthorizationOwner | undefined;
   platform?: NodeJS.Platform | undefined;
   arch?: string | undefined;
   initializationWaitMs?: number;
+  authorityGeneration?: () => string | undefined;
+  accountOwner?: { audience: string; subject: string };
 }
 
-const absentObservation: ComputeNodeRuntimeObservation = {
-  connector: "absent",
-  host: "absent",
-  readability: "readable",
-  salix: "unregistered",
-};
-
-/**
- * Main-owned, serialized desired/observed lifecycle for the local Agent VMM.
- * Anchors: tla/salix/VMMRemoteEnrollment.tla and agent-vmm/spec/tla/ApplianceLifecycle.tla.
- */
 export class ComputeNodeService {
   private intent: PersistedIntent = { desiredEnabled: false, revision: 1, version: 3 };
   private snapshot: ComputeNodeState;
+  private intentReadable = true;
   private tail: Promise<unknown> = Promise.resolve();
   private workActivity: ComputeNodeWorkActivity = "unknown";
+  private productUnavailable = false;
+  private installationPhase:
+    | import("./install-authorization").ComputeNodeInstallAuthorizationPhase
+    | undefined;
   private refreshPromise: Promise<ComputeNodeState> | undefined;
   private observationFresh = false;
   private observedAt?: string;
+  private readonly operationAuthority = new AsyncLocalStorage<{
+    generation: string | undefined;
+  }>();
 
   private constructor(private readonly options: ComputeNodeServiceOptions) {
+    this.options = {
+      ...options,
+      adapter: this.fenceEffects(options.adapter, "runtime"),
+      ...(options.installAuthorization
+        ? {
+            installAuthorization: this.fenceEffects(
+              options.installAuthorization,
+              "authorization"
+            ),
+          }
+        : {}),
+      ...(options.preparation
+        ? { preparation: this.fenceEffects(options.preparation) }
+        : {}),
+    };
+    if (options.accountOwner)
+      this.intent = { ...this.intent, version: 4, accountOwner: options.accountOwner };
     const eligible =
       (options.platform ?? process.platform) === "darwin" &&
       (options.arch ?? process.arch) === "arm64";
@@ -143,6 +148,66 @@ export class ComputeNodeService {
       void service.run(() => service.reconcile()).catch(() => undefined);
     }
     return service;
+  }
+
+  recoverBinding(
+    expected: import("./install-authorization").RecoveredComputeBinding,
+    consume: () => Promise<import("./install-authorization").RecoveredComputeBinding>
+  ) {
+    return this.run(async () => {
+      this.requireIntentReadable();
+      this.intent.recoveryPending = {
+        operationId: expected.id,
+        workspaceId: expected.scope_key,
+        registrationId: expected.registration_id,
+        environmentId: expected.environment_id,
+      };
+      await this.persistIntent();
+      const accepted = await consume();
+      if (
+        accepted.id !== expected.id ||
+        accepted.registration_id !== expected.registration_id ||
+        accepted.environment_id !== expected.environment_id ||
+        accepted.scope_key !== expected.scope_key
+      )
+        throw new Error("Recovery binding changed.");
+      // The effect may already be committed after logout. Only the original account receives it.
+      await this.applyRecoveredBinding(accepted);
+      this.requireCurrentAuthority();
+      return this.reconcile();
+    });
+  }
+
+  private async applyRecoveredBinding(
+    binding: import("./install-authorization").RecoveredComputeBinding
+  ) {
+    this.requireIntentReadable();
+    // Persist an accepted cloud transfer to this original account even if its Session ended.
+    // Preserve an earlier failed request as evidence; never replay it as this recovered installation.
+    if (
+      this.intent.installOperationId &&
+      this.intent.installOperationId !== binding.id
+    ) {
+      const archive = `${this.options.filePath}.recoveries`;
+      await mkdir(archive, { recursive: true });
+      const file = join(
+        archive,
+        `${Buffer.from(this.intent.installOperationId).toString("base64url")}.json`
+      );
+      await writeFile(`${file}.tmp`, JSON.stringify(this.intent), { mode: 0o600 });
+      await rename(`${file}.tmp`, file);
+    }
+    this.intent = {
+      version: this.options.accountOwner ? 4 : 3,
+      ...(this.options.accountOwner ? { accountOwner: this.options.accountOwner } : {}),
+      revision: this.intent.revision + 1,
+      desiredEnabled: binding.status !== "stopped",
+      workspaceId: binding.scope_key,
+      installOperationId: binding.id,
+      installAppliedOperationId: binding.id,
+      registrationId: binding.registration_id,
+    };
+    await this.writeIntent(false);
   }
 
   state(): ComputeNodeState {
@@ -175,6 +240,11 @@ export class ComputeNodeService {
   configure(input: ComputeNodeConfigureInput) {
     return this.run(async () => {
       this.requireEligible();
+      this.requireIntentReadable();
+      if (this.intent.recoveryPending)
+        throw new Error(
+          "Check the accepted recovery result before changing this connection."
+        );
       if (!input.desiredEnabled) return this.drainInternal();
       if (!input.workspaceId) {
         throw new Error("Select a workspace before enabling this compute node.");
@@ -234,9 +304,12 @@ export class ComputeNodeService {
             this.intent.installAppliedOperationId = operationId;
           } else if (projection.authorizationStatus === "handed_off") {
             if (this.intent.installAppliedOperationId !== operationId) {
-              await this.options.adapter.resume(operationId, operation.requestId);
-              this.intent.installAppliedOperationId = operationId;
-            } else {
+              this.intent.receiptMissing = true;
+              await this.persistIntent();
+              throw new Error(
+                "The original installation receipt is missing. Recover management of the existing connection before continuing."
+              );
+            } else if (!this.intent.initializationPending) {
               await this.options.installAuthorization.configure({
                 enabled: true,
                 operationId,
@@ -292,8 +365,11 @@ export class ComputeNodeService {
         );
         throw new Error("Compute node product authorization requires attention.");
       }
+      this.intent.initializationPending = true;
+      await this.persistIntent();
       try {
         await this.initializeWorkload();
+        delete this.intent.initializationPending;
         this.finishOperation("succeeded");
       } catch (error) {
         this.finishOperation("failed");
@@ -334,6 +410,7 @@ export class ComputeNodeService {
   rebuild() {
     return this.run(async () => {
       this.requireEligible();
+      this.requireIntentReadable();
       if (!this.options.preparation)
         throw new Error("Host build configuration is unavailable.");
       this.beginOperation("rebuild");
@@ -367,6 +444,7 @@ export class ComputeNodeService {
   repair() {
     return this.run(async () => {
       this.requireEligible();
+      this.requireIntentReadable();
       this.beginOperation("repair");
       this.publish("processing");
       await this.persistIntent();
@@ -408,7 +486,13 @@ export class ComputeNodeService {
     return this.run(async () => {
       this.requireBinding(expected);
       this.requireEligible();
-      this.beginOperation("remove");
+      this.requireIntentReadable();
+      if (
+        this.intent.operation?.kind === "remove" &&
+        this.intent.operation.outcome !== "succeeded"
+      ) {
+        this.intent.operation.outcome = "pending";
+      } else this.beginOperation("remove");
       this.intent.desiredEnabled = false;
       this.publish("processing");
       await this.persistIntent();
@@ -420,20 +504,36 @@ export class ComputeNodeService {
           throw new Error("Compute node product authorization is unavailable.");
         }
         try {
-          await this.options.installAuthorization.revoke({
-            operationId: installOperationId,
-            workspaceId,
-          });
+          if (!this.intent.remoteRevocationConfirmed) {
+            await this.options.installAuthorization.revoke({
+              operationId: installOperationId,
+              workspaceId,
+            });
+            this.intent.remoteRevocationConfirmed = true;
+            await this.persistIntent();
+          }
         } catch (error) {
           // A scoped 404 can hide an inaccessible registration. Only an explicit
           // removal may detach it locally; never claim remote revocation.
           if (!(error instanceof ComputeNodeAuthorizationNotFoundError)) throw error;
           unavailableRegistration = true;
         }
-        await this.options.adapter.remove(
-          this.intent.operation?.requestId,
-          this.intent.registrationId
-        );
+        const local = await this.options.adapter.observe(this.intent.registrationId);
+        if (local.registration === "unreadable" || local.readability !== "readable") {
+          throw new Error(
+            "The local registration could not be read. Check the Host connection."
+          );
+        }
+        if (unavailableRegistration && local.registration !== "absent") {
+          throw new Error(
+            "This session cannot revoke the registration. Use local VMM management."
+          );
+        }
+        if (local.registration !== "absent")
+          await this.options.adapter.remove(
+            this.intent.operation?.requestId,
+            this.intent.registrationId
+          );
       } catch (error) {
         const observed = await this.observeAfterFailure();
         this.finishOperation(isUnknownFailure(error) ? "unknown" : "failed");
@@ -450,7 +550,7 @@ export class ComputeNodeService {
         observed = await this.observeProductStatus(observed);
       if (
         observed.readability !== "readable" ||
-        (!unavailableRegistration && !this.removalConfirmed(observed))
+        !this.localRemovalConfirmed(observed)
       ) {
         this.finishOperation("unknown");
         await this.persistIntent();
@@ -462,10 +562,25 @@ export class ComputeNodeService {
       }
       this.finishOperation("succeeded");
       this.intent.remoteRevocationConfirmed = !unavailableRegistration;
+      if (unavailableRegistration && this.intent.operation) {
+        // Preserve the original account's unresolved cloud result before clearing its current binding.
+        const directory = `${this.options.filePath}.removals`;
+        await mkdir(directory, { recursive: true });
+        this.requireCurrentAuthority();
+        const address = Buffer.from(this.intent.operation.requestId).toString(
+          "base64url"
+        );
+        const target = join(directory, `${address}.json`);
+        await writeFile(`${target}.tmp`, JSON.stringify(this.intent), { mode: 0o600 });
+        this.requireCurrentAuthority();
+        await rename(`${target}.tmp`, target);
+      }
       delete this.intent.workspaceId;
       delete this.intent.installOperationId;
       delete this.intent.installAppliedOperationId;
       delete this.intent.registrationId;
+      delete this.intent.initializationPending;
+      delete this.intent.receiptMissing;
       await this.persistIntent();
       return this.publish(
         "removed",
@@ -477,25 +592,66 @@ export class ComputeNodeService {
     });
   }
 
+  abandon(expected: ComputeNodeExpectedBinding) {
+    return this.run(async () => {
+      this.requireBinding(expected);
+      this.requireIntentReadable();
+      const operationId = this.intent.installOperationId,
+        workspaceId = this.intent.workspaceId;
+      if (
+        !operationId ||
+        !workspaceId ||
+        this.intent.installAppliedOperationId ||
+        this.intent.recoveryPending ||
+        !this.options.installAuthorization?.abandon
+      )
+        throw new Error("This unfinished request cannot be closed here.");
+      // The cloud owner checks original subject, scope, and absence of any accepted exchange under its row lock.
+      await this.options.installAuthorization.abandon({ operationId, workspaceId });
+      await this.completeAbandon();
+      this.requireCurrentAuthority();
+      return this.publish("removed");
+    });
+  }
+
+  private async completeAbandon() {
+    this.intent.remoteRevocationConfirmed = true;
+    const directory = `${this.options.filePath}.removals`;
+    await mkdir(directory, { recursive: true });
+    const file = join(
+      directory,
+      `${Buffer.from(this.intent.installOperationId!).toString("base64url")}.json`
+    );
+    await writeFile(`${file}.tmp`, JSON.stringify(this.intent), { mode: 0o600 });
+    await rename(`${file}.tmp`, file);
+    this.intent.desiredEnabled = false;
+    delete this.intent.workspaceId;
+    delete this.intent.installOperationId;
+    delete this.intent.registrationId;
+    delete this.intent.initializationPending;
+    delete this.intent.receiptMissing;
+    this.beginOperation("remove");
+    this.finishOperation("succeeded");
+    await this.writeIntent(false);
+  }
+
   private async initialize() {
     try {
-      const parsed = JSON.parse(
-        await readFile(this.options.filePath, "utf8")
-      ) as unknown;
+      const parsed = persistedIntentSchema.parse(
+        JSON.parse(await readIntentFile(this.options.filePath))
+      );
+      const savedOwner = parsed.accountOwner;
       if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "version" in parsed &&
-        (parsed.version === 1 || parsed.version === 2 || parsed.version === 3) &&
-        "desiredEnabled" in parsed &&
-        typeof parsed.desiredEnabled === "boolean" &&
-        "revision" in parsed &&
-        typeof parsed.revision === "number"
+        this.options.accountOwner &&
+        (savedOwner?.audience !== this.options.accountOwner.audience ||
+          savedOwner?.subject !== this.options.accountOwner.subject)
       ) {
-        this.intent = { ...(parsed as PersistedIntent), version: 3 };
+        throw new Error("Saved intent belongs to another account.");
       }
+      this.intent = { ...parsed, version: this.options.accountOwner ? 4 : 3 };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.intentReadable = false;
         this.publish(
           "action_required",
           undefined,
@@ -511,6 +667,7 @@ export class ComputeNodeService {
 
   private async drainInternal() {
     this.requireEligible();
+    this.requireIntentReadable();
     this.beginOperation("drain");
     this.intent.desiredEnabled = false;
     this.publish("processing");
@@ -535,7 +692,9 @@ export class ComputeNodeService {
       if (
         isUnknownFailure(error) &&
         observed.readability === "readable" &&
-        (observed.host === "stopped" || observed.host === "absent")
+        (observed.registrationState === "draining" ||
+          observed.registrationState === "revoked" ||
+          observed.registration === "absent")
       ) {
         this.finishOperation("succeeded");
         await this.persistIntent();
@@ -555,10 +714,45 @@ export class ComputeNodeService {
   }
 
   private async reconcile(settleOperation = true) {
+    if (
+      !this.intent.installOperationId &&
+      this.intent.workspaceId &&
+      this.intent.operation?.kind === "configure" &&
+      this.options.installAuthorization?.inspectUnexchangedRequest
+    ) {
+      try {
+        const original =
+          await this.options.installAuthorization.inspectUnexchangedRequest({
+            workspaceId: this.intent.workspaceId,
+            requestId: this.intent.operation.requestId,
+          });
+        this.intent.installOperationId = original.operationId;
+        this.intent.registrationId = original.registrationId;
+        this.intent.operation.operationId = original.operationId;
+        await this.persistIntent();
+      } catch {
+        this.requireCurrentAuthority();
+      }
+    }
+    const recovery = this.intent.recoveryPending;
+    if (recovery && this.options.installAuthorization?.inspectRecoveredBinding) {
+      try {
+        const binding = await this.options.installAuthorization.inspectRecoveredBinding(
+          { operationId: recovery.operationId, workspaceId: recovery.workspaceId }
+        );
+        if (
+          binding.registration_id === recovery.registrationId &&
+          binding.environment_id === recovery.environmentId &&
+          binding.scope_key === recovery.workspaceId
+        )
+          await this.applyRecoveredBinding(binding);
+      } catch {
+        this.requireCurrentAuthority();
+      }
+    }
     this.observationFresh = true;
     let observed = await this.options.adapter.observe(this.intent.registrationId);
     observed = await this.observeProductStatus(observed);
-    this.workActivity = await this.observeWorkActivity(this.intent.registrationId);
     if (settleOperation && this.confirmedOperation(observed)) {
       this.finishOperation("succeeded");
       await this.persistIntent();
@@ -598,9 +792,9 @@ export class ComputeNodeService {
     observed = this.snapshot.observed,
     problem?: string
   ) {
-    // registrationId is a main-owned correlation detail used by the
-    // independent Workload reader. It is not part of the renderer state
-    // contract and must not leak into the strict native state schema.
+    this.requireCurrentAuthority();
+    // registrationId remains Main-owned for runtime targeting and must not
+    // leak into the renderer's strict native state schema.
     const stateObserved: ComputeNodeState["observed"] = {
       connector: observed.connector,
       host: observed.host,
@@ -608,11 +802,19 @@ export class ComputeNodeService {
       salix: observed.salix,
     };
     this.snapshot = computeNodeStateSchema.parse({
+      confirmationId: this.options.authorityGeneration?.(),
       bindingWorkspaceId: this.intent.workspaceId,
       bindingInstallationId: this.intent.installOperationId,
+      bindingRevision: this.intent.revision,
       observedAt: this.observedAt,
       observationFresh: this.observationFresh,
       remoteRevocationConfirmed: this.intent.remoteRevocationConfirmed,
+      canAbandonRequest: !!(
+        this.intent.installOperationId &&
+        !this.intent.installAppliedOperationId &&
+        !this.intent.recoveryPending &&
+        this.options.installAuthorization?.abandon
+      ),
       ...this.recoveryFor(status, observed),
       desiredEnabled: this.intent.desiredEnabled,
       eligibility: this.snapshot.eligibility,
@@ -634,14 +836,52 @@ export class ComputeNodeService {
   ): Pick<ComputeNodeState, "issue" | "recoveryActions"> {
     if (!this.snapshot.eligibility.eligible)
       return { issue: "unsupported", recoveryActions: [] };
+    if (
+      this.intent.operation?.kind === "remove" &&
+      this.intent.operation.outcome !== "succeeded" &&
+      this.intent.workspaceId
+    )
+      return {
+        issue: "removal_incomplete",
+        recoveryActions: ["finish_remove", "check_status"],
+      };
+    if (this.intent.recoveryPending)
+      return { issue: "operation_unknown", recoveryActions: ["check_status"] };
+    if (observed.reason === "capability_missing")
+      return { issue: "capability_missing", recoveryActions: ["check_status"] };
+    if (this.productUnavailable)
+      return { issue: "authorization_unavailable", recoveryActions: ["check_status"] };
+    if (this.intent.receiptMissing)
+      return {
+        issue: "installation_receipt_missing",
+        recoveryActions: ["check_status"],
+      };
+    if (this.intent.initializationPending)
+      return {
+        issue: "shell_initialization_pending",
+        recoveryActions: ["continue_shell", "check_status"],
+      };
     const canContinue =
       this.intent.desiredEnabled &&
       this.intent.operation?.kind === "configure" &&
       !!this.intent.workspaceId;
     const recoveryActions: NonNullable<ComputeNodeState["recoveryActions"]> =
       canContinue ? ["continue_enable", "check_status"] : ["check_status"];
-    if (this.intent.operation?.outcome === "unknown")
-      return { issue: "operation_unknown", recoveryActions };
+    if (this.intent.operation?.outcome === "unknown") {
+      const canResume =
+        canContinue &&
+        (!this.intent.installOperationId ||
+          this.installationPhase === "requested" ||
+          this.installationPhase === "exchange_committed" ||
+          (this.installationPhase === "handed_off" &&
+            this.intent.installAppliedOperationId === this.intent.installOperationId));
+      return {
+        issue: "operation_unknown",
+        recoveryActions: canResume
+          ? ["continue_enable", "check_status"]
+          : ["check_status"],
+      };
+    }
     if (status !== "action_required") return { recoveryActions: ["check_status"] };
     if (this.snapshot.preparation?.phase === "failed")
       return { issue: "preparation_failed", recoveryActions };
@@ -656,13 +896,20 @@ export class ComputeNodeService {
   }
 
   private async persistIntent() {
+    this.requireCurrentAuthority();
     this.intent.revision = Math.max(
       this.intent.revision + 1,
       this.snapshot.revision + 1
     );
+    await this.writeIntent(true);
+  }
+
+  private async writeIntent(requireCurrent: boolean) {
+    this.requireIntentReadable();
     await mkdir(dirname(this.options.filePath), { recursive: true });
     const temporary = `${this.options.filePath}.tmp`;
     await writeFile(temporary, JSON.stringify(this.intent), { mode: 0o600 });
+    if (requireCurrent) this.requireCurrentAuthority();
     await rename(temporary, this.options.filePath);
   }
 
@@ -698,7 +945,11 @@ export class ComputeNodeService {
     }
     if (observed.readability !== "readable") return false;
     if (operation.kind === "drain") {
-      return observed.host === "stopped" || observed.host === "absent";
+      return (
+        observed.registrationState === "draining" ||
+        observed.registrationState === "revoked" ||
+        observed.registration === "absent"
+      );
     }
     if (operation.kind === "remove") return this.removalConfirmed(observed);
     // Install/configure success requires the helper's exact operation result;
@@ -709,35 +960,48 @@ export class ComputeNodeService {
   private removalConfirmed(observed: ComputeNodeRuntimeObservation) {
     // Product removal revokes the exact registration. The shared Host may
     // remain installed for registrations owned by other products/scopes.
-    return observed.salix === "revoked";
+    return (
+      this.intent.remoteRevocationConfirmed === true &&
+      this.localRemovalConfirmed(observed)
+    );
+  }
+
+  private localRemovalConfirmed(observed: ComputeNodeRuntimeObservation) {
+    return (
+      observed.readability === "readable" &&
+      (observed.registration === "absent" || observed.registrationState === "revoked")
+    );
   }
 
   private async observeAfterFailure() {
     try {
       return await this.options.adapter.observe(this.intent.registrationId);
     } catch {
-      return this.snapshot.observed;
-    }
-  }
-
-  private async observeWorkActivity(registrationId?: string) {
-    const owner = this.options.workloadObservation;
-    if (!owner) return "unknown" as const;
-    try {
-      const observation = await owner.observe(registrationId);
-      return observation.readable ? observation.activity : "unknown";
-    } catch {
-      return "unknown" as const;
+      return {
+        ...this.snapshot.observed,
+        readability: "unreadable" as const,
+        registration: "unreadable" as const,
+      };
     }
   }
 
   private async observeProductStatus(observed: ComputeNodeRuntimeObservation) {
+    this.workActivity = "unknown";
+    this.productUnavailable = false;
+    this.installationPhase = undefined;
     const owner = this.options.installAuthorization;
     const workspaceId = this.intent.workspaceId;
     const operationId = this.intent.installOperationId;
+    if (this.intent.remoteRevocationConfirmed)
+      return { ...observed, salix: "revoked" as const };
     if (!owner || !workspaceId || !operationId) return observed;
     try {
-      const status = await owner.observe({ operationId, workspaceId });
+      const { status, workActivity, authorizationStatus } = await owner.inspect({
+        operationId,
+        workspaceId,
+      });
+      this.workActivity = workActivity;
+      this.installationPhase = authorizationStatus;
       return {
         ...observed,
         salix:
@@ -749,13 +1013,22 @@ export class ComputeNodeService {
                 ? ("degraded" as const)
                 : ("enrolling" as const),
       };
-    } catch {
+    } catch (error) {
+      this.productUnavailable = error instanceof ComputeNodeAuthorizationNotFoundError;
       this.observationFresh = false;
       return { ...observed, salix: "degraded" as const };
     }
   }
 
   private requireBinding(expected?: ComputeNodeExpectedBinding) {
+    if (
+      this.options.authorityGeneration &&
+      expected?.confirmationId !== this.options.authorityGeneration()
+    ) {
+      throw new ComputeNodeBindingChangedError(
+        "The compute node confirmation expired. Review the current node."
+      );
+    }
     if (
       expected &&
       (expected.workspaceId !== this.intent.workspaceId ||
@@ -764,6 +1037,11 @@ export class ComputeNodeService {
       throw new ComputeNodeBindingChangedError(
         "Compute node binding changed. Review the current node before confirming again."
       );
+    if (expected && expected.bindingRevision !== this.intent.revision) {
+      throw new ComputeNodeBindingChangedError(
+        "The compute node confirmation expired. Review the current node."
+      );
+    }
   }
 
   private requireEligible() {
@@ -774,16 +1052,106 @@ export class ComputeNodeService {
     }
   }
 
-  private run(operation: () => Promise<ComputeNodeState>) {
-    const result = this.tail.then(operation, operation).catch((error: unknown) => {
-      if (error instanceof ComputeNodeBindingChangedError) throw error;
-      this.publish(
-        "action_required",
-        undefined,
-        error instanceof Error ? error.message : "Compute node operation failed."
+  private requireCurrentAuthority() {
+    if (!this.options.authorityGeneration) return;
+    const current = this.options.authorityGeneration();
+    const frozen = this.operationAuthority.getStore();
+    if (!current || (frozen && frozen.generation !== current))
+      throw new ComputeNodeSessionChangedError();
+  }
+
+  private requireIntentReadable() {
+    if (!this.intentReadable)
+      throw new Error(
+        "Saved compute node intent is unreadable. Repair its storage before changing it."
       );
-      throw error;
+  }
+
+  // Only accepted facts may be saved after a Session change, to this service's original account file.
+  // The serialized owner prevents another operation from changing its target during this write.
+  private async saveAcceptedResult(
+    category: string | undefined,
+    property: PropertyKey,
+    args: unknown[],
+    output: unknown
+  ) {
+    if (!this.intentReadable) return;
+    let changed = false;
+    if (
+      category === "authorization" &&
+      (property === "authorize" || property === "retry")
+    ) {
+      const result = output as { operationId: string; registrationId: string };
+      this.intent.installOperationId = result.operationId;
+      this.intent.registrationId = result.registrationId;
+      changed = true;
+    } else if (category === "authorization" && property === "abandon") {
+      await this.completeAbandon();
+      return;
+    } else if (category === "authorization" && property === "revoke") {
+      this.intent.remoteRevocationConfirmed = true;
+      changed = true;
+    } else if (
+      category === "runtime" &&
+      (property === "install" || property === "resume")
+    ) {
+      this.intent.installAppliedOperationId = args[0] as string;
+      changed = true;
+    }
+    if (changed) {
+      if (this.intent.operation) this.intent.operation.outcome = "unknown";
+      this.intent.revision += 1;
+      await this.writeIntent(false);
+    }
+  }
+
+  private fenceEffects<T extends object>(owner: T, category?: string): T {
+    return new Proxy(owner, {
+      get: (target, property) => {
+        const value = Reflect.get(target, property);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          this.requireCurrentAuthority();
+          const result: unknown = Reflect.apply(value, target, args);
+          if (!(result instanceof Promise)) return result;
+          return result.then(async (output) => {
+            try {
+              this.requireCurrentAuthority();
+            } catch (error) {
+              if (error instanceof ComputeNodeSessionChangedError)
+                await this.saveAcceptedResult(category, property, args, output);
+              throw error;
+            }
+            return output;
+          });
+        };
+      },
     });
+  }
+
+  private run(operation: () => Promise<ComputeNodeState>) {
+    const generation = this.options.authorityGeneration?.();
+    const execute = () =>
+      this.operationAuthority.run({ generation }, async () => {
+        this.requireCurrentAuthority();
+        try {
+          return await operation();
+        } catch (error) {
+          this.requireCurrentAuthority();
+          if (
+            error instanceof ComputeNodeBindingChangedError ||
+            error instanceof ComputeNodeSessionChangedError
+          )
+            throw error;
+          this.publish(
+            "action_required",
+            undefined,
+            error instanceof Error ? error.message : "Compute node operation failed."
+          );
+          throw error;
+        }
+      });
+    const result = this.tail.then(execute, execute);
     this.tail = result.catch(() => undefined);
     return result;
   }
@@ -803,7 +1171,9 @@ function facetsFor(
           ? "connecting"
           : "disconnected";
   const runtimeReadiness =
-    observed.host === "ready" && observed.salix === "ready"
+    observed.host === "ready" &&
+    observed.connector === "ready" &&
+    observed.salix === "ready"
       ? "ready"
       : observed.host === "degraded" || observed.salix === "degraded"
         ? "degraded"
@@ -832,268 +1202,6 @@ function facetsFor(
   };
 }
 
-export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
-  private lastKnown: ComputeNodeRuntimeObservation = absentObservation;
-
-  constructor(
-    private readonly lifecyclePath: string,
-    private readonly run = runCommand
-  ) {}
-
-  async observe(registrationId?: string): Promise<ComputeNodeRuntimeObservation> {
-    try {
-      const output = await this.run(this.lifecyclePath, [
-        "status",
-        ...COMMA_AGENT_VMM_SERVICE_ARGS,
-        ...(registrationId ? ["--registration-id", registrationId] : []),
-      ]);
-      const value = JSON.parse(output) as Record<string, unknown>;
-      const hasCompleteReadinessFacts = ["hostReadable", "hostHealthy"].every(
-        (key) => key in value
-      );
-      const hostReady =
-        Boolean(value.hostLoaded) &&
-        hasCompleteReadinessFacts &&
-        Boolean(value.hostReadable) &&
-        Boolean(value.hostHealthy);
-      const observed: ComputeNodeRuntimeObservation = {
-        connector: value.connectorLoaded
-          ? "ready"
-          : value.connectorInstalled
-            ? "stopped"
-            : "absent",
-        host: hostReady
-          ? "ready"
-          : hasCompleteReadinessFacts && value.hostLoaded
-            ? "degraded"
-            : value.hostInstalled
-              ? "stopped"
-              : "absent",
-        readability: "readable",
-        salix: value.salixRevoked ? "revoked" : "unregistered",
-      };
-      this.lastKnown = observed;
-      return observed;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return { ...absentObservation };
-      return { ...this.lastKnown, readability: "unreadable" };
-    }
-  }
-
-  async repair(requestId?: string) {
-    await this.run(this.lifecyclePath, lifecycleArgs("repair", requestId));
-  }
-
-  async enable(requestId?: string, registrationId?: string) {
-    if (!registrationId) {
-      throw new Error("Compute node registration identity is unavailable.");
-    }
-    await this.run(
-      this.lifecyclePath,
-      registrationStateArgs("enabled", registrationId, requestId)
-    );
-  }
-
-  async install(requestId?: string, descriptor?: string) {
-    await this.run(
-      this.lifecyclePath,
-      [
-        ...lifecycleArgs("install", requestId),
-        ...(descriptor ? ["--operation-stdin"] : []),
-      ],
-      descriptor,
-      180_000
-    );
-  }
-  async resume(operationId: string, _requestId?: string) {
-    await this.run(
-      this.lifecyclePath,
-      [...lifecycleArgs("install", operationId), "--resume-operation", operationId],
-      undefined,
-      180_000
-    );
-  }
-  async drain(requestId?: string, registrationId?: string) {
-    if (!registrationId) {
-      throw new Error("Compute node registration identity is unavailable.");
-    }
-    await this.run(
-      this.lifecyclePath,
-      registrationStateArgs("draining", registrationId, requestId)
-    );
-  }
-
-  async remove(requestId?: string, registrationId?: string) {
-    await this.drain(requestId, registrationId);
-  }
-}
-
-const workActivityResponseSchema = z.strictObject({
-  activity: z.enum(["idle", "active"]),
-  active_operation_count: z.number().int().nonnegative(),
-  workload_count: z.number().int().nonnegative(),
-});
-
-/**
- * Main-owned reader for the independent Salix Workload activity projection.
- * It has no lifecycle mutation authority and never infers activity from the
- * local VMM status command.
- */
-export class ComputeWorkloadActivityOwner implements ComputeNodeWorkloadObservationOwner {
-  constructor(
-    private readonly session: ElectronMainSessionService,
-    private readonly fetcher: typeof fetch = fetch,
-    private readonly timeoutMs = WORK_ACTIVITY_TIMEOUT_MS
-  ) {}
-
-  async observe(registrationId?: string): Promise<ComputeNodeWorkloadObservation> {
-    if (!registrationId) return { activity: "unknown", readable: false };
-    const lease = sessionProductLease(this.session.state());
-    if (!lease) return { activity: "unknown", readable: false };
-    const credential = this.session.acquireProductCredential({
-      authorityInstanceId: lease.authorityInstanceId,
-      expectedAudience: lease.audience,
-      expectedSessionId: lease.sessionId,
-      generation: lease.generation,
-    });
-    if (!credential) return { activity: "unknown", readable: false };
-
-    try {
-      const signal = AbortSignal.any([
-        credential.signal,
-        AbortSignal.timeout(this.timeoutMs),
-      ]);
-      const response = await this.fetcher(
-        new URL(
-          `/v1/compute-node/work-activity/${encodeURIComponent(registrationId)}`,
-          lease.audience
-        ),
-        {
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${credential.token}`,
-            "x-comma-session-transport": "bearer",
-          },
-          method: "GET",
-          redirect: "manual",
-          signal,
-        }
-      );
-      if (response.status === 401) {
-        await this.session.reportUnauthorized(credential);
-        return { activity: "unknown", readable: false };
-      }
-      if (!response.ok) return { activity: "unknown", readable: false };
-      const result = workActivityResponseSchema.parse(await response.json());
-      if (!this.session.isCurrentProductCredential(credential)) {
-        return { activity: "unknown", readable: false };
-      }
-      return { activity: result.activity, readable: true };
-    } catch {
-      return { activity: "unknown", readable: false };
-    }
-  }
-}
-
-function lifecycleArgs(operation: string, requestId?: string) {
-  return requestId
-    ? [operation, ...COMMA_AGENT_VMM_SERVICE_ARGS, "--request-id", requestId]
-    : [operation, ...COMMA_AGENT_VMM_SERVICE_ARGS];
-}
-
-function registrationStateArgs(
-  state: "enabled" | "draining",
-  registrationId: string,
-  requestId?: string
-) {
-  return [
-    "registration-state",
-    ...COMMA_AGENT_VMM_SERVICE_ARGS,
-    "--registration-id",
-    registrationId,
-    "--state",
-    state,
-    ...(requestId ? ["--request-id", requestId] : []),
-  ];
-}
-
 function isUnknownFailure(error: unknown) {
-  return (
-    error instanceof Error &&
-    /timed out|timeout|connection reset|broken pipe/i.test(error.message)
-  );
-}
-
-export function runCommand(
-  file: string,
-  args: string[],
-  stdin?: string,
-  timeoutMs = 15_000,
-  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, {
-      ...options,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      callback();
-    };
-    const signalProcessTree = (signal: NodeJS.Signals) => {
-      if (child.pid && process.platform !== "win32") {
-        try {
-          process.kill(-child.pid, signal);
-        } catch {
-          child.kill(signal);
-        }
-      } else {
-        child.kill(signal);
-      }
-    };
-    const terminate = () => {
-      signalProcessTree("SIGTERM");
-      const force = setTimeout(() => signalProcessTree("SIGKILL"), 1_000);
-      force.unref();
-    };
-    const timeout = setTimeout(() => {
-      terminate();
-      finish(() =>
-        reject(new Error(`Agent VMM command timed out after ${timeoutMs}ms.`))
-      );
-    }, timeoutMs);
-    timeout.unref();
-    child.stdout.on("data", (chunk: Buffer) => appendCommandOutput(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => appendCommandOutput(stderr, chunk));
-    child.once("error", (error) => finish(() => reject(error)));
-    child.once("close", (code) => {
-      if (code === 0) finish(() => resolve(Buffer.concat(stdout).toString("utf8")));
-      else
-        finish(() =>
-          reject(
-            new Error(
-              Buffer.concat(stderr).toString("utf8").trim().slice(-4096) ||
-                `Agent VMM command failed (${code ?? "signal"}).`
-            )
-          )
-        );
-    });
-    child.stdin.end(stdin);
-  });
-}
-
-function appendCommandOutput(chunks: Buffer[], chunk: Buffer) {
-  chunks.push(chunk.subarray(-256 * 1024));
-  while (
-    chunks.length > 1 &&
-    chunks.reduce((size, item) => size + item.length, 0) > 256 * 1024
-  )
-    chunks.shift();
+  return error instanceof ComputeNodeCommandError && error.reason === "outcome_unknown";
 }

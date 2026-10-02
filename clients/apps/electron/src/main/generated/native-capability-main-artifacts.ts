@@ -25,6 +25,7 @@ import type {
   WindowAppearanceProvider,
   WindowsProvider,
 } from "../modules/native/index";
+import type { OnboardingWindowProvider } from "../onboarding-window";
 import type { SubscriptionAuthorizationService } from "../subscription-authorization";
 import type { TokenDanceAuthorizationService } from "../tokendance-authorization";
 import type { FilesProvider } from "../modules/files/downloads";
@@ -64,6 +65,7 @@ export type NativeCapabilityProviderMap = {
   notch: NotchProvider;
   surfaces: SurfaceListProvider;
   windows: WindowsProvider;
+  onboardingWindow: OnboardingWindowProvider;
   clipboard: ClipboardProvider;
   subscriptionAuthorization: SubscriptionAuthorizationService;
   tokenDanceAuthorization: TokenDanceAuthorizationService;
@@ -97,7 +99,9 @@ export type NativeCapabilityHandlerTypeMap = {
   "native.info": NativeInfoProvider["info"];
   "appPreferences.state": AppPreferencesProvider["state"];
   "appPreferences.initializeClientSettings": AppPreferencesProvider["initializeClientSettings"];
+  "appPreferences.openLoginItemsSettings": AppPreferencesProvider["openLoginItemsSettings"];
   "appPreferences.openNotificationSettings": AppPreferencesProvider["openNotificationSettings"];
+  "appPreferences.requestNotificationAuthorization": AppPreferencesProvider["requestNotificationAuthorization"];
   "appPreferences.update": AppPreferencesProvider["update"];
   "connectorRuntime.state": ConnectorRuntimeProvider["state"];
   "connectorRuntime.scope": ConnectorRuntimeProvider["scope"];
@@ -120,6 +124,10 @@ export type NativeCapabilityHandlerTypeMap = {
   "windows.create": WindowsProvider["create"];
   "windows.focus": WindowsProvider["focus"];
   "windows.close": WindowsProvider["close"];
+  "onboarding.presentWindow": OnboardingWindowProvider["presentWindow"];
+  "onboarding.closeWindow": OnboardingWindowProvider["closeWindow"];
+  "onboarding.outputVolume": OnboardingWindowProvider["outputVolume"];
+  "onboarding.window": OnboardingWindowProvider["window"];
   "clipboard.readText": ClipboardProvider["readText"];
   "clipboard.readImage": ClipboardProvider["readImage"];
   "clipboard.writeText": ClipboardProvider["writeText"];
@@ -165,8 +173,18 @@ export type NativeCapabilityHandlerTypeMap = {
   "computeNode.refresh": ComputeNodeProvider["refresh"];
   "computeNode.repair": ComputeNodeProvider["repair"];
   "computeNode.rebuild": ComputeNodeProvider["rebuild"];
+  "computeNode.localOverview": ComputeNodeProvider["localOverview"];
+  "computeNode.disposeLocal": ComputeNodeProvider["disposeLocal"];
+  "computeNode.resumeLocalDisposal": ComputeNodeProvider["resumeLocalDisposal"];
+  "computeNode.hostMaintenanceState": ComputeNodeProvider["hostMaintenanceState"];
+  "computeNode.maintainHost": ComputeNodeProvider["maintainHost"];
+  "computeNode.resumeHostMaintenance": ComputeNodeProvider["resumeHostMaintenance"];
+  "computeNode.recoveryCandidates": ComputeNodeProvider["recoveryCandidates"];
+  "computeNode.recover": ComputeNodeProvider["recover"];
+  "computeNode.localWorkloads": ComputeNodeProvider["localWorkloads"];
   "computeNode.drain": ComputeNodeProvider["drain"];
   "computeNode.remove": ComputeNodeProvider["remove"];
+  "computeNode.abandon": ComputeNodeProvider["abandon"];
   "sessionHistory.state": NativeSessionHistoryProvider["state"];
   "sessionHistory.load": NativeSessionHistoryProvider["load"];
   "sessionHistory.retain": NativeSessionHistoryProvider["retain"];
@@ -284,8 +302,12 @@ export function registerGeneratedNativeMainBindings({
     "appPreferences.state": async (input) => providers.appPreferences.state(input),
     "appPreferences.initializeClientSettings": async (input) =>
       providers.appPreferences.initializeClientSettings(input),
+    "appPreferences.openLoginItemsSettings": async (input) =>
+      providers.appPreferences.openLoginItemsSettings(input),
     "appPreferences.openNotificationSettings": async (input) =>
       providers.appPreferences.openNotificationSettings(input),
+    "appPreferences.requestNotificationAuthorization": async (input) =>
+      providers.appPreferences.requestNotificationAuthorization(input),
     "appPreferences.update": async (input) => providers.appPreferences.update(input),
     "connectorRuntime.state": async (input) => providers.connectorRuntime.state(input),
     "connectorRuntime.scope": async (input) => providers.connectorRuntime.scope(input),
@@ -313,6 +335,13 @@ export function registerGeneratedNativeMainBindings({
     "windows.create": async (input) => providers.windows.create(input),
     "windows.focus": async (input) => providers.windows.focus(input),
     "windows.close": async (input) => providers.windows.close(input),
+    "onboarding.presentWindow": async (input) =>
+      providers.onboardingWindow.presentWindow(input),
+    "onboarding.closeWindow": async (input) =>
+      providers.onboardingWindow.closeWindow(input),
+    "onboarding.outputVolume": async (input) =>
+      providers.onboardingWindow.outputVolume(input),
+    "onboarding.window": async (input) => providers.onboardingWindow.window(input),
     "clipboard.readText": async (input) => providers.clipboard.readText(input),
     "clipboard.readImage": async (input) => providers.clipboard.readImage(input),
     "clipboard.writeText": async (input) => providers.clipboard.writeText(input),
@@ -375,8 +404,26 @@ export function registerGeneratedNativeMainBindings({
     "computeNode.refresh": async (input) => providers.computeNode.refresh(input),
     "computeNode.repair": async (input) => providers.computeNode.repair(input),
     "computeNode.rebuild": async (input) => providers.computeNode.rebuild(input),
+    "computeNode.localOverview": async (input) =>
+      providers.computeNode.localOverview(input),
+    "computeNode.disposeLocal": async (input) =>
+      providers.computeNode.disposeLocal(input),
+    "computeNode.resumeLocalDisposal": async (input) =>
+      providers.computeNode.resumeLocalDisposal(input),
+    "computeNode.hostMaintenanceState": async (input) =>
+      providers.computeNode.hostMaintenanceState(input),
+    "computeNode.maintainHost": async (input) =>
+      providers.computeNode.maintainHost(input),
+    "computeNode.resumeHostMaintenance": async (input) =>
+      providers.computeNode.resumeHostMaintenance(input),
+    "computeNode.recoveryCandidates": async (input) =>
+      providers.computeNode.recoveryCandidates(input),
+    "computeNode.recover": async (input) => providers.computeNode.recover(input),
+    "computeNode.localWorkloads": async (input) =>
+      providers.computeNode.localWorkloads(input),
     "computeNode.drain": async (input) => providers.computeNode.drain(input),
     "computeNode.remove": async (input) => providers.computeNode.remove(input),
+    "computeNode.abandon": async (input) => providers.computeNode.abandon(input),
     "sessionHistory.state": async (input) => providers.sessionHistory.state(input),
     "sessionHistory.load": async (input) => providers.sessionHistory.load(input),
     "sessionHistory.retain": async (input) => providers.sessionHistory.retain(input),

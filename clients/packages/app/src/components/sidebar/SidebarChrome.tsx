@@ -65,15 +65,18 @@ export function SidebarChrome() {
   const { collapsed } = useCommaSidebar();
   const { settings, update } = useCommaClientSettings();
   const inboxUnread = useInboxTabUnread();
+  const { isGuest = false } = useCommaAuth();
   const storedOrder = settings.sidebarNavOrder;
   // Drive needs the synchronicity node only the Electron host runs, so the
-  // web rail leaves it out.
+  // web rail leaves it out. A guest Session has only Home's Router chat.
   const settledOrder = useMemo(
     () =>
-      reconcileSidebarNavOrder(storedOrder).filter(
-        (id) => id !== "drive" || driveSynchronicityAvailable()
-      ),
-    [storedOrder]
+      isGuest
+        ? ["home"]
+        : reconcileSidebarNavOrder(storedOrder).filter(
+            (id) => id !== "drive" || driveSynchronicityAvailable()
+          ),
+    [isGuest, storedOrder]
   );
   // The drop shows its order at once; the setting owner acknowledges after a
   // round trip on Electron, and the rows must not snap back in between.
@@ -93,7 +96,7 @@ export function SidebarChrome() {
   const { dragging, listRef, registerRow, rowProps } = useSidebarNavReorder({
     onOrderChange: commitOrder,
     order,
-    suspended: collapsed,
+    suspended: collapsed || isGuest,
   });
 
   return (

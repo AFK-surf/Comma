@@ -148,7 +148,8 @@ defmodule Comma.Accounts.RepositoryTest do
         []
       ).rows
 
-    assert foreign_targets == [["comma_user_avatars"], ["comma_users"]]
+    # comma_user_identities.user_id and comma_users.guest_imported_into_user_id.
+    assert foreign_targets == [["comma_user_avatars"], ["comma_users"], ["comma_users"]]
   end
 
   test "migration exposes only the account indexes required by bounded lookups" do

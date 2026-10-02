@@ -140,14 +140,27 @@ defmodule SalixStore.ComputeContract do
     end
   end
 
-  defp epoch(value) when is_binary(value) do
+  @doc "Validate the canonical positive uint64 controller epoch used by Agent VMM."
+  def connection_epoch(value) when is_binary(value) and byte_size(value) <= 20 do
     case Integer.parse(value) do
-      {integer, ""} when integer > 0 -> {:ok, value}
-      _ -> {:error, {:invalid, :connection_epoch}}
+      {integer, ""} when integer in 1..18_446_744_073_709_551_615 ->
+        if Integer.to_string(integer) == value,
+          do: {:ok, value},
+          else: {:error, :invalid_connection_epoch}
+
+      _ ->
+        {:error, :invalid_connection_epoch}
     end
   end
 
-  defp epoch(_), do: {:error, {:invalid, :connection_epoch}}
+  def connection_epoch(_), do: {:error, :invalid_connection_epoch}
+
+  defp epoch(value) do
+    case connection_epoch(value) do
+      {:ok, epoch} -> {:ok, epoch}
+      _ -> {:error, {:invalid, :connection_epoch}}
+    end
+  end
 
   defp outcome(value) when value in @operation_outcomes, do: {:ok, value}
   defp outcome(:unknown_outcome), do: {:ok, "unknown"}

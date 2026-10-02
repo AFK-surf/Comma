@@ -36,6 +36,18 @@ defmodule Comma.MemberSourceItemsTest do
     :ok = MemberSourceItems.settle([first, stale], %{"outcome" => "quiet"})
     assert [%{id: id}] = MemberSourceItems.pending(profile.id, 24)
     assert id == second.id
+
+    # An unusable judgment keeps the item waiting for a bounded number of tries.
+    :ok = MemberSourceItems.settle([second], %{"outcome" => "retry", "attempts" => 1})
+    assert [%{id: ^id}] = MemberSourceItems.pending(profile.id, 24)
+
+    :ok =
+      MemberSourceItems.settle([second], %{
+        "outcome" => "retry",
+        "attempts" => MemberSourceItems.judge_attempts()
+      })
+
+    assert MemberSourceItems.pending(profile.id, 24) == []
   end
 
   test "current items follow each source's latest collection" do

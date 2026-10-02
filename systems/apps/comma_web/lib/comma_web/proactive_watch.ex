@@ -58,6 +58,151 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
+  @doc """
+  Records a watch's wake as the owner's Home matter and hands it to the
+  Router through the one proactive delivery path, as every other proactive
+  handoff. The owner asked for the watch, so it spends no automatic budget.
+  The Loop's origin and label stay on the Router input. Loops Comma does not
+  own return `:default` and wake their Session directly.
+  """
+  def deliver(row, content, dedup, origin) do
+    case get_in(row, ["config", "comma_proactive"]) do
+      %{"user_id" => owner} when is_binary(owner) ->
+        handoff(row, owner, content, dedup, origin, 2)
+
+      _ ->
+        :default
+    end
+  end
+
+  defp handoff(row, owner, content, dedup, origin, tries) do
+    config = row["config"]
+    account = CommaWeb.Proactive.source_account(config["source"] || %{})
+    key = SalixIM.MailInteraction.key(account, config["source_ref"])
+
+    request =
+      "loop:" <> Base.encode16(:crypto.hash(:sha256, row["id"] <> ":" <> dedup), case: :lower)
+
+    with {:ok, _, ctx, home} <- CommaWeb.HomeMail.context(%{"id" => owner}, %{}, row["group_id"]),
+         {:ok, conversation} <- Conversations.get_group_conversation_record(ctx.group_id, home) do
+      current = SalixIM.MailInteraction.entries(conversation)[key]
+
+      command = %{
+        "action" => "present",
+        "automatic" => false,
+        "key" => key,
+        "request_id" => request,
+        "generation" => if(is_map(current), do: current["generation"]),
+        "account_id" => account,
+        "thread_id" => config["source_ref"],
+        "message_id" => "loop:" <> dedup,
+        # A matter the owner already follows keeps its subject and link.
+        "subject" => (is_map(current) && current["subject"]) || config["intent"] || "",
+        "source_url" => (is_map(current) && current["source_url"]) || "",
+        "read" => config["source"],
+        "text" => bounded(content),
+        "trusted_origin" => origin
+      }
+
+      cond do
+        # A redelivered wake was already handed over.
+        is_map(current) and is_nil(current["pending"]) and
+            request in [current["request_id"] | current["loop_requests"] || []] ->
+          {:ok, :duplicate}
+
+        true ->
+          with {:ok, command} <- CommaWeb.HomeMail.retire_completed_task(command, ctx, home) do
+            SalixIM.ConversationServer.mail_interaction(
+              ctx.group_id,
+              home,
+              owner,
+              ctx.agent_id,
+              command
+            )
+          end
+          |> case do
+            {:ok, _} ->
+              {:ok, :created}
+
+            # The same observation was already handled: the wake is a duplicate.
+            {:error, :mail_source_handled} ->
+              {:ok, :duplicate}
+
+            # A concurrent change moved the matter; read it again once.
+            {:error, :mail_source_changed} when tries > 1 ->
+              handoff(row, owner, content, dedup, origin, tries - 1)
+
+            error ->
+              error
+          end
+      end
+    end
+  end
+
+  # A matter value keeps a bounded text; the Loop limits content to 8 KiB.
+  # Home holds every matter in one bounded value (16 watches fit at this
+  # cap). The watch's evidence is JSON: over the cap, its locator and
+  # instructions come first and its largest evidence fields are cut and say
+  # so. The Router can reread the source.
+  @wake_bytes 4_000
+  @cut "[evidence truncated]"
+  @first ~w(instructions source_ref intent request_id watch_id now_ms)
+  @shrinkable ~w(event source context previous related_read source_read)
+
+  defp bounded(content) when byte_size(content) <= @wake_bytes, do: content
+
+  defp bounded(content) do
+    case Jason.decode(content) do
+      {:ok, %{} = evidence} -> evidence |> shrink() |> encode()
+      _ -> cut_text(content, @wake_bytes - byte_size(@cut) - 1) <> "\n" <> @cut
+    end
+  end
+
+  defp shrink(evidence) do
+    if byte_size(encode(evidence)) <= @wake_bytes do
+      evidence
+    else
+      case largest(evidence) do
+        nil ->
+          evidence
+
+        {field, encoded} ->
+          room = max(byte_size(encoded) - (byte_size(encode(evidence)) - @wake_bytes) - 64, 0)
+          shrink(Map.put(evidence, field, cut_text(encoded, room) <> " " <> @cut))
+      end
+    end
+  end
+
+  defp largest(evidence) do
+    @shrinkable
+    |> Enum.filter(&Map.has_key?(evidence, &1))
+    |> Enum.map(fn field ->
+      value = evidence[field]
+      {field, if(is_binary(value), do: value, else: Jason.encode!(value))}
+    end)
+    |> Enum.reject(fn {_field, encoded} -> String.ends_with?(encoded, @cut) end)
+    |> Enum.max_by(fn {_field, encoded} -> byte_size(encoded) end, fn -> nil end)
+  end
+
+  # Locator and instructions first, then the rest of the evidence.
+  defp encode(evidence) do
+    {first, rest} = Enum.split_with(evidence, fn {key, _} -> key in @first end)
+
+    first
+    |> Enum.sort_by(fn {key, _} -> Enum.find_index(@first, &(&1 == key)) end)
+    |> Kernel.++(Enum.sort(rest))
+    |> Jason.OrderedObject.new()
+    |> Jason.encode!()
+  end
+
+  defp cut_text(text, limit) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce_while("", fn g, acc ->
+      if byte_size(acc) + byte_size(g) > limit, do: {:halt, acc}, else: {:cont, acc <> g}
+    end)
+  end
+
   def status(ctx) do
     with {:ok, _, user} <- CommaWeb.Proactive.scope(ctx),
          {:ok, rows} <- Store.proactive_monitors(ctx.agent_id) do

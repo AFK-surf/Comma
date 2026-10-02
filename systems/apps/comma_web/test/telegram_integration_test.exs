@@ -720,6 +720,22 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert owner == c.user["id"]
     assert {:ok, state} = CommaWeb.Proactive.state(%{}, ctx)
     assert is_list(state["sources"])
+
+    # The Router learns where a reminder it decided on also reaches the owner.
+    link = Comma.TelegramLinks.get_link(c.workspace["id"])
+
+    assert [
+             %{
+               "provider" => "telegram",
+               "tool" => "im_api.telegram.send_message",
+               "connect_id" => connect_id,
+               "chat_id" => chat_id,
+               "ready" => true
+             }
+           ] = state["personal_targets"]
+
+    assert connect_id == link.connect_id
+    assert chat_id == link.telegram_user_id
   end
 
   test "OIDC binds one private Telegram identity and disconnect retires it", %{
@@ -1516,7 +1532,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert cookie.same_site == "None"
     assert cookie.extra == "Partitioned"
     assert "comma_panel_" <> _ = cookie.value
-    assert cookie.max_age <= 15 * 60
+    assert cookie.max_age > 15 * 60 and cookie.max_age <= 24 * 60 * 60
 
     assert %{"session_id" => session_id} =
              miniapp_cookie_request(:get, "/v1/comma/auth/session", cookie.value)
@@ -1545,7 +1561,11 @@ defmodule CommaWeb.TelegramIntegrationTest do
     {:ok, router_chat} = SalixIM.RouterConversationInput.ensure(group_id)
     router_chat_id = router_chat["conversation_id"]
 
-    assert api_request(session, :get, "/v1/comma/groups/#{group_id}/conversations/#{router_chat_id}").status ==
+    assert api_request(
+             session,
+             :get,
+             "/v1/comma/groups/#{group_id}/conversations/#{router_chat_id}"
+           ).status ==
              200
 
     assert miniapp_cookie_request(
@@ -1585,13 +1605,25 @@ defmodule CommaWeb.TelegramIntegrationTest do
            ).status ==
              401
 
-    assert miniapp_cookie_request(:post, "/v1/comma/groups/#{group_id}/conversations", cookie.value).status ==
+    assert miniapp_cookie_request(
+             :post,
+             "/v1/comma/groups/#{group_id}/conversations",
+             cookie.value
+           ).status ==
              401
 
-    assert miniapp_cookie_request(:get, "/v1/comma/groups/another-group/conversations", cookie.value).status ==
+    assert miniapp_cookie_request(
+             :get,
+             "/v1/comma/groups/another-group/conversations",
+             cookie.value
+           ).status ==
              401
 
-    assert api_request(%{"token" => cookie.value}, :get, "/v1/comma/groups/#{group_id}/conversations").status ==
+    assert api_request(
+             %{"token" => cookie.value},
+             :get,
+             "/v1/comma/groups/#{group_id}/conversations"
+           ).status ==
              401
 
     old_connect_id = Comma.TelegramLinks.get_link(workspace["id"]).connect_id

@@ -380,34 +380,33 @@ defmodule BridgeForTeamsWeb.RuntimeAuthControllerTest do
     refute_receive {:auth_request, _}
   end
 
-  test "Devices exposes unready Compute targets through browser-owned private controls", ctx do
+  test "Devices lists unready Compute targets without reading their runtime", ctx do
     workload = runtime_fixture(ctx, "pi")
+    path = "/dashboard/api/v1/orgs/#{ctx.org.slug}/projects/#{ctx.project.id}/devices"
 
-    {:ok, view, _html} =
+    conn =
       build_conn()
       |> log_in_user(ctx.admin)
-      |> live("/orgs/#{ctx.org.slug}/projects/#{ctx.project.id}/devices")
+      |> get(path, %{
+        "runtime_auth_target" => workload.id,
+        "runtime_auth_request" => "forged-request"
+      })
 
-    assert has_element?(view, "#runtime-auth-#{workload.id}", "pi")
-    html = view |> element("#runtime-auth-#{workload.id} button", "管理") |> render_click()
-    assert html =~ "runtime-auth-private-controls"
+    data = json_response(conn, 200)["data"]
 
-    assert has_element?(
-             view,
-             "#runtime-auth-private-controls[phx-hook=RuntimeAuth][phx-update=ignore]"
-           )
+    assert [
+             %{
+               "id" => id,
+               "provider" => "pi",
+               "managed" => true,
+               "target" => %{"kind" => "compute_workload", "workload_id" => target}
+             }
+           ] = data["runtime_auth"]["targets"]
 
-    assert has_element?(view, "input[data-auth-secret][type=password]:not([name])")
-    assert has_element?(view, "input[data-auth-file]:not([phx-change]):not([name])")
-    render_click(view, "close_runtime_auth_panel", %{})
-    refute has_element?(view, "#runtime-auth-private-controls")
-
-    render_click(view, "manage_runtime_auth", %{
-      "id" => workload.id,
-      "request-id" => "forged-request"
-    })
-
-    refute has_element?(view, "#runtime-auth-private-controls")
+    assert id == workload.id
+    assert target == workload.id
+    # A forged request opens nothing, and listing reads no runtime status.
+    assert data["runtime_auth"]["request"] == nil
     refute_receive {:auth_request, _}
   end
 

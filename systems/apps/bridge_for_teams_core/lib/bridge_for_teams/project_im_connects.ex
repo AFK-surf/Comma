@@ -22,6 +22,10 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
   @providers ~w(slack feishu)
   @transient [:unavailable, :timeout]
+  # `list_connects_for_projects/2` budgets: per Salix call, and for the whole
+  # lookup before it starts another call.
+  @connect_list_call_timeout 3_000
+  @connect_list_budget 10_000
 
   # Feishu requires only `app_id`: the project card selects an org Feishu app
   # binding and forwards the chosen app identity. Bot secrets are resolved by
@@ -90,6 +94,69 @@ defmodule BridgeForTeams.ProjectIMConnects do
          :ok <- ensure_group_ready(project),
          :ok <- validate_list_provider(provider) do
       do_list(project, provider)
+    end
+  end
+
+  @doc """
+  Read the `provider` connects of already loaded projects from Salix: one call
+  per project with a Salix group, and no database reads, reconciliation or
+  diagnostics writes. The caller bounds `projects`. A project whose Salix group
+  does not exist yet has no connects. Returns the `{project, connect}` pairs
+  and the first lookup error, or nil.
+
+  This read sits on a page load, so it stops early. Each call has a
+  #{@connect_list_call_timeout} ms budget (plus the 5 s erpc margin when Salix
+  is on another node). The first `:unavailable` or `:timeout` answer stops the
+  lookup, and no call starts after #{@connect_list_budget} ms. The worst case
+  is that budget plus one call: about 18 s, independent of the project count.
+  An early stop returns the pairs read so far with that error.
+  """
+  @spec list_connects_for_projects([Project.t()], String.t() | nil) ::
+          {[{Project.t(), map()}], term() | nil}
+  def list_connects_for_projects(projects, provider) when is_list(projects) do
+    deadline = System.monotonic_time(:millisecond) + @connect_list_budget
+
+    {pairs, error} =
+      projects
+      |> Enum.reject(&blank?(&1.salix_group_id))
+      |> Enum.reduce_while({[], nil}, fn project, {pairs, error} ->
+        if System.monotonic_time(:millisecond) > deadline do
+          {:halt, {pairs, :timeout}}
+        else
+          case list_with_timeout(project, provider) do
+            {:ok, connects} when is_list(connects) ->
+              {:cont, {Enum.reverse(Enum.map(connects, &{project, &1}), pairs), error}}
+
+            {:error, :group_not_ready} ->
+              {:cont, {pairs, error}}
+
+            {:error, reason} when reason in @transient ->
+              {:halt, {pairs, reason}}
+
+            {:error, reason} ->
+              {:cont, {pairs, error || reason}}
+
+            other ->
+              {:cont, {pairs, error || other}}
+          end
+        end
+      end)
+
+    {Enum.reverse(pairs), error}
+  end
+
+  defp list_with_timeout(%Project{salix_group_id: group_id}, provider) do
+    client = client()
+
+    result =
+      if Code.ensure_loaded?(client) and function_exported?(client, :list_group_im_connects, 3),
+        do:
+          client.list_group_im_connects(group_id, provider, timeout: @connect_list_call_timeout),
+        else: client.list_group_im_connects(group_id, provider)
+
+    case result do
+      {:error, :not_found} -> {:error, :group_not_ready}
+      other -> other
     end
   end
 

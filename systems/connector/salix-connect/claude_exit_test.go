@@ -14,7 +14,7 @@ func TestClaudeKilledProcessExitAfterSettlement(t *testing.T) {
 			generation.wait.Add(1)
 			session := &claudeRuntimeSession{
 				connector: c, cmd: exec.Command("sleep", "60"), done: make(chan struct{}),
-				authGeneration: generation, diagnostics: &claudeDiagnosticBuffer{},
+				authGeneration: generation, diagnostics: &harnessDiagnosticBuffer{},
 				token: "token-1", sessionID: "session-1", dispatchID: "dispatch-1",
 				executionID: "execution-1", workState: state,
 			}

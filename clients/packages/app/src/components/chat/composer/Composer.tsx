@@ -22,7 +22,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -30,7 +29,6 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { animateSuggestionAcceptance } from "../suggestions/suggestionAcceptanceMotion";
 import { nativePlatformClipboard } from "../../../runtime-chat/nativePlatformActions";
 import type { CommaSkill } from "../../../api";
 import { chatQuoteLabel, type ChatDraftQuote } from "./draftQuotes";
@@ -50,6 +48,7 @@ import type {
 } from "../model/conversationChannel";
 import { useRecordingFileActions } from "../../useRecordingFileActions";
 import { useAudioCapture } from "../../useAudioCapture";
+import { needsDesktopApp, requestDesktopApp } from "../../DesktopAppPrompt";
 import {
   driveMentionSections,
   type ComposerDriveMentionItem,
@@ -151,7 +150,6 @@ export const Composer = memo(function Composer({
   draftAttachments = [],
   draftQuotes = [],
   mentionSources,
-  onAcceptSuggestion,
   onAttachFiles,
   onContentHeightChange,
   onDraftChange,
@@ -163,7 +161,6 @@ export const Composer = memo(function Composer({
   onSend,
   placeholder,
   sendLabel,
-  suggestion,
   showVoiceButton = false,
   size,
   skills = [],
@@ -181,8 +178,6 @@ export const Composer = memo(function Composer({
   draftQuotes?: ChatDraftQuote[];
   /** Tasks, routines, and plugins for the "@" panel; Add works without it. */
   mentionSources?: ComposerMentionSources | undefined;
-  onAcceptSuggestion?: (() => void) | undefined;
-  suggestion?: string | undefined;
   onAttachFiles?: (files: AttachmentUploadInput[]) => void;
   onContentHeightChange?: (height: number) => void;
   onDraftChange: (draft: string) => void;
@@ -547,51 +542,10 @@ export const Composer = memo(function Composer({
     });
   };
 
-  const acceptedSuggestionRef = useRef<{
-    editor: HTMLElement;
-    text: string;
-    at: number;
-  } | null>(null);
-  useLayoutEffect(() => {
-    const accepted = acceptedSuggestionRef.current;
-    if (!accepted) return;
-    acceptedSuggestionRef.current = null;
-    const { editor, text, at } = accepted;
-    if (draft !== text || editor.ownerDocument.activeElement !== editor) return;
-    // The rich editor has committed the controlled draft before this effect.
-    const range = editor.ownerDocument.createRange();
-    range.selectNodeContents(editor);
-    range.collapse(false);
-    const selection = editor.ownerDocument.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    return animateSuggestionAcceptance(editor, at);
-  }, [draft]);
-
   // Cmd/Ctrl+Enter is an alternate submit gesture. It uses the same direct
   // Conversation send path as the button and plain Enter.
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.defaultPrevented || disabled || isImeKeyEvent(event.nativeEvent)) return;
-    if (
-      event.key === "Tab" &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      draft === "" &&
-      suggestion
-    ) {
-      event.preventDefault();
-      acceptedSuggestionRef.current = {
-        editor: event.currentTarget,
-        text: suggestion,
-        // The wave's schedule counts from the key press.
-        at: event.timeStamp,
-      };
-      onDraftChange(suggestion);
-      onAcceptSuggestion?.();
-      return;
-    }
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
     if (event.altKey || event.shiftKey) return;
     event.preventDefault();
@@ -995,11 +949,7 @@ export const Composer = memo(function Composer({
               onPasteFiles: handleTransferredFiles,
             }
           : {})}
-        placeholder={
-          (draft === "" && !disabled ? suggestion : undefined) ??
-          placeholder ??
-          messages.chat_composer_placeholder()
-        }
+        placeholder={placeholder ?? messages.chat_composer_placeholder()}
         richText
         sendLabel={sendLabel ?? messages.chat_send_message()}
         showAttachButton={Boolean(onAttachFiles || onPickAttachments)}
@@ -1011,7 +961,9 @@ export const Composer = memo(function Composer({
               onVoicePress: handleVoicePress,
               voiceLevel: audioCapture.level,
             }
-          : {})}
+          : showVoiceButton && needsDesktopApp()
+            ? { onVoicePress: requestDesktopVoice }
+            : {})}
         {...(size ? { size } : {})}
         submitDisabled={effectiveSubmitDisabled}
         submitPending={submitPending}
@@ -1062,4 +1014,10 @@ function formatAttachmentSize(size: number | undefined, locale: CommaLocale) {
   return `${formatNumber(size / (1024 * 1024), locale, {
     maximumFractionDigits: 1,
   })} MB`;
+}
+
+// Voice input records through the desktop app's audio tap; a browser has none.
+function requestDesktopVoice() {
+  requestDesktopApp("voice");
+  return false as const;
 }

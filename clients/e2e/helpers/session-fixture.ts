@@ -18,6 +18,8 @@ export interface E2eSessionIdentity {
   profile?: {
     avatarId?: string;
     avatarPngBase64?: string;
+    /** The account's app language; absent until the first device reports one. */
+    locale?: "en" | "zh-CN";
     name?: string;
   };
   sessionId?: string;
@@ -78,6 +80,17 @@ export function reflectedCorsRequestHeaders(
 }
 
 export function startSessionProjectionStub(identity: E2eSessionIdentity) {
+  // The account profile is server state: a language one page saves is what
+  // the next page load reads.
+  let accountLocale = identity.profile?.locale ?? null;
+  let accountName = identity.profile?.name ?? null;
+  const accountProfile = () => ({
+    avatar_id: identity.profile?.avatarId ?? null,
+    email: identity.email,
+    id: identity.userId ?? `e2e-user:${identity.email.toLowerCase()}`,
+    locale: accountLocale,
+    name: accountName,
+  });
   const server = createServer((request, response) => {
     setCorsHeaders(request, response);
     if (request.method === "OPTIONS") {
@@ -95,11 +108,26 @@ export function startSessionProjectionStub(identity: E2eSessionIdentity) {
       path === "/v1/comma/me/profile" &&
       identity.profile
     ) {
-      writeJson(response, {
-        avatar_id: identity.profile.avatarId ?? null,
-        email: identity.email,
-        id: identity.userId ?? `e2e-user:${identity.email.toLowerCase()}`,
-        name: identity.profile.name ?? null,
+      writeJson(response, accountProfile());
+      return;
+    }
+    if (
+      request.method === "PATCH" &&
+      path === "/v1/comma/me/profile" &&
+      identity.profile
+    ) {
+      let body = "";
+      request.on("data", (chunk: Buffer) => {
+        body += chunk.toString("utf8");
+      });
+      request.on("end", () => {
+        const patch = JSON.parse(body || "{}") as {
+          locale?: "en" | "zh-CN";
+          name?: string;
+        };
+        if (patch.locale) accountLocale = patch.locale;
+        if (patch.name) accountName = patch.name;
+        writeJson(response, accountProfile());
       });
       return;
     }
@@ -129,6 +157,8 @@ export function startSessionProjectionStub(identity: E2eSessionIdentity) {
   return new Promise<{
     baseUrl: string;
     close: () => Promise<void>;
+    /** The account every session this stub verifies belongs to. */
+    userId: string;
   }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
@@ -140,6 +170,7 @@ export function startSessionProjectionStub(identity: E2eSessionIdentity) {
             httpServer.close(() => done());
             httpServer.closeAllConnections();
           }),
+        userId: createE2eSessionProjection(identity).user.id,
       });
     });
   });

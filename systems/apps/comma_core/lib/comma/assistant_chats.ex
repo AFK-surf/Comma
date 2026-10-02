@@ -8,20 +8,21 @@ defmodule Comma.AssistantChats do
 
   alias Comma.{Conversations, Workspaces}
 
-  def ensure_chat(user, session, group_id) do
+  def ensure_chat(user, session, group_id, opts \\ []) do
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
          {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
-         {:ok, conversation} <- ensure_router_conversation(workspace) do
+         {:ok, conversation} <- ensure_router_conversation(workspace, opts) do
       {:ok, Conversations.present_canonical(workspace, conversation, user)}
     end
   end
 
-  defp ensure_router_conversation(workspace) do
+  defp ensure_router_conversation(workspace, opts) do
     client = Comma.Salix.Client.impl()
+    args = if Keyword.has_key?(opts, :message_limit), do: [workspace, opts], else: [workspace]
 
     if Code.ensure_loaded?(client) and
-         function_exported?(client, :ensure_group_router_conversation, 1) do
-      client.ensure_group_router_conversation(workspace)
+         function_exported?(client, :ensure_group_router_conversation, length(args)) do
+      apply(client, :ensure_group_router_conversation, args)
     else
       {:error, :salix_router_conversation_not_supported}
     end

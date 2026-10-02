@@ -56,6 +56,8 @@ defmodule SalixVoice.TestStubs do
 
   defmodule Metering do
     @moduledoc false
+    def authorize(_attrs), do: Application.get_env(:salix_voice, :test_admission, :ok)
+
     def charge(attrs) do
       case Application.get_env(:salix_voice, :test_pid) do
         pid when is_pid(pid) -> send(pid, {:metered, attrs})

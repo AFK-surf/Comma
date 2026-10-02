@@ -876,7 +876,8 @@ defmodule SalixAgent.Loops do
     Capabilities.deliver_notification(
       record,
       "Background loop #{label} #{text}.",
-      "lifecycle:" <> dedup_suffix
+      "lifecycle:" <> dedup_suffix,
+      lifecycle: true
     )
   end
 

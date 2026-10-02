@@ -305,7 +305,7 @@ test("a rejected real refresh replaces stale mock recommendations with canonical
     await expect(firstCard.locator("h3")).toHaveCSS("line-height", "20px");
     await expect(firstCard.locator(".comma-recommendation-items")).toHaveCSS(
       "row-gap",
-      "0px"
+      "1px"
     );
     await expect(
       firstCard.locator(
@@ -1636,14 +1636,13 @@ test("styles per-product inline-link chips with brand logos and white tiles", as
   }
 });
 
-for (const [lastError, failureCopy] of [
+// Failures the member cannot act on never raise a notice. An empty day is said
+// in the rail; a missing identity stamp leaves the rail neutral.
+for (const [lastError, railCopy] of [
   ["renderer_declined", "Nothing new in your apps to brief today."],
-  [
-    "member_identity_required",
-    "Reconnect your apps in Plugins to verify your personal account.",
-  ],
+  ["member_identity_required", "Refresh to generate your first briefing."],
 ] as const) {
-  test(`a failed generation names ${lastError} and Refresh generates at once`, async ({
+  test(`a failed generation (${lastError}) stays quiet and Refresh generates at once`, async ({
     page,
   }) => {
     const stub = await startChatSmokeStub();
@@ -1742,22 +1741,15 @@ for (const [lastError, failureCopy] of [
       await page.goto("/");
 
       const rail = page.locator(".comma-recommendations");
-      // Routine problems are toasts; the rail keeps only its own content.
-      const problem = page.getByTestId("routine-problem-toast");
       releaseFailure?.();
-      await expect(problem).toBeVisible();
-      await expect(problem).toContainText(failureCopy);
-      await expect(rail.getByText(failureCopy)).toHaveCount(0);
-      await expect(page.getByText("Routines are unavailable")).toHaveCount(0);
       await expect(rail).toHaveAttribute("data-state", "error");
+      await expect(rail.getByText(railCopy)).toBeVisible();
+      await expect(page.getByTestId("routine-problem-toast")).toHaveCount(0);
       // A terminal generation error ends the discovery checks, which would
       // otherwise re-read every 1.5 seconds.
       const readsAtError = recommendationReads;
       await page.waitForTimeout(3_500);
       expect(recommendationReads).toBe(readsAtError);
-      // The toast stack covers the composer's Send button, so a Routine
-      // problem closes on its own; the rail header's refresh tries again.
-      await expect(problem).toBeHidden({ timeout: 10_000 });
 
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
 
@@ -1765,7 +1757,7 @@ for (const [lastError, failureCopy] of [
       await expect(page.getByTestId("recommendations-generating")).toBeVisible();
       await expect(page.getByText("Generating your briefing…")).toBeVisible();
       await expect(rail).toHaveAttribute("data-state", "refreshing");
-      await expect(page.getByText(failureCopy)).toHaveCount(0);
+      await expect(rail.getByText(railCopy)).toHaveCount(0);
       expect(refreshRequested).toBe(true);
 
       releaseRefresh?.();
@@ -1859,14 +1851,12 @@ test("failed generation and unreadable refresh retain the briefing until an auth
     await expect(page.getByText("Old mock briefing.")).toBeVisible();
     await expect(page.getByText("Old mock card", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await expect(page.getByTestId("routine-problem-toast")).toContainText(
-      "Couldn’t update routines. Showing the previous briefing."
+    // The failed refresh keeps the previous briefing without a notice.
+    await expect(page.locator(".comma-recommendations")).toHaveAttribute(
+      "data-state",
+      "stale"
     );
-    await expect(
-      page
-        .locator(".comma-recommendations")
-        .getByText("Couldn’t update routines. Showing the previous briefing.")
-    ).toHaveCount(0);
+    await expect(page.getByTestId("routine-problem-toast")).toHaveCount(0);
     await expect(page.getByText("Old mock card", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect.poll(() => readFailures).toBeGreaterThan(0);
@@ -2022,9 +2012,9 @@ for (const scenario of [
         `**/v1/comma/workspaces/${chatSmokeWorkspace.id}/recommendations**`,
         async (route) => {
           if (route.request().method() !== "GET") return route.continue();
-          // The app also loads settings without query parameters. Count only
-          // the rail's locale-bearing projection reads.
-          if (new URL(route.request().url()).searchParams.has("locale")) reads += 1;
+          // The composer's routine list reads without query parameters. Count
+          // only the rail's timezone-bearing projection reads.
+          if (new URL(route.request().url()).searchParams.has("timezone")) reads += 1;
           await route.fulfill({
             json: {
               ...oldMockEnvelope,
@@ -2074,69 +2064,81 @@ for (const scenario of [
   });
 }
 
-test("recommendation settings reports the resolved locale after a language change", async ({
+test("the app language is an account setting that every device follows", async ({
   page,
 }) => {
   const stub = await startChatSmokeStub();
-  const recommendationLocales: Array<string | null> = [];
+  let accountLocale: string | null = null;
+  const profileWrites: unknown[] = [];
+  const recommendationQueries: string[] = [];
 
   try {
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
-      email: "recommendation-settings-locale@comma.local",
-      token: "comma_sess_recommendation_settings_locale",
+      email: "account-language@comma.local",
+      token: "comma_sess_account_language",
     });
-    await page.addInitScript(() => {
-      localStorage.setItem("comma.locale", "en");
-    });
-
-    await page.route("**/v1/comma/workspaces", async (route) => {
-      if (route.request().method() !== "GET") {
+    await page.route("**/v1/comma/me/profile", async (route) => {
+      const request = route.request();
+      if (request.method() === "PATCH") {
+        const body = request.postDataJSON() as { locale?: string };
+        profileWrites.push(body);
+        accountLocale = body.locale ?? accountLocale;
+      } else if (request.method() !== "GET") {
         await route.continue();
         return;
       }
-
       await route.fulfill({
-        contentType: "application/json",
         json: {
-          data: [
-            {
-              group_id: chatSmokeWorkspace.group_id,
-              id: chatSmokeWorkspace.id,
-              name: chatSmokeWorkspace.name,
-            },
-          ],
+          email: "account-language@comma.local",
+          id: "usr_account_language",
+          locale: accountLocale,
+          name: "Ada",
         },
       });
     });
-
     await page.route("**/v1/comma/workspaces/*/recommendations**", async (route) => {
       const request = route.request();
       if (request.method() !== "GET") {
         await route.continue();
         return;
       }
-
-      recommendationLocales.push(new URL(request.url()).searchParams.get("locale"));
-      await route.fulfill({
-        contentType: "application/json",
-        json: { settings, snapshot: null, state: "empty" },
-      });
+      recommendationQueries.push(new URL(request.url()).search);
+      await route.fulfill({ json: { settings, snapshot: null, state: "empty" } });
     });
 
-    await page.goto("/#/settings?category=recommendations");
-    await expect.poll(() => recommendationLocales).toEqual(["en"]);
+    // An account without a language takes this device's language once.
+    await page.goto("/#/settings?category=general");
+    await expect.poll(() => profileWrites).toEqual([{ locale: "en" }]);
 
-    await page.getByRole("button", { name: "General" }).click();
     const languageControl = page.locator(
       '[data-setting-id="app.language"] [data-slot="settings-control"] button'
     );
     await languageControl.click();
+    await expect(page.getByRole("option", { name: "Auto detect" })).toHaveCount(0);
     await page.getByRole("option", { name: "Simplified Chinese" }).click();
+    await expect
+      .poll(() => profileWrites)
+      .toEqual([{ locale: "en" }, { locale: "zh-CN" }]);
     await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
 
-    await page.getByRole("button", { name: "例程" }).click();
-    await expect.poll(() => recommendationLocales).toEqual(["en", "zh-CN"]);
+    // Another device with a stale local choice follows the account.
+    await page.evaluate(() => {
+      localStorage.setItem(
+        "comma.client-settings",
+        JSON.stringify({
+          ...JSON.parse(localStorage.getItem("comma.client-settings") ?? "{}"),
+          localePreference: "en",
+        })
+      );
+    });
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+    expect(profileWrites).toHaveLength(2);
+    // Routine reads never carry the language; the server reads the account.
+    expect(recommendationQueries.every((query) => !query.includes("locale"))).toBe(
+      true
+    );
   } finally {
     await stub.close();
   }

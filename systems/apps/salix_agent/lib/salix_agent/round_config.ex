@@ -270,6 +270,8 @@ defmodule SalixAgent.RoundConfig do
     recommendation_policy =
       if runtime_config[:purpose] == "comma_recommendation", do: :restricted, else: :ordinary
 
+    guest_policy = SalixAgent.GuestPolicy.policy_for_purpose(runtime_config[:purpose])
+
     base_disclosure_context =
       session_context
       |> Map.put(:agent_id, agent_id)
@@ -278,6 +280,7 @@ defmodule SalixAgent.RoundConfig do
       |> Map.put(:disabled_tools, runtime_config[:disabled_tools] || [])
       |> Map.put(:inspector_policy, runtime_config[:inspector_policy])
       |> Map.put(:recommendation_policy, recommendation_policy)
+      |> Map.put(:guest_policy, guest_policy)
 
     im_disclosure_context =
       base_disclosure_context
@@ -368,6 +371,7 @@ defmodule SalixAgent.RoundConfig do
             mcp_entries
           )
           |> Map.put("recommendation_policy", Atom.to_string(recommendation_policy))
+          |> Map.put("guest_policy", Atom.to_string(guest_policy))
           |> Map.put("inspector_policy", runtime_config[:inspector_policy])
 
         config = %{

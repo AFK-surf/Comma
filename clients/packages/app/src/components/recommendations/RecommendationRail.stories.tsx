@@ -335,6 +335,12 @@ const generatingEnvelope = {
   snapshot: null,
   state: "refreshing",
 } satisfies RecommendationEnvelope;
+// A briefing is on screen and a refresh is regenerating it: the greeting stays,
+// the summary body and cards show the command palette preview's skeleton.
+const refreshingEnvelope = {
+  ...envelope,
+  state: "refreshing",
+} satisfies RecommendationEnvelope;
 // Generation failed (Figma 1205:13333): copy and a "Try again" action that
 // runs a refresh.
 const unavailableEnvelope = {
@@ -559,6 +565,40 @@ export const Generating = {
         onOpenUrl={noop}
         onUsePrompt={noop}
         workspaceId="storybook-workspace-generating"
+      />
+    </RailFrame>
+  ),
+};
+
+export const InitialLoad = {
+  render: () => (
+    <RailFrame>
+      <RecommendationRail
+        api={
+          {
+            ...railApi(envelope),
+            getRecommendations: () => new Promise(() => {}),
+          } as unknown as CommaApiClient
+        }
+        greetingName="Zanwei"
+        onOpenTask={noop}
+        onOpenUrl={noop}
+        onUsePrompt={noop}
+        workspaceId="storybook-workspace-initial-load"
+      />
+    </RailFrame>
+  ),
+};
+
+export const Refreshing = {
+  render: () => (
+    <RailFrame>
+      <RecommendationRail
+        api={railApi(refreshingEnvelope)}
+        onOpenTask={noop}
+        onOpenUrl={noop}
+        onUsePrompt={noop}
+        workspaceId="storybook-workspace-refreshing"
       />
     </RailFrame>
   ),

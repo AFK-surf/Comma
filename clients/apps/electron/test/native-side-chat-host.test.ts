@@ -404,6 +404,43 @@ describe("CommaSideChatHost gesture lifecycle", () => {
   );
 
   it.skipIf(!canRunRealHelper)(
+    "shows and hides the menu-bar item that Main describes",
+    async () => {
+      const helper = new RealHelperHarness();
+      await helper.waitForFrame((frame) => frame.kind === "side-chat.ready");
+
+      helper.writeFrame({
+        iconPath: resolve(appDir, "build/icons/tray/CommaTemplate.png"),
+        kind: "status-menu.show",
+        protocolVersion: chatProtocolVersion,
+        requestId: "status-menu-show",
+        rows: [
+          { id: "open-comma", kind: "item", shortcut: "⌥ Space", title: "Open Comma" },
+          { kind: "separator" },
+          { kind: "header", title: "Tasks" },
+          { id: "task:grp/cnv", kind: "item", title: "Draft the Q3 plan and budget" },
+        ],
+        toolTip: "Comma is running",
+        width: 300,
+      });
+      await expect(helper.waitForResult("status-menu-show")).resolves.toMatchObject({
+        ok: true,
+      });
+
+      helper.writeFrame({
+        kind: "status-menu.hide",
+        protocolVersion: chatProtocolVersion,
+        requestId: "status-menu-hide",
+      });
+      await expect(helper.waitForResult("status-menu-hide")).resolves.toMatchObject({
+        ok: true,
+      });
+      await expect(helper.close()).resolves.toEqual({ code: 0, signal: null });
+    },
+    20_000
+  );
+
+  it.skipIf(!canRunRealHelper)(
     "fails closed on version mismatches and out-of-range interactive progress",
     async () => {
       const helper = new RealHelperHarness();

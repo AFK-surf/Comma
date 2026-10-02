@@ -30,6 +30,8 @@ defmodule SalixStore.IFC do
 
   @audience_modes ~w(space members)
   @placements ~w(internal external)
+  # The dashboard lists read one row past this, so a longer list says so.
+  @dashboard_rows 200
 
   # `public` is a real observation and not a scope kind the kernel knows: a
   # public room's audience IS its space, so the resolver emits no scope atom
@@ -727,7 +729,13 @@ defmodule SalixStore.IFC do
     _ -> {:error, :unavailable}
   end
 
-  @doc "Every operator classification in one connect, for the dashboard."
+  # Scope labels and facts are listed in byte order (`COLLATE "C"`), the order
+  # Elixir compares binaries in, so `SalixIM.IFC.Admin` can line the two
+  # bounded reads up against each other.
+  @doc "The rows each dashboard list returns; it reads one more to flag a longer list."
+  def dashboard_rows, do: @dashboard_rows
+
+  @doc "Operator classifications in one connect, for the dashboard (bounded)."
   @spec list_scope_labels(String.t(), String.t(), String.t()) ::
           {:ok, [map()]} | {:error, :unavailable}
   def list_scope_labels(tenant_id, group_id, connect_id) do
@@ -735,7 +743,8 @@ defmodule SalixStore.IFC do
       ScopeLabel
       |> where([l], l.tenant_id == ^tenant_id and l.group_id == ^group_id)
       |> where([l], l.connect_id == ^connect_id)
-      |> order_by([l], asc: l.scope_id)
+      |> order_by([l], asc: fragment("? COLLATE \"C\"", l.scope_id))
+      |> limit(^(@dashboard_rows + 1))
       |> Repo.all()
       |> Enum.map(
         &%{
@@ -753,7 +762,7 @@ defmodule SalixStore.IFC do
   end
 
   @doc """
-  Every conversation this connect has observed, for the dashboard.
+  The conversations this connect has observed, for the dashboard (bounded).
 
   The classifications in `list_scope_labels/3` only cover conversations an
   operator has already touched. This is the other half — what the projection
@@ -767,7 +776,8 @@ defmodule SalixStore.IFC do
       ScopeFact
       |> where([f], f.tenant_id == ^tenant_id and f.group_id == ^group_id)
       |> where([f], f.connect_id == ^connect_id)
-      |> order_by([f], asc: f.scope_id)
+      |> order_by([f], asc: fragment("? COLLATE \"C\"", f.scope_id))
+      |> limit(^(@dashboard_rows + 1))
       |> Repo.all()
       |> Enum.map(
         &%{
@@ -787,7 +797,7 @@ defmodule SalixStore.IFC do
   end
 
   @doc """
-  Every principal this connect knows a placement for, for the dashboard.
+  The principals this connect knows a placement for, for the dashboard (bounded).
 
   Both halves: what the provider said (`placement_observed`) and what an
   operator decided instead (`placement_override`), because the page has to show
@@ -801,6 +811,7 @@ defmodule SalixStore.IFC do
       |> where([p], p.tenant_id == ^tenant_id and p.group_id == ^group_id)
       |> where([p], p.connect_id == ^connect_id)
       |> order_by([p], asc: p.user_id)
+      |> limit(^(@dashboard_rows + 1))
       |> Repo.all()
       |> Enum.map(
         &%{
@@ -815,7 +826,7 @@ defmodule SalixStore.IFC do
     _ -> {:error, :unavailable}
   end
 
-  @doc "Every clearance in one connect, for the dashboard."
+  @doc "Clearances in one connect, for the dashboard (bounded)."
   @spec list_tag_clearances(String.t(), String.t(), String.t()) ::
           {:ok, [map()]} | {:error, :unavailable}
   def list_tag_clearances(tenant_id, group_id, connect_id) do
@@ -824,6 +835,7 @@ defmodule SalixStore.IFC do
       |> where([c], c.tenant_id == ^tenant_id and c.group_id == ^group_id)
       |> where([c], c.connect_id == ^connect_id)
       |> order_by([c], asc: c.tag, asc: c.principal_key)
+      |> limit(^(@dashboard_rows + 1))
       |> Repo.all()
       |> Enum.map(&%{"tag" => &1.tag, "principal_key" => &1.principal_key})
 

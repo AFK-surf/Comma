@@ -6,6 +6,10 @@ import {
 } from "@comma/native-bridge";
 import { useEffect, useRef } from "react";
 import { toast } from "@comma/ui";
+import {
+  isOnboardingOpen,
+  subscribeOnboardingOpen,
+} from "../onboarding/onboardingPresence";
 
 type MenuAction = ApplicationMenuItems[number] & { run: () => unknown };
 const owners = new Map<symbol, readonly MenuAction[]>();
@@ -30,10 +34,18 @@ function publishCurrentOwners() {
       if (action.enabled || !actions.get(action.id)?.enabled)
         actions.set(action.id, action);
     }
+  // While the first-launch onboarding is open, every command stays listed but
+  // unavailable, accelerators included: each acts on a surface the onboarding
+  // covers. The menu's system items (Edit, Close, Minimize, Quit) are not
+  // published here and keep working.
+  const onboardingOpen = isOnboardingOpen();
   void bridge.applicationMenu
     .update({
       locale,
-      items: [...actions.values()].map(({ run: _run, ...item }) => item),
+      items: [...actions.values()].map(({ run: _run, ...item }) => ({
+        ...item,
+        enabled: item.enabled && !onboardingOpen,
+      })),
     })
     .catch(console.error);
 }
@@ -50,8 +62,9 @@ export function useApplicationMenu(actions: readonly MenuAction[]) {
     if (bridge.platform !== "electron" || current.current.length === 0) return;
     locale = currentLocale;
     const key = owner.current;
-    if (!unsubscribe)
-      unsubscribe = bridge.applicationMenu.onCommand((id) => {
+    if (!unsubscribe) {
+      const stopCommands = bridge.applicationMenu.onCommand((id) => {
+        if (isOnboardingOpen()) return;
         const action = [...owners.values()]
           .flat()
           .findLast((item) => item.id === id && item.enabled);
@@ -64,6 +77,12 @@ export function useApplicationMenu(actions: readonly MenuAction[]) {
               );
             });
       });
+      const stopOnboarding = subscribeOnboardingOpen(publish);
+      unsubscribe = () => {
+        stopCommands();
+        stopOnboarding();
+      };
+    }
     owners.set(
       key,
       current.current.map((item) => ({

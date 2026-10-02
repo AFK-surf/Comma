@@ -48,6 +48,26 @@ defmodule CommaWeb.PluginConnections do
     end
   end
 
+  @doc "Active Composio accounts of one member toolkit in the Workspace's default group."
+  def active_member_accounts(workspace, toolkit) when toolkit in @member_toolkits do
+    case Salix.Composio.list_all_group_connected_accounts(
+           workspace["salix_tenant_id"],
+           workspace["default_group_id"]
+         ) do
+      {:ok, accounts} ->
+        {:ok,
+         Enum.filter(accounts, fn account ->
+           account["user_id"] == workspace["default_group_id"] and
+             account_toolkit(account) == toolkit and active_account?(account)
+         end)}
+
+      {:error, _} ->
+        {:error, :plugins_unavailable}
+    end
+  end
+
+  def active_member_accounts(_workspace, _toolkit), do: {:error, :member_source_unsupported}
+
   defp personal_accounts(workspace, definition) do
     if Enum.any?(get_in(definition, ["setup", "connections"]) || [], &(&1["kind"] == "composio")) do
       case Salix.Composio.list_all_group_connected_accounts(
@@ -110,7 +130,7 @@ defmodule CommaWeb.PluginConnections do
          user_id,
          _accounts,
          _bindings,
-         _resolved,
+         resolved,
          _mcps
        )
        when provider in ~w(github linear notion slack) do
@@ -126,13 +146,25 @@ defmodule CommaWeb.PluginConnections do
     }
 
     state =
-      if binding &&
-           match?(
-             {:ok, _},
-             CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source)
-           ),
-         do: "ready",
-         else: "needs_authorization"
+      cond do
+        is_nil(binding) ->
+          "needs_authorization"
+
+        # The member's grant exists but lacks a scope this plugin now requires,
+        # or the provider revoked it. Only a reconnect can widen or renew it.
+        # Checked before identity, which rejects any grant that is not active.
+        resolved[connection["id"]] in ~w(missing_scopes reauthorization_required) ->
+          "needs_reauthorization"
+
+        not match?(
+          {:ok, _},
+          CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source)
+        ) ->
+          "needs_authorization"
+
+        true ->
+          "ready"
+      end
 
     [
       %{

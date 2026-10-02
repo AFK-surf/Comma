@@ -1,0 +1,167 @@
+name: Comma
+options:
+  minimumXcodeGenVersion: 2.44.1
+  createIntermediateGroups: true
+  # Icon Composer bundles are single resources; actool builds the adaptive and legacy icons from them.
+  fileTypes:
+    icon:
+      file: true
+      buildPhase: resources
+  deploymentTarget:
+    iOS: "18.0"
+    watchOS: "11.0"
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "5"
+    CODE_SIGN_STYLE: Automatic
+    # Kept here, not only in Xcode: `xcodegen generate` rewrites project.pbxproj.
+    DEVELOPMENT_TEAM: D9AAN3VJK8
+    COMMA_PHONE_BUNDLE_ID: surf.comma.ios
+    COMMA_API_BASE_URL: https://salix-staging.comma.surf
+    COMMA_APP_NAME: Comma
+    COMMA_PUSH_ENVIRONMENT: development
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+  configs:
+    Release:
+      COMMA_APP_NAME: Comma
+      COMMA_PUSH_ENVIRONMENT: production
+packages:
+  CommaCore:
+    path: ../../packages/apple-core
+  # Apple's CommonMark + GFM parser; agent replies render from its syntax tree.
+  Markdown:
+    url: https://github.com/swiftlang/swift-markdown
+    from: 0.9.0
+targets:
+  Comma:
+    type: application
+    platform: iOS
+    sources:
+      - path: iOS
+        excludes: ["*.plist", "*.entitlements"]
+      - path: Shared
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID)
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: $(COMMA_APP_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        COMMA_API_BASE_URL: $(COMMA_API_BASE_URL)
+        COMMA_PUSH_ENVIRONMENT: $(COMMA_PUSH_ENVIRONMENT)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSSupportsLiveActivities: true
+        NSPhotoLibraryUsageDescription: Choose images to send in your chat.
+        UIBackgroundModes: [remote-notification]
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [comma-ios-dev, comma]
+    entitlements:
+      path: iOS/Comma.entitlements
+      properties:
+        aps-environment: $(COMMA_PUSH_ENVIRONMENT)
+        com.apple.developer.applesignin: [Default]
+    dependencies:
+      - package: CommaCore
+      - package: Markdown
+      - target: CommaLiveActivity
+        embed: true
+      - target: CommaWatch
+        embed: true
+  CommaLiveActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: LiveActivity
+        excludes: ["*.plist"]
+      - path: Shared/TaskActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).activity
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: LiveActivity/Info.plist
+      properties:
+        CFBundleDisplayName: Comma Tasks
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  CommaWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: Watch
+        excludes: ["*.plist"]
+      - path: Shared
+        excludes: [TaskActivityAttributes.swift]
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).watch
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Watch/Info.plist
+      properties:
+        CFBundleDisplayName: $(COMMA_APP_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        WKCompanionAppBundleIdentifier: $(COMMA_PHONE_BUNDLE_ID)
+        WKApplication: true
+        COMMA_API_BASE_URL: $(COMMA_API_BASE_URL)
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [comma]
+        WKSupportsLiveActivityLaunchAttributeTypes: [TaskActivityAttributes]
+    dependencies:
+      - package: CommaCore
+      - package: Markdown
+  CommaTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: Comma
+      - package: CommaCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Comma:
+    build:
+      targets:
+        Comma: all
+    test:
+      targets: [CommaTests]
+    run:
+      config: Debug
+  CommaWatch:
+    build:
+      targets:
+        CommaWatch: all
+    run:
+      config: Debug

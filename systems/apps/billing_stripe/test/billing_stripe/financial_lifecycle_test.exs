@@ -223,6 +223,8 @@ defmodule BillingStripe.FinancialLifecycleTest do
 
   test "dispute win restores valid rights, loss revokes them, and delayed win cannot undo a refund" do
     account = "ba_dispute"
+    # Grant status depends on the current time: the paid period must cover now.
+    {starts, ends} = current_period()
 
     assert {:ok, _} =
              deliver(
@@ -233,8 +235,8 @@ defmodule BillingStripe.FinancialLifecycleTest do
                  "in_dispute",
                  "pi_dispute",
                  "comma_value_v1",
-                 ~U[2026-09-01 00:00:00Z],
-                 ~U[2026-10-01 00:00:00Z]
+                 starts,
+                 ends
                )
              )
 
@@ -272,8 +274,8 @@ defmodule BillingStripe.FinancialLifecycleTest do
                  "in_lost",
                  "pi_lost",
                  "comma_value_v1",
-                 ~U[2026-09-01 00:00:00Z],
-                 ~U[2026-10-01 00:00:00Z]
+                 starts,
+                 ends
                )
              )
 
@@ -506,6 +508,11 @@ defmodule BillingStripe.FinancialLifecycleTest do
       [account]
     ).rows
     |> Map.new(fn [invoice, amount] -> {invoice, amount} end)
+  end
+
+  defp current_period do
+    starts = DateTime.utc_now() |> DateTime.add(-1, :day) |> DateTime.truncate(:second)
+    {starts, DateTime.add(starts, 30, :day)}
   end
 
   defp grant_status(account) do

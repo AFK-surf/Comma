@@ -37,7 +37,10 @@ defmodule Comma.Accounts.UserAvatar do
     |> validate_required([:id, :user_id, :object_key, :content_type, :byte_size, :status])
     |> validate_inclusion(:status, ["pending", "active", "cleanup"])
     |> validate_inclusion(:content_type, ["image/jpeg", "image/png", "image/webp"])
-    |> validate_number(:byte_size, greater_than: 0, less_than_or_equal_to: 102_400)
+    |> validate_number(:byte_size,
+      greater_than: 0,
+      less_than_or_equal_to: Comma.ProfileAvatar.max_bytes()
+    )
     |> foreign_key_constraint(:user_id)
     |> unique_constraint(:object_key)
     |> check_constraint(:status, name: :comma_user_avatars_status_check)

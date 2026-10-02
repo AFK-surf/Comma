@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { appendFileSync } from "node:fs";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -37,6 +37,9 @@ export function inferWorkerReleaseKind(event, fallback = "gateway_only") {
     (file) =>
       file === "systems/cloudflare/salix-vm-gateway/Dockerfile" ||
       file === "systems/cloudflare/salix-vm-gateway/entrypoint.sh" ||
+      file === "systems/cloudflare/salix-vm-gateway/scripts/build-connector.sh" ||
+      file === "systems/cloudflare/salix-vm-gateway/scripts/install-harnesses.mjs" ||
+      file === "systems/runtime-images/runtime-dependencies.lock.json" ||
       file.endsWith("/Dockerfile"),
   );
 
@@ -260,7 +263,7 @@ export function checkImageReleasePage(page) {
   return page.next_cursor;
 }
 
-export function requireInactiveContainerInstances(instances, workloads = [], ownedProbeId = null) {
+export function requireInactiveContainerInstances(instances, workloads = []) {
   if (!Array.isArray(instances)) {
     throw new Error("Cloudflare Container instance list is not an array");
   }
@@ -271,15 +274,12 @@ export function requireInactiveContainerInstances(instances, workloads = [], own
     if (instance?.kind === "durable_object") {
       if (instance.state === "inactive") return false;
       if (!["stopped", "failed"].includes(instance.state)) return true;
-      if (instance.name === ownedProbeId && instance.state === "stopped") return false;
       return owners.get(instance.name)?.archive_recorded !== true;
     }
     if (instance?.kind !== "instance" || !["stopped", "failed"].includes(instance.state)) {
       return true;
     }
     const matches = objects.filter((object) => object.deployment_id === instance.id);
-    if (matches.length === 1 && matches[0].name === ownedProbeId &&
-        instance.state === "stopped") return false;
     return matches.length !== 1 || owners.get(matches[0].name)?.archive_recorded !== true;
   });
   if (unsafe.length > 0) {
@@ -298,6 +298,8 @@ const SANDBOX_RUNTIME_PATHS = [
   ":(top)systems/cloudflare/salix-vm-gateway/entrypoint.sh",
   ":(top)systems/cloudflare/salix-vm-gateway/wrangler.jsonc",
   ":(top)systems/cloudflare/salix-vm-gateway/scripts/build-connector.sh",
+  ":(top)systems/cloudflare/salix-vm-gateway/scripts/install-harnesses.mjs",
+  ":(top)systems/runtime-images/runtime-dependencies.lock.json",
 ];
 
 export function sameSandboxRuntimeSources(previousRevision, revision, cwd = process.cwd()) {
@@ -429,6 +431,18 @@ function containerState(instance) {
     ? raw : "unknown";
 }
 
+export function businessContainerInstances(instances, workloads) {
+  const names = new Set(workloads.map((record) => record.resource_name).filter(Boolean));
+  const deployments = new Set(instances.filter((record) =>
+    record.kind === "durable_object" && names.has(record.name))
+    .map((record) => record.deployment_id).filter(Boolean));
+  // Unassociated Container disks are disposable during image replacement.
+  return instances.filter((record) => record.kind === "instance"
+    ? deployments.has(record.id)
+    : record.kind === "durable_object" &&
+      (names.has(record.name) || deployments.has(record.deployment_id)));
+}
+
 export function runningContainerOwners(instances, workloads) {
   const owners = new Map(
     workloads.filter((record) => record.provider === "cloudflare")
@@ -484,10 +498,8 @@ async function imageReleaseWorkloads(maintenanceId) {
   return records;
 }
 
-async function drainRunningContainers(maintenanceId, applicationId, profileKey) {
-  const deadline = Date.now() + 75 * 60_000;
-  const release = (await imageReleaseApi(maintenanceId, "status")).maintenance;
-  const ownedProbeId = ownedImageProbeId(release, maintenanceId, profileKey);
+async function drainRunningContainers(maintenanceId, applicationId, profileKey, deadline) {
+  if (!Number.isSafeInteger(deadline)) throw new Error("Image release drain deadline is missing");
   while (Date.now() < deadline) {
     const allWorkloads = await imageReleaseWorkloads(maintenanceId);
     for (const record of allWorkloads) {
@@ -496,26 +508,17 @@ async function drainRunningContainers(maintenanceId, applicationId, profileKey) 
         throw new Error(`Group ${record.group_id} has no resolved Container profile`);
       }
     }
-    let pages = await fetchContainerPages(`/${encodeURIComponent(applicationId)}/instances`);
-    let instances = flattenContainerInstances(pages);
-    if (await recoverOwnedImageProbe(release, instances, {
-      maintenanceId,
-      applicationId,
-      profileKey,
-      baseUrl: process.env.SALIX_VM_GATEWAY_BASE_URL,
-      secret: process.env.SALIX_VM_GATEWAY_SECRET,
-    })) {
-      pages = await fetchContainerPages(`/${encodeURIComponent(applicationId)}/instances`);
-      instances = flattenContainerInstances(pages);
-    }
-    const workloads = workloadsForApplication(instances, allWorkloads,
+    const pages = await fetchContainerPages(`/${encodeURIComponent(applicationId)}/instances`);
+    const inventory = flattenContainerInstances(pages);
+    const workloads = workloadsForApplication(inventory, allWorkloads,
       process.env.SALIX_VM_GATEWAY_BASE_URL, profileKey);
+    const instances = businessContainerInstances(inventory, allWorkloads);
     const running = runningContainerOwners(instances, workloads);
     const archiving = workloads.filter((record) =>
       record.provider === "cloudflare" && record.status === "archiving");
     if (running.length === 0 && archiving.length === 0) {
       checkImageReleasePage({ data: workloads, next_cursor: null });
-      requireInactiveContainerInstances(instances, workloads, ownedProbeId);
+      requireInactiveContainerInstances(instances, workloads);
       return;
     }
     const seen = new Set();
@@ -683,6 +686,8 @@ async function main(argv) {
           !["prepared", "deploying"].includes(response.phase)) {
         throw new Error("Salix did not confirm the image release fence");
       }
+      if (!Number.isSafeInteger(response.started_at)) throw new Error("Image release start time is missing");
+      writeOutputs({ drain_deadline_ms: response.started_at + 75 * 60_000 });
       return;
     }
 
@@ -702,6 +707,7 @@ async function main(argv) {
         requireArg(args, "maintenance-id"),
         requireArg(args, "application-id"),
         requireArg(args, "profile-key"),
+        Number(requireArg(args, "deadline-ms")),
       );
       return;
     }
@@ -735,7 +741,6 @@ async function main(argv) {
         maintenanceId: requireArg(args, "maintenance-id"),
         sourceRevision: requireArg(args, "source-revision"),
         profileKey: requireArg(args, "profile-key"),
-        applicationId: requireArg(args, "application-id"),
       });
       return;
     }
@@ -883,29 +888,40 @@ async function readSalixWorkerRelease() {
   return result;
 }
 
-async function probeImageContainer({ baseUrl, secret, maintenanceId, sourceRevision, profileKey, applicationId }) {
+export async function probeImageContainer({ baseUrl, secret, maintenanceId, sourceRevision, profileKey }, request = signedGatewayRequest) {
   if (!secret) throw new Error("SALIX_VM_GATEWAY_SECRET is required");
   maskSecret(secret);
   const sandboxId = imageProbeSandboxId(maintenanceId, profileKey);
   const basePath = imageProbePath(profileKey, sandboxId);
+  const control = { owner_id: maintenanceId, operation_id: sandboxId, generation: 1, revision: 1 };
+  const controlledRequest = (url, key, method, path, body) => request(url, key, method,
+    `${path}${path.includes("?") ? "&" : "?"}salix_control=${encodeURIComponent(JSON.stringify({ ...control, claim_id: randomUUID() }))}`, body);
   let attempted = false;
   try {
     attempted = true;
-    const ensured = await signedGatewayRequest(
+    const opened = await controlledRequest(baseUrl, secret, "POST", `${basePath}/control`,
+      { action: "open", control: { ...control, claim_id: "probe-open" } });
+    if (!opened.ok) throw new Error(`Fresh Sandbox control returned HTTP ${opened.status}`);
+    const ensured = await controlledRequest(
       baseUrl,
       secret,
       "POST",
       `${basePath}/ensure`,
       { keep_alive: true },
     );
-    if (!ensured.ok) {
+    if (!ensured.ok && ![500, 503, 504].includes(ensured.status)) {
       throw new Error(`Fresh Sandbox ensure returned HTTP ${ensured.status}`);
     }
 
     let confirmed = false;
     const deadline = Date.now() + 15 * 60_000;
     while (Date.now() < deadline) {
-      const ready = await signedGatewayRequest(
+      const status = await controlledRequest(baseUrl, secret, "GET", `${basePath}/status`);
+      if (!status.ok || (await status.json()).status !== "ready") {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        continue;
+      }
+      const ready = await controlledRequest(
         baseUrl,
         secret,
         "GET",
@@ -928,29 +944,13 @@ async function probeImageContainer({ baseUrl, secret, maintenanceId, sourceRevis
     }
   } finally {
     if (attempted) {
-      const destroyed = await signedGatewayRequest(
-        baseUrl,
-        secret,
-        "POST",
-        `${basePath}/destroy`,
-        {},
-      );
-      if (!destroyed.ok) {
-        throw new Error(`Image probe Sandbox destroy returned HTTP ${destroyed.status}`);
-      }
-      await waitForProbeStop(applicationId, sandboxId);
+      await stopImageProbe({ baseUrl, secret, profileKey, control }, sandboxId, controlledRequest);
     }
   }
 }
 
 function imageProbeSandboxId(maintenanceId, profileKey) {
-  return `image-probe-${maintenanceId.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40)}-${profileKey}`;
-}
-
-function ownedImageProbeId(release, maintenanceId, profileKey) {
-  return release?.enabled === true && release.reason === "sandbox_image_release" &&
-    release.phase === "deploying" && release.maintenance_id === maintenanceId
-    ? imageProbeSandboxId(maintenanceId, profileKey) : null;
+  return `image-probe-${maintenanceId.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40)}-${profileKey}-${randomBytes(4).toString("hex")}`;
 }
 
 function imageProbePath(profileKey, sandboxId) {
@@ -961,39 +961,23 @@ function imageProbePath(profileKey, sandboxId) {
   return `${prefix}/${sandboxId}`;
 }
 
-export async function recoverOwnedImageProbe(release, instances, {
-  maintenanceId, applicationId, profileKey, baseUrl, secret,
-}, request = signedGatewayRequest, wait = waitForProbeStop) {
-  const sandboxId = ownedImageProbeId(release, maintenanceId, profileKey);
-  if (!sandboxId) return false;
-  if (probeStopped(instances, sandboxId)) return false;
-  if (!secret) throw new Error("SALIX_VM_GATEWAY_SECRET is required");
+async function stopImageProbe({ baseUrl, secret, profileKey, control }, sandboxId, request = signedGatewayRequest) {
   maskSecret(secret);
-  const destroyed = await request(baseUrl, secret, "POST",
-    `${imageProbePath(profileKey, sandboxId)}/destroy`, {});
-  if (!destroyed.ok) {
-    throw new Error(`Image probe Sandbox destroy returned HTTP ${destroyed.status}`);
+  const path = imageProbePath(profileKey, sandboxId);
+  const sealed = await request(baseUrl, secret, "POST", `${path}/control`,
+    { action: "seal", control: { ...control, claim_id: "probe-seal" } });
+  if (!sealed.ok) {
+    console.warn(`Disposable image probe ${sandboxId} seal failed: HTTP ${sealed.status}`);
+    return;
   }
-  await wait(applicationId, sandboxId);
-  return true;
-}
-
-async function waitForProbeStop(applicationId, sandboxId) {
-  const deadline = Date.now() + 180_000;
-  while (Date.now() < deadline) {
-    const pages = await fetchContainerPages(`/${encodeURIComponent(applicationId)}/instances`);
-    const instances = flattenContainerInstances(pages);
-    if (probeStopped(instances, sandboxId)) return;
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  for (const [action, body] of [["keepalive", { keep_alive: false }], ["destroy", {}]]) {
+    try {
+      const response = await request(baseUrl, secret, "POST", `${path}/${action}`, body);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      console.warn(`Disposable image probe ${sandboxId} ${action} failed: ${error.message}`);
+    }
   }
-  throw new Error(`Probe ${sandboxId} did not stop in its Container application`);
-}
-
-export function probeStopped(instances, sandboxId) {
-  const matches = instances.filter((item) =>
-    item.kind === "durable_object" && item.name === sandboxId);
-  if (matches.length > 1) throw new Error(`Probe ${sandboxId} has duplicate owners`);
-  return matches.length === 0 || ["inactive", "stopped"].includes(matches[0].state);
 }
 
 export function signedGatewayHeaders(secret, method, path, encoded, timestamp, nonce, requestId) {

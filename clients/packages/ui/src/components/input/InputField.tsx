@@ -59,6 +59,7 @@ export const InputField = ({
   pattern,
   inputMode,
   onKeyDown,
+  onPaste,
   onBlur,
   onFocus,
   "aria-label": ariaLabel,
@@ -116,6 +117,7 @@ export const InputField = ({
               {...(pattern !== undefined ? { pattern } : {})}
               {...(inputMode !== undefined ? { inputMode } : {})}
               {...(onKeyDown !== undefined ? { onKeyDown } : {})}
+              {...(onPaste !== undefined ? { onPaste } : {})}
               {...(onBlur !== undefined ? { onBlur } : {})}
               {...(onFocus !== undefined ? { onFocus } : {})}
             />

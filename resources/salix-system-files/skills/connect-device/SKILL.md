@@ -12,7 +12,7 @@ Keep commands, device IDs, paths, and verification text unchanged.
 
 1. Call `device.create_connector_install_command` with a suitable device name.
 2. Retain `device_id`, `command`, `registration_expires_at`, `verification_path`, and `verification_content`.
-3. Give `command` unchanged in one shell code block in the authorized private conversation.
+3. Give `command` unchanged in one shell code block.
 4. Ask the user to run it on the target computer and type `yes` at its local consent prompt.
 5. Explain that access starts read-only and runs in the background until reboot, without a startup service.
 

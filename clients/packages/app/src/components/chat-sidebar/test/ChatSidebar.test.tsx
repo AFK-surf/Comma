@@ -660,9 +660,12 @@ describe("ChatSidebar", () => {
     expect(screen.getByRole("textbox", { name: "Address" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Close New tab" }));
-    expect(screen.getByTestId("chat-sidebar-empty")).toBeVisible();
-    expect(screen.getByTestId("chat-sidebar")).toHaveAttribute("data-open", "true");
+    expect(screen.getByTestId("chat-sidebar")).toHaveAttribute("data-open", "false");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
 
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("chat-sidebar")).toHaveAttribute("data-open", "true");
+    expect(screen.getByTestId("chat-sidebar-empty")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "New browser tab" }));
     expect(screen.getByRole("tab", { name: "New tab" })).toBeVisible();
   });

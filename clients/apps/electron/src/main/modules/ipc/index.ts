@@ -21,6 +21,7 @@ export interface NativeCallerContext {
     | "meeting-recorder-window"
     | "main-window"
     | "dev-workbench"
+    | "onboarding-window"
     | "side-chat-test-window"
     | "side-chat-window"
     | "playground"

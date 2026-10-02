@@ -122,7 +122,21 @@ func (c *connector) computerUseToken() (string, error) {
 }
 
 func (c *connector) computerUseHelperCommand(ctx context.Context, authToken string) (*exec.Cmd, error) {
-	return commandContextWithProcessGroup(ctx, "open", computerUseHelperOpenArgs(c.cfg.computerUseHelperApp, c.cfg.computerUseSocketPath, c.cfg.computerUseRuntimePath, authToken)...), nil
+	prepareCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	executable := filepath.Join(c.cfg.computerUseHelperApp, "Contents", "MacOS", "CommaComputerUseDaemon")
+	var stderr bytes.Buffer
+	prepare := commandContextWithProcessGroup(prepareCtx, executable, "--prepare-app")
+	prepare.Stderr = &stderr
+	output, err := prepare.Output()
+	if err != nil {
+		return nil, fmt.Errorf("prepare computer_use application: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	helperApp := strings.TrimSpace(string(output))
+	if helperApp == "" {
+		return nil, errors.New("computer_use returned no application path")
+	}
+	return commandContextWithProcessGroup(ctx, "open", computerUseHelperOpenArgs(helperApp, c.cfg.computerUseSocketPath, c.cfg.computerUseRuntimePath, authToken)...), nil
 }
 
 func computerUseHelperOpenArgs(helperApp, socketPath, runtimePath, authToken string) []string {

@@ -22,7 +22,7 @@ defmodule SalixVoice do
 
   @pg SalixVoice.PG
 
-  @type admit_error :: :disabled | :busy | :node_full | :draining | :not_configured
+  @type admit_error :: :disabled | :busy | :node_full | :draining | :not_configured | map()
 
   @doc """
   Admit a call on this node and start its `CallActor`.
@@ -45,7 +45,8 @@ defmodule SalixVoice do
          :ok <- enabled(settings),
          :ok <- configured(settings),
          :ok <- node_capacity(settings),
-         :ok <- group_free(attrs.group_id) do
+         :ok <- group_free(attrs.group_id),
+         :ok <- authorize(Map.put(attrs, :sku, settings["gpt_live_model"])) do
       call_id = new_call_id()
       carrier_call_id = attrs[:carrier_call_id] || call_id
 
@@ -77,6 +78,29 @@ defmodule SalixVoice do
           {:error, _reason} -> {:error, :not_configured}
         end
       end
+    end
+  end
+
+  @doc false
+  def authorize(attrs) do
+    case Application.get_env(:salix_voice, :metering_mod) do
+      nil ->
+        :ok
+
+      mod ->
+        directory =
+          Application.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
+
+        with {:ok, group} <- directory.get_group(attrs.group_id),
+             :ok <- mod.authorize(Map.put(attrs, :owner_snapshot, group["billing_owner"])) do
+          :ok
+        else
+          {:error, {:billing_unavailable, decision}} ->
+            {:error, SalixAgent.BillingAvailability.error(decision)}
+
+          {:error, _} ->
+            {:error, SalixAgent.BillingAvailability.error(%{"reason" => "fee_control_error"})}
+        end
     end
   end
 

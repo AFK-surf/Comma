@@ -35,15 +35,19 @@ import { ShellIconButton } from "../ShellIconButton";
 import { TaskDetailsPanel } from "../chat/tasks/TaskDetailsPanel";
 import { panelTabButton } from "../panelTabButton";
 
-const TaskConversationPreview = lazy(() =>
-  import("../search/TaskConversationPreview")
-    .then((module) => ({ default: module.TaskConversationPreview }))
-    .catch(() => ({ default: TaskConversationUnavailable }))
+const TaskPanelReport = lazy(() =>
+  import("./TaskPanelReport")
+    .then((module) => ({ default: module.TaskPanelReport }))
+    .catch(() => ({ default: TaskPanelReportUnavailable }))
 );
 
-function TaskConversationUnavailable() {
+function TaskPanelReportUnavailable() {
   const messages = useCommaMessages();
-  return <p role="alert">{messages.chat_ref_task_unavailable()}</p>;
+  return (
+    <p className="text-sm text-tertiary" role="alert">
+      {messages.task_panel_messages_unavailable()}
+    </p>
+  );
 }
 
 type TaskPanelTarget = {
@@ -52,9 +56,8 @@ type TaskPanelTarget = {
   workspaceId?: string | undefined;
 };
 
-type PanelScreen = "tasks" | "details" | "conversation";
+type PanelScreen = "tasks" | "details";
 const TASK_PAGE_SIZE = 20;
-const TASK_MESSAGE_LIMIT = 20;
 const TASK_STATUSES: readonly (TaskStatusBucket | "all")[] = [
   "all",
   "backlog",
@@ -84,6 +87,13 @@ export type TaskPanelHost = {
   backButton?: TaskPanelHostBackButton | undefined;
   /** Device haptics, such as Telegram's `HapticFeedback.selectionChanged`. */
   selectionChanged?: (() => void) | undefined;
+  /** Returns to the chat, such as Telegram's `close`, where Task actions live. */
+  close?: (() => void) | undefined;
+  /**
+   * Set when the chat signed the reader in. Its session renews only through a
+   * new launch, so an ended session offers to reopen before a Comma sign-in.
+   */
+  reopen?: (() => void) | undefined;
 };
 
 /** A read-only Comma Task view for an external chat's browser. */
@@ -94,12 +104,53 @@ export function TaskPanelApp({
   host?: TaskPanelHost | undefined;
   target: TaskPanelTarget;
 }) {
+  const [commaSignIn, setCommaSignIn] = useState(false);
+  const reopen = host?.reopen;
   return (
     <CommaAppearanceProvider colorScheme={host?.colorScheme}>
-      <CommaAuthGate>
+      <CommaAuthGate
+        signedOutFallback={
+          reopen && !commaSignIn ? (
+            <TaskPanelReopen onReopen={reopen} onSignIn={() => setCommaSignIn(true)} />
+          ) : undefined
+        }
+      >
         <AuthenticatedTaskPanel host={host} target={target} />
       </CommaAuthGate>
     </CommaAppearanceProvider>
+  );
+}
+
+/** An ended chat-launched session: reopening from the chat signs in again. */
+function TaskPanelReopen({
+  onReopen,
+  onSignIn,
+}: {
+  onReopen: () => void;
+  onSignIn: () => void;
+}) {
+  const messages = useCommaMessages();
+  return (
+    <main className="comma-embedded-task-panel bg-main-panel-bg text-primary">
+      <div className="comma-embedded-task-panel-content flex flex-1 flex-col justify-center gap-xl">
+        <h1 className="text-xl font-semibold text-balance">
+          {messages.task_panel_reopen_title()}
+        </h1>
+        <p className="text-sm text-tertiary text-pretty">
+          {messages.task_panel_reopen_body()}
+        </p>
+        <Button className="w-full" hierarchy="primary" onPress={onReopen} size="md">
+          {messages.task_panel_reopen_action()}
+        </Button>
+        <button
+          className="comma-embedded-task-open-in-comma"
+          onClick={onSignIn}
+          type="button"
+        >
+          {messages.task_panel_sign_in_with_comma()}
+        </button>
+      </div>
+    </main>
   );
 }
 
@@ -130,7 +181,6 @@ function AuthenticatedTaskPanel({
 const SCREEN_DEPTH: Record<PanelScreen, number> = {
   tasks: 0,
   details: 1,
-  conversation: 2,
 };
 
 function TaskPanelReader({
@@ -201,10 +251,7 @@ function TaskPanelReader({
   }
 
   const back = useCallback(() => {
-    setNavigation((current) => ({
-      screen: current.screen === "conversation" ? "details" : "tasks",
-      direction: "back",
-    }));
+    setNavigation({ screen: "tasks", direction: "back" });
   }, []);
 
   useEffect(() => {
@@ -246,9 +293,7 @@ function TaskPanelReader({
               onPress={back}
               size="sm"
             >
-              {screen === "conversation"
-                ? messages.task_panel_back_to_details()
-                : messages.tasks_all()}
+              {messages.tasks_all()}
             </Button>
           )}
           {canRefresh ? (
@@ -283,109 +328,97 @@ function TaskPanelReader({
             data-direction={navigation.direction}
             key={screen}
           >
-            {screen === "conversation" && conversation && target.workspaceId ? (
-              <div className="comma-embedded-task-conversation">
-                <Suspense
-                  fallback={<LoadingIndicator label={messages.common_loading()} />}
-                >
-                  <TaskConversationPreview
-                    apiClient={api}
-                    messageLimit={TASK_MESSAGE_LIMIT}
-                    task={{
-                      conversationId: conversation.id,
-                      groupId,
-                      workspaceId: target.workspaceId,
-                      status: conversation.status,
-                      title: conversation.title,
-                      updatedAt: conversation.updated_at,
-                    }}
-                  />
-                </Suspense>
-              </div>
-            ) : (
-              <>
-                <ScrollArea className="min-h-0 flex-1" edgeEffect="none">
-                  <div className="comma-embedded-task-panel-content">
-                    {conversation && previewStatus === "ready" ? (
-                      <>
-                        <h1 className="mb-3xl break-words text-xl font-semibold text-balance">
-                          {conversation.title}
-                        </h1>
-                        <TaskDetailsPanel
-                          api={api}
-                          canDone={false}
-                          conversation={conversation}
-                          doneState="idle"
-                          groupId={conversation.group_id}
-                          layout="embedded"
-                          open
-                          {...(conversation.bound_worker
-                            ? {
-                                worker: {
-                                  participantId:
-                                    conversation.bound_worker.participant_id,
-                                  actorId: conversation.bound_worker.actor_id,
-                                  name: conversation.bound_worker.name,
-                                },
-                              }
-                            : {})}
-                        />
-                      </>
-                    ) : previewStatus === "loading" && groupId && conversationId ? (
-                      <output className="flex items-center gap-md text-sm text-tertiary">
-                        <LoadingIndicator label={messages.common_loading()} />
-                      </output>
-                    ) : (
-                      <div className="flex flex-col items-start gap-xl" role="alert">
-                        <p className="text-sm text-tertiary">
-                          {messages.chat_ref_task_unavailable()}
-                        </p>
-                        <Button
-                          hierarchy="secondary-gray"
-                          onPress={() => setRevision((current) => current + 1)}
-                          size="sm"
-                        >
-                          {messages.common_retry()}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
+            <ScrollArea className="min-h-0 flex-1" edgeEffect="none">
+              <div className="comma-embedded-task-panel-content">
                 {conversation && previewStatus === "ready" ? (
-                  <footer className="comma-embedded-task-panel-footer">
-                    <div className="comma-embedded-task-panel-bar comma-embedded-task-panel-actions">
-                      <p className="text-sm text-tertiary text-pretty">
-                        {messages.task_panel_chat_hint()}
-                      </p>
-                      {target.workspaceId ? (
-                        <Button
-                          className="w-full"
-                          hierarchy="secondary-gray"
-                          onPress={() => setScreen("conversation")}
-                          size="md"
+                  <>
+                    <h1 className="break-words text-xl font-semibold text-balance">
+                      {conversation.title}
+                    </h1>
+                    {target.workspaceId ? (
+                      <div className="comma-embedded-task-report">
+                        <Suspense
+                          fallback={
+                            <LoadingIndicator label={messages.common_loading()} />
+                          }
                         >
-                          {messages.task_panel_view_conversation()}
-                        </Button>
-                      ) : null}
-                      {target.workspaceId ? (
-                        <a
-                          className="comma-embedded-task-open-in-comma"
-                          href={commaWebTaskUrl(
-                            target.workspaceId,
-                            groupId,
-                            conversation.id
-                          )}
-                          rel="noopener"
-                          target="_blank"
-                        >
-                          {messages.task_panel_open_in_comma_web()}
-                        </a>
-                      ) : null}
-                    </div>
-                  </footer>
-                ) : null}
-              </>
-            )}
+                          <TaskPanelReport
+                            api={api}
+                            conversation={conversation}
+                            workspaceId={target.workspaceId}
+                          />
+                        </Suspense>
+                      </div>
+                    ) : null}
+                    <TaskDetailsPanel
+                      api={api}
+                      canDone={false}
+                      conversation={conversation}
+                      doneState="idle"
+                      groupId={conversation.group_id}
+                      layout="embedded"
+                      open
+                      {...(conversation.bound_worker
+                        ? {
+                            worker: {
+                              participantId: conversation.bound_worker.participant_id,
+                              actorId: conversation.bound_worker.actor_id,
+                              name: conversation.bound_worker.name,
+                            },
+                          }
+                        : {})}
+                    />
+                  </>
+                ) : previewStatus === "loading" && groupId && conversationId ? (
+                  <output className="flex items-center gap-md text-sm text-tertiary">
+                    <LoadingIndicator label={messages.common_loading()} />
+                  </output>
+                ) : (
+                  <div className="flex flex-col items-start gap-xl" role="alert">
+                    <p className="text-sm text-tertiary">
+                      {messages.chat_ref_task_unavailable()}
+                    </p>
+                    <Button
+                      hierarchy="secondary-gray"
+                      onPress={() => setRevision((current) => current + 1)}
+                      size="sm"
+                    >
+                      {messages.common_retry()}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+            {conversation && previewStatus === "ready" ? (
+              <footer className="comma-embedded-task-panel-footer">
+                <div className="comma-embedded-task-panel-bar comma-embedded-task-panel-actions">
+                  {host?.close ? (
+                    <Button
+                      className="w-full"
+                      hierarchy="primary"
+                      onPress={host.close}
+                      size="md"
+                    >
+                      {messages.task_panel_back_to_telegram()}
+                    </Button>
+                  ) : null}
+                  {target.workspaceId ? (
+                    <a
+                      className="comma-embedded-task-open-in-comma"
+                      href={commaWebTaskUrl(
+                        target.workspaceId,
+                        groupId,
+                        conversation.id
+                      )}
+                      rel="noopener"
+                      target="_blank"
+                    >
+                      {messages.task_panel_open_in_comma_web()}
+                    </a>
+                  ) : null}
+                </div>
+              </footer>
+            ) : null}
           </div>
         )}
       </div>

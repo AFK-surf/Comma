@@ -21,7 +21,7 @@ The broader [domain concept inventory](DOMAIN_CONCEPTS.md) records current conce
 | Agent 工作范围      | 一组 Agent、Conversation、能力和运行环境共同工作的范围 | Comma 中仍是 Workspace；BFT 中是 Agent Swarm；账户范围可以尚未创建任何 Agent 工作范围             |
 | Router              | 配置后成为工作范围内唯一的当前协调 Agent               | 一般状态为 0..1；只有 chat-ready / active execution scope 才要求恰好一个 Router                 |
 | Worker              | 完成具体任务的 Agent                                   | 每个范围可以有多个 Worker；同一 Worker 可以处理多个独立 Task                                    |
-| Assistant Chat      | 用户与当前 Router 的长期可见对话                       | Comma: one fixed Router Conversation per current Group. BFT: one current Chat per User × Agent Swarm.                                               |
+| Assistant Chat      | 用户与当前 Router 的长期可见对话                       | Comma: one fixed Router Conversation per current Group. BFT has no dashboard Assistant Chat.                                                         |
 | Agent Task          | Router 或 Worker 委派的独立、可持久工作对象            | 对应一个 `agent_task` Conversation；当前 Router `im_api.internal.task.create` assigns one responsible Worker |
 | Task lifecycle      | Task 对外可见的粗粒度生命周期                          | 只有 Conversation `status` 一份权威；Gate progress 不是第二套 Task 状态                         |
 | Gate / Progress     | Gate 定义阶段；Progress 是 Gate 的一次具体 activation  | 每次 activation 只指向一个普通 Agent Participant；可分叉、汇合和有界循环                        |
@@ -43,7 +43,7 @@ The broader [domain concept inventory](DOMAIN_CONCEPTS.md) records current conce
       │  └─ Canonical Runtime Session [已配置 Router 恰好 1]
       ├─ Worker [0..N]
       │  └─ Task Runtime Session [0..N]
-      ├─ Assistant Chat [Comma: shared per Group; BFT: per User × Agent Swarm]
+      ├─ Assistant Chat [Comma: shared per Group]
       ├─ Comma Center Recommendation [每个成员 0..1 current projection]
       └─ Agent Task [0..N]
          ├─ Task lifecycle [恰好 1；Conversation status]
@@ -68,7 +68,7 @@ Assistant Chat / Agent Task
 | 产品用户            | Comma User                                           | BFT User                                   |
 | 账户与授权范围      | Workspace，同时承担 Agent 工作范围                 | Organization，通过 Membership/RBAC 授权    |
 | Agent 工作范围      | Workspace 对应的当前 Salix Group                   | Agent Swarm；当前代码历史名为 `Project`    |
-| 当前 Assistant Chat | 当前 Group 共用一条固定 Router Conversation | 每个 User × Agent Swarm 一份 New Home Chat |
+| 当前 Assistant Chat | 当前 Group 共用一条固定 Router Conversation | 无（My Space 已移除）                      |
 | Agent 团队          | 0..1 当前 Router + 默认/后续 Worker                | 0..1 当前 Router + 0..N Worker Agent       |
 
 这里最容易误读的是 BFT `Project`：它在当前产品语言里是 Agent Swarm，不是通用项目管理对象。另一个差异是 Comma Workspace 同时承担“授权范围”和“Agent 工作范围”，BFT 则把两层拆成 Organization 与 Agent Swarm。
@@ -103,7 +103,7 @@ Single Session 的完整限定词是：
 
 因此，User、Agent、Conversation 和 Session 的关系不是“都装进一个 Session”，而是：
 
-1. Comma 用户在当前 Group 的固定 Router Conversation 中发送 Message；Message 仍记录具体用户 sender。BFT 自己的产品 Chat binding 不受此 Comma 基数影响。
+1. Comma 用户在当前 Group 的固定 Router Conversation 中发送 Message；Message 仍记录具体用户 sender。
 2. Conversation 的 Router Participant 是接收目标。它保存 Router `agent_id` 和明确的 `session_id`。
 3. Router Participant 的多个投递最终都进入该 Router control record 上的同一个 canonical `router_session_id`。
 4. Router Runtime Session 保留跨 Conversation 的执行上下文，但每条输入仍携带来源 Conversation/Message identity。
@@ -119,9 +119,8 @@ Single Session 的完整限定词是：
 这里的重新指定是低频人工或控制面操作：Group 的 `router_agent_id` 从一个 Router Agent 明确改为另一个 Router Agent。它不是请求级负载均衡、Pod 重启，也不是自动故障转移。Single Session 仍是“每个 Router Agent 一份”，不是“每个 Group 永久一份”；重新指定前的 Router 与控制面当前 Router 各自保留不同的 canonical Session。
 
 - Comma：产品 Chat binding、Conversation ID 和历史展示保持不变。`Comma.Conversations.send_message/5` 在已有 `user_chat` 的下一次发送前，请求 Salix 按当前 Group authority reconcile Router Participant；Conversation owner 停用重新指定前的 target，并激活控制面当前 Router target。并发重试继续使用同一个 serving Conversation 和同一个 client request identity。Group Router 缺失、无效或 Participant identity 不明确时，在 append 前 fail closed。
-- BFT：保留同一 `UserAssistantChat` binding 行，但 `AssistantChats` 发现原 Conversation 的 required Router Participant 不再匹配后，会把它视为 stale、创建替代 Conversation，并更新 binding 的 `conversation_id`。
 
-`04D · Comma：控制面显式重新指定 Group Router` 和 `04E · BFT：控制面显式重新指定 Group Router` 分别展示两条产品生命周期。两图都只描述明确的控制面操作，不表示 Router 会在普通请求之间自动切换。
+`04D · Comma：控制面显式重新指定 Group Router` 展示这条产品生命周期。它只描述明确的控制面操作，不表示 Router 会在普通请求之间自动切换。
 
 Comma 的收敛触发点有意限定在下一次发送：ensure/list/detail 不做隐式 participant mutation。因而从控制面操作完成到下一次成功发送之间，依赖“控制面当前 Router Participant 已存在”的 activity events/SSE 会 fail closed；detail/history 仍可读。这个短窗口不表示自动恢复或后台切换，客户端在下一次发送完成后恢复正常 activity stream。
 
@@ -151,7 +150,7 @@ External Worker Binding 恰好有两种稳定形态：`connected_runtime(device_
 
 Service Route 是 Workload 间的 capability-gated authority，不是某个 Provider 的 service 记录。prepare/activate/renew/drain/revoke/expiry 由同一 provider-neutral ledger 表达；每次访问都重查 source/destination Workload generation、Environment authority、exact route capability 与 expiry。Unsupported hosting capability fail closed。
 
-Comma Desktop 的“将此 Mac 作为计算节点”是显式 opt-in 的 Compute capacity。当前 Electron Main 管理已 provisioned 节点的 status/configure/restart/repair/drain/remove，Renderer 只消费生成式 native capability；configure 仍要求底层 enrollment 已经 provisioned，不能把本地安装成功冒充 Salix ready。UI 分别展示 connection、runtime readiness、work activity、admission/drain 与 installation health，不用单个模糊的“在线”状态代替。
+Comma Desktop 的“将此 Mac 作为计算节点”是显式 opt-in 的 Compute capacity。Electron Main 按 audience 和原 subject 保存接入意图，并冻结每次云操作的当前 Session 代次。Renderer 只消费生成式 native capability。合法启用负责安装和注册，再由原 owner 准备初始 Shell。本机安装成功不证明 Salix ready。同账号重新登录通过专用设备持有证明恢复原接入。正常移除先确认云撤销，再把同注册环境停止到 Retained，保留私有数据。可信本机 operator 可另行确认强制清除精确本地环境或整个 registration。这不授予云内容读取权。资源页只读取有界本机磁盘摘要和环境缓存。
 
 `07D · Compute、External Worker 与 Service Route` 展示产品 owner、共享 SSOT、Provider contract、runtime binding、ServiceRoute 和桌面 Compute Node 的落点。协议语义与迁移边界以 [`compute-behavior-baseline.md`](../salix/compute-behavior-baseline.md)、[`runtime-agent.md`](../salix/runtime-agent.md) 和 [`compute-migration-runbook.md`](../salix/compute-migration-runbook.md) 为准。
 
@@ -174,7 +173,6 @@ Comma Center Recommendation 是 `Member × Workspace` 的产品 projection，不
 | Comma 当前 Chat                       | [`Comma.AssistantChats`](../../systems/apps/comma_core/lib/comma/assistant_chats.ex#L1) + [`SalixIM.RouterConversationInput`](../../systems/apps/salix_im/lib/salix_im/router_conversation_input.ex#L1)             | 授权当前 Group，直接解析并复用该 Group 的固定 Router Conversation                      |
 | BFT Organization                    | [`BridgeForTeams.Schema.Organization`](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/organization.ex#L1)                                                            | 1:1 映射 Salix Tenant                                                                  |
 | BFT Agent Swarm                     | [`BridgeForTeams.Schema.Project`](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/project.ex#L1)                                                                      | 1:1 映射 Salix Group；产品名与代码历史名不同                                           |
-| BFT 当前 Chat                       | [`BridgeForTeams.Schema.UserAssistantChat`](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user_assistant_chat.ex#L1)                                                | `User × Project` 唯一                                                                  |
 | Conversation                        | [`SalixIM.ConversationActor`](../../systems/apps/salix_im/lib/salix_im/conversation_actor.ex#L1)                                                                                           | Message 与 membership 的唯一 mutation owner                                            |
 | Participant                         | [`SalixIM.ConversationParticipantActor`](../../systems/apps/salix_im/lib/salix_im/conversation_participant_actor.ex#L1)                                                                    | Participant lifecycle、provider log cursor、发送回执与重试的 owner                              |
 | Message sender                      | [`SalixIM.ConversationMessage`](../../systems/apps/salix_im/lib/salix_im/conversation_message.ex#L1)                                                                                       | sender identity 存在 Message 上，不从 Participant 猜测                                 |
@@ -182,7 +180,6 @@ Comma Center Recommendation 是 `Member × Workspace` 的产品 projection，不
 | Router Session 选择                 | [`SalixAgent.AgentRoleActor`](../../systems/apps/salix_agent/lib/salix_agent/agent_role_actor.ex#L369)                                                                                     | 忽略 delivery session hint，覆盖为持久化 canonical `router_session_id`                 |
 | Worker Session 选择                 | [`SalixIM.AgentDeliveryPayload`](../../systems/apps/salix_im/lib/salix_im/agent_delivery_payload.ex#L181)                                                                                  | 目标 Worker 新建 Session；Worker delegator 可复用 `origin_session_id`                  |
 | Comma 控制面显式重新指定 Group Router | [`Comma.Conversations.send_message/5`](../../systems/apps/comma_core/lib/comma/conversations.ex#L185) + [`RouterConversationInput`](../../systems/apps/salix_im/lib/salix_im/router_conversation_input.ex#L1) | 下一次发送通过固定 Router Conversation input reconcile Router Participant；保留同一 Conversation 与历史 |
-| BFT 控制面显式重新指定 Group Router | [`BridgeForTeams.AssistantChats`](../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex#L95)                                                                    | required Router 不匹配时替换 Conversation，并更新同一产品 binding                      |
 | Group 固定 Router Chat              | [`SalixIM.RouterConversationInput`](../../systems/apps/salix_im/lib/salix_im/router_conversation_input.ex#L18)                                                                             | 会 reconcile Router Participant；这是 Group 固定 Conversation，不是 Comma Assistant Chat |
 | Internal Session Owner              | [`SalixAgent.InternalSessionActor`](../../systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex#L1)                                                                           | `{agent_id, session_id}` 的 internal runtime 单写者                                    |
 | External Session Owner              | [`SalixAgent.ExternalSessionActor`](../../systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex#L1)                                                                           | `{agent_id, session_id}` 的 external runtime 单写者；Salix 平台也支持 external Router  |
@@ -190,7 +187,7 @@ Comma Center Recommendation 是 `Member × Workspace` 的产品 projection，不
 | Compute Provider                    | [`SalixEnv.ComputeProvider`](../../systems/apps/salix_env/lib/salix_env/compute_provider.ex#L1)                                                                                            | Cloudflare 和 Agent VMM 的统一 contract 与 conformance surface                  |
 | External Worker Binding             | [`SalixAgent.RuntimeBindingResolver`](../../systems/apps/salix_agent/lib/salix_agent/runtime_binding_resolver.ex#L1)                                                                       | 精确两种 binding；stable target 与 live epoch 分离                                     |
 | Service Route Authority             | [`SalixStore.ServiceRoutes`](../../systems/apps/salix_store/lib/salix_store/service_routes.ex#L1)                                                                                          | 每次访问重查两端 generation、环境 authority、capability 与 expiry                      |
-| Desktop Compute Node                | [`ComputeNodeService`](../../clients/apps/electron/src/main/modules/compute-node/index.ts#L1)                                                                                              | Main-owned provisioned-node status/configure/repair/drain/remove；generated bridge      |
+| Desktop Compute Node                | [`ComputeNodeService`](../../clients/apps/electron/src/main/modules/compute-node/index.ts#L1)                                                                                              | Main-owned account intent/recovery/remove；operator disposal/summary；generated bridge      |
 | Comma Recommendation SSOT             | [`Comma.Recommendations`](../../systems/apps/comma_core/lib/comma/recommendations.ex#L1)                                                                                                         | Member×Workspace profile/run、generation/source revision 与 current snapshot 的唯一产品 owner |
 | Recommendation Source/Runtime       | [`CommaWeb.RecommendationRuntime`](../../systems/apps/comma_web/lib/comma_web/recommendation_runtime.ex#L1)                                                                                      | Server 有界收集只读 facts；持久化 job 执行决策、文本生成与受约束的发布                |
 | Recommendation Contract             | [`@comma/recommendation-contract`](../../clients/packages/recommendation-contract/src/index.ts#L1)                                                                                           | 两个版本化模板、bounded document/action schema 和旧客户端 fallback                     |

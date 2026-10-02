@@ -103,6 +103,7 @@ defmodule SalixIM.ConversationMessage do
       |> Map.put("agent_redelivery", attrs[:agent_redelivery])
       |> Map.put("provider_effect", attrs[:provider_effect])
       |> Map.put("provider_status", attrs[:provider_status])
+      |> Map.put("platform_message", attrs[:platform_message])
       |> Map.reject(fn {_key, value} -> is_nil(value) end)
 
     message = Map.put(message, "request_fingerprint", request_fingerprint(message))
@@ -220,6 +221,7 @@ defmodule SalixIM.ConversationMessage do
          get_in(message, ["metadata", "event_type"]) in [
            "provider.output",
            "provider.status",
+           "provider.message",
            "message.redelivery"
          ])
   end
@@ -408,7 +410,7 @@ defmodule SalixIM.ConversationMessage do
   def request_fingerprint(message) when is_map(message) do
     message
     |> Map.take(
-      ~w(kind participant_id actor_type user_id agent_id content metadata mentions delivery_filter reply_to_message_id)
+      ~w(kind participant_id actor_type user_id agent_id content metadata mentions delivery_filter reply_to_message_id platform_message)
     )
     |> :erlang.term_to_binary([:deterministic])
     |> Crypto.hex()

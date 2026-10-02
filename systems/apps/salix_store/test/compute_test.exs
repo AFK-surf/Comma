@@ -24,6 +24,135 @@ defmodule SalixStore.ComputeTest do
     :ok
   end
 
+  test "a sealed carrier settles managed calls but retains legacy and other locations" do
+    tenant = SalixStore.Ids.new_tenant_id()
+    group = SalixStore.Ids.new_group_id(tenant)
+
+    assert {:ok, _, :created} =
+             Compute.ensure_group_workload(%{
+               "tenant_id" => tenant,
+               "group_id" => group,
+               "provider" => "cloudflare",
+               "provider_resource_id" => "sandbox-owner",
+               "provider_resource_name" => "sandbox-owner",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
+               "status" => "ready",
+               "created_at" => 1_000
+             })
+
+    target = "cf-standard-2:sandbox-owner"
+    assert {:ok, opened} = Compute.prepare_cloudflare_control(group, target, :open)
+
+    assert {:ok, "legacy"} =
+             Compute.begin_cloudflare_gateway_attempt(group, "legacy", :normal, target)
+
+    assert {:ok, "managed"} =
+             Compute.begin_cloudflare_gateway_attempt(group, "managed", :normal, target, %{
+               "action" => "import"
+             })
+
+    assert {:error, :gateway_target_changed} =
+             Compute.begin_cloudflare_gateway_attempt(
+               group,
+               "stale-managed",
+               :normal,
+               "cf-standard-1:other",
+               %{"action" => "import"}
+             )
+
+    assert {:ok, "other"} =
+             Compute.begin_cloudflare_gateway_attempt(
+               group,
+               "other",
+               :normal,
+               "cf-standard-1:other"
+             )
+
+    assert {:ok, ^opened} = Compute.prepare_cloudflare_control(group, target, :open)
+
+    assert {:ok, _, _} =
+             Compute.update_group_workload(group, fn record ->
+               record
+               |> Map.put("status", "archiving")
+               |> Map.put("archive_operation_id", "archive-owner")
+             end)
+
+    assert {:ok, sealed} = Compute.prepare_cloudflare_control(group, target, :seal)
+    assert sealed["revision"] > opened["revision"]
+
+    observation = %{
+      "control" => Map.put(sealed, "pending", %{"claim_id" => "managed"}),
+      "managed_commands_settled" => true
+    }
+
+    assert {:error, :cloudflare_control_unsettled} =
+             Compute.settle_cloudflare_control(group, target, observation)
+
+    assert {:ok, %{"active_operation_count" => 3}} = Compute.group_workload(group)
+
+    assert :ok =
+             Compute.settle_cloudflare_control(
+               group,
+               target,
+               put_in(observation, ["control", "pending"], nil)
+             )
+
+    assert {:ok, remaining} = Compute.group_workload(group)
+    assert Map.keys(remaining["active_operations"]) |> Enum.sort() == ["legacy", "other"]
+
+    assert {:error, :cloudflare_control_sealed} =
+             Compute.prepare_cloudflare_control(group, target, :open)
+  end
+
+  test "terminal settlement preserves another claim and rejects mismatched command evidence" do
+    tenant = SalixStore.Ids.new_tenant_id()
+    group = SalixStore.Ids.new_group_id(tenant)
+    target = "cf-standard-2:terminal-owner"
+
+    assert {:ok, _, :created} =
+             Compute.ensure_group_workload(%{
+               "tenant_id" => tenant,
+               "group_id" => group,
+               "provider" => "cloudflare",
+               "provider_resource_id" => "terminal-owner",
+               "provider_resource_name" => "terminal-owner",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
+               "status" => "ready"
+             })
+
+    {:ok, control} = Compute.prepare_cloudflare_control(group, target, :open)
+
+    for claim <- ["completed", "still-active"] do
+      assert {:ok, ^claim} =
+               Compute.begin_cloudflare_gateway_attempt(group, claim, :normal, target, %{
+                 "action" => "import"
+               })
+    end
+
+    terminal =
+      control
+      |> Map.put("claim_id", "completed")
+      |> Map.put("action", "import")
+      |> Map.put("outcome", "completed")
+
+    mismatched = Map.put(terminal, "revision", control["revision"] + 1)
+
+    assert :ok =
+             Compute.settle_cloudflare_terminal(group, target, %{
+               "control" => Map.put(control, "last_terminal", mismatched)
+             })
+
+    assert {:ok, %{"active_operation_count" => 2}} = Compute.group_workload(group)
+
+    assert :ok =
+             Compute.settle_cloudflare_terminal(group, target, %{
+               "control" => Map.put(control, "last_terminal", terminal)
+             })
+
+    assert {:ok, record} = Compute.group_workload(group)
+    assert Map.keys(record["active_operations"]) == ["still-active"]
+  end
+
   test "post-rollout profile handoff converts late legacy rows and absent locations in pages" do
     migration_file =
       Application.app_dir(

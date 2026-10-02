@@ -67,7 +67,8 @@ defmodule SalixAgent.SubscriptionWorker do
   end
 
   defp request_timeout(op, body) do
-    if op in ["/v1/responses", "/v1/responses/compact", "/v1/messages"] and is_map(body) and
+    if op in ["/v1/responses", "/v1/responses/compact", "/v1/messages", "/v1/chat/completions"] and
+         is_map(body) and
          body["stream"] == true do
       {SalixAgent.LLM.stream_first_event_timeout_ms(), "worker_first_event_timeout",
        {SalixAgent.LLM.stream_idle_timeout_ms(), "worker_idle_timeout"}}

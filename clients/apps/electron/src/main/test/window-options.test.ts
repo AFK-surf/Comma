@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createMainWindowOptions,
+  createOnboardingWindowOptions,
   createRuntimeWorkbenchWindowOptions,
   createSideChatTestWindowOptions,
   createSideChatWindowOptions,
@@ -209,6 +210,53 @@ describe("createSideChatTestWindowOptions", () => {
       additionalArguments: [
         "--window-id=win_side_chat_test",
         "--window-role=side-chat-test-window",
+      ],
+    });
+  });
+});
+
+describe("createOnboardingWindowOptions", () => {
+  it("lays an isolated transparent sheet over the display at the normal window level", () => {
+    const options = createOnboardingWindowOptions({
+      bounds: { height: 1117, width: 1728, x: -1728, y: 0 },
+      preloadPath: "/tmp/comma-preload.js",
+      productName: "Comma Test",
+      windowId: "win_onboarding",
+      windowRole: "onboarding-window",
+    });
+
+    expect(options).toMatchObject({
+      backgroundColor: "#00000000",
+      frame: false,
+      fullscreenable: false,
+      hasShadow: false,
+      height: 1117,
+      maximizable: false,
+      minimizable: false,
+      movable: false,
+      resizable: false,
+      show: false,
+      title: "Welcome to Comma Test",
+      transparent: true,
+      width: 1728,
+      x: -1728,
+      y: 0,
+    });
+    // Created at the normal level: its presenter raises it above the Dock only
+    // while Comma is active, so the browser and System Settings come in front.
+    expect(options.alwaysOnTop).toBeUndefined();
+    expect(options.type).toBeUndefined();
+    // Its intro sound plays as it opens, without waiting for a press.
+    expect(options.webPreferences).toMatchObject({
+      preload: "/tmp/comma-preload.js",
+      autoplayPolicy: "no-user-gesture-required",
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      additionalArguments: [
+        "--window-id=win_onboarding",
+        "--window-role=onboarding-window",
       ],
     });
   });

@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { cx } from "@comma/ui";
+import { cx, plainTextWithLinks } from "@comma/ui";
 import { memo, useContext, useMemo, type Ref } from "react";
 import type { CommaApiClient } from "../../../../api";
 import { parseBrowserElementInspectionMessage } from "../../../chat-sidebar/browserElementInspection";
@@ -29,6 +29,7 @@ import {
   textAttachmentsToPills,
 } from "./user/messageTextAttachments";
 import { UserMessageBubble } from "./user/UserMessageBubble";
+import { MessagePlatformBadge } from "../../MessagePlatformBadge";
 
 // Rows are memoized so per-emit thread renders (every keystroke and stream
 // chunk) reconcile only rows whose message/draft actually changed. All
@@ -74,23 +75,34 @@ export const MessageRow = memo(function MessageRow({
   workspaceId: string;
 }) {
   const messagesApi = useCommaMessages();
-  const inspectionMessage = parseBrowserElementInspectionMessage(message.text);
-  const attachmentsBlock = parseAttachmentsBlock(inspectionMessage.body);
+  const inspectionMessage: ReturnType<typeof parseBrowserElementInspectionMessage> =
+    message.platformSource
+      ? { body: message.text }
+      : parseBrowserElementInspectionMessage(message.text);
+  const attachmentsBlock = message.platformSource
+    ? { body: inspectionMessage.body, attachments: [] }
+    : parseAttachmentsBlock(inspectionMessage.body);
   const defaultActorRole = useContext(ThreadDefaultActorRoleContext);
   // Quotes lead the wire text and attachments trail it, so peeling the
   // attachments block first leaves the quote block at the front of the body.
-  const parsed = parseQuotedTextBlock(attachmentsBlock.body);
-  const displayBody = controlCommandDisplayText(parsed.body);
+  const parsed = message.platformSource
+    ? { body: attachmentsBlock.body, quotes: [] }
+    : parseQuotedTextBlock(attachmentsBlock.body);
+  const displayBody = message.platformSource
+    ? parsed.body
+    : controlCommandDisplayText(parsed.body);
   const userContent = useMemo(
     () =>
       message.role === "assistant"
         ? undefined
-        : userMessageContentWithMentions(displayBody, {
-            api,
-            groupId,
-            workspaceId,
-          }),
-    [api, displayBody, groupId, message.role, workspaceId]
+        : message.platformSource
+          ? plainTextWithLinks(displayBody)
+          : userMessageContentWithMentions(displayBody, {
+              api,
+              groupId,
+              workspaceId,
+            }),
+    [api, displayBody, groupId, message.role, message.platformSource, workspaceId]
   );
   const parsedAttachments = textAttachmentsToPills(attachmentsBlock.attachments);
   const mergedAttachments = mergeMessageAttachments(
@@ -172,6 +184,7 @@ export const MessageRow = memo(function MessageRow({
             onAnchorOutgoingTurn={onAnchorOutgoingTurn}
             onOutgoingAnimationComplete={onOutgoingAnimationComplete}
             outgoingPresentation={outgoingPresentation}
+            platform={message.platformSource}
             text={displayBody}
           />
           {showActions ? (
@@ -179,7 +192,14 @@ export const MessageRow = memo(function MessageRow({
               ariaLabel={messagesApi.chat_copy_message()}
               copyText={parsed.body}
               messageId={message.messageId}
+              platform={message.platformSource}
             />
+          ) : message.platformSource ? (
+            // Read-only surfaces (side chat, previews, shares) drop Copy but
+            // still name where the message came from.
+            <div className="comma-chat-message-actions">
+              <MessagePlatformBadge platform={message.platformSource} />
+            </div>
           ) : null}
         </div>
       ) : null}

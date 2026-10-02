@@ -1,3 +1,4 @@
+import type { CommaLocale } from "@comma/i18n";
 import {
   browserBindingSchema,
   browserResultSchema,
@@ -8,17 +9,27 @@ import {
   type BrowserEvent,
 } from "./browser";
 import {
-  subscriptionResetSchema,
-  type SubscriptionReset,
   subscriptionAccountSchema,
   subscriptionPageSchema,
   subscriptionOAuthSchema,
   subscriptionOAuthPollSchema,
+  subscriptionResetSchema,
   type SubscriptionAccount,
+  type SubscriptionReset,
   type SubscriptionPage,
   type SubscriptionOAuth,
   type SubscriptionProvider,
+  type ProviderKeyInput,
+  type ProfileUpdate,
 } from "./subscriptionAccounts";
+import {
+  modelCatalogSchema,
+  agentModelsSchema,
+  workerModelsSchema,
+  type AgentModels,
+  type AgentSelection,
+  type ModelCatalog,
+} from "./modelCatalog";
 import {
   meetingTaskReceiptSchema,
   type MeetingTaskReceipt,
@@ -30,15 +41,9 @@ import {
   discoveredModelsSchema,
   type DiscoveredModels,
   type ModelDiscoveryInput,
-  agentModelsSchema,
-  workerModelsSchema,
-  agentModelSchema,
   deletedModelSchema,
   type ModelTemplate,
   type ModelTemplateInput,
-  type SubscriptionModelChoice,
-  type AgentModels,
-  type AgentModel,
 } from "./modelTemplates";
 import type {
   CommaApiConfig,
@@ -88,7 +93,6 @@ import {
   commaVoiceVerificationSchema,
   commaSignalIntegrationSchema,
   commaSignalNumberSchema,
-  commaChatSuggestionSchema,
   commaConversationEventSchema,
   commaTaskParticipantStatusesSchema,
   type CommaTaskParticipantStatuses,
@@ -134,7 +138,6 @@ import {
   commaBillingChangeSchema,
   commaBillingChangePreviewSchema,
   commaRedemptionResultSchema,
-  type CommaChatSuggestion,
   type CommaConnectorToken,
   type CommaRouterApiKey,
   type CommaRouterApiKeyCreated,
@@ -189,6 +192,19 @@ const computeWorkloadSchema = z.object({
   kind: z.string(),
   desired_state: z.string().optional(),
   observed_state: z.string(),
+  phase: z
+    .enum([
+      "stopped",
+      "draining",
+      "action_required",
+      "ready",
+      "waiting_connection",
+      "allocating",
+      "starting",
+      "unknown",
+    ])
+    .optional(),
+  phase_observed_at: z.string().optional(),
   updated_at: z.string().optional(),
 });
 const computeProjectionSchema = z.object({
@@ -235,18 +251,15 @@ export interface CommaApiClient {
     after?: string,
     options?: { signal?: AbortSignal }
   ): Promise<SubscriptionPage>;
+  /** Adds an API-key profile; subscriptions are added through OAuth. */
   createSubscriptionAccount(
     workspaceId: string,
-    input: { provider: SubscriptionProvider; credentials: Record<string, JsonValue> }
+    input: ProviderKeyInput
   ): Promise<SubscriptionAccount>;
   updateSubscriptionAccount(
     workspaceId: string,
     id: string,
-    input: {
-      version: string;
-      disabled?: boolean;
-      credentials?: Record<string, JsonValue>;
-    }
+    input: ProfileUpdate
   ): Promise<SubscriptionAccount>;
   deleteSubscriptionAccount(
     workspaceId: string,
@@ -257,6 +270,7 @@ export interface CommaApiClient {
     workspaceId: string,
     id: string
   ): Promise<SubscriptionAccount>;
+  /** Redeem a Codex quota reset; retrying with the same request id is safe. */
   resetSubscriptionQuota(
     workspaceId: string,
     id: string,
@@ -307,6 +321,11 @@ export interface CommaApiClient {
     allow: boolean,
     options?: { signal?: AbortSignal }
   ): Promise<{ allows_operations: boolean }>;
+  probeDevice(
+    workspaceId: string,
+    deviceId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<CommaDevice>;
   listBillingPlans(options?: { signal?: AbortSignal }): Promise<CommaBillingPlan[]>;
   getBillingSummary(
     workspaceId: string,
@@ -331,7 +350,7 @@ export interface CommaApiClient {
   redeemBillingCode(workspaceId: string, code: string): Promise<CommaRedemptionResult>;
   getProfile(options?: { signal?: AbortSignal }): Promise<CommaUserProfile>;
   updateProfile(
-    attrs: { name: string },
+    attrs: { name?: string; locale?: CommaLocale },
     options?: { signal?: AbortSignal }
   ): Promise<CommaUserProfile>;
   uploadAvatar(
@@ -349,40 +368,23 @@ export interface CommaApiClient {
     input: ModelDiscoveryInput,
     options?: { signal?: AbortSignal }
   ): Promise<DiscoveredModels>;
-  listModelTemplates(
-    workspaceId: string,
-    options?: { signal?: AbortSignal }
-  ): Promise<ModelTemplate[]>;
   createModelTemplate(
     workspaceId: string,
     input: ModelTemplateInput
   ): Promise<ModelTemplate>;
-  resolveSubscriptionModel(
-    workspaceId: string,
-    input: SubscriptionModelChoice
-  ): Promise<ModelTemplate>;
-  updateModelTemplate(
-    workspaceId: string,
-    id: string,
-    input: Partial<ModelTemplateInput>
-  ): Promise<ModelTemplate>;
-  deleteModelTemplate(workspaceId: string, id: string): Promise<{ deleted: true }>;
   getAgentModels(
     workspaceId: string,
     options?: { signal?: AbortSignal }
   ): Promise<AgentModels>;
-  /** `templateId: null` returns this Agent to its platform role default. */
+  getWorkerModels(workspaceId: string, cursor: string): Promise<AgentModels["workers"]>;
+  /** The models Comma can route and the sources that serve each one. */
+  getModelCatalog(options?: { signal?: AbortSignal }): Promise<ModelCatalog>;
   setAgentModel(
     workspaceId: string,
-    target: string,
-    templateId: string | null
-  ): Promise<AgentModel>;
-
-  getWorkerModels(workspaceId: string, cursor: string): Promise<AgentModels["workers"]>;
-  setWorkerDefault(
-    workspaceId: string,
-    templateId: string | null
-  ): Promise<{ template_id: string | null }>;
+    agentId: string,
+    selection: AgentSelection
+  ): Promise<void>;
+  renameAgent(workspaceId: string, agentId: string, name: string): Promise<void>;
 
   /** Whether this user's Workspace has its org and network on the Synchronicity control plane. */
   getSynchronicityStatus(options?: {
@@ -747,7 +749,7 @@ export interface CommaApiClient {
   ): Promise<void>;
   getRecommendations(
     workspaceId: string,
-    options?: { locale?: string; signal?: AbortSignal; timezone?: string }
+    options?: { signal?: AbortSignal; timezone?: string }
   ): Promise<CommaRecommendationEnvelope>;
   updateRecommendationSettings(
     workspaceId: string,
@@ -805,11 +807,6 @@ export interface CommaApiClient {
     messageId: string,
     options?: { signal?: AbortSignal }
   ): Promise<SalixMessage[]>;
-  generateChatSuggestions(
-    groupId: string,
-    conversationId: string,
-    options?: { locale?: string; signal?: AbortSignal }
-  ): Promise<CommaChatSuggestion[]>;
   sendMessage(
     groupId: string,
     conversationId: string,
@@ -1116,7 +1113,7 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
     listSubscriptionAccounts(workspaceId, after = "", options = {}) {
       return request(
         "GET",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/subscription-accounts?after=${encodeURIComponent(after)}`,
+        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/subscription-accounts?view=profiles&after=${encodeURIComponent(after)}`,
         subscriptionPageSchema,
         undefined,
         options.signal
@@ -1203,45 +1200,12 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
         options.signal
       );
     },
-    async listModelTemplates(workspaceId, options = {}) {
-      const page = await request(
-        "GET",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/model-templates`,
-        commaPageSchema(modelTemplateSchema),
-        undefined,
-        options.signal
-      );
-      return page.data;
-    },
     createModelTemplate(workspaceId, input) {
       return request(
         "POST",
         `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/model-templates`,
         modelTemplateSchema,
         input
-      );
-    },
-    resolveSubscriptionModel(workspaceId, input) {
-      return request(
-        "POST",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/model-templates/resolve-subscription`,
-        modelTemplateSchema,
-        input
-      );
-    },
-    updateModelTemplate(workspaceId, id, input) {
-      return request(
-        "PATCH",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/model-templates/${encodeURIComponent(id)}`,
-        modelTemplateSchema,
-        input
-      );
-    },
-    deleteModelTemplate(workspaceId, id) {
-      return request(
-        "DELETE",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/model-templates/${encodeURIComponent(id)}`,
-        deletedModelSchema
       );
     },
     getAgentModels(workspaceId, options = {}) {
@@ -1253,14 +1217,6 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
         options.signal
       );
     },
-    setAgentModel(workspaceId, role, templateId) {
-      return request(
-        "PUT",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/agent-models/${encodeURIComponent(role)}`,
-        agentModelSchema,
-        { template_id: templateId }
-      );
-    },
     getWorkerModels(workspaceId, cursor) {
       return request(
         "GET",
@@ -1268,12 +1224,29 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
         workerModelsSchema
       );
     },
-    setWorkerDefault(workspaceId, templateId) {
+    getModelCatalog(options = {}) {
       return request(
+        "GET",
+        "/v1/comma/model-catalog",
+        modelCatalogSchema,
+        undefined,
+        options.signal
+      );
+    },
+    async setAgentModel(workspaceId, agentId, selection) {
+      await request(
         "PUT",
-        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/agent-models/worker-default`,
-        z.object({ template_id: z.string().nullable() }),
-        { template_id: templateId }
+        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/model`,
+        z.unknown(),
+        { selection }
+      );
+    },
+    async renameAgent(workspaceId, agentId, name) {
+      await request(
+        "PATCH",
+        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}`,
+        z.unknown(),
+        { name }
       );
     },
     renameDevice(workspaceId, deviceId, name, options = {}) {
@@ -1323,6 +1296,17 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
         commaDeviceSchema,
         undefined,
         options.signal
+      );
+    },
+
+    probeDevice(workspaceId, deviceId, options = {}) {
+      const timeout = AbortSignal.timeout(35_000);
+      return request(
+        "POST",
+        `/v1/comma/workspaces/${encodeURIComponent(workspaceId)}/devices/${encodeURIComponent(deviceId)}/probe`,
+        commaDeviceSchema,
+        {},
+        options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
       );
     },
 
@@ -2258,12 +2242,7 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
     getRecommendations(workspaceId, options = {}) {
       const params = new URLSearchParams();
       const timezone = options.timezone?.trim();
-      const locale = options.locale?.trim();
       if (timezone) params.set("timezone", timezone);
-      // The briefing is model-generated, so the renderer needs the UI language
-      // the same way it needs the timezone; the server stores it for the daily
-      // scheduled run, which has no client to ask.
-      if (locale) params.set("locale", locale);
       const query = params.size > 0 ? `?${params.toString()}` : "";
       return request(
         "GET",
@@ -2449,23 +2428,6 @@ export function createCommaApi(config: CommaApiConfig): CommaApiClient {
         `${conversationPath(groupId, conversationId)}/messages/${encodeURIComponent(messageId)}/context`,
         commaPageSchema(salixMessageSchema),
         undefined,
-        options.signal
-      );
-      return page.data;
-    },
-
-    async generateChatSuggestions(groupId, conversationId, options = {}) {
-      const params = new URLSearchParams();
-      const locale = options.locale?.trim();
-      // The generator uses the conversation language and keeps the UI locale as a
-      // fallback when the conversation does not establish a language.
-      if (locale) params.set("locale", locale);
-      const query = params.size > 0 ? `?${params.toString()}` : "";
-      const page = await request(
-        "POST",
-        `${conversationPath(groupId, conversationId)}/suggestions${query}`,
-        commaPageSchema(commaChatSuggestionSchema),
-        {},
         options.signal
       );
       return page.data;

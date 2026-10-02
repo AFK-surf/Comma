@@ -1520,6 +1520,69 @@ defmodule CommaWeb.CommaApiTest do
            }
   end
 
+  test "native transcript limits reach Home, send and SSE through the canonical owner" do
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => "native-http-tail@example.com"})
+    workspace = create_ready_workspace!(user["id"])
+    issue_billing_grant(workspace)
+    {:ok, session} = Comma.Accounts.create_session(user["id"])
+    chat = active_chat!(session, workspace)
+    group_id = workspace["default_group_id"]
+    home_path = "/v1/comma/groups/#{group_id}/assistant-chat"
+    path = "/v1/comma/groups/#{group_id}/conversations/#{chat["id"]}"
+
+    for index <- 1..32 do
+      assert {:ok, _} =
+               SalixIM.ConversationServer.append_group_conversation_message(
+                 group_id,
+                 chat["id"],
+                 %{
+                   "actor_type" => "user",
+                   "user_id" => "current",
+                   "client_request_id" => "native-history-#{index}",
+                   "content" => "native-history-#{index}",
+                   "delivery_filter" => %{"participant_ids" => []}
+                 }
+               )
+    end
+
+    old_home = user_req(session["token"], :post, home_path, json: %{}) |> expect_status(200)
+    refute Map.has_key?(old_home.body, "messages")
+
+    home =
+      user_req(session["token"], :post, home_path <> "?message_limit=24", json: %{})
+      |> expect_status(200)
+
+    assert length(home.body["messages"]) == 24
+    assert home.body["message_count"] == 32
+    assert hd(home.body["messages"])["client_request_id"] == "native-history-9"
+
+    smallest =
+      user_req(session["token"], :post, home_path <> "?message_limit=0", json: %{})
+      |> expect_status(200)
+
+    assert length(smallest.body["messages"]) == 1
+
+    sent =
+      user_req(session["token"], :post, path <> "/messages?message_limit=24",
+        json: %{
+          "client_request_id" => "native-http-send",
+          "message" => %{"content" => "native input"}
+        }
+      )
+      |> expect_status(202)
+
+    assert length(sent.body["messages"]) == 24
+    assert Enum.any?(sent.body["messages"], &(&1["client_request_id"] == "native-http-send"))
+
+    events =
+      user_req(session["token"], :get, path <> "/events?wait=0&message_limit=24")
+      |> expect_status(200)
+
+    [snapshot] = sse_payloads(events.body, "snapshot")
+    assert length(snapshot["messages"]) == 24
+    assert snapshot["message_count"] >= 33
+  end
+
   test "assistant-chat is the Group fixed Router Conversation and sends through its input adapter" do
     user =
       admin_req(:post, "/v1/comma/admin/users",

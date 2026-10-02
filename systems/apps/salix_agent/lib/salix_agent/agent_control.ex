@@ -620,7 +620,8 @@ defmodule SalixAgent.AgentControl do
            validate_role(attrs["role"] || if(attrs["is_router"], do: "router", else: "worker")),
          {:ok, template_id} <- creation_template(template_id, role, tenant_id),
          {:ok, template} <- load_creation_template(template_id, role, tenant_id),
-         {:ok, vm_input} <- normalize_vm_input(attrs["vm"], tenant_id) do
+         {:ok, vm_input} <- normalize_vm_input(attrs["vm"], tenant_id),
+         :ok <- admit_tenant_profile(tenant_id, role, attrs["purpose"], vm_input) do
       name = attrs["name"] || template["name"] || "Agent"
 
       create_with_vm(
@@ -636,6 +637,36 @@ defmodule SalixAgent.AgentControl do
       )
     end
   end
+
+  # A router-only (guest) Tenant admits only guest Routers without a Cloud VM.
+  # The purpose then selects the fail-closed guest tool policy.
+  defp admit_tenant_profile(tenant_id, role, purpose, vm_input) do
+    guest_purpose = SalixStore.TenantProfiles.guest_router_purpose()
+
+    cond do
+      SalixStore.TenantProfiles.router_only?(tenant_id) ->
+        if role == "router" and purpose == guest_purpose and vm_input["enabled"] == false,
+          do: :ok,
+          else: {:error, {:bad_request, "this tenant admits only guest Router agents"}}
+
+      purpose == guest_purpose ->
+        {:error, {:bad_request, "guest Router agents require a router-only tenant"}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp reject_guest_router_escalation(%{"purpose" => purpose}, attrs) do
+    if purpose == SalixStore.TenantProfiles.guest_router_purpose() and
+         (Map.has_key?(attrs, "purpose") or match?(%{"enabled" => true}, attrs["vm"]) or
+            Map.has_key?(attrs, "disabled_tools") or Map.has_key?(attrs, "runtime_config") or
+            Map.has_key?(attrs, "inspector_policy")),
+       do: {:error, {:bad_request, "guest Router configuration is fixed"}},
+       else: :ok
+  end
+
+  defp reject_guest_router_escalation(_current, _attrs), do: :ok
 
   defp nonblank_template_id(id) when is_binary(id) do
     if String.trim(id) == "", do: nil, else: id
@@ -1667,6 +1698,7 @@ defmodule SalixAgent.AgentControl do
 
   defp validate_updates(current, attrs) when is_map(attrs) do
     with :ok <- reject_identity_updates(attrs),
+         :ok <- reject_guest_router_escalation(current, attrs),
          :ok <- reject_generic_revised_binding_update(current, attrs),
          {:ok, updates} <- validate_name(attrs, %{}),
          {:ok, updates} <- validate_purpose(attrs, updates),

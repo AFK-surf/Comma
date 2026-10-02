@@ -74,12 +74,12 @@ Agent Swarm & 围绕一个业务目标建立的工作空间，用来组织 Agent
 成员 & 被授权访问组织的用户。组织角色包括 owner、admin 和 member。 \\
 Agent & Agent Swarm 中负责接收请求或完成工作的智能助手。Router Agent 负责分配工作，Worker Agent 负责执行具体任务。 \\
 任务 & 团队交给 Agent 处理的工作。任务详情页保留后续消息和执行进展。 \\
-计划 & 按预定时间触发的工作，在 \textbf{Schedules} 中管理。 \\
+计划 & 按预定时间触发的工作，在任务详情中添加和编辑，在 \textbf{Tasks} 的 \textbf{Scheduled} 视图中查看和删除。 \\
 集成 & 把 Slack 或 Feishu 等消息入口连接到 Agent Swarm。 \\
 连接 & Agent Swarm 使用的第三方帐号授权，与消息集成分开管理。 \\
 Runner & 由组织管理、用于承载设备工作的机器。Runner 在 \textbf{Fin} 中添加和维护。 \\
 设备 & Agent 可使用的远程工作环境。创建设备前，需要组织中有可用 Runner。 \\
-网站 & Agent 发布并归属于当前 Agent Swarm 的网站。 \\
+网站 & Agent 发布并归属于当前 Agent Swarm 的网站，列在 Agent Swarm 的 \textbf{Overview} 中。 \\
 \bottomrule
 \end{longtable}
 
@@ -117,9 +117,9 @@ Runner & 由组织管理、用于承载设备工作的机器。Runner 在 \textb
 Dashboard 的左侧边栏按使用范围分组：
 
 \begin{itemize}
-  \item 顶部的组织切换器：切换当前组织，或选择 \textbf{View all organizations}。
-  \item \textbf{Workspace}：包括 \textbf{Overview}、\textbf{Agent Swarms}、\textbf{Fin}，以及按角色显示的 \textbf{Operations}。
-  \item 当前 Agent Swarm：包括 \textbf{Tasks}、\textbf{Agents}、\textbf{Schedules}、\textbf{Devices} 和 \textbf{Websites}。
+  \item 顶部的组织切换器：列出你所属的组织，用于切换当前组织。
+  \item \textbf{Workspace}：包括 \textbf{Overview}、\textbf{Agent Swarms}、\textbf{Fin}，以及按角色显示的 \textbf{Health}。
+  \item 当前 Agent Swarm：包括 \textbf{Overview}、\textbf{Tasks}、\textbf{Agents}、\textbf{Devices} 和 \textbf{Settings}。
   \item \textbf{Configure}：包括 \textbf{Plugins}、\textbf{Skills}、\textbf{Integrations} 和 \textbf{Connections}。
   \item \textbf{Administration}：包括 \textbf{Members}、\textbf{Organization plugins} 和按角色显示的 \textbf{Settings}。
 \end{itemize}
@@ -167,32 +167,32 @@ member & 使用已获授权的 Agent Swarm 和任务，适合普通团队成员�
 
 \section{组织设置}
 
-有权限的用户可以从 \textbf{Administration} 打开 \textbf{Settings}。设置页按标签分类。
+有权限的用户可以从 \textbf{Administration} 打开 \textbf{Settings}。侧边栏中的 \textbf{Settings} 子菜单包含 \textbf{General}、\textbf{AI models}、\textbf{Single sign-on} 和 \textbf{Integrations} 四个页面。
 
 \subsection{General}
 
-\textbf{General} 用于维护组织名称和默认语言。修改后点击 \textbf{Save changes}。
+\textbf{General} 用于维护组织名称、slug、图标和默认语言，并管理 BFT CLI 的登录会话。修改后点击 \textbf{Save}。
 
-\subsection{Models}
+\subsection{AI models}
 
-\textbf{Models} 用于限制组织可使用的模型，并设置默认模型。调整前应确认现有 Agent 是否依赖即将停用的选项。
+\textbf{AI models} 用于限制组织可使用的模型，并设置默认模型。调整前应确认现有 Agent 是否依赖即将停用的选项。
 
 \subsection{Single sign-on}
 
 \textbf{Single sign-on} 用于配置组织登录方式。保存后，应使用测试帐号在新的浏览器会话中验证登录，再通知全体成员切换。
 
-\subsection{OAuth apps 与 Composio}
+\subsection{Integrations}
 
-\textbf{OAuth apps} 用于管理组织授权的应用，\textbf{Composio} 用于配置可供 \textbf{Connections} 使用的服务。敏感凭据保存后不会再次完整显示；需要更换时，请使用页面提供的更新或撤销操作。
+\textbf{Integrations} 页面包含 \textbf{OAuth apps}、\textbf{Composio}、\textbf{Signal} 和 \textbf{Feishu} 四个部分。\textbf{OAuth apps} 用于管理组织授权的应用，\textbf{Composio} 用于配置可供 \textbf{Connections} 使用的服务。敏感凭据保存后不会再次完整显示；需要更换时，请使用页面提供的更新或撤销操作。
 
-\subsection{Feishu apps}
+\subsection{Feishu}
 
 Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这样，同一份组织配置可以用于 Dashboard 登录或群机器人。
 
 \begin{enumerate}
-  \item 打开 \textbf{Settings} 的 \textbf{Feishu apps}。
+  \item 打开 \textbf{Settings} → \textbf{Integrations}，找到 \textbf{Feishu} 部分。
   \item 添加 Feishu app，并按页面提示填写显示名称、应用标识、应用密钥和机器人验证信息。
-  \item 根据用途选择 \textbf{Use for dashboard login (SSO)}、\textbf{Use for the group bot (IM)}，或同时选择两项。
+  \item 根据用途选择 \textbf{Use for dashboard sign-in}、\textbf{Use for the group bot}，或同时选择两项。
   \item 保存后，使用页面展示的地址和检查项完成 Feishu 管理后台配置。
 \end{enumerate}
 
@@ -218,52 +218,60 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
 
 展开 Runner 可查看更详细的状态和容量。owner 或 admin 可以使用页面提供的 \textbf{Rotate access}、\textbf{Revoke} 和 \textbf{Remove} 等操作。普通 member 可以查看 Runner，但不能执行管理操作。
 
-设备创建页面若提示没有可用 Runner，请先点击 \textbf{Open Fin}，完成 Runner 添加或恢复后再重试。
+设备创建页面若提示没有可用 Runner，请先点击 \textbf{Open Runners}，完成 Runner 添加或恢复后再重试。
 
 \section{Agent Swarm 管理}
 
 \subsection{查看和搜索 Agent Swarm}
 
-在 \textbf{Workspace} 中打开 \textbf{Agent Swarms}。列表只显示当前用户有权访问的项目，可使用搜索框按名称查找。
+在 \textbf{Workspace} 中打开 \textbf{Agent Swarms}。列表只显示当前用户有权访问的项目，可使用筛选框按名称、slug 或运行时 ID 查找。列表滚动到底部时会继续加载。
 
 \subsection{创建 Agent Swarm}
 
 \begin{enumerate}
   \item 点击 \textbf{New Agent Swarm}。
-  \item 填写名称和 slug。
-  \item 点击 \textbf{Create Agent Swarm}。
-  \item 创建后进入该 Agent Swarm，继续添加 Agent、成员和集成。
+  \item 填写名称。slug 会按名称自动生成，可按需修改。
+  \item 点击 \textbf{Create Agent Swarm}。字段有误时，错误会显示在对应字段下方。
+  \item 创建后自动进入该 Agent Swarm，继续添加 Agent、成员和集成。
 \end{enumerate}
 
 名称用于界面展示；slug 用于稳定链接，建议使用简短、清晰的英文小写名称。
 
 \subsection{访问权限}
 
-打开 Agent Swarm 的设置入口，再进入 \textbf{Access}。owner 或 admin 可以添加有权访问该 Agent Swarm 的组织成员，并按页面提供的角色分配权限。
+打开 Agent Swarm 的 \textbf{Settings}，找到 \textbf{Access} 部分。Agent Swarm 管理员可以通过邮箱添加用户，调整角色（\textbf{Admin} 或 \textbf{User}），或移除访问权限。
 
 组织 owner 和 admin 通常具有组织范围的管理权；普通 member 需要明确加入后才能看到对应 Agent Swarm。
 
 \section{Agents}
 
+\textbf{Agents} 列出当前 Agent Swarm 的 Router Agent 和 Worker Agent。\textbf{Group router} 标出当前接收消息的 Router；\textbf{Used by Triage} 标出 Triage 正在使用的 Worker，点击后打开 Slack 分诊中的 Worker 设置。点击 Agent 名称，会在右侧打开详情，显示角色、状态、运行位置、模型、运行时 ID 和系统提示词。详情页地址可以直接分享。
+
 \subsection{创建 Agent}
 
 \begin{enumerate}
   \item 进入 Agent Swarm，打开 \textbf{Agents}。
-  \item 点击 \textbf{New agent}。
-  \item 填写名称，并选择 \textbf{Agent type}。
-  \item 根据团队分工选择 Router Agent 或 Worker Agent，并完成页面要求的配置。
-  \item 点击 \textbf{Create agent}。
+  \item 点击 \textbf{New agent}。新建的 Agent 都是 Worker Agent。
+  \item 填写名称，并在 \textbf{Type} 中选择 \textbf{Internal} 或 \textbf{External agent}。
+  \item 选择 \textbf{External agent} 时，在 \textbf{Run on} 中选择 \textbf{Connected Device}（再选择设备和外部运行时）或 \textbf{Compute Workload}（再选择提供方和工作负载）。
+  \item 点击 \textbf{Create agent}。Agent 完成创建后，点击列表上的 \textbf{Refresh} 查看。
 \end{enumerate}
 
-\textbf{Internal} 类型由 Bridge For Teams 调度；\textbf{External Codex} 类型需要先连接可用设备。若设备尚未准备好，请先完成本手册的“设备”章节。
+\textbf{Internal} 类型由 Bridge For Teams 调度；外部 Agent 需要一个就绪的已连接设备运行时或 Compute 工作负载。若设备尚未准备好，请先完成本手册的“设备”章节。
 
-\subsection{配置和归档 Agent}
+\subsection{配置、重新绑定和归档 Agent}
 
-在 Agent 列表中选择 \textbf{Configure}，可以调整名称、模型、职责说明和其他可见设置。修改 Router Agent 前，应确认消息仍能分配到合适的 Worker Agent。
+以下操作在 Agent 详情中进行，只有 Agent Swarm 管理员可以使用：
 
-不再使用的 Agent 可以选择 \textbf{Archive}。归档前先检查仍在进行的任务和消息集成，避免新的请求继续指向该 Agent。
+\begin{itemize}
+  \item \textbf{Configure}：选择模型并编辑系统提示词。不选择模型时，Agent 使用该角色的默认模型。修改 Router Agent 前，应确认消息仍能分配到合适的 Worker Agent。
+  \item \textbf{Rebind runtime}：把外部 Worker 的新会话改到另一个设备运行时或工作负载。进行中的任务保留当前运行时。
+  \item \textbf{Archive}：归档 Worker Agent。若该 Worker 正被 Triage 使用，确认框会说明影响；归档后，在选择其他 Worker 之前，Triage 不会分配新任务。Router Agent 不能归档。
+\end{itemize}
 
-\section{Tasks 与 Schedules}
+Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \textbf{Start new session} 开始新会话；当前工作会停止，原会话的历史记录仍可查看。
+
+\section{Tasks 与定时计划}
 
 \subsection{创建和跟进任务}
 
@@ -279,7 +287,7 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
 
 \subsection{管理计划}
 
-\textbf{Schedules} 用于查看和管理定时工作。创建或修改计划时，确认时区、触发时间、目标 Agent 和任务内容。停用不再需要的计划，避免重复工作。
+计划在任务详情中添加和编辑。在 \textbf{Tasks} 右上角的筛选中选择 \textbf{Scheduled}，可以查看当前 Agent Swarm 的全部定时计划，并删除不再需要的计划。创建或修改计划时，确认时区、触发时间、目标 Agent 和任务内容。
 
 \section{Integrations}
 
@@ -288,7 +296,7 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
 \subsection{连接 Feishu}
 
 \begin{enumerate}
-  \item 请组织 owner 或 admin 先在 \textbf{Settings} 的 \textbf{Feishu apps} 中完成组织级配置，并启用 \textbf{Use for the group bot (IM)}。
+  \item 请组织 owner 或 admin 先在 \textbf{Settings} → \textbf{Integrations} 的 \textbf{Feishu} 部分完成组织级配置，并启用 \textbf{Use for the group bot}。
   \item 进入目标 Agent Swarm，打开 \textbf{Integrations}。
   \item 选择 Feishu，选择组织已登记的 Feishu app，并填写 \textbf{Connect name}。
   \item 按页面检查项，在 Feishu 管理后台完成权限、事件订阅和回调配置。
@@ -325,7 +333,7 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
   \item 散会后，在同一话题查看摘要、\texttt{transcript.txt} 和可用录音。每个文件独立发送，单个文件上限为 30 MB；文件缺失或超限不会阻止摘要发布，也不会重复已经成功发送的产物。
 \end{enumerate}
 
-普通定时提醒仍在 \textbf{Schedules} 中管理。Calendar 到点通知由管理员单独启用；没有明确需要时，不要再为同一会议配置一份重复提醒。
+普通定时提醒仍在任务详情中管理，并在 \textbf{Tasks} 的 \textbf{Scheduled} 视图中列出。Calendar 到点通知由管理员单独启用；没有明确需要时，不要再为同一会议配置一份重复提醒。
 
 \section{Connections}
 
@@ -338,14 +346,14 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
   \item 返回连接列表，确认状态可用。
 \end{enumerate}
 
-如果没有所需服务，请联系组织 owner 或 admin 检查 \textbf{Settings} 中的 \textbf{Composio} 配置。
+如果没有所需服务，请联系组织 owner 或 admin 检查 \textbf{Settings} → \textbf{Integrations} 中的 \textbf{Composio} 配置。
 
 \section{Plugins 与 Skills}
 
 \textbf{Plugins} 用于为当前 Agent Swarm 启用已获准的插件；\textbf{Skills} 用于查看和配置 Agent 可使用的技能。
 
 \begin{itemize}
-  \item \textbf{Organization plugins}：组织范围的插件目录和可用性设置。
+  \item 组织的 \textbf{Plugins}：查看组织插件和来自 Comma 的插件，点击插件查看详情。owner 和 admin 可以新建和编辑组织插件。
   \item Agent Swarm 的 \textbf{Plugins}：为当前 Agent Swarm 选择和配置插件。
   \item Agent Swarm 的 \textbf{Skills}：查看技能说明，并按页面支持的方式启用或配置。
 \end{itemize}
@@ -364,24 +372,26 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
   \item 填写 \textbf{Name} 和可选的 \textbf{Alias}。
   \item 选择一个可用 \textbf{Runner}。
   \item 点击 \textbf{Create on runner}。
-  \item 等待设备列表显示可用状态，再把它分配给 \textbf{External Codex} Agent。
+  \item 页面会提示设备正在连接；设备就绪后列表自动更新。再把它分配给 \textbf{External Codex} Agent。
 \end{enumerate}
 
-如果没有可选 Runner，点击 \textbf{Open Fin}。确认 Runner 在线且有足够容量后，返回设备页重试。
+如果没有可选 Runner，点击 \textbf{Open Runners}。确认 Runner 在线且有足够容量后，返回设备页点击 \textbf{Check for runners}。
 
 \subsection{维护设备}
 
-设备不再使用时，可以按页面提供的操作断开或删除。执行前先检查仍在使用该设备的 Agent 和任务。设备状态异常时，先查看所选 Runner 是否可用，再尝试重新连接。
+设备不再使用时，在设备行的操作菜单中选择 \textbf{Disconnect} 或 \textbf{Delete}，确认后执行。执行前先检查仍在使用该设备的 Agent 和任务。设备状态异常时，先查看所选 Runner 是否可用，再尝试重新连接。
 
-\section{Websites}
+列表第一行是由 Comma 管理的云电脑，Agent Swarm 管理员可以用该行的开关启用或停用它。同一页面还包括 \textbf{Runtime authentication}（登录外部运行时或绑定组织账号）、\textbf{Compute environments} 和 \textbf{Android setup}。
 
-\textbf{Websites} 汇总当前 Agent Swarm 下已发布的网站。打开网站条目可以查看页面提供的访问和管理操作。
+\section{网站}
 
-如果列表为空，说明当前 Agent Swarm 还没有已发布网站，或当前用户没有相应访问权。
+Agent Swarm 的 \textbf{Overview} 右侧的 \textbf{Websites} 面板列出当前 Agent Swarm 下已发布的网站，最多显示 5 个，并注明其余数量。点击网站名称会在新窗口打开网站，点击发布者可以打开对应 Agent。
 
-\section{Operations}
+如果面板为空，说明当前 Agent Swarm 还没有已发布网站。
 
-\textbf{Operations} 会根据角色显示，用于查看组织资源、集成和近期操作的健康状态。处理异常时先阅读页面提示并使用相应检查；需要修改组织级配置时，请由 owner 或 admin 操作。
+\section{Health}
+
+\textbf{Health} 仅对 owner 和 admin 显示，用于查看组织的运行状况：整体状态及其原因、投递、集成、Runner 和设备信号的最近更新时间、最近 7 天的错误事件，以及审计记录。审计记录可以导出为 CSV。处理异常时先阅读页面提示；需要修改组织级配置时，请由 owner 或 admin 操作。
 
 \section{常见问题}
 

@@ -137,7 +137,7 @@ Lean separates `write` from `durable_fence`. Input acknowledgments, including du
 A working-state ledger hit cannot confirm durable acceptance.
 For a committed revision, the fence checks ownership and epoch without another write. For pending work, it commits the frozen candidate first.
 Direct-log staging carries a working input/frontier revision into activation within one owner callback.
-The combined CAS admits the input, advances its source frontier, and records activation.
+The combined CAS commits input, its source frontier, activation, and miniskill selection.
 Generic delivery keeps its durable acknowledgment. A busy Router leaves unadmitted inputs in the source log.
 Input, activation, log, and recovery commands retain their native Revision and continuation through writes and CAS, including first creation.
 The host validates events, repairs command-argument UTF-8, and performs external effects.

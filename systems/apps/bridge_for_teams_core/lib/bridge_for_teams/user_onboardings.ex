@@ -2,8 +2,8 @@ defmodule BridgeForTeams.UserOnboardings do
   @moduledoc """
   Per-user dashboard onboarding state.
 
-  The dashboard shows a first-run flow (capabilities → profile → integrations →
-  starter tasks) to users who have not finished it yet; `onboarded?/1` is the
+  The dashboard shows a first-run flow (capabilities → profile → integrations)
+  to users who have not finished it yet; `onboarded?/1` is the
   gate query the web layer runs on every authenticated LiveView mount, so it
   stays a single indexed lookup. `completed` and `skipped` both count as
   finished — skipping is a legitimate way through the flow.
@@ -83,87 +83,6 @@ defmodule BridgeForTeams.UserOnboardings do
     |> Repo.update()
   end
 
-  @doc """
-  A compact brief of what onboarding captured about the user — identity, key
-  contacts, and the granted capabilities — for embedding in agent-facing
-  prompts (the assistant rail context, task delegation). `nil` when nothing
-  useful was captured, so callers can splice it in unconditionally.
-
-  Machine-facing English by design, like the rest of the prompt contract.
-  """
-  @spec agent_brief(Ecto.UUID.t()) :: String.t() | nil
-  def agent_brief(user_id) do
-    case get_onboarding(user_id) do
-      {:ok, onboarding} -> compose_brief(onboarding)
-      {:error, :not_found} -> nil
-    end
-  end
-
-  defp compose_brief(%UserOnboarding{} = onboarding) do
-    profile = onboarding.profile || %{}
-
-    lines =
-      [
-        identity_line(profile["identity"]),
-        contacts_line(profile["key_contacts"]),
-        capabilities_line(onboarding.capabilities)
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    if lines == [] do
-      nil
-    else
-      Enum.join(["About the user (from onboarding):" | lines], "\n")
-    end
-  end
-
-  defp identity_line(%{} = identity) do
-    name = present(identity["name"]) || present(identity["email"])
-
-    detail =
-      [present(identity["role"]), present(identity["org"])]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.join(" at ")
-
-    cond do
-      is_nil(name) -> nil
-      detail == "" -> "- #{name}"
-      true -> "- #{name} — #{detail}"
-    end
-  end
-
-  defp identity_line(_identity), do: nil
-
-  defp contacts_line([_ | _] = contacts) do
-    named =
-      contacts
-      |> Enum.map(fn contact ->
-        name = present(contact["name"]) || present(contact["email"])
-        role = present(contact["role"])
-        if name, do: if(role, do: "#{name} (#{role})", else: name)
-      end)
-      |> Enum.reject(&is_nil/1)
-
-    if named != [], do: "- Key contacts: " <> Enum.join(named, ", ")
-  end
-
-  defp contacts_line(_contacts), do: nil
-
-  # `capabilities` mixes boolean grants with bookkeeping (`"_schedules"` holds
-  # a map); matching on `true` keeps only real grants.
-  defp capabilities_line(%{} = capabilities) do
-    granted = for {key, true} <- capabilities, is_binary(key), do: key
-
-    if granted != [] do
-      "- Enabled capabilities: " <> (granted |> Enum.sort() |> Enum.join(", "))
-    end
-  end
-
-  defp capabilities_line(_capabilities), do: nil
-
-  defp present(value) when is_binary(value) and value != "", do: value
-  defp present(_value), do: nil
-
   @doc "Mark onboarding finished."
   @spec complete(UserOnboarding.t()) :: {:ok, UserOnboarding.t()} | {:error, Ecto.Changeset.t()}
   def complete(%UserOnboarding{} = onboarding), do: finish(onboarding, "completed")
@@ -175,10 +94,9 @@ defmodule BridgeForTeams.UserOnboardings do
   @doc """
   Reopen the flow from the first step, whatever state it is in. Deliberately
   non-destructive: the captured capabilities and profile stay (the wizard
-  pre-fills from them, and the `"_schedules"` audit keeps routine
-  reconciliation idempotent), and nothing a previous run produced — board
-  tasks, report offers, schedules, connections — is touched. The user is back
-  behind the onboarding gate until they finish or skip again.
+  pre-fills from them), and nothing a previous run produced, such as
+  connections, is touched. The user is back behind the onboarding gate until
+  they finish or skip again.
   """
   @spec restart(UserOnboarding.t()) :: {:ok, UserOnboarding.t()} | {:error, Ecto.Changeset.t()}
   def restart(%UserOnboarding{} = onboarding) do

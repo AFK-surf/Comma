@@ -45,7 +45,8 @@ defmodule SalixWeb.CloudVM.Runtimes do
                      |> Map.merge(%{
                        "state" => "pending",
                        "requested_at" => now_ms(),
-                       "issue" => nil
+                       "issue" => nil,
+                       "error" => nil
                      })
                      |> Map.delete("discovery_attempts")
                      |> Map.delete("claim")
@@ -67,6 +68,26 @@ defmodule SalixWeb.CloudVM.Runtimes do
       false -> {:error, :cloud_vm_runtime_invalid_request}
       {:error, _} = error -> error
     end
+  end
+
+  def fail_pending(group_id, error) do
+    GroupCompute.update_group_workload(group_id, fn current ->
+      targets =
+        Map.new(current["runtime_targets"] || %{}, fn {id, target} ->
+          if target["state"] == "pending",
+            do:
+              {id,
+               target
+               |> Map.merge(%{
+                 "state" => "failed",
+                 "issue" => "billing_unavailable",
+                 "error" => error
+               })},
+            else: {id, target}
+        end)
+
+      Map.put(current, "runtime_targets", targets)
+    end)
   end
 
   def schedule(group_id, opts \\ []) do
@@ -165,6 +186,11 @@ defmodule SalixWeb.CloudVM.Runtimes do
           {id, value} ->
             result =
               with :ok <-
+                     SalixWeb.ComputeProviders.Cloudflare.authorize_resume(
+                       current["group_id"],
+                       opts
+                     ),
+                   :ok <-
                      SalixWeb.ComputeProviders.Cloudflare.prepare_runtime_connector(current),
                    remaining when remaining > 0 <- @budget_ms - (now_ms() - value["requested_at"]) do
                 install_opts =
@@ -181,8 +207,14 @@ defmodule SalixWeb.CloudVM.Runtimes do
                 %{"state" => "installing", "claim" => ^token} = target ->
                   patch =
                     case result do
-                      :ok -> %{"state" => "installed", "issue" => nil}
-                      {:error, issue} -> %{"state" => "failed", "issue" => to_string(issue)}
+                      :ok ->
+                        %{"state" => "installed", "issue" => nil}
+
+                      {:error, %{"error_class" => "billing_unavailable"} = error} ->
+                        %{"state" => "failed", "issue" => "billing_unavailable", "error" => error}
+
+                      {:error, issue} ->
+                        %{"state" => "failed", "issue" => to_string(issue)}
                     end
 
                   put_in(
@@ -428,6 +460,7 @@ defmodule SalixWeb.CloudVM.Runtimes do
       "provider" => value["provider"],
       "state" => state,
       "issue" => issue,
+      "error" => value["error"],
       "device_id" => rec["device_id"],
       "ready" =>
         rec["status"] == "ready" and state == "installed" and is_map(runtime) and

@@ -1,0 +1,66 @@
+.comma-compute-disk {
+  display: grid;
+  gap: var(--spacing-md);
+  width: 100%;
+  min-width: 0;
+}
+.comma-compute-disk p {
+  margin: 0;
+}
+.comma-compute-disk__bar {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  height: 20px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-quaternary);
+}
+.comma-compute-disk__bar > * {
+  min-width: 0;
+}
+.comma-compute-disk__segment {
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+  background: var(--color-fg-brand-primary);
+}
+.comma-compute-disk__segment--1 {
+  background: var(--color-fg-success-primary);
+}
+.comma-compute-disk__segment--2 {
+  background: var(--color-fg-warning-primary);
+}
+.comma-compute-disk__segment--3 {
+  background: var(--color-fg-error-primary);
+}
+.comma-compute-disk__segment--4 {
+  background: var(--color-fg-secondary);
+}
+.comma-compute-disk__segment--5 {
+  background: var(--color-fg-warning-secondary);
+}
+.comma-compute-disk__other {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-fg-quaternary),
+    var(--color-fg-quaternary) 2px,
+    var(--color-bg-tertiary) 2px,
+    var(--color-bg-tertiary) 5px
+  );
+}
+.comma-compute-disk__remaining {
+  background: var(--color-bg-secondary);
+}
+.comma-compute-disk__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-md);
+  color: var(--color-fg-secondary);
+}
+
+.comma-compute-disk__segment:focus-visible {
+  outline: 2px solid var(--color-fg-brand-primary);
+  outline-offset: 2px;
+}

@@ -99,7 +99,7 @@ const defaultFooterHints: readonly CommandPaletteFooterHint[] = [
 ];
 
 const overlayClassName =
-  "comma-command-palette-overlay fixed inset-0 z-[var(--z-index-modal-overlay)] flex items-center justify-center p-xl outline-none max-[30rem]:p-md";
+  "comma-command-palette-overlay fixed inset-0 z-[var(--z-index-modal-overlay)] flex items-center justify-center p-xl outline-none @max-[480px]/comma-window:p-md";
 
 const modalClassName = "comma-command-palette-modal flex outline-none";
 
@@ -194,7 +194,7 @@ const CommandPaletteItemView = <TValue extends string>({
     </span>
     {item.meta ? (
       <span
-        className="shrink-0 whitespace-nowrap text-sm font-regular text-quaternary max-[24rem]:hidden"
+        className="shrink-0 whitespace-nowrap text-sm font-regular text-quaternary @max-[384px]/comma-window:hidden"
         data-slot="command-palette-item-meta"
       >
         {item.meta}

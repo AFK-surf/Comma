@@ -1,0 +1,15 @@
+.comma-chat-platform-badge {
+  display: inline-flex;
+  width: 24px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.comma-chat-platform-badge-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--comma-chat-platform-color);
+}

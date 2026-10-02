@@ -814,7 +814,12 @@ for (const surface of ["route", "side-chat"] as const) {
               progress: Number(animation?.currentTime ?? 0),
               duration: Number(animation?.effect?.getTiming().duration ?? 0),
               easing: animation?.effect?.getTiming().easing ?? "",
-              background: style.backgroundColor,
+              // A flight paints its material on its ::before plane, so a
+              // translucent material is not painted twice.
+              background:
+                bubble.dataset.outgoingPresentation === "flying"
+                  ? getComputedStyle(bubble, "::before").backgroundColor
+                  : style.backgroundColor,
               color: getComputedStyle(content).color,
               textLeft: glyph.left,
               textTop: glyph.top,
@@ -1323,14 +1328,29 @@ for (const surface of ["route", "side-chat"] as const) {
     expect(inset).toBeLessThanOrEqual(25);
   });
 
-  test(`${surface}: only the last message from each consecutive sender has a bubble tail`, async ({
+  test(`${surface}: visible time separators restart consecutive bubble tail groups`, async ({
     page,
     handoffBaseURL,
   }, info) => {
     await openSurface(page, surface, handoffBaseURL);
+    await page.setViewportSize({
+      width: surface === "side-chat" ? 440 : 800,
+      height: 1200,
+    });
+    const startedAt = Date.UTC(2026, 8, 29, 7, 58);
     const messages = [
-      message("tail-user-one", "user", "First question"),
-      message("tail-user-two", "user", "One more detail"),
+      ...(
+        [
+          ["tail-user-one", "First question", 0],
+          ["tail-user-two", "One more detail", 59_999],
+          ["tail-user-three", "One minute later", 60_000],
+          ["tail-user-four", "Several minutes later", 360_000],
+        ] as const
+      ).map(([id, text, offset]) => ({
+        ...message(id, "user", text),
+        createdAt: startedAt + offset,
+        platformSource: "wechat" as const,
+      })),
       message("tail-router-one", "assistant", "First reply"),
       message(
         "tail-router-two",
@@ -1339,6 +1359,14 @@ for (const surface of ["route", "side-chat"] as const) {
       ),
     ];
     await show(page, { messages });
+    await expect(page.getByTestId(/^chat-conversation-time-/)).toHaveCount(
+      surface === "side-chat" ? 0 : 3
+    );
+    const userTails = (
+      surface === "side-chat"
+        ? ["tail-user-four"]
+        : ["tail-user-two", "tail-user-three", "tail-user-four"]
+    ).map((id) => [id, "right"]);
     const tails = () =>
       page
         .locator("article[data-bubble-tail]")
@@ -1348,10 +1376,11 @@ for (const surface of ["route", "side-chat"] as const) {
             row.getAttribute("data-bubble-tail"),
           ])
         );
-    await expect.poll(tails).toEqual([
-      ["tail-user-two", "right"],
-      ["tail-router-two", "left"],
-    ]);
+    await expect.poll(tails).toEqual([...userTails, ["tail-router-two", "left"]]);
+    // Surfaces without Copy (side chat) still name the source platform.
+    await expect(
+      page.locator('[data-message-id="tail-user-four"] [data-platform="wechat"]')
+    ).toHaveCount(1);
     const lastBubble = page
       .locator('[data-message-id="tail-router-two"] .markdown-stream-bubble')
       .last();
@@ -1360,10 +1389,22 @@ for (const surface of ["route", "side-chat"] as const) {
         lastBubble.evaluate((node) => getComputedStyle(node, "::before").content)
       )
       .toBe('""');
-    const userBubble = await page
-      .locator('[data-message-id="tail-user-two"] .comma-chat-user-bubble')
-      .boundingBox();
+    const userBubbleLocator = page.locator(
+      `[data-message-id="${userTails[0]![0]}"] .comma-chat-user-bubble`
+    );
+    // WeChat's light bubble needs its dark ink on every surface.
+    await expect(userBubbleLocator).toHaveCSS("color", "rgb(8, 45, 7)");
+    const userBubble = await userBubbleLocator.boundingBox();
     expect(userBubble).not.toBeNull();
+    // Platform bubbles carry their own colour, so match the tail against it.
+    const tailColor = await userBubbleLocator.evaluate((element) => {
+      const background = getComputedStyle(element).backgroundColor;
+      const painted =
+        background === "rgba(0, 0, 0, 0)"
+          ? getComputedStyle(element, "::before").backgroundColor
+          : background;
+      return painted.match(/\d+/g)!.slice(0, 3).map(Number);
+    });
     // Verify painted pixels below the body, where a clipped tail disappears.
     const tailImage = await page.screenshot({
       clip: {
@@ -1374,7 +1415,7 @@ for (const surface of ["route", "side-chat"] as const) {
       },
     });
     const paintedTailPixels = await page.evaluate(
-      async (dataURL) => {
+      async ([dataURL, color]) => {
         const image = new Image();
         image.src = dataURL;
         await image.decode();
@@ -1384,14 +1425,14 @@ for (const surface of ["route", "side-chat"] as const) {
         const context = canvas.getContext("2d")!;
         context.drawImage(image, 0, 0);
         const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-        let bluePixels = 0;
+        let tailPixels = 0;
         for (let i = 0; i < pixels.length; i += 4) {
-          if (pixels[i + 2]! > pixels[i]! + 60 && pixels[i + 2]! > pixels[i + 1]! + 30)
-            bluePixels++;
+          if (color.every((channel, c) => Math.abs(pixels[i + c]! - channel) <= 24))
+            tailPixels++;
         }
-        return bluePixels;
+        return tailPixels;
       },
-      `data:image/png;base64,${tailImage.toString("base64")}`
+      [`data:image/png;base64,${tailImage.toString("base64")}`, tailColor] as const
     );
     expect(paintedTailPixels).toBeGreaterThan(10);
     await page.screenshot({ path: info.outputPath(`${surface}-message-tails.png`) });
@@ -1401,10 +1442,7 @@ for (const surface of ["route", "side-chat"] as const) {
         message("tail-router-three", "assistant", "Final addition"),
       ],
     });
-    await expect.poll(tails).toEqual([
-      ["tail-user-two", "right"],
-      ["tail-router-three", "left"],
-    ]);
+    await expect.poll(tails).toEqual([...userTails, ["tail-router-three", "left"]]);
   });
 
   test(`${surface}: router replies omit identity and connect above the first bubble`, async ({

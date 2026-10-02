@@ -53,6 +53,8 @@ def sessionEvent (state event : Term) : KernelM Term := do
     let hwm ← failureHwm fact
     let streak ← bumpFailure state hwm (failureTerminal fact)
     let payload := fact.get (b "event")
+    let streak := if payload.get (b "error_class") == b "billing_unavailable" then
+        streak.put (b "billing_reason") (payload.get (b "reason")) else streak
     let retry := payload.get (b "retry_at_ms")
     pure (if retry.isInteger then streak.put (b "retry_at_ms") retry else streak)
     else pure nil

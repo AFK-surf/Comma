@@ -31,20 +31,10 @@ import {
   commaClientSettingsStorageKey,
 } from "../components/commaClientSettings";
 import { CommaSideChatShortcutProvider } from "../components/commaSideChatShortcut";
+import { RouterIdentityProvider } from "../components/router-identity/RouterIdentityProvider";
 import { legacyCommaSideChatShortcutStorageKey } from "../components/readLegacyCommaClientSettings";
 import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShortcuts";
 import type { AppShortcutPlatform } from "../components/shortcuts/appShortcutRegistry";
-
-// jsdom cannot decode or encode images; the browser path is covered by the
-// profile-settings Playwright spec.
-const preparedAvatar = new File(["prepared"], "avatar.webp", { type: "image/webp" });
-const { prepareProfileAvatar } = vi.hoisted(() => ({
-  prepareProfileAvatar: vi.fn(),
-}));
-vi.mock("../components/profileAvatarImage", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../components/profileAvatarImage")>()),
-  prepareProfileAvatar,
-}));
 
 const telegramSettings = () => within(screen.getByRole("region", { name: "Telegram" }));
 
@@ -89,15 +79,17 @@ const renderSettings = (
     <CommaWebClientSettingsProvider>
       <CommaClientSettingsI18nProvider>
         <CommaAuthContext.Provider value={auth}>
-          <CommaAppearanceProvider>
-            <CommaSideChatShortcutProvider>
-              <CommaAppShortcutsProvider
-                {...(appShortcutPlatform ? { platform: appShortcutPlatform } : {})}
-              >
-                <AppSettingsRoute />
-              </CommaAppShortcutsProvider>
-            </CommaSideChatShortcutProvider>
-          </CommaAppearanceProvider>
+          <RouterIdentityProvider>
+            <CommaAppearanceProvider>
+              <CommaSideChatShortcutProvider>
+                <CommaAppShortcutsProvider
+                  {...(appShortcutPlatform ? { platform: appShortcutPlatform } : {})}
+                >
+                  <AppSettingsRoute />
+                </CommaAppShortcutsProvider>
+              </CommaSideChatShortcutProvider>
+            </CommaAppearanceProvider>
+          </RouterIdentityProvider>
         </CommaAuthContext.Provider>
       </CommaClientSettingsI18nProvider>
     </CommaWebClientSettingsProvider>
@@ -112,13 +104,15 @@ const renderElectronSettings = (auth = defaultAuth()) =>
     <CommaElectronClientSettingsProvider>
       <CommaClientSettingsI18nProvider>
         <CommaAuthContext.Provider value={auth}>
-          <CommaAppearanceProvider>
-            <CommaSideChatShortcutProvider>
-              <CommaAppShortcutsProvider>
-                <AppSettingsRoute />
-              </CommaAppShortcutsProvider>
-            </CommaSideChatShortcutProvider>
-          </CommaAppearanceProvider>
+          <RouterIdentityProvider>
+            <CommaAppearanceProvider>
+              <CommaSideChatShortcutProvider>
+                <CommaAppShortcutsProvider>
+                  <AppSettingsRoute />
+                </CommaAppShortcutsProvider>
+              </CommaSideChatShortcutProvider>
+            </CommaAppearanceProvider>
+          </RouterIdentityProvider>
         </CommaAuthContext.Provider>
       </CommaClientSettingsI18nProvider>
     </CommaElectronClientSettingsProvider>
@@ -732,23 +726,16 @@ describe("AppSettingsRoute", () => {
     expect(requests.filter(({ method }) => method === "GET")).toHaveLength(1);
   });
 
-  it("uploads an avatar directly from the Profile settings item", async () => {
-    const publishProfile = vi.fn();
+  it("opens the crop dialog before uploading a chosen avatar", async () => {
     const inputClick = vi.spyOn(HTMLInputElement.prototype, "click");
-    const requests: Array<{ body?: BodyInit | null; method: string; path: string }> =
-      [];
+    const requests: Array<{ method: string; path: string }> = [];
 
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(input.toString(), "https://api.example");
-        const method = init?.method ?? "GET";
-        requests.push({
-          method,
-          path: url.pathname,
-          ...(init?.body !== undefined ? { body: init.body } : {}),
-        });
-        if (method === "GET" && url.pathname.startsWith("/v1/comma/me/avatar/")) {
+        requests.push({ method: init?.method ?? "GET", path: url.pathname });
+        if (url.pathname.startsWith("/v1/comma/me/avatar/")) {
           return new Response("existing-avatar", {
             headers: { "content-type": "image/png" },
             status: 200,
@@ -756,7 +743,7 @@ describe("AppSettingsRoute", () => {
         }
         return new Response(
           JSON.stringify({
-            avatar_id: method === "PUT" ? "avt_ada" : "avt_existing",
+            avatar_id: "avt_existing",
             email: "ada@example.com",
             id: "usr_ada",
             name: "Ada",
@@ -766,7 +753,7 @@ describe("AppSettingsRoute", () => {
       })
     );
 
-    renderProfileSettings({ ...defaultAuth(), publishProfile });
+    renderProfileSettings(defaultAuth());
 
     await userEvent.click(screen.getByRole("button", { name: "Profile" }));
     const avatarButton = await screen.findByRole("button", {
@@ -780,30 +767,23 @@ describe("AppSettingsRoute", () => {
     const fileInput = await screen.findByLabelText("Choose image", {
       selector: 'input[type="file"]',
     });
-    const avatar = new File(["avatar"], "avatar.png", { type: "image/png" });
-    prepareProfileAvatar.mockResolvedValueOnce(preparedAvatar);
+    // Files between the old 100 KB bound and 2 MB are now accepted.
+    const avatar = new File([new Uint8Array(1024 * 1024)], "avatar.png", {
+      type: "image/png",
+    });
     await userEvent.upload(fileInput, avatar);
 
+    const cropDialog = await screen.findByRole("dialog", { name: "Crop avatar" });
+    expect(cropDialog).toBeInTheDocument();
+    expect(requests.some(({ method }) => method === "PUT")).toBe(false);
+
+    await userEvent.click(screen.getByRole("button", { name: /Cancel/ }));
     await waitFor(() =>
-      expect(requests).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ method: "PUT", path: "/v1/comma/me/avatar" }),
-        ])
-      )
+      expect(
+        screen.queryByRole("dialog", { name: "Crop avatar" })
+      ).not.toBeInTheDocument()
     );
-    const upload = requests.find(({ method }) => method === "PUT");
-    if (!(upload?.body instanceof FormData)) {
-      throw new Error("Expected avatar upload multipart form data");
-    }
-    expect(prepareProfileAvatar).toHaveBeenCalledWith(avatar);
-    expect(upload.body.get("avatar")).toBe(preparedAvatar);
-    expect(publishProfile).toHaveBeenCalledWith({
-      avatar_id: "avt_ada",
-      email: "ada@example.com",
-      id: "usr_ada",
-      name: "Ada",
-    });
-    expect(screen.queryByRole("dialog", { name: "Name" })).not.toBeInTheDocument();
+    expect(requests.some(({ method }) => method === "PUT")).toBe(false);
   });
 
   it("signs out from the Profile account section", async () => {
@@ -840,21 +820,30 @@ describe("AppSettingsRoute", () => {
     expect(signOut).toHaveBeenCalledOnce();
   });
 
-  it("uses SettingsPanel to switch and persist the display language", async () => {
-    renderSettings();
+  it("saves the display language to the account, then switches this device", async () => {
+    const auth = defaultAuth();
+    const updateProfile = vi.fn(async (attrs: { locale?: "en" | "zh-CN" }) => ({
+      email: "ada@example.com",
+      id: "usr_ada",
+      locale: attrs.locale ?? null,
+      name: "Ada",
+    }));
+    renderSettings({ ...auth, api: { ...auth.api, updateProfile } });
 
     expect(
       screen.getByRole("heading", { level: 1, name: "General" })
     ).toBeInTheDocument();
     expect(screen.getByText("Language for the app UI")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Select language/ })).toHaveTextContent(
-      "Auto detect"
-    );
-
+    // The account language has two values; there is no follow-the-OS option.
     await userEvent.click(screen.getByRole("button", { name: /Select language/ }));
+    expect(screen.queryByRole("option", { name: "Auto detect" })).toBeNull();
     await userEvent.click(screen.getByRole("option", { name: "Simplified Chinese" }));
 
-    expect(screen.getByRole("heading", { level: 1, name: "通用" })).toBeInTheDocument();
+    expect(updateProfile).toHaveBeenCalledWith({ locale: "zh-CN" });
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "通用" })
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /选择语言/ })).toHaveTextContent(
       "简体中文"
     );
@@ -1200,6 +1189,35 @@ describe("AppSettingsRoute", () => {
     expect(
       screen.getByRole("button", { name: "Open Side Chat: Ctrl + L" })
     ).toBeInTheDocument();
+  });
+
+  it("replays the onboarding from General for an account that finished it", async () => {
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({
+        ...structuredClone(defaultCommaClientSettings),
+        onboardingCompletedUserIds: ["usr_other", "usr_ada"],
+      })
+    );
+    renderSettings({ ...defaultAuth(), userId: "usr_ada" });
+
+    const row = await screen.findByText("Replay onboarding");
+    await userEvent.click(
+      within(row.closest("[data-setting-id]") as HTMLElement).getByRole("button", {
+        name: "Replay",
+      })
+    );
+    // Forgetting the completion is what brings the onboarding back.
+    await waitFor(() =>
+      expect(readStoredClientSettings().onboardingCompletedUserIds).toEqual([
+        "usr_other",
+      ])
+    );
+  });
+
+  it("offers a guest no onboarding to replay", () => {
+    renderSettings({ ...defaultAuth(), isGuest: true, userId: "usr_guest" });
+    expect(screen.queryByText("Replay onboarding")).toBeNull();
   });
 
   it("customizes general shortcuts and can reset them to defaults", async () => {
@@ -1595,12 +1613,19 @@ describe("AppSettingsRoute", () => {
     });
     const showInDock = screen.getByRole("switch", { name: "Show in dock" });
     const showInAirDrop = screen.getByRole("switch", { name: "Show Comma in AirDrop" });
+    const sideChat = screen.getByRole("switch", { name: "Side Chat" });
+    const keepAwake = screen.getByRole("switch", {
+      name: "Keep awake with lid closed",
+    });
     await waitFor(() => expect(launchAtLogin).toBeEnabled());
     expect(launchAtLogin).not.toBeChecked();
     expect(showInMenuBar).toBeChecked();
     expect(showInDock).toBeChecked();
     // Existing preference files predate AirDrop; Comma stays visible by default.
     expect(showInAirDrop).toBeChecked();
+    // Existing preference files predate the switch; Side Chat stays on.
+    expect(sideChat).toBeChecked();
+    expect(keepAwake).not.toBeChecked();
 
     await userEvent.click(launchAtLogin);
     await waitFor(() => expect(launchAtLogin).toBeChecked());
@@ -1610,12 +1635,129 @@ describe("AppSettingsRoute", () => {
     await waitFor(() => expect(showInDock).not.toBeChecked());
     await userEvent.click(showInAirDrop);
     await waitFor(() => expect(showInAirDrop).not.toBeChecked());
+    await userEvent.click(sideChat);
+    await waitFor(() => expect(sideChat).not.toBeChecked());
+    await userEvent.click(keepAwake);
+    await waitFor(() => expect(keepAwake).toBeChecked());
 
     expect(update.mock.calls.map(([patch]) => patch)).toEqual([
       { launchAtLogin: true },
       { showInMenuBar: false },
       { showInDock: false },
       { showInAirDrop: false },
+      { sideChatEnabled: false },
+      { keepAwakeWhenLidClosed: true },
+    ]);
+  });
+
+  it("guides the user to Login Items until macOS allows keeping the Mac awake", async () => {
+    let preferences = appPreferencesSchema.parse({
+      keepAwakeWhenLidClosedStatus: "not-registered",
+      launchAtLogin: false,
+      showInDock: true,
+      showInMenuBar: true,
+    });
+    // Main registers the daemon on the first turn-on; macOS then waits for the user.
+    const update = vi.fn(async (patch: AppPreferencesPatch) => {
+      preferences = appPreferencesSchema.parse({
+        ...preferences,
+        ...patch,
+        ...(patch.keepAwakeWhenLidClosed
+          ? { keepAwakeWhenLidClosedStatus: "requires-approval" }
+          : {}),
+        revision: preferences.revision + 1,
+      });
+      return preferences;
+    });
+    const openLoginItemsSettings = vi.fn(async () => ({ opened: true }));
+    installNativeBridgeMock({
+      appPreferences: {
+        openLoginItemsSettings,
+        state: createNativeStateBridgeMock(() => preferences),
+        update,
+      },
+      os: "macos",
+      platform: "electron",
+    });
+    renderSettings();
+
+    const keepAwake = screen.getByRole("switch", {
+      name: "Keep awake with lid closed",
+    });
+    await waitFor(() => expect(keepAwake).toBeEnabled());
+    await userEvent.click(keepAwake);
+    const dialog = await screen.findByRole("dialog", {
+      name: "Allow Comma in Login Items",
+    });
+    expect(keepAwake).toBeChecked();
+
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Open System Settings" })
+    );
+    expect(openLoginItemsSettings).toHaveBeenCalledOnce();
+    expect(dialog).not.toBeInTheDocument();
+    // The choice waits for approval: the switch reads off and says why.
+    expect(keepAwake).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "Waiting for your approval. Allow Comma in System Settings › General › Login Items, and this turns on."
+      )
+    ).toBeInTheDocument();
+
+    // Back from System Settings: Main's readback after approval turns it on.
+    preferences = appPreferencesSchema.parse({
+      ...preferences,
+      keepAwakeWhenLidClosedStatus: "available",
+      revision: preferences.revision + 1,
+    });
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(keepAwake).toBeChecked());
+    expect(update.mock.calls.map(([patch]) => patch)).toEqual([
+      { keepAwakeWhenLidClosed: true },
+    ]);
+  });
+
+  it("withdraws the keep-awake choice when the approval dialog is cancelled", async () => {
+    let preferences = appPreferencesSchema.parse({
+      keepAwakeWhenLidClosedStatus: "requires-approval",
+      launchAtLogin: false,
+      showInDock: true,
+      showInMenuBar: true,
+    });
+    const update = vi.fn(async (patch: AppPreferencesPatch) => {
+      preferences = appPreferencesSchema.parse({
+        ...preferences,
+        ...patch,
+        revision: preferences.revision + 1,
+      });
+      return preferences;
+    });
+    installNativeBridgeMock({
+      appPreferences: {
+        openLoginItemsSettings: vi.fn(async () => ({ opened: true })),
+        state: createNativeStateBridgeMock(() => preferences),
+        update,
+      },
+      os: "macos",
+      platform: "electron",
+    });
+    renderSettings();
+
+    const keepAwake = screen.getByRole("switch", {
+      name: "Keep awake with lid closed",
+    });
+    await waitFor(() => expect(keepAwake).toBeEnabled());
+    await userEvent.click(keepAwake);
+    const dialog = await screen.findByRole("dialog", {
+      name: "Allow Comma in Login Items",
+    });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(keepAwake).not.toBeChecked();
+    expect(update.mock.calls.map(([patch]) => patch)).toEqual([
+      { keepAwakeWhenLidClosed: true },
+      { keepAwakeWhenLidClosed: false },
     ]);
   });
 
@@ -1920,6 +2062,54 @@ describe("AppSettingsRoute", () => {
     ]);
   });
 
+  it("keeps system notifications usable while macOS has not asked about Comma yet", async () => {
+    let preferences = appPreferencesSchema.parse({
+      launchAtLogin: false,
+      showInDock: true,
+      showInMenuBar: true,
+      systemNotificationsStatus: "undetermined",
+    });
+    const update = vi.fn(async (patch: AppPreferencesPatch) => {
+      preferences = appPreferencesSchema.parse({
+        ...preferences,
+        ...patch,
+        revision: preferences.revision + 1,
+      });
+      return preferences;
+    });
+    installNativeBridgeMock({
+      appPreferences: {
+        state: createNativeStateBridgeMock(() => preferences),
+        update,
+      },
+      os: "macos",
+      platform: "electron",
+    });
+    renderSettings();
+    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+
+    // macOS asks on the first banner, so nothing is blocked yet: the stored
+    // choice shows as is and the Router rows follow it.
+    const system = screen.getByRole("switch", { name: "System notifications" });
+    await waitFor(() => expect(system).toBeEnabled());
+    expect(system).toBeChecked();
+    expect(
+      screen.getByText("Comma sends system notifications to remind you.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Router message notifications" })
+    ).toBeEnabled();
+
+    await userEvent.click(system);
+    await waitFor(() => expect(system).not.toBeChecked());
+    expect(
+      screen.queryByRole("dialog", { name: "Allow notifications in System Settings" })
+    ).toBeNull();
+    expect(update.mock.calls.map(([patch]) => patch)).toEqual([
+      { systemNotifications: false },
+    ]);
+  });
+
   it("auditions the notification sound while its toggle is off", async () => {
     const play = vi
       .spyOn(window.HTMLMediaElement.prototype, "play")
@@ -2178,7 +2368,7 @@ describe("AppSettingsRoute", () => {
     renderSettings();
     await userEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
     expect(
-      await screen.findByRole("button", { name: "Open Comma: Alt + Space" })
+      await screen.findByRole("button", { name: "Open Comma: Alt + ," })
     ).toBeEnabled();
     const shortcut = await screen.findByRole("button", {
       name: "Open Side Chat: Ctrl + Z",
@@ -2243,12 +2433,22 @@ describe("AppSettingsRoute", () => {
     expect(
       screen.queryByRole("button", { name: /Open Side Chat:/ })
     ).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "General" }));
-    expect(
-      screen.getByRole("switch", { name: "Launch Comma at login" })
-    ).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Show in menu bar" })).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Show in dock" })).toBeDisabled();
+  });
+
+  it("offers the Mac app instead of changing native preferences on the web", async () => {
+    const update = vi.fn();
+    installNativeBridgeMock({ appPreferences: { update }, platform: "web" });
+    renderSettings();
+
+    for (const name of ["Launch Comma at login", "Show in menu bar", "Show in dock"]) {
+      const toggle = screen.getByRole("switch", { name });
+      // The browser has no native preferences; the switch stays live so a
+      // press can offer the Mac app, and its value does not change.
+      expect(toggle).toBeEnabled();
+      await userEvent.click(toggle);
+      expect(toggle).not.toBeChecked();
+    }
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("does not reserve the native Side Chat shortcut on the web", async () => {

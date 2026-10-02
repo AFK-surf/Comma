@@ -1140,6 +1140,41 @@ defmodule SalixEnv.ComputeReconcilerTest do
     assert Repo.get!(Compute.Workload, fixture.workload.id).generation == 1
   end
 
+  test "missing connection observation waits without creating commands; malformed epoch requires action",
+       fixture do
+    allocation = Repo.get!(Compute.Allocation, fixture.allocation.id)
+    binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
+
+    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
+      set: [observation: %{}]
+    )
+
+    assert {:ok, %{outcome: :pending}} =
+             ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
+
+    assert Repo.aggregate(Compute.Command, :count) == 0
+
+    for epoch <- ["0", "01", "invalid"] do
+      Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
+        set: [observation: %{"connection_epoch" => epoch}]
+      )
+
+      assert {:error, :invalid_connection_epoch} =
+               ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
+
+      assert Repo.aggregate(Compute.Command, :count) == 0
+    end
+
+    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
+      set: [observation: binding.observation]
+    )
+
+    assert {:ok, %{outcome: :pending, command: command}} =
+             ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
+
+    assert command.kind == "runtime.open_session"
+  end
+
   test "reconciles one exact shell generation through session, bundle import, container and ready",
        fixture do
     Process.put(:compute_reconciler_image_reference, fixture.image_reference)

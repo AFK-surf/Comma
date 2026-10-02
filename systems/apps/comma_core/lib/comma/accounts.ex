@@ -85,7 +85,7 @@ defmodule Comma.Accounts do
     if Map.has_key?(attrs, "email") do
       {:error, :email_change_not_supported}
     else
-      update_user_fields(id, Map.take(attrs, ["name", "status"]))
+      update_user_fields(id, Map.take(attrs, ["name", "status", "locale"]))
     end
   end
 
@@ -142,7 +142,16 @@ defmodule Comma.Accounts do
     end
   end
 
+  def resolve_session_id(session_id) do
+    case Sessions.resolve_id(session_id) do
+      {:ok, user, session} -> {:ok, public_user(user), session}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def touch_session(session), do: Sessions.touch_last_seen(session)
+  def touch_session_active(session), do: Sessions.touch_active(session)
+  def present?(user_id), do: Sessions.present?(user_id)
 
   def list_sessions(user_id, opts \\ []), do: Sessions.list(user_id, opts)
   def revoke_session(user_id, session_id), do: Sessions.revoke(user_id, session_id)
@@ -152,6 +161,39 @@ defmodule Comma.Accounts do
 
   def revoke_all_sessions(user_id, opts \\ []), do: Sessions.revoke_all(user_id, opts)
   def revoke_session_token(token), do: Sessions.revoke_token(token)
+
+  @doc """
+  The account's app language for server-written text. An account that has not
+  reported one yet reads as English.
+  """
+  def locale(user_id) when is_binary(user_id) do
+    case Repo.one(from(row in User, where: row.id == ^user_id, select: row.locale)) do
+      locale when is_binary(locale) -> locale
+      _ -> "en"
+    end
+  end
+
+  @doc """
+  Adopt a client-reported app language only while the account has none.
+  Clients released before the account setting report it on Routine reads;
+  an account that already has a language keeps it. Returns `:adopted` when
+  this call set it.
+  """
+  def adopt_locale(user_id, locale) when is_binary(user_id) and is_binary(locale) do
+    if locale in User.locales() do
+      case Repo.update_all(
+             from(row in User, where: row.id == ^user_id and is_nil(row.locale)),
+             set: [locale: locale, updated_at: DateTime.utc_now()]
+           ) do
+        {1, _} -> :adopted
+        {0, _} -> :unchanged
+      end
+    else
+      :unchanged
+    end
+  end
+
+  def adopt_locale(_user_id, _locale), do: :unchanged
 
   def consume_budget(session, operation_id \\ nil) do
     Sessions.consume_budget(session, operation_id)
@@ -164,10 +206,17 @@ defmodule Comma.Accounts do
       "name" => user.name,
       "avatar_id" => user.avatar_id,
       "status" => user.status,
+      "locale" => user.locale,
       "created_at" => unix(user.created_at),
       "updated_at" => unix(user.updated_at)
     }
+    |> put_guest_kind(user)
   end
+
+  # Released clients parse the registered user shape strictly. Only a guest,
+  # which those clients cannot create, carries `kind`.
+  defp put_guest_kind(public, %User{kind: "guest"}), do: Map.put(public, "kind", "guest")
+  defp put_guest_kind(public, _user), do: public
 
   defp clamp_user_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@max_user_page)
   defp clamp_user_limit(_limit), do: @max_user_page

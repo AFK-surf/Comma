@@ -216,18 +216,26 @@ defmodule BridgeForTeams.Onboarding do
 
   @doc """
   Members who asked for OAuth configuration, oldest first. Surfaced to org
-  admins on Settings → OAuth apps while no client is configured yet.
+  admins on Settings → Integrations while no client is configured yet.
+  `:limit` caps the number of rows.
   """
-  @spec pending_oauth_reminders(Ecto.UUID.t()) :: [%{user: User.t(), reminded_at: DateTime.t()}]
-  def pending_oauth_reminders(org_id) do
-    from(s in MemberOnboardingState,
-      join: u in User,
-      on: u.id == s.user_id,
-      where: s.org_id == ^org_id and not is_nil(s.oauth_reminded_at),
-      order_by: [asc: s.oauth_reminded_at],
-      select: %{user: u, reminded_at: s.oauth_reminded_at}
-    )
-    |> Repo.all()
+  @spec pending_oauth_reminders(Ecto.UUID.t(), keyword()) :: [
+          %{user: User.t(), reminded_at: DateTime.t()}
+        ]
+  def pending_oauth_reminders(org_id, opts \\ []) do
+    query =
+      from(s in MemberOnboardingState,
+        join: u in User,
+        on: u.id == s.user_id,
+        where: s.org_id == ^org_id and not is_nil(s.oauth_reminded_at),
+        order_by: [asc: s.oauth_reminded_at, asc: s.user_id],
+        select: %{user: u, reminded_at: s.oauth_reminded_at}
+      )
+
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> query |> limit(^limit) |> Repo.all()
+      _ -> Repo.all(query)
+    end
   end
 
   @doc "Drop the cached OAuth-configured answer (call after saving/removing an OAuth app)."

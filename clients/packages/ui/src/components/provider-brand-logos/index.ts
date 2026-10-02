@@ -19,3 +19,8 @@ export { LarkProviderLogo } from "./LarkProviderLogo";
 export { FeishuProviderLogo } from "./FeishuProviderLogo";
 export { WeChatProviderLogo } from "./WeChatProviderLogo";
 export { SignalProviderLogo, SignalProviderMark } from "./SignalProviderLogo";
+export {
+  SignalAppTileLogo,
+  TelegramAppTileLogo,
+  WeChatAppTileLogo,
+} from "./ProviderAppTileLogos";

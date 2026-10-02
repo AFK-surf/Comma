@@ -44,12 +44,31 @@ defmodule SalixLlm.SiteProxy do
 
   @spec complete(map() | keyword() | nil, req(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def complete(llm_opts, req, opts \\ []) do
+  def complete(llm_opts, req, opts \\ []),
+    do: routed(llm_opts, &do_complete(&1, req, opts))
+
+  @spec stream(map() | keyword() | nil, req(), (map() -> any())) ::
+          {:ok, map() | nil} | {:error, term(), map() | nil}
+  def stream(llm_opts, req, on_chunk) when is_function(on_chunk, 1),
+    do: routed(llm_opts, &do_stream(&1, req, on_chunk))
+
+  # A catalog route (`catalog://`) or a subscription pool route
+  # (`subscription://`) names no endpoint to post to: the account pool picks
+  # the Profile or account and supplies its endpoint, request id and, for a
+  # pool, the worker transport. Every other route posts where it says.
+  defp routed(llm_opts, call) do
+    if SalixAgent.AccountPool.catalog_route?(llm_opts) or
+         SalixAgent.AccountPool.owns_route?(llm_opts),
+       do: SalixAgent.AccountPool.dispatch(llm_opts, call),
+       else: call.(llm_opts)
+  end
+
+  defp do_complete(llm_opts, req, opts) do
     cfg = ProviderConfig.resolve(llm_opts)
     {url, body, headers} = marshal(cfg, req, false)
     receive_timeout = receive_timeout(opts)
 
-    case Req.post(url,
+    case SalixLlm.Http.post(cfg, url,
            json: body,
            headers: headers,
            receive_timeout: receive_timeout,
@@ -73,9 +92,7 @@ defmodule SalixLlm.SiteProxy do
     end
   end
 
-  @spec stream(map() | keyword() | nil, req(), (map() -> any())) ::
-          {:ok, map() | nil} | {:error, term(), map() | nil}
-  def stream(llm_opts, req, on_chunk) when is_function(on_chunk, 1) do
+  defp do_stream(llm_opts, req, on_chunk) do
     cfg = ProviderConfig.resolve(llm_opts)
     {url, body, headers} = marshal(cfg, req, true)
 
@@ -97,7 +114,7 @@ defmodule SalixLlm.SiteProxy do
     # `SalixLlm.StreamWatchdog` abandons a stream that stops producing events;
     # that surfaces as `{:error, {:stream_idle_timeout, _}, usage}` below, with
     # whatever usage the stream had reported before it went quiet.
-    case SalixLlm.StreamWatchdog.post(url,
+    case SalixLlm.Http.post(cfg, url,
            json: body,
            headers: headers,
            receive_timeout: @receive_timeout,

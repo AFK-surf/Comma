@@ -18,15 +18,12 @@ defmodule BridgeForTeams.Application do
       device runtime changes into agent runtime Operations events.
     * `BridgeForTeams.Observability.Pruner` — runs the shared Operations
       retention pruning boundary on a schedule.
-    * `BridgeForTeams.DashboardProjection.Reconciler` — refreshes My Space
-      local dashboard projections outside request and LiveView processes.
+    * `BridgeForTeams.DashboardProjection.Reconciler` — refreshes per-project
+      dashboard snapshots outside request and LiveView processes.
     * `BridgeForTeams.SlackHistoryOnboarding.Reconciler` — when explicitly
       enabled, advances one persisted bounded Slack-history import transition
       at a time; PostgreSQL run/receipt/lease state remains the correctness
       owner.
-    * `BridgeForTeams.Artifacts.Sweeper` — periodically indexes VFS report
-      runs and general artifact documents whose conversation update doorbell
-      was lost.
 
   Reconcile/event consumers run in this core app alongside the domain contexts.
   """
@@ -56,7 +53,6 @@ defmodule BridgeForTeams.Application do
         BridgeForTeams.EnvironmentRuntimeObserver,
         BridgeForTeams.Observability.Pruner
       ])
-      |> maybe_add(artifacts_sweeper_enabled?(), BridgeForTeams.Artifacts.Sweeper)
       |> maybe_add(
         Application.get_env(:bridge_for_teams_core, :storage_metering, [])
         |> Keyword.get(:enabled, false),
@@ -73,12 +69,6 @@ defmodule BridgeForTeams.Application do
 
   defp maybe_add(children, true, child), do: children ++ [child]
   defp maybe_add(children, _enabled, _child), do: children
-
-  defp artifacts_sweeper_enabled? do
-    :bridge_for_teams_core
-    |> Application.get_env(BridgeForTeams.Artifacts.Sweeper, [])
-    |> Keyword.get(:enabled, true)
-  end
 
   defp tenant_config_checker_enabled? do
     :bridge_for_teams_core

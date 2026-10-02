@@ -461,7 +461,9 @@ defmodule CommaWeb.OauthIdpConsent do
       # neither may sign the user's identity over to a third party, so
       # only ordinary user_login sessions qualify (stricter than the
       # bare restricted check on purpose).
-      if session["restricted"] == true or session["session_source"] != "user_login" do
+      # A guest has only a placeholder email, so it has no identity to assert.
+      if session["restricted"] == true or session["session_source"] != "user_login" or
+           user["kind"] == "guest" do
         :forbidden_session
       else
         {:ok, user}

@@ -19,6 +19,7 @@ import type {
   RecommendationSource,
 } from "@comma/recommendation-contract";
 import type { CommaApiClient, CommaConversation, CommaPlugin } from "../../../api";
+import { useOnboardingAhead } from "../../onboarding/useOnboardingAhead";
 
 /**
  * Tasks, routines, and plugins use a short per-scope cache. Drive queries
@@ -402,8 +403,15 @@ export function useComposerMentionSources({
     enabled && groupId && typeof api?.listConversations === "function"
       ? `tasks ${groupId} ${projection?.snapshot.lastSyncedAt ?? 0}`
       : undefined;
+  // Reading the Routines creates them: while the first-launch onboarding is
+  // ahead they wait for its apps step, which starts them with every app it
+  // connected.
+  const onboardingAhead = useOnboardingAhead();
   const routinesKey =
-    enabled && workspaceId && typeof api?.getRecommendations === "function"
+    enabled &&
+    !onboardingAhead &&
+    workspaceId &&
+    typeof api?.getRecommendations === "function"
       ? `routines ${workspaceId}`
       : undefined;
   const pluginsKey =

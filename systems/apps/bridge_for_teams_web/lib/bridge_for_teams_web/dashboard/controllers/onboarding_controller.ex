@@ -15,6 +15,8 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingController do
 
   alias BridgeForTeams.UserOnboardings
 
+  def resume(conn, _params), do: redirect(conn, to: ~p"/onboarding")
+
   def restart(conn, _params) do
     user = conn.assigns.current_user
 

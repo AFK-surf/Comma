@@ -178,6 +178,156 @@ describe("NativeSideChatService", () => {
     service.dispose();
   });
 
+  it("draws the menu-bar menu in the helper it starts, reports the chosen row, and gives the menu up with the helper", async () => {
+    vi.useFakeTimers();
+    const hosts: FakeHost[] = [];
+    const service = createService(hosts);
+    const onSelect = vi.fn();
+    const onLost = vi.fn();
+    const menu = {
+      iconPath: "/resources/CommaTemplate.png",
+      rows: [
+        { id: "open-comma", kind: "item" as const, shortcut: "⌥ Space", title: "Open" },
+        { kind: "separator" as const },
+        { id: "quit", kind: "item" as const, shortcut: "⌘ Q", title: "Quit Comma" },
+      ],
+      toolTip: "Comma is running",
+      width: 300,
+    };
+
+    // A menu set before the helper runs reaches it when it starts.
+    service.showStatusMenu(menu, onSelect, onLost);
+    expect(hosts).toHaveLength(0);
+    service.start();
+    expect(statusMenuShows(hosts[0])).toEqual([
+      expect.objectContaining({ ...menu, kind: "status-menu.show" }),
+    ]);
+    hosts[0]?.emitClientFrame({
+      id: "quit",
+      kind: "status-menu.select",
+      protocolVersion: chatProtocolVersion,
+      requestId: "select-1",
+    });
+    expect(onSelect).toHaveBeenCalledWith("quit");
+
+    // A lost helper takes the menu with it: Main draws it from then on, and
+    // the restarted helper does not.
+    hosts[0]?.exit(1);
+    expect(onLost).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(statusMenuShows(hosts[1])).toEqual([]);
+    hosts[1]?.exit(1);
+    expect(onLost).toHaveBeenCalledOnce();
+
+    // A hidden menu stays hidden in the next helper.
+    service.showStatusMenu(menu, onSelect, onLost);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(statusMenuShows(hosts[2])).toHaveLength(1);
+    service.hideStatusMenu();
+    expect(hosts[2]?.hostFrames().at(-1)?.kind).toBe("status-menu.hide");
+    service.dispose();
+    expect(onLost).toHaveBeenCalledOnce();
+  });
+
+  it("gives the menu-bar menu up when the helper rejects the replayed shortcut", () => {
+    const hosts: FakeHost[] = [];
+    const service = createService(hosts);
+    const onLost = vi.fn();
+    service.showStatusMenu(
+      {
+        iconPath: "/resources/CommaTemplate.png",
+        rows: [],
+        toolTip: "Comma",
+        width: 300,
+      },
+      vi.fn(),
+      onLost
+    );
+    service.start();
+    const replay = hosts[0]
+      ?.hostFrames()
+      .find((frame) => frame.kind === "side-chat.shortcut");
+    hosts[0]?.emitClientFrame({
+      error: "The global shortcut is unavailable.",
+      kind: "command.result",
+      ok: false,
+      protocolVersion: chatProtocolVersion,
+      requestId: replay!.requestId,
+    });
+    expect(onLost).toHaveBeenCalledOnce();
+    service.dispose();
+  });
+
+  it("keeps Side Chat shut while turned off, also in a restarted helper", async () => {
+    vi.useFakeTimers();
+    const hosts: FakeHost[] = [];
+    const onEnabledChanged = vi.fn();
+    const service = createService(hosts, { onEnabledChanged });
+    service.start();
+    hosts[0]?.acknowledgeLastShortcut();
+
+    service.setEnabled(false);
+    expect(onEnabledChanged).toHaveBeenLastCalledWith(false);
+    expect(hosts[0]?.hostFrames().at(-1)).toMatchObject({
+      enabled: false,
+      kind: "side-chat.enabled",
+    });
+    const sentWhileOff = kinds(hosts[0]).length;
+    service.open();
+    service.toggle();
+    service.setInteractiveProgress({ progress: 0.5 });
+    service.finishInteractiveProgress({ shouldOpen: true });
+    // Only closing frames reach the helper.
+    expect(
+      hosts[0]
+        ?.hostFrames()
+        .slice(sentWhileOff)
+        .filter(
+          (frame) =>
+            frame.kind !== "side-chat.close" &&
+            !(frame.kind === "side-chat.interactive-complete" && !frame.shouldOpen)
+        )
+    ).toEqual([]);
+
+    // A restarted helper hears it is off before it registers the chord.
+    hosts[0]?.emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const restarted = kinds(hosts[1]);
+    expect(restarted.indexOf("side-chat.enabled")).toBeGreaterThanOrEqual(0);
+    expect(restarted.indexOf("side-chat.enabled")).toBeLessThan(
+      restarted.indexOf("side-chat.shortcut")
+    );
+
+    service.setEnabled(true);
+    expect(hosts[1]?.hostFrames().at(-1)).toMatchObject({
+      enabled: true,
+      kind: "side-chat.enabled",
+    });
+    service.open();
+    expect(kinds(hosts[1]).at(-1)).toBe("side-chat.open");
+    service.dispose();
+  });
+
+  it("turned off before start launches no helper and replays the saved binding", () => {
+    const hosts: FakeHost[] = [];
+    const service = createService(hosts);
+
+    // Main applies the stored preference before it starts the helper.
+    service.setEnabled(false);
+    expect(hosts).toHaveLength(0);
+
+    service.start(null);
+    expect(hosts).toHaveLength(1);
+    const frames = hosts[0]?.hostFrames() ?? [];
+    expect(frames.filter((frame) => frame.kind === "side-chat.shortcut")).toEqual([
+      expect.not.objectContaining({ keyCode: expect.anything() }),
+    ]);
+    expect(kinds(hosts[0]).indexOf("side-chat.enabled")).toBeLessThan(
+      kinds(hosts[0]).indexOf("side-chat.shortcut")
+    );
+    service.dispose();
+  });
+
   it("starts with a saved cleared binding instead of registering the default", () => {
     const hosts: FakeHost[] = [];
     const service = createService(hosts);
@@ -1760,12 +1910,17 @@ describe("NativeSideChatService", () => {
   });
 });
 
+function kinds(host: FakeHost | undefined) {
+  return host?.hostFrames().map((frame) => frame.kind) ?? [];
+}
+
 function createService(
   hosts: FakeHost[],
   options: {
     activateOpenWindow?: boolean;
     onCloseTestWindow?: () => void;
     onDebugSettingsChanged?: (settings: SideChatDebugSettings) => void;
+    onEnabledChanged?: (enabled: boolean) => void;
     onOpenSettings?: () => Promise<void> | void;
     onOpenTestWindow?: (input: {
       sourceFrame: { height: number; width: number; x: number; y: number };
@@ -1875,6 +2030,10 @@ function createAttachment() {
     },
     window,
   };
+}
+
+function statusMenuShows(host: FakeHost | undefined) {
+  return host?.hostFrames().filter((frame) => frame.kind === "status-menu.show");
 }
 
 class FakeHost extends EventEmitter {

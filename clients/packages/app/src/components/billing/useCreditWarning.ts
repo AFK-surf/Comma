@@ -4,8 +4,13 @@ import { creditAllowance } from "./BillingSettings";
 
 export type CreditWarning = {
   percent: number;
-  threshold: 5 | 10 | 50;
+  // 0: no usable credits remain, including after every grant expired.
+  threshold: 0 | 5 | 10 | 50;
 };
+
+function warningThreshold(percent: number): CreditWarning["threshold"] | undefined {
+  return percent <= 5 ? 5 : percent <= 10 ? 10 : percent <= 50 ? 50 : undefined;
+}
 
 type Dismissal = { grants: string; threshold: number };
 
@@ -91,13 +96,21 @@ class CreditWarningMonitor {
   }
 
   private update() {
+    if (!this.summary) return this.publish(undefined);
     const allowance = creditAllowance(this.summary, this.plans ?? []);
-    if (!allowance || !this.summary) return this.publish(undefined);
+    // The summary lists only unexpired grants. With none left there is no
+    // allowance to compare against, but billed work is already refused, so
+    // that state reads as exhausted rather than unknown.
+    const exhausted =
+      this.summary.current_credits <= 0 &&
+      (allowance !== undefined || this.summary.active_grants.length === 0);
+    if (!allowance && !exhausted) return this.publish(undefined);
     // Compare the actual ratio. Display rounding must not trigger an early warning.
-    const percent = (this.summary.current_credits / allowance.total) * 100;
-    const threshold =
-      percent <= 5 ? 5 : percent <= 10 ? 10 : percent <= 50 ? 50 : undefined;
-    if (!threshold) return this.publish(undefined);
+    const percent = allowance
+      ? (this.summary.current_credits / allowance.total) * 100
+      : 0;
+    const threshold = exhausted ? 0 : warningThreshold(percent);
+    if (threshold === undefined) return this.publish(undefined);
     try {
       const saved: unknown = JSON.parse(
         localStorage.getItem(this.storageKey()) ?? "null"
@@ -121,7 +134,7 @@ class CreditWarningMonitor {
     ) {
       return this.publish(undefined);
     }
-    this.publish({ percent: allowance.percent, threshold });
+    this.publish({ percent: allowance?.percent ?? 0, threshold });
   }
 
   dismiss = () => {

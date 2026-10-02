@@ -71,6 +71,26 @@ describe("Login", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("offers a secondary action only when one is supplied", async () => {
+    const user = userEvent.setup();
+    const onPress = vi.fn();
+    const { unmount } = render(
+      <Login
+        mode="email"
+        secondaryAction={{ label: "Try without an account", onPress }}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Try without an account" }));
+    expect(onPress).toHaveBeenCalledOnce();
+
+    unmount();
+    render(<Login mode="email" />);
+    expect(
+      screen.queryByRole("button", { name: "Try without an account" })
+    ).not.toBeInTheDocument();
+  });
+
   it("enables email continuation and submits the trimmed value", async () => {
     const user = userEvent.setup();
     const onEmailChange = vi.fn();

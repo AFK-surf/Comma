@@ -14,22 +14,6 @@ def DeliveryEncoding (item payload id event : Term) : Prop :=
   event.get (b "content") = payload.get (b "content") ∧
   event.get (b "accepted_input") = acceptedInput item
 
-/-- The encoder keeps queue payload identity and content, before any transcript reducer runs. -/
-theorem delivery_encoding {session item payload id event : Term} {j r : List Term}
-    (h : deliveryEvent session item payload id j = .ok (event, r)) :
-    DeliveryEncoding item payload id event := by
-  unfold deliveryEvent at h
-  obtain ⟨wake, _, _, h⟩ := bind_ok h
-  repeat'
-    replace h := bind_ok h
-    obtain ⟨value, _, read, h⟩ := h
-    have eq := (access_ok read).1
-    subst value
-  obtain rfl := pure_ok h
-  unfold putPresent
-  split <;> split <;> split <;>
-    simp +decide [DeliveryEncoding, stringKeyed, Term.put, Term.get, BEq.beq, Term.text]
-
 theorem mapM_exact {α β : Type} {f : α → KernelM β} {g : α → β}
     (correct : ∀ x value j r, f x j = .ok (value, r) → value = g x)
     {xs : List α} {ys : List β} {j r : List Term}
@@ -54,16 +38,33 @@ def RuntimeEncoding (item payload id event : Term) : Prop :=
   event.get (b "summary") = (payload.get (b "summary")).default (payload.get (b "content")) ∧
   event.get (b "accepted_input") = acceptedInput item
 
-theorem binary_key_beq (left right : String) : (b left == b right) = (left == right) := by
-  apply Bool.eq_iff_iff.mpr
-  change (left.toByteArray.data == right.toByteArray.data) = true ↔ (left == right) = true
-  simp only [beq_iff_eq]
-  constructor
-  · intro same
-    exact String.toByteArray_inj.mp (ByteArray.ext same)
-  · intro same
-    subst right
-    rfl
+theorem delivery_encoding_putPresent {item payload id event : Term} {name : String}
+    (encoded : DeliveryEncoding item payload id event)
+    (outside : ["type", "message_id", "source_message_id", "dedupe_key", "content",
+      "accepted_input"].all (fun key => name != key) = true)
+    (value : Term) : DeliveryEncoding item payload id (putPresent event name value) := by
+  simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, bne_iff_ne] at outside
+  obtain ⟨type, message, source, dedupe, content, accepted⟩ := outside
+  obtain ⟨htype, hmessage, hsource, hdedupe, hcontent, haccepted⟩ := encoded
+  exact ⟨(putPresent_get_other _ _ type).trans htype, (putPresent_get_other _ _ message).trans hmessage,
+    (putPresent_get_other _ _ source).trans hsource, (putPresent_get_other _ _ dedupe).trans hdedupe,
+    (putPresent_get_other _ _ content).trans hcontent, (putPresent_get_other _ _ accepted).trans haccepted⟩
+
+/-- The encoder keeps queue payload identity and content, before any transcript reducer runs. -/
+theorem delivery_encoding {session item payload id event : Term} {j r : List Term}
+    (h : deliveryEvent session item payload id j = .ok (event, r)) :
+    DeliveryEncoding item payload id event := by
+  unfold deliveryEvent at h
+  obtain ⟨wake, _, _, h⟩ := bind_ok h
+  repeat'
+    replace h := bind_ok h
+    obtain ⟨value, _, read, h⟩ := h
+    have eq := (access_ok read).1
+    subst value
+  obtain rfl := pure_ok h
+  -- The optional fields are outside the encoding. Check the literal map once, not per branch.
+  repeat (refine delivery_encoding_putPresent ?_ (by decide) _)
+  simp +decide [DeliveryEncoding, stringKeyed, Term.get, BEq.beq, Term.text]
 
 theorem stringKeyed_present_lookup (entries : List (String × Term)) (key : String) :
     (stringKeyed (entries.filter (fun pair => pair.2 != nil))).get (b key) =
@@ -124,7 +125,7 @@ theorem queueItemEvent_encoding {session item id hwm event nextId nextHwm : Term
     subst emitted
     refine ⟨payload, _, j₂, normalized, ?_⟩
     first
-      | exact Or.inr (runtime_encoding encoded)
+      | (head_is encoded [runtimeEvent]; exact Or.inr (runtime_encoding encoded))
       | exact Or.inl (delivery_encoding encoded)
 
 /-- A stored record carries the normalized queue payload, independently of the emitted event. -/

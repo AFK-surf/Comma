@@ -15,7 +15,17 @@ import { openNativePlatformExternalUrl } from "../../runtime-chat/nativePlatform
 const requestTimeoutMs = 30_000;
 const authorizationTimeoutMs = 120_000;
 
-type Target = { pluginId: string; workspaceId: string; connectionId?: string };
+/**
+ * Where the install was started: the Plugins page, or the onboarding, which
+ * calls a plugin an app and has no Plugins page to return to.
+ */
+export type PluginInstallOrigin = "plugins" | "onboarding";
+type Target = {
+  pluginId: string;
+  workspaceId: string;
+  connectionId?: string;
+  origin?: PluginInstallOrigin;
+};
 type Operation = "install" | "reauthorize";
 type Continuation = Target & {
   authorizationState: string;
@@ -23,10 +33,25 @@ type Continuation = Target & {
   operation: Operation;
 };
 type Request = Target & { controller: AbortController };
+/**
+ * An install the user is authorizing in the browser. The install happens only
+ * when a window verifies it, so a window that closes hands it to another.
+ */
+export type PluginAuthorization = {
+  workspaceId: string;
+  pluginId: string;
+  authorizationState: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+};
 type InstallContext = {
   cancel(target: Target): void;
   install(target: Target): Promise<void>;
   reauthorize(target: Target & { connectionId: string }): Promise<void>;
+  /** The install this window is waiting to verify, if any. */
+  authorization: PluginAuthorization | undefined;
+  /** Takes over verifying an install another window started. */
+  resume(authorization: PluginAuthorization, origin?: PluginInstallOrigin): void;
   pending: Target | undefined;
   result: (Target & { plugin: CommaPlugin }) | undefined;
   completionVersion: number;
@@ -167,13 +192,22 @@ export function PluginInstallProvider({
         // A failed read does not cancel the provider's authorization. The same
         // attempt remains eligible for the next check until its absolute deadline.
         if (previous) return;
+        const app = target.origin === "onboarding";
+        if (error instanceof InstallTimeoutError) {
+          toast.error(
+            app
+              ? messages.plugins_install_request_timed_out_app()
+              : messages.plugins_install_request_timed_out()
+          );
+          return;
+        }
         toast.error(
-          error instanceof InstallTimeoutError
-            ? messages.plugins_install_request_timed_out()
-            : operation === "reauthorize"
-              ? messages.plugins_reauthorize_failed()
+          operation === "reauthorize"
+            ? messages.plugins_reauthorize_failed()
+            : app
+              ? messages.plugins_install_failed_app()
               : messages.plugins_install_failed(),
-          error instanceof Error && error.message ? { description: error.message } : {}
+          { description: installErrorDescription(error, messages) }
         );
       } finally {
         clearTimeout(timer);
@@ -238,13 +272,38 @@ export function PluginInstallProvider({
     [api, reset]
   );
 
+  const resume = useCallback(
+    (
+      { authorizationState, expiresAt, pluginId, workspaceId }: PluginAuthorization,
+      origin?: PluginInstallOrigin
+    ) => {
+      if (Date.now() >= expiresAt) return;
+      reset();
+      const next: Continuation = {
+        authorizationState,
+        expiresAt,
+        operation: "install",
+        pluginId,
+        workspaceId,
+        ...(origin ? { origin } : {}),
+      };
+      continuationRef.current = next;
+      setContinuation(next);
+    },
+    [reset]
+  );
+
   useEffect(() => {
     if (!continuation) return;
     const timer = setTimeout(
       () => {
         if (continuationRef.current !== continuation) return;
         reset();
-        toast.error(messages.plugins_install_authorization_timed_out());
+        toast.error(
+          continuation.origin === "onboarding"
+            ? messages.plugins_install_authorization_timed_out_app()
+            : messages.plugins_install_authorization_timed_out()
+        );
       },
       Math.max(0, continuation.expiresAt - Date.now())
     );
@@ -267,13 +326,74 @@ export function PluginInstallProvider({
     };
   }, [continuation, pending, perform]);
 
+  const authorization: PluginAuthorization | undefined =
+    continuation?.operation === "install"
+      ? {
+          authorizationState: continuation.authorizationState,
+          expiresAt: continuation.expiresAt,
+          pluginId: continuation.pluginId,
+          workspaceId: continuation.workspaceId,
+        }
+      : undefined;
+
   return (
     <PluginInstallContext.Provider
-      value={{ cancel, install, reauthorize, pending, result, completionVersion }}
+      value={{
+        authorization,
+        cancel,
+        completionVersion,
+        install,
+        pending,
+        reauthorize,
+        result,
+        resume,
+      }}
     >
       {children}
     </PluginInstallContext.Provider>
   );
+}
+
+type Messages = ReturnType<typeof useCommaMessages>;
+
+/**
+ * Why an install or reconnect failed, in the reader's words. The server's
+ * error is a machine code (`upstream_unavailable`) or an untranslated
+ * sentence, so it is never shown; a code or status with no wording of its
+ * own reads as a general failure.
+ */
+function installErrorDescription(error: unknown, messages: Messages) {
+  if (!(error instanceof CommaApiError)) return messages.plugins_error_generic();
+  const code = error.body?.error;
+  switch (code) {
+    case "authorization_callback_in_progress":
+    case "stale_plugin_operation":
+      return messages.plugins_error_busy();
+    case "missing_oauth_client":
+    case "not_configured":
+      return messages.plugins_error_not_configured();
+    case "forbidden":
+      return messages.plugins_error_forbidden();
+    case "not_found":
+      return messages.plugins_error_not_found();
+  }
+  if (code?.endsWith("_unavailable")) return messages.plugins_error_unavailable();
+  switch (error.status) {
+    case 403:
+      return messages.plugins_error_forbidden();
+    case 404:
+      return messages.plugins_error_not_found();
+    case 409:
+      return messages.plugins_error_busy();
+    case 412:
+      return messages.plugins_error_not_configured();
+    case 502:
+    case 503:
+    case 504:
+      return messages.plugins_error_unavailable();
+    default:
+      return messages.plugins_error_generic();
+  }
 }
 
 export function usePluginInstall() {

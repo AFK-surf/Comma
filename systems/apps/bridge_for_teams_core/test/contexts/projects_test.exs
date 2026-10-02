@@ -428,7 +428,7 @@ defmodule BridgeForTeams.ProjectsTest do
       assert {:ok, project} = Projects.ensure_owned_project(org.id, user.id, "My Swarm")
 
       assert project.name == "My Swarm"
-      assert project.slug == "my-swarm-" <> BridgeForTeams.Artifacts.user_suffix(user.id)
+      assert project.slug == "my-swarm-" <> String.slice(String.replace(user.id, "-", ""), 0, 8)
 
       # Creation went through create_project/3: the creator owns it (admin
       # ACL — ownership in this model), so the dashboard default resolves it.
@@ -461,7 +461,7 @@ defmodule BridgeForTeams.ProjectsTest do
       user: user
     } do
       assert {:ok, project} = Projects.ensure_owned_project(org.id, user.id, "测试")
-      assert project.slug == "swarm-" <> BridgeForTeams.Artifacts.user_suffix(user.id)
+      assert project.slug == "swarm-" <> String.slice(String.replace(user.id, "-", ""), 0, 8)
     end
 
     test "an org owner's implied project admin is access, not ownership — still creates", %{

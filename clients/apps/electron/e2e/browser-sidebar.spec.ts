@@ -2,6 +2,7 @@ import { expect } from "../../../e2e/helpers/native-expect";
 import { _electron as electron, test } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +11,7 @@ import {
   maxBrowserSidebarSessionsPerOwner,
   type BrowserSidebarState,
 } from "@comma/native-bridge";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import {
   chatSmokeTaskConversation,
   chatSmokeWorkspace,
@@ -30,6 +32,7 @@ test("Command-K keeps the browser visible until its stand-in is decoded", async 
     assistantReply: `[Open browser](${browserStub.baseUrl}/a1)`,
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-browser-overlay-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
@@ -176,6 +179,7 @@ test("browser sidebar keeps page sessions isolated and remains recoverable durin
     ].join("\n\n"),
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-browser-sidebar-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
@@ -2303,17 +2307,31 @@ test("browser sidebar keeps page sessions isolated and remains recoverable durin
         );
       }, task.id);
 
+    // Advance the real Main-owned lease expiry instead of spending 30 seconds
+    // idle. Install before these leases are released; other processes keep
+    // their real clocks, and production retention policy stays unchanged.
+    const mainClock = await app.evaluateHandle(
+      (_electron, modulePath) => {
+        const require = process.getBuiltinModule("module").createRequire(modulePath);
+        const timers: typeof import("@sinonjs/fake-timers") = require(modulePath);
+        return timers.install({
+          toFake: ["setTimeout", "clearTimeout"],
+          shouldAdvanceTime: true,
+          shouldClearNativeTimers: true,
+        });
+      },
+      createRequire(resolve(process.cwd(), "package.json")).resolve(
+        "@sinonjs/fake-timers"
+      )
+    );
     await waitForLruHome();
     const initialLruSessionIds: string[] = [];
     for (let index = 0; index < maxBrowserSidebarSessionsPerOwner - 1; index += 1) {
       const task = lruTaskRefs[index];
       if (!task) throw new Error(`Missing LRU task ${index}`);
       if (index === maxBrowserSidebarSessionsPerOwner - 2) {
-        await expect
-          .poll(() => hasRetainedLruTaskChat(lruTaskRefs[1]!), {
-            timeout: 35_000,
-          })
-          .toBe(false);
+        await mainClock.evaluate((clock) => clock.tickAsync(30_000));
+        await expect.poll(() => hasRetainedLruTaskChat(lruTaskRefs[1]!)).toBe(false);
       }
       initialLruSessionIds.push(await openLruTaskBrowser(task));
       await appWindow.goBack();
@@ -2501,6 +2519,7 @@ test("a browser tab shows the page icon and keeps it across a reload", async () 
     assistantReply: `[Open icon page](${browserStub.baseUrl}/icon-page)`,
   });
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-browser-favicon-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
@@ -2548,6 +2567,27 @@ test("a browser tab shows the page icon and keeps it across a reload", async () 
     await address.press("Enter");
     await expect(tab).toContainText("No icon");
     await expect(tabIcon).toHaveCount(0);
+
+    const sidebar = content.getByTestId("chat-sidebar");
+    await tab.hover();
+    await sidebar.getByRole("button", { name: "Close No icon" }).click();
+    await expect(sidebar).toHaveAttribute("data-open", "false");
+    await expect(appWindow.getByTestId("chat-sidebar-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect.poll(async () => (await sidebar.boundingBox())?.width ?? 0).toBe(0);
+    await expect
+      .poll(() =>
+        app.evaluate(
+          ({ webContents }, url) =>
+            webContents
+              .getAllWebContents()
+              .some((contents) => contents.getURL() === url),
+          `${browserStub.baseUrl}/no-icon`
+        )
+      )
+      .toBe(false);
   } finally {
     await app.close();
     await apiStub.close();
@@ -2560,6 +2600,7 @@ test("sign-out closes every native browser sidebar session", async () => {
   const browserStub = await startBrowserStub();
   const apiStub = await startChatSmokeStub();
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-browser-sign-out-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
@@ -2627,6 +2668,7 @@ test("a sign-in popup opens on a click, stays in the page's session, and never o
   const browserStub = await startBrowserStub();
   const apiStub = await startChatSmokeStub();
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-browser-popup-e2e-"));
+  recordElectronOnboardingCompleted(userDataDir, [apiStub.userId]);
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],

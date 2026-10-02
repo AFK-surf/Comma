@@ -183,7 +183,7 @@ agent_vmm_host_ready() {
   while [ "$attempt" -le 15 ]; do
     if run_agent_vmm_lifecycle "$helper" status \
       --service-type "$BFT_AGENT_VMM_SERVICE_TYPE_RESOLVED" \
-      --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED" > "$observed" && \
+      --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED" --shared-host > "$observed" && \
       python3 - "$observed" <<'PY'
 import json
 import sys
@@ -254,7 +254,7 @@ install_agent_vmm_bundle() {
     [ "$installed_release_id" = "$target_release_id" ] || fail "install.agent_vmm_administrator_update_required" \
       "install the selected Agent VMM Host release with its administrator installer before BFT daemon onboarding"
     observed="$temp_dir/agent-vmm-host-status.json"
-    if ! agent_vmm_host_ready "$app/Contents/Helpers/agent-vmm-lifecycle" "$observed"; then
+    if ! agent_vmm_host_ready "$staged/Contents/Helpers/agent-vmm-lifecycle" "$observed"; then
       fail "install.agent_vmm_host_not_ready" "the administrator-installed Agent VMM Host is not ready"
     fi
     return 0
@@ -275,14 +275,14 @@ install_agent_vmm_bundle() {
       python3 -c 'import json,sys; print(json.load(sys.stdin).get("release_id", ""))' 2>/dev/null || true)
     if [ "$current_release_id" = "$target_release_id" ]; then
       observed="$temp_dir/agent-vmm-host-status.json"
-      if ! agent_vmm_host_ready "$app/Contents/Helpers/agent-vmm-lifecycle" "$observed"; then
-        if ! run_agent_vmm_lifecycle "$app/Contents/Helpers/agent-vmm-lifecycle" repair \
+      if ! agent_vmm_host_ready "$staged/Contents/Helpers/agent-vmm-lifecycle" "$observed"; then
+        if ! run_agent_vmm_lifecycle "$staged/Contents/Helpers/agent-vmm-lifecycle" repair \
           --service-type "$BFT_AGENT_VMM_SERVICE_TYPE_RESOLVED" \
           --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED" \
-          --request-id "$repair_request_id"; then
+          --request-id "$repair_request_id" --shared-host; then
           fail "install.agent_vmm_host_repair_failed" "Agent VMM Host repair stopped with its local recovery state retained"
         fi
-        if ! agent_vmm_host_ready "$app/Contents/Helpers/agent-vmm-lifecycle" "$observed"; then
+        if ! agent_vmm_host_ready "$staged/Contents/Helpers/agent-vmm-lifecycle" "$observed"; then
           fail "install.agent_vmm_host_not_ready" "Agent VMM Host readiness was not observed after repair"
         fi
       fi
@@ -306,22 +306,30 @@ install_agent_vmm_bundle() {
     }
   fi
   if [ ! -d "$app" ]; then
-    mv "$prepared" "$app"
-    helper="$app/Contents/Helpers/agent-vmm-lifecycle"
+    # The native owner checks policy and publishes while holding the same lock
+    # as maintenance. A preflight read alone cannot fence a late installer copy.
+    if ! run_agent_vmm_lifecycle "$staged/Contents/Helpers/agent-vmm-lifecycle" publish-host \
+      --source-app "$staged" \
+      --service-type "$BFT_AGENT_VMM_SERVICE_TYPE_RESOLVED" \
+      --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED"; then
+      fail "install.agent_vmm_host_publish_failed" "Local Host publication was not authorized or completed"
+    fi
+    rm -rf "$prepared"
+    helper="$staged/Contents/Helpers/agent-vmm-lifecycle"
     if ! run_agent_vmm_lifecycle "$helper" install \
       --service-type "$BFT_AGENT_VMM_SERVICE_TYPE_RESOLVED" \
       --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED" \
-      --request-id "$install_request_id"; then
+      --request-id "$install_request_id" --shared-host; then
       fail "install.agent_vmm_host_install_failed" "Agent VMM Host install stopped with its local recovery state retained"
     fi
   else
-    helper="$app/Contents/Helpers/agent-vmm-lifecycle"
+    helper="$staged/Contents/Helpers/agent-vmm-lifecycle"
     update_log="$temp_dir/agent-vmm-host-update.log"
     update_command() {
       run_agent_vmm_lifecycle "$helper" update --source-app "$prepared" \
         --target-release-id "$target_release_id" --request-id "$update_request_id" \
         --service-type "$BFT_AGENT_VMM_SERVICE_TYPE_RESOLVED" \
-        --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED"
+        --service-user "$BFT_AGENT_VMM_SERVICE_USER_RESOLVED" --shared-host
     }
     if ! update_command >"$update_log" 2>&1; then
       [ ! -s "$update_log" ] || sed -n '1,20p' "$update_log" >&2
@@ -814,6 +822,7 @@ main() {
   mkdir -p "$bin_dir" "$state_dir" "$workdir/agents"
 
   temp_dir="$(mktemp -d)"
+  temp_dir="$(cd "$temp_dir" && pwd -P)"
   trap 'rm -rf "$temp_dir"' EXIT INT TERM
 
   connector_url="${BFT_SALIX_CONNECTOR_URL:-}"
@@ -829,6 +838,23 @@ main() {
   ok "salix-connect installed and verified"
 
   agent_vmm_host_app="$home_dir/Library/Application Support/Agent VMM Host/current/Agent VMM Host.app"
+  # Local operator intent survives removal of the application and its data.
+  # Check before copying any bundle, including an older release without this gate.
+  if ! python3 - "$home_dir/Library/Application Support/Agent VMM Maintenance/state.json" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        policy = json.load(handle)
+except FileNotFoundError:
+    raise SystemExit(0)
+if policy.get("version") != 1 or not isinstance(policy.get("uninstalled"), bool):
+    raise SystemExit("Local VMM maintenance policy is invalid")
+if policy.get("activeRequest") or policy["uninstalled"]:
+    raise SystemExit("Continue local VMM maintenance before BFT installation")
+PY
+  then
+    fail "preflight.agent_vmm_maintenance_required" "Local owner maintenance prevents automatic Host installation"
+  fi
   agent_vmm_host_url="$(expand_platform_url "${BFT_AGENT_VMM_HOST_URL:-}" "$platform")"
   agent_vmm_host_sha="${BFT_AGENT_VMM_HOST_SHA256:-}"
   agent_vmm_host_size="${BFT_AGENT_VMM_HOST_SIZE:-}"

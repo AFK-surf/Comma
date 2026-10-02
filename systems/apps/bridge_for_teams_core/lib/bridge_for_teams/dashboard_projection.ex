@@ -1,6 +1,7 @@
 defmodule BridgeForTeams.DashboardProjection do
   @moduledoc """
-  Local dashboard projection API for My Space.
+  Per-project dashboard snapshots (conversation, meeting, token and provider
+  totals) read by the org Overview and Agent Swarm overview.
 
   Page reads use snapshots through this module. Salix fan-out is limited to
   explicit refresh/rebuild calls and the reconciler worker.
@@ -8,15 +9,7 @@ defmodule BridgeForTeams.DashboardProjection do
 
   import Ecto.Query
 
-  alias BridgeForTeams.{
-    Agents,
-    Conversations,
-    Memberships,
-    ProjectOAuthConnections,
-    Projects,
-    Repo,
-    WorkspaceItems
-  }
+  alias BridgeForTeams.{Agents, Conversations, ProjectOAuthConnections, Projects, Repo}
 
   alias BridgeForTeams.Salix.Client
   alias BridgeForTeams.Schema.{Organization, Project, ProjectDashboardSnapshot}
@@ -25,7 +18,6 @@ defmodule BridgeForTeams.DashboardProjection do
   @stale_after_seconds 300
   @call_timeout_ms 5_000
   @billing_timeout_ms 1_000
-  @workspace_categories WorkspaceItems.categories()
 
   def topic(project_id), do: "bft:dashboard_projection:#{project_id}"
 
@@ -156,13 +148,6 @@ defmodule BridgeForTeams.DashboardProjection do
 
           {:ok, snapshot} = upsert_snapshot(project, snapshot_attrs)
 
-          if Keyword.get(opts, :project_workspace_items, true) do
-            case project_workspace_items(project, conversations, meetings, snapshot_attrs) do
-              {:ok, _items} -> :ok
-              {:error, reason} -> Repo.rollback(reason)
-            end
-          end
-
           case Keyword.get(opts, :commit_ack, fn -> :ok end).() do
             :ok -> :ok
             {:error, reason} -> Repo.rollback(reason)
@@ -204,15 +189,6 @@ defmodule BridgeForTeams.DashboardProjection do
     with {:ok, %Project{} = project} <- Projects.get_project(project_id) do
       refresh_project(project, opts)
     end
-  end
-
-  def project_conversations(%Project{} = project, conversations) when is_list(conversations) do
-    rows =
-      conversations
-      |> Enum.filter(&workspace_conversation?/1)
-      |> Enum.map(&workspace_item_from_conversation/1)
-
-    project_workspace_item_rows(project, rows)
   end
 
   def rebuild_projects(projects, opts \\ []) when is_list(projects) do
@@ -376,264 +352,6 @@ defmodule BridgeForTeams.DashboardProjection do
     }
   end
 
-  defp project_workspace_items(%Project{} = project, conversations, meetings, snapshot_attrs) do
-    rows =
-      conversations
-      |> Enum.filter(&workspace_conversation?/1)
-      |> Enum.map(&workspace_item_from_conversation/1)
-      |> Kernel.++(
-        Enum.map(meetings, &workspace_item_from_meeting/1) ++
-          Enum.map(meetings, &workspace_item_from_meeting_recap/1) ++
-          meeting_action_items(meetings) ++
-          [
-            workspace_item_from_metrics(snapshot_attrs),
-            workspace_item_from_team_activity(snapshot_attrs)
-          ]
-      )
-
-    project_workspace_item_rows(project, rows)
-  end
-
-  defp project_workspace_item_rows(%Project{} = project, rows) do
-    visible_project_user_ids(project)
-    |> Enum.reduce_while({:ok, []}, fn user_id, {:ok, acc} ->
-      user_rows = reject_mock_owned_rows(rows, user_id, project.id)
-
-      case WorkspaceItems.upsert_projected_items(project, user_id, user_rows) do
-        {:ok, items} -> {:cont, {:ok, acc ++ items}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  # The projection's own builder rows: the metrics/team-activity singletons
-  # plus the meeting mirrors. Rows projected from real Salix conversations are
-  # NOT in this set.
-  @builder_external_sources ~w(dashboard_projection salix_meeting salix_meeting_recap salix_meeting_action)
-
-  # A user's live mock-import cards (`BridgeForTeams.WorkspaceImports`) own
-  # their categories: skip writing builder rows there so a refresh never
-  # stacks a live widget next to (or interleaves live rows into) an imported
-  # demo category. Mock rows use `external_source: "mock_import"`, so upsert
-  # identity can never overwrite them — without this skip the failure mode is
-  # duplication, not clobbering. Self-healing: once the mock cards are
-  # archived, the next refresh recreates the builder rows.
-  defp reject_mock_owned_rows(rows, user_id, project_id) do
-    owned = WorkspaceItems.mock_import_categories(user_id, project_id)
-
-    if MapSet.size(owned) == 0 do
-      rows
-    else
-      Enum.reject(rows, fn row ->
-        row["external_source"] in @builder_external_sources and
-          MapSet.member?(owned, row["category"])
-      end)
-    end
-  end
-
-  defp visible_project_user_ids(%Project{} = project) do
-    org_admin_ids =
-      project.org_id
-      |> Memberships.list_org_members()
-      |> Enum.filter(&(&1.role in ["owner", "admin"]))
-      |> Enum.map(& &1.user_id)
-
-    project_member_ids =
-      project.id
-      |> Memberships.list_project_members()
-      |> Enum.map(& &1.user_id)
-
-    [project.created_by_user_id | org_admin_ids ++ project_member_ids]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.uniq()
-  end
-
-  defp workspace_item_from_conversation(conversation) do
-    metadata = conversation["metadata"] |> map_value() |> Map.delete("workflow_summary")
-    metadata = maybe_put(metadata, "owner_user_id", conversation["owner_user_id"])
-    source_refs = map_value(conversation["source_refs"])
-    payload = map_value(metadata["payload"])
-    kind = conversation["kind"] || "work_item"
-    category = workspace_category(kind, metadata)
-
-    %{
-      "title" => conversation["title"] || "Untitled",
-      "kind" => kind,
-      "category" => category,
-      "status" => workspace_item_status(kind, conversation["status"]),
-      "activity_status" => conversation["activity_status"],
-      "source" => metadata["source"] || "projection",
-      "platform" => metadata["platform"] || "comma",
-      "description" => metadata["description"],
-      "payload" => payload,
-      "metadata" => metadata,
-      "source_refs" => source_refs,
-      "labels" => conversation["labels"] || [],
-      "latest_artifact" => conversation["latest_artifact"],
-      "artifact_manifest" => conversation["artifact_manifest"],
-      "archived_at" => archive_timestamp(conversation, metadata),
-      "external_source" => metadata["external_source"],
-      "external_id" => metadata["external_id"],
-      "salix_conversation_id" => conversation["conversation_id"],
-      "salix_agent_id" => source_refs["agent_id"] || conversation_agent_id(conversation),
-      "salix_schedule_id" => source_refs["schedule_id"],
-      "vfs_path" => payload["vfs_path"],
-      "synced_at" => DateTime.utc_now()
-    }
-  end
-
-  defp workspace_category("agent_task", metadata) do
-    case metadata["workspace_category"] do
-      category when category in @workspace_categories -> category
-      _missing_or_invalid -> "general"
-    end
-  end
-
-  defp workspace_category(kind, _metadata), do: WorkspaceItems.category_for_kind(kind)
-
-  defp workspace_conversation?(%{"kind" => kind}) when is_binary(kind),
-    do: kind in WorkspaceItems.kinds()
-
-  defp workspace_conversation?(_conversation), do: false
-
-  defp workspace_item_status("agent_task", "active"), do: "in_progress"
-  defp workspace_item_status("agent_task", "completed"), do: "done"
-
-  defp workspace_item_status("agent_task", status)
-       when status in ~w(failed cancelled escalated),
-       do: status
-
-  defp workspace_item_status(_kind, status)
-       when status in ~w(suggested accepted in_progress ready_for_review done archived),
-       do: status
-
-  defp workspace_item_status("agent_task", _status), do: "in_progress"
-  defp workspace_item_status(_kind, _status), do: "accepted"
-
-  defp workspace_item_from_meeting(meeting) do
-    %{
-      "title" => meeting["title"] || meeting[:title] || "Meeting",
-      "kind" => "meeting",
-      "category" => "meetings",
-      "status" => "accepted",
-      "source" => "projection",
-      "platform" => "comma",
-      "payload" => map_value(meeting),
-      "external_source" => "salix_meeting",
-      "external_id" =>
-        meeting["meeting_id"] || meeting[:meeting_id] || meeting["id"] || meeting[:id],
-      "synced_at" => DateTime.utc_now()
-    }
-  end
-
-  defp workspace_item_from_meeting_recap(meeting) do
-    summary = map_value(meeting["summary"] || meeting[:summary])
-    meeting_id = meeting["meeting_id"] || meeting[:meeting_id] || meeting["id"] || meeting[:id]
-    title = summary["title"] || meeting["title"] || meeting[:title] || "Meeting"
-
-    %{
-      "title" => "#{title} — recap",
-      "kind" => "meeting_recap",
-      "category" => "meeting_recaps",
-      "status" => "ready_for_review",
-      "source" => "projection",
-      "platform" => provider_name(meeting) || "comma",
-      "payload" => %{
-        "meeting_id" => meeting_id,
-        "bullets" => List.wrap(summary["key_points"]),
-        "date" => Date.utc_today() |> Date.to_iso8601()
-      },
-      "external_source" => "salix_meeting_recap",
-      "external_id" => meeting_id,
-      "synced_at" => DateTime.utc_now()
-    }
-  end
-
-  defp meeting_action_items(meetings) do
-    meetings
-    |> Enum.flat_map(fn meeting ->
-      summary = map_value(meeting["summary"] || meeting[:summary])
-      meeting_id = meeting["meeting_id"] || meeting[:meeting_id] || meeting["id"] || meeting[:id]
-      title = summary["title"] || meeting["title"] || meeting[:title] || "Meeting"
-
-      summary
-      |> Map.get("action_items", [])
-      |> Enum.with_index()
-      |> Enum.map(fn {item, index} ->
-        item = map_value(item)
-
-        %{
-          "title" => item["description"] || item["title"] || "Follow up",
-          "kind" => "work_item",
-          "category" => "general",
-          "status" => "accepted",
-          "source" => "projection",
-          "platform" => provider_name(meeting) || "comma",
-          "payload" => %{
-            "origin" => "meeting:#{meeting_id}:#{index}",
-            "origin_title" => title,
-            "owner" => item["owner"],
-            "deadline" => item["deadline"]
-          },
-          "external_source" => "salix_meeting_action",
-          "external_id" => "#{meeting_id}:#{index}",
-          "synced_at" => DateTime.utc_now()
-        }
-      end)
-    end)
-  end
-
-  defp workspace_item_from_metrics(attrs) do
-    %{
-      "title" => "Workspace metrics",
-      "kind" => "metrics_snapshot",
-      "category" => "metrics",
-      "status" => "ready_for_review",
-      "source" => "projection",
-      "platform" => "comma",
-      "payload" => %{
-        "summary" => "Live from your workspace projection.",
-        "hero" => %{
-          "type" => "kpis",
-          "items" => [
-            %{"label" => "Conversations", "value" => to_string(attrs.conversation_count || 0)},
-            %{"label" => "Meetings", "value" => to_string(attrs.meeting_count || 0)},
-            %{"label" => "Tokens used", "value" => to_string(attrs.token_total || 0)}
-          ]
-        }
-      },
-      "external_source" => "dashboard_projection",
-      "external_id" => "metrics",
-      "synced_at" => DateTime.utc_now()
-    }
-  end
-
-  defp workspace_item_from_team_activity(attrs) do
-    recent = attrs.recent_conversations || []
-
-    %{
-      "title" => "Team activity",
-      "kind" => "team_activity",
-      "category" => "team_activity",
-      "status" => "ready_for_review",
-      "source" => "projection",
-      "platform" => "comma",
-      "payload" => %{
-        "summary" => "#{length(recent)} workspace conversations updated.",
-        "hero" => %{
-          "type" => "entities",
-          "items" =>
-            Enum.map(recent, fn item ->
-              %{"name" => item["title"] || "Untitled", "detail" => item["status"] || ""}
-            end)
-        }
-      },
-      "external_source" => "dashboard_projection",
-      "external_id" => "team_activity",
-      "synced_at" => DateTime.utc_now()
-    }
-  end
-
   defp call_with_retry(fun), do: call_with_retry(fun, 2, @call_timeout_ms)
 
   defp call_with_retry(fun, attempts_left, timeout_ms) do
@@ -711,17 +429,6 @@ defmodule BridgeForTeams.DashboardProjection do
   defp provider_name(%{toolkit: toolkit}) when is_binary(toolkit), do: toolkit
   defp provider_name(_), do: nil
 
-  defp conversation_agent_id(%{"participants" => participants}) when is_list(participants) do
-    participants
-    |> Enum.find(&(&1["actor_type"] == "agent"))
-    |> case do
-      %{"agent_id" => agent_id} -> agent_id
-      _ -> nil
-    end
-  end
-
-  defp conversation_agent_id(_conversation), do: nil
-
   defp normalize_snapshot_attrs(attrs) do
     usage_total =
       attrs[:token_total] || attrs["token_total"] ||
@@ -792,10 +499,6 @@ defmodule BridgeForTeams.DashboardProjection do
 
   defp int(_), do: 0
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
 
   defp positive_integer(value, default) when is_binary(value) do
@@ -806,16 +509,6 @@ defmodule BridgeForTeams.DashboardProjection do
   end
 
   defp positive_integer(_value, default), do: default
-
-  defp map_value(value) when is_map(value), do: value
-  defp map_value(_), do: %{}
-
-  # Task archive time is owned by the Conversation; older non-Task projections
-  # keep their existing metadata representation.
-  defp archive_timestamp(%{"kind" => "agent_task", "archived_at" => value}, _metadata)
-       when is_integer(value), do: DateTime.from_unix!(value, :millisecond)
-
-  defp archive_timestamp(_conversation, metadata), do: metadata["archived_at"]
 
   defp timestamp(%DateTime{} = datetime), do: datetime
 

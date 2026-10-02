@@ -43,6 +43,7 @@ export function useSessionLifecycleSnapshot(source: SessionLifecycleProjectionSo
 
 export type {
   SessionAuthenticatorController,
+  SessionGuestController,
   SessionHostController,
   SessionLifecycleController,
   SessionLoginChallenge,

@@ -55,6 +55,8 @@ def write_host_runtime_archive(
     install_error: str | None = None,
     version_side_effect: pathlib.Path | None = None,
     ready_after_repair: bool = False,
+    uninstall_after_version: pathlib.Path | None = None,
+    update_error: str | None = None,
 ) -> str:
     app = archive_path.parent / "Agent VMM Host.app"
     helper = app / "Contents" / "Helpers" / "agent-vmm-lifecycle"
@@ -81,6 +83,12 @@ def write_host_runtime_archive(
         install_failure = (
             "if [ \"${1:-}\" = install ]; then "
             f"printf '%s\\n' {shlex.quote(install_error)} >&2; exit 1; fi\n"
+        )
+    update_failure = ""
+    if update_error is not None:
+        update_failure = (
+            "if [ \"${1:-}\" = update ]; then "
+            f"printf '%s\\n' {shlex.quote(update_error)} >&2; exit 1; fi\n"
         )
     repair_marker = archive_path.parent / "agent-vmm-repair-complete"
     repair_status = ""
@@ -111,12 +119,30 @@ def write_host_runtime_archive(
     version_command = ""
     if version_side_effect is not None:
         version_command = f"touch {shlex.quote(str(version_side_effect))}; "
+    if uninstall_after_version is not None:
+        version_command += (
+            f"mkdir -p {shlex.quote(str(uninstall_after_version.parent))}; "
+            f"printf '%s' '{{\"version\":1,\"uninstalled\":true}}' > {shlex.quote(str(uninstall_after_version))}; "
+        )
     write_executable(
         helper,
         "#!/bin/sh\n"
         f"if [ \"${{1:-}}\" = version ]; then {version_command}printf '%s\\n' '{{\"component\":\"agent-vmm-host\",\"version\":\"release-test\",\"release_id\":\"release-test\"}}'; exit 0; fi\n"
+        "if [ \"${1:-}\" = publish-host ]; then\n"
+        "python3 - \"$3\" \"$HOME\" <<'PY'\n"
+        "import json, pathlib, shutil, sys\n"
+        "home = pathlib.Path(sys.argv[2])\n"
+        "policy = home / 'Library/Application Support/Agent VMM Maintenance/state.json'\n"
+        "if policy.exists():\n"
+        "    state = json.loads(policy.read_text())\n"
+        "    if state.get('uninstalled') or state.get('activeRequest'): raise SystemExit('native owner denied publication')\n"
+        "target = home / 'Library/Application Support/Agent VMM Host/current/Agent VMM Host.app'\n"
+        "if not target.exists(): shutil.copytree(sys.argv[1], target)\n"
+        "PY\n"
+        "exit $?\nfi\n"
         f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log_path))}\n"
         f"{install_failure}"
+        f"{update_failure}"
         f"{repair_status}"
         f"{delayed_status}"
         f"if [ \"${{1:-}}\" = status ]; then printf '%s\\n' {shlex.quote(json.dumps(status))}; fi\n",
@@ -401,6 +427,64 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 self.assertIn(detail, proc.stderr)
                 self.assertFalse((prefix / "bin" / "salix-connect").exists())
 
+    def test_completed_uninstall_during_download_prevents_late_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            connector = artifacts / "salix-connector"
+            connector_sha = write_executable(connector, "#!/bin/sh\nexit 0\n")
+            runner = artifacts / "runner"
+            runner_sha = write_worker(runner)
+            env = {
+                "HOME": str(root / "home"),
+                "BFT_INSTALL_PREFIX": str(root / "install"),
+                "BFT_SALIX_CONNECTOR_URL": connector.as_uri(),
+                "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
+                "BFT_RUNNER_URL": runner.as_uri(),
+                "BFT_RUNNER_SHA256": runner_sha,
+                **agent_vmm_host_env(root, artifacts),
+            }
+            policy = root / "home/Library/Application Support/Agent VMM Maintenance/state.json"
+            archive = artifacts / "agent-vmm-host.zip"
+            env["BFT_AGENT_VMM_HOST_SHA256"] = write_host_runtime_archive(
+                archive, root / "host-lifecycle.log", uninstall_after_version=policy
+            )
+            env["BFT_AGENT_VMM_HOST_SIZE"] = str(archive.stat().st_size)
+            result = self.run_installer(env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("install.agent_vmm_host_publish_failed", result.stderr)
+            self.assertFalse((root / "home/Library/Application Support/Agent VMM Host/current/Agent VMM Host.app").exists())
+
+    def test_local_maintenance_prevents_restaging_an_old_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            connector = artifacts / "salix-connector"
+            connector_sha = write_executable(connector, "#!/bin/sh\nexit 0\n")
+            runner = artifacts / "runner"
+            runner_sha = write_worker(runner)
+            env = {
+                "HOME": str(root / "home"),
+                "BFT_INSTALL_PREFIX": str(root / "install"),
+                "BFT_SALIX_CONNECTOR_URL": connector.as_uri(),
+                "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
+                "BFT_RUNNER_URL": runner.as_uri(),
+                "BFT_RUNNER_SHA256": runner_sha,
+                **agent_vmm_host_env(root, artifacts),
+            }
+            policy = root / "home" / "Library" / "Application Support" / "Agent VMM Maintenance" / "state.json"
+            policy.parent.mkdir(parents=True)
+            app = root / "home" / "Library" / "Application Support" / "Agent VMM Host" / "current" / "Agent VMM Host.app"
+            for state in ({"version": 1, "uninstalled": True}, {"version": 1, "uninstalled": False, "activeRequest": "maintenance-1"}, {"version": 2, "uninstalled": False}):
+                policy.write_text(json.dumps(state), encoding="utf-8")
+                result = self.run_installer(env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("preflight.agent_vmm_maintenance_required", result.stderr)
+                self.assertFalse(app.exists())
+                self.assertFalse((root / "host-lifecycle.log").exists())
+
     def test_installs_shared_host_runtime_and_observes_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -448,8 +532,8 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertEqual(
                 host_log.read_text(encoding="utf-8").splitlines(),
                 [
-                    f"install --service-type agent --service-user {pwd.getpwuid(os.getuid()).pw_name} --request-id bft-host-install-test-install",
-                    f"status --service-type agent --service-user {pwd.getpwuid(os.getuid()).pw_name}",
+                    f"install --service-type agent --service-user {pwd.getpwuid(os.getuid()).pw_name} --request-id bft-host-install-test-install --shared-host",
+                    f"status --service-type agent --service-user {pwd.getpwuid(os.getuid()).pw_name} --shared-host",
                 ],
             )
             self.assertFalse((root / "home" / "Applications" / "Agent VMM.app").exists())
@@ -474,7 +558,7 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             host_log.write_text("", encoding="utf-8")
             proc = self.run_installer(install_env)
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(host_log.read_text(encoding="utf-8").splitlines(), [f"status {SERVICE_ARGS}"])
+            self.assertEqual(host_log.read_text(encoding="utf-8").splitlines(), [f"status {SERVICE_ARGS} --shared-host"])
             self.assertFalse(any(host_app.parent.glob(".Agent VMM Host.*.app")))
 
             marker = host_app / "old-generation"
@@ -493,7 +577,7 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 lines = host_log.read_text(encoding="utf-8").splitlines()
                 self.assertTrue(lines[0].startswith("update --source-app "), lines)
-                self.assertEqual(lines[1], f"status {SERVICE_ARGS}")
+                self.assertEqual(lines[1], f"status {SERVICE_ARGS} --shared-host")
                 arguments = lines[0].split()
                 request_id = arguments[arguments.index("--request-id") + 1]
                 self.assertIn("--target-release-id release-test", lines[0])
@@ -503,8 +587,8 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             marker.write_text("retained", encoding="utf-8")
             write_executable(helper, "#!/bin/sh\nprintf 'disk still owned\n' >&2\nexit 1\n")
             proc = self.run_installer(install_env)
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("install.agent_vmm_host_update_failed", proc.stderr)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            # Business commands use the verified staged helper, never this broken old helper.
             self.assertEqual(marker.read_text(encoding="utf-8"), "retained")
             self.assertIn("disk still owned", helper.read_text(encoding="utf-8"))
 
@@ -584,7 +668,7 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertIn(diagnostic, proc.stderr)
             self.assertEqual(
                 host_log.read_text(encoding="utf-8").splitlines(),
-                [f"install {SERVICE_ARGS} --request-id bft-host-install-test-install"],
+                [f"install {SERVICE_ARGS} --request-id bft-host-install-test-install --shared-host"],
             )
             host_app = (
                 root
@@ -635,10 +719,10 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             lines = host_log.read_text(encoding="utf-8").splitlines()
             self.assertIn(
-                f"repair {SERVICE_ARGS} --request-id bft-host-recovery-test-repair",
+                f"repair {SERVICE_ARGS} --request-id bft-host-recovery-test-repair --shared-host",
                 lines,
             )
-            self.assertEqual(lines[-1], f"status {SERVICE_ARGS}")
+            self.assertEqual(lines[-1], f"status {SERVICE_ARGS} --shared-host")
 
     def test_host_runtime_update_failure_preserves_current_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -654,7 +738,7 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             host_sha = write_host_runtime_archive(
                 artifacts / "agent-vmm-host.zip",
                 new_log,
-                install_error="new Host install failed",
+                update_error="pre-cutover update failed",
             )
             home = root / "home"
             old_app = (
@@ -696,7 +780,8 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
 
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("install.agent_vmm_host_update_failed", proc.stderr)
-            lines = old_log.read_text(encoding="utf-8").splitlines()
+            self.assertFalse(old_log.exists(), "The older installed helper must not execute business commands")
+            lines = new_log.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1, lines)
             self.assertTrue(lines[0].startswith("update --source-app "), lines)
             self.assertIn("--target-release-id release-test --request-id bft-host-install-update", lines[0])
@@ -773,10 +858,10 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertEqual(
                 host_log.read_text(encoding="utf-8").splitlines(),
                 [
-                    f"install {SERVICE_ARGS} --request-id bft-host-install-install",
-                    f"status {SERVICE_ARGS}",
-                    f"status {SERVICE_ARGS}",
-                    f"status {SERVICE_ARGS}",
+                    f"install {SERVICE_ARGS} --request-id bft-host-install-install --shared-host",
+                    f"status {SERVICE_ARGS} --shared-host",
+                    f"status {SERVICE_ARGS} --shared-host",
+                    f"status {SERVICE_ARGS} --shared-host",
                 ],
             )
 

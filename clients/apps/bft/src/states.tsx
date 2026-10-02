@@ -1,4 +1,6 @@
 import { messages } from "./messages";
+import { orgHref } from "./navSpec";
+import { spaLinkClick } from "./router";
 
 const t = messages.states;
 
@@ -21,6 +23,31 @@ export function OrgNotFound() {
       <p>{t.orgNotFoundBody}</p>
       <a className="bft-btn" href="/orgs">
         {t.backToOrganizations}
+      </a>
+    </div>
+  );
+}
+
+export function ProjectNotFound({ org }: { org: string }) {
+  return (
+    <div className="bft-state">
+      <h2>{t.projectNotFoundTitle}</h2>
+      <p>{t.projectNotFoundBody}</p>
+      <a className="bft-btn" href={orgHref(org, "/projects")} onClick={spaLinkClick}>
+        {t.backToAgentSwarms}
+      </a>
+    </div>
+  );
+}
+
+/** An owner/admin page answered 403 for this member. */
+export function Forbidden({ org }: { org: string }) {
+  return (
+    <div className="bft-state">
+      <h2>{t.forbiddenTitle}</h2>
+      <p>{t.forbiddenBody}</p>
+      <a className="bft-btn" href={orgHref(org)}>
+        {t.backToOverview}
       </a>
     </div>
   );

@@ -495,3 +495,50 @@ func TestCodexUnstartedInputWaitsForDurableBinding(t *testing.T) {
 		t.Fatalf("binding retry changed execution: %#v", restored)
 	}
 }
+
+// The Worker's chosen reasoning effort reaches Codex on each turn, together
+// with its model. A Worker without one leaves Codex on its own default.
+func TestCodexTurnStartSendsModelAndEffort(t *testing.T) {
+	for _, effort := range []string{"high", ""} {
+		t.Run("effort="+effort, func(t *testing.T) {
+			root, logPath := t.TempDir(), filepath.Join(t.TempDir(), "native.log")
+			first := newEventTestConnector(t, root)
+			first.setComputeRuntimeExecutionTarget(nil)
+			batch := testRuntimeInputBatch("codex", "effort-session", "effort-dispatch", "effort-input")
+			batch.Session.Command, batch.Session.Workspace = fakeCodexCommand(t, logPath, nil), t.TempDir()
+			batch.Session.Model, batch.Session.ReasoningEffort = "gpt-5.5", effort
+			persistRuntimeInputBatch(t, first.externalRuntimeState, batch)
+			if _, err := first.externalRuntimeState.claimInputBatches([]externalRuntimeInputBatch{batch}, first.externalRuntimeState.inputForBatches([]externalRuntimeInputBatch{batch})); err != nil {
+				t.Fatal(err)
+			}
+			first.externalRuntimeState.close()
+			c, err := newConnector(config{root: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.closeExternalRuntimes()
+			attachUnboundCodexTestTransport(t, c)
+			c.checkExternalRuntimes(context.Background())
+			assertCodexOriginalInputDelivered(t, logPath, "effort-input", 1)
+
+			log, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(string(log), "\n") {
+				raw, ok := strings.CutPrefix(line, "turn/start ")
+				if !ok || !strings.Contains(raw, "effort-input") {
+					continue
+				}
+				var params map[string]any
+				if err := json.Unmarshal([]byte(raw), &params); err != nil {
+					t.Fatal(err)
+				}
+				gotEffort, present := params["effort"]
+				if params["model"] != "gpt-5.5" || present != (effort != "") || (present && gotEffort != effort) {
+					t.Fatalf("turn/start params = %v, want model gpt-5.5 and effort %q", params, effort)
+				}
+			}
+		})
+	}
+}

@@ -91,11 +91,12 @@ defmodule CommaWeb.RecommendationRenderer do
     or verify a fix. It is a suggested task to start, not a claim you already did it.
     Write it as an imperative that starts with its verb, not with a name or an ID.
     Do not invent extra deliverables, scope, or a procedure to make a task sound useful.
-    Aim for 15-30 Chinese characters or 8-15 English words, under 100 characters.
+    Aim for 8-15 words in English or 15-30 characters in Chinese, under 100 characters.
     Keep explanations and source wording in the popup, not the pre-task title.
-    Prefer "复测生成速度优化，记录实际响应表现" over
-    "重试优化后的版本，确认能否稳定在 10 秒内返回结果" when the sender merely
-    reported a roughly 10-second observation and asked the recipient to retry.
+    Prefer "retest the speed optimization and record the observed response time"
+    over "retry the optimized version and confirm it returns within 10 seconds"
+    when the sender merely reported a roughly 10-second observation and asked the
+    recipient to retry. Examples show intent, not the output language.
     Reported measurements are observations, not acceptance thresholds or deadlines.
     Preserve numeric requirements only when the source explicitly requests them.
     Do not turn approximations into guarantees or infer a missing feature is part
@@ -117,6 +118,8 @@ defmodule CommaWeb.RecommendationRenderer do
   end
 
   defp instructions(_run), do: @instructions
+  defp language_subject(%{relevance_mode: "member"}), do: "every recommendation"
+  defp language_subject(_run), do: "all authored prose"
   defp schema(%{relevance_mode: "member"}), do: Comma.RecommendationMemberSelection.schema()
   defp schema(_run), do: RecommendationDraft.schema()
 
@@ -141,7 +144,10 @@ defmodule CommaWeb.RecommendationRenderer do
   normal: relevant to the member's work, but no action is needed soon.
   low: FYI updates, newsletters, automated notices, broad announcements, work
   another person owns, resolved work, or anything the conversation already covers.
-  When unsure between two levels, choose the lower one. Never add obligations,
+  Rate only from the evidence. Comma rereads the source before any message, so
+  do not lower a level to be safe. When the evidence cannot tell whether the
+  member must act, answer unclear for the most urgent candidate instead of
+  guessing a level; Comma looks at it again later. Never add obligations,
   deadlines or urgency absent from the evidence. The level decides whether
   Comma considers the message at all.
   Write the message as Comma speaking to the member in chat. In one or two short
@@ -166,7 +172,7 @@ defmodule CommaWeb.RecommendationRenderer do
       "required" => ["id", "urgency", "message"],
       "properties" => %{
         "id" => %{"type" => "string", "minLength" => 1, "maxLength" => 128},
-        "urgency" => %{"type" => "string", "enum" => @urgencies},
+        "urgency" => %{"type" => "string", "enum" => @urgencies ++ ["unclear"]},
         "message" => %{"type" => "string", "minLength" => 1, "maxLength" => 600}
       }
     }
@@ -213,13 +219,19 @@ defmodule CommaWeb.RecommendationRenderer do
   end
 
   defp attention_request(workspace, profile, input, llm_opts, billing) do
+    locale = Comma.Accounts.locale(profile.user_id)
+
     messages = [
-      %{role: "system", content: @attention_instructions <> language(profile.locale)},
+      %{
+        role: "system",
+        content: with_language(@attention_instructions, locale, "the message")
+      },
       %{
         role: "user",
         content:
           Jason.encode!(
             Map.merge(input, %{
+              "outputLanguage" => output_language(locale),
               "currentTime" => DateTime.to_iso8601(DateTime.utc_now()),
               "timezone" => profile.timezone,
               "contentSchema" => attention_schema()
@@ -289,7 +301,10 @@ defmodule CommaWeb.RecommendationRenderer do
   end
 
   defp request(workspace, profile, run, collection, context, llm_opts, billing) do
+    locale = Comma.Accounts.locale(profile.user_id)
+
     input = %{
+      "outputLanguage" => output_language(locale),
       "currentTime" => DateTime.to_iso8601(DateTime.utc_now()),
       "timezone" => profile.timezone,
       "sources" => if(run.relevance_mode == "member", do: [], else: context.input),
@@ -305,7 +320,7 @@ defmodule CommaWeb.RecommendationRenderer do
     messages = [
       %{
         role: "system",
-        content: instructions(run) <> language(profile.locale)
+        content: with_language(instructions(run), locale, language_subject(run))
       },
       %{role: "user", content: Jason.encode!(input)}
     ]
@@ -395,10 +410,22 @@ defmodule CommaWeb.RecommendationRenderer do
   defp content({:error, reason}), do: {:error, {:model_error, LLM.Error.category(reason)}}
   defp content(_), do: {:error, :invalid_briefing_content}
 
-  defp language("zh-CN"),
-    do:
-      "\nWrite all authored prose in Simplified Chinese. Preserve source-owned names and labels."
+  # The output language comes first and is checked last. A single trailing
+  # sentence lost to Chinese candidate text in about one English run in five:
+  # the model wrote every recommendation in Chinese.
+  defp with_language(instructions, locale, subject) do
+    language = language(locale)
 
-  defp language(_),
-    do: "\nWrite all authored prose in English. Preserve source-owned names and labels."
+    """
+    Output language: #{language}. Write #{subject} in #{language}, whatever language
+    the candidates, their context or the conversation use. Keep person names,
+    product names, identifiers and code exactly as written; translate everything else.
+    """ <> instructions <> "Finally, check that #{subject} is written in #{language}.\n"
+  end
+
+  defp language("zh-CN"), do: "Simplified Chinese"
+  defp language(_), do: "English"
+
+  defp output_language("zh-CN"), do: "zh-CN"
+  defp output_language(_), do: "en"
 end

@@ -1,7 +1,8 @@
 import type { ChatTarget } from "@comma/chat-contract";
 import type { CommaConversation } from "@comma/app/api";
 import type { ChatMessage } from "@comma/app/chat-runtime";
-import { baseLocale, messages as i18n, type CommaLocale } from "@comma/i18n";
+import { baseLocale, messages as i18n } from "@comma/i18n";
+import { readMainLocale, type MainLocaleSource } from "../main-locale";
 
 // The banner wraps the body to a few lines and fades out the overflow itself,
 // so visual truncation belongs to the platform. This budget only keeps the
@@ -60,6 +61,7 @@ function isRouterMessage(
   message: ChatMessage,
   conversation: CommaConversation
 ): boolean {
+  if (message.platformSource) return false;
   if (message.role !== "assistant") return false;
   if (message.text.trim() === "") return false;
   if (message.actorRole === "router") return true;
@@ -72,7 +74,7 @@ export class MessageNotificationsService {
   readonly #emitEvent: (payload: MessageNotificationEmission) => void;
   readonly #onDeliveryRefused: () => void;
   readonly #sendReply: (target: ChatTarget, text: string) => Promise<void>;
-  readonly #locale: CommaLocale;
+  readonly #locale: MainLocaleSource;
   readonly #productName: string;
   readonly #log: { warn: (message: string) => void };
   // Router messages delivered since the user was last in Comma.
@@ -92,7 +94,7 @@ export class MessageNotificationsService {
     sendReply,
   }: {
     emitEvent: (payload: MessageNotificationEmission) => void;
-    locale?: CommaLocale;
+    locale?: MainLocaleSource;
     log: { warn: (message: string) => void };
     /**
      * The OS took none of the banners just raised. The authorization the
@@ -176,13 +178,16 @@ export class MessageNotificationsService {
         playSound: preferences.notificationSound && deliveredCount === 0,
         replyPlaceholder: i18n.electron_notification_reply_placeholder(
           {},
-          { locale: this.#locale }
+          { locale: readMainLocale(this.#locale) }
         ),
         // The Router speaks as Comma. The Home chat's server title ("Bridge
         // chat") names storage, not who is talking; a task keeps its own.
         title:
           conversation.kind === "user_chat"
-            ? i18n.electron_notification_router_title({}, { locale: this.#locale })
+            ? i18n.electron_notification_router_title(
+                {},
+                { locale: readMainLocale(this.#locale) }
+              )
             : conversation.title.trim() || this.#productName,
       });
       if (delivered) deliveredCount += 1;

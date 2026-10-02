@@ -16,6 +16,7 @@ Update the relevant topic instead of adding a plan, review transcript, or comple
 | [Development](development.md)                                     | Local setup, native development, troubleshooting                      |
 | [Clients](clients.md)                                             | Native authority, authentication lifecycle, browser and UI boundaries |
 | [Identity and security](identity-security.md)                     | User, tenant, admin, OAuth, signing-key operations                    |
+| [Guest mode](architecture/DOMAIN_CONCEPTS.md#guest-mode)          | Web guest sign-in, router-only guest Tenant, handoff and chat import  |
 | [Conversations](salix/conversation-owner-actor.md)                | Canonical messages, participants, delivery, history                   |
 | [Agent runtime](agent-runtime.md)                                 | Session execution, dependency liveness, compaction                    |
 | [Tasks and background execution](salix/tasks-background-execution.md)             | Task state, delegation, schedules, archive                        |

@@ -216,3 +216,29 @@ Run `mix test apps/salix_agent/test/browser_live_test.exs --include browser_live
 They create and delete their own Cloudflare browsers and consume provider usage. Keep the API token in the specified file.
 Local tests establish first-request cookie and first-script local-storage behavior. Live tests verify transfer through Cloudflare CDP and guardrails.
 Neither proves every website's login behavior, IndexedDB persistence, or preservation of changes after the last successful checkpoint.
+
+## Computer Use permission identity
+
+Computer Use owns its macOS Accessibility and Screen Recording permissions.
+Packaged Comma installs the signed helper outside Comma.app, under
+`~/Library/Application Support/Comma Computer Use/<helper bundle ID>/`.
+Permission checks, authorization, and Connector actions open that same app
+through LaunchServices. System Settings lists the flavor-specific Computer Use
+name. Its permission restart does not require Comma to restart.
+The installation replaces only the copied helper bundle when shipped code changes.
+Existing Comma permissions do not grant access to this independent app. Users
+must authorize Computer Use. The next action starts it again if macOS closed it.
+
+The packaged helper regression installs a nested distribution copy and checks
+its signature and LaunchServices identity. It starts, stops, and relaunches the
+independent app. A regression starts a replacement before the old helper exits.
+It checks that final cleanup preserves the replacement's socket and response path.
+Native tests also cover replacement and failed-copy recovery.
+These tests do not grant TCC permissions or prove the system consent dialog.
+
+On a fresh macOS test account, open authorization from packaged Comma.
+Grant Accessibility and Screen Recording to the Computer Use app.
+Confirm that System Settings names Computer Use for both grants.
+Select the system restart action and confirm that Comma's PID does not change.
+Then request a screenshot through the Connector and confirm that it succeeds.
+Do not reset a developer's existing permissions to run this check.

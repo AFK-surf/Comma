@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { supportedLocales } from "@comma/i18n";
 import {
   recommendationEnvelopeSchema,
   type RecommendationSettings,
@@ -58,6 +59,9 @@ export const commaUserProfileSchema = z
     // Reads retain the physical/import compatibility bound. Self-service
     // writes are still limited to 64 characters by the UI and server command.
     name: z.string().min(1).max(200).nullable().optional(),
+    // The account's app language, shared by every device. Null until the
+    // first signed-in client reports its language.
+    locale: z.enum(supportedLocales).nullable().optional(),
   })
   .strip();
 
@@ -404,7 +408,12 @@ export const commaPluginPersonalSourcesSchema = z.object({
       connectionId: z.string(),
       toolkit: z.string(),
       kind: z.enum(["composio", "managed_oauth", "native_mcp_oauth"]),
-      state: z.enum(["ready", "needs_confirmation", "needs_authorization"]),
+      state: z.enum([
+        "ready",
+        "needs_confirmation",
+        "needs_authorization",
+        "needs_reauthorization",
+      ]),
       selectedAccountId: z.string().nullable().optional(),
       candidates: z.array(z.object({ id: z.string() })),
       /** MCP OAuth grants name the plugin MCPs they authorize. */
@@ -447,17 +456,16 @@ export const salixMessageSchema = z
     user_id: z.string().min(1).optional(),
     role_label: z.string().min(1).optional(),
     content: z.array(salixContentBlockSchema),
+    platform_message: z
+      .object({
+        provider: z.string().min(1).max(64),
+        role: z.enum(["user", "assistant"]),
+        content: z.array(salixContentBlockSchema),
+      })
+      .optional(),
     metadata: salixMessageMetadataSchema.optional(),
     client_request_id: z.string().optional(),
     created_at: z.number().optional(),
-  })
-  .passthrough();
-
-export const commaChatSuggestionSchema = z
-  .object({
-    id: z.string().min(1),
-    label: z.string().min(1),
-    prompt: z.string().min(1),
   })
   .passthrough();
 
@@ -1233,7 +1241,6 @@ export type CommaPluginConfirmedAccount = z.output<
 >;
 export type CommaGroupFile = z.output<typeof commaGroupFileSchema>;
 export type SalixMessage = z.output<typeof salixMessageSchema>;
-export type CommaChatSuggestion = z.output<typeof commaChatSuggestionSchema>;
 export type CommaConversationKind = z.output<typeof commaConversationKindSchema>;
 export type CommaConversation = z.output<typeof commaConversationSchema>;
 

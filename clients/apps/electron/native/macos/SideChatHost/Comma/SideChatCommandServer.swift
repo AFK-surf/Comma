@@ -8,6 +8,9 @@ import Foundation
 final class SideChatCommandServer {
     private weak var controller: EdgeChatController?
     private var readTask: Task<Void, Never>?
+    private lazy var statusMenu = StatusMenuController { [weak self] id in
+        self?.emit(.statusMenuSelect(requestId: UUID().uuidString, id: id))
+    }
 
     init(controller: EdgeChatController) {
         self.controller = controller
@@ -107,6 +110,15 @@ final class SideChatCommandServer {
                 error: registered ? nil : "The global shortcut is unavailable.",
                 ok: registered
             ))
+        case let .statusMenuShow(requestId, iconPath, rows, toolTip, width):
+            statusMenu.show(iconPath: iconPath, toolTip: toolTip, rows: rows, width: width)
+            emit(.result(requestId: requestId, error: nil, ok: true))
+        case let .statusMenuHide(requestId):
+            statusMenu.hide()
+            emit(.result(requestId: requestId, error: nil, ok: true))
+        case let .enabled(requestId, enabled):
+            controller?.setEnabled(enabled)
+            emit(.result(requestId: requestId, error: nil, ok: true))
         case let .stop(requestId):
             emit(.result(requestId: requestId, error: nil, ok: true))
             NSApp.terminate(nil)

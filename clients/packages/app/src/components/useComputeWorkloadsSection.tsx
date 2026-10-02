@@ -43,13 +43,18 @@ function clearCreation(key: string, requestId: string) {
   return true;
 }
 const preparing = (w: CommaComputeWorkload) =>
-  ["pending", "allocating", "starting", "creating"].includes(w.observed_state) &&
-  (!w.desired_state || w.desired_state === "ready");
+  w.desired_state === "ready" &&
+  ["waiting_connection", "allocating", "starting"].includes(w.phase ?? "");
 
 const workloadLabel = (w: CommaComputeWorkload) =>
   `${w.kind === "shell" ? "Shell" : w.kind} ${w.id.slice(-8)}`;
 
-export function useComputeWorkloadsSection(api: CommaApiClient, enabled: boolean) {
+export function useComputeWorkloadsSection(
+  api: CommaApiClient,
+  enabled: boolean,
+  observationTick?: number
+) {
+  const sharedObservation = observationTick !== undefined;
   const m = useCommaMessages();
   const auth = useContext(CommaAuthContext);
   const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
@@ -83,8 +88,15 @@ export function useComputeWorkloadsSection(api: CommaApiClient, enabled: boolean
     rounds.current = 0;
   }, [storageKey]);
 
+  const sharedObservationNeeded = useRef(true);
+  const loadRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  useEffect(() => {
+    if (observationTick !== undefined && sharedObservationNeeded.current)
+      void loadRef.current?.();
+  }, [observationTick]);
   const refresh = useCallback(() => {
     rounds.current = 0;
+    sharedObservationNeeded.current = true;
     setRevision((value) => value + 1);
   }, []);
   useEffect(() => {
@@ -144,22 +156,26 @@ export function useComputeWorkloadsSection(api: CommaApiClient, enabled: boolean
               setError(m.compute_read_failed());
           }
         }
+        sharedObservationNeeded.current = awaiting || value.workloads.some(preparing);
         if (
           !document.hidden &&
           (awaiting || value.workloads.some(preparing)) &&
-          rounds.current < 60
+          rounds.current < 60 &&
+          !sharedObservation
         )
           timer = setTimeout(() => void load(), 5_000);
       } catch {
         if (!controller.signal.aborted) {
           setError(m.compute_read_failed());
-          if (!document.hidden && rounds.current < 60)
+          sharedObservationNeeded.current = true;
+          if (!document.hidden && rounds.current < 60 && !sharedObservation)
             timer = setTimeout(() => void load(), 5_000);
         }
       } finally {
         reading = false;
       }
     };
+    loadRef.current = load;
     const visible = () => {
       if (!document.hidden) void load();
       else if (timer) clearTimeout(timer);
@@ -167,11 +183,21 @@ export function useComputeWorkloadsSection(api: CommaApiClient, enabled: boolean
     document.addEventListener("visibilitychange", visible);
     void load();
     return () => {
+      if (loadRef.current === load) loadRef.current = undefined;
       controller.abort();
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [api, enabled, workspaceId, storageKey, workloadAfter, revision, m]);
+  }, [
+    api,
+    enabled,
+    workspaceId,
+    storageKey,
+    workloadAfter,
+    revision,
+    m,
+    sharedObservation,
+  ]);
 
   const create = useCallback(async () => {
     if (!workspaceId || lock.current) return;
@@ -216,13 +242,17 @@ export function useComputeWorkloadsSection(api: CommaApiClient, enabled: boolean
       ? m.compute_work_draining()
       : w.desired_state === "stopped" || w.observed_state === "stopped"
         ? m.compute_work_stopped()
-        : preparing(w)
-          ? m.compute_work_preparing()
-          : w.observed_state === "ready"
-            ? m.compute_work_ready()
-            : w.observed_state === "failed"
-              ? m.compute_work_failed()
-              : m.compute_work_other();
+        : w.phase === "waiting_connection"
+          ? m.compute_work_waiting_connection()
+          : w.phase === "action_required"
+            ? m.compute_work_failed()
+            : preparing(w)
+              ? m.compute_work_preparing()
+              : w.observed_state === "ready"
+                ? m.compute_work_ready()
+                : w.observed_state === "failed"
+                  ? m.compute_work_failed()
+                  : m.compute_work_other();
   const rows = [...(projection?.workloads ?? [])];
   if (accepted && !rows.some((w) => w.id === accepted.id)) rows.unshift(accepted);
   const section: SettingsPanelSection = {

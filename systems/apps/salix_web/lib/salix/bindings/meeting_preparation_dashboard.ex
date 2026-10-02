@@ -222,7 +222,6 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
              is_boolean(attrs["personal_preparation"]),
          true <- valid_series?(attrs["series"] || [], attrs["calendar_selections"]),
          {:ok, previous} <- settings(group),
-         true <- valid_text?(attrs["channel_id"], 128),
          {:ok, connect} <- active_connect(group, attrs["connect_id"]),
          {:ok, personal} <- personal_preparation(attrs, previous, connect),
          {:ok, catalog} <- MeetingEnrollment.catalog(group["tenant_id"], group["group_id"]),
@@ -230,9 +229,7 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
            Enum.all?(attrs["calendar_selections"], fn selection ->
              Enum.any?(catalog, &same_calendar?(&1, selection))
            end),
-         %{"id" => channel_id, "is_member" => true} = channel <-
-           API.conversation_info(API.installation(connect), attrs["channel_id"]),
-         true <- channel_id == attrs["channel_id"] and channel["is_archived"] != true do
+         {:ok, %{"id" => channel_id} = channel} <- team_channel(connect, attrs["channel_id"]) do
       selected =
         Enum.map(attrs["calendar_selections"], fn selection ->
           Enum.find(catalog, &same_calendar?(&1, selection))
@@ -265,6 +262,19 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
   end
 
   defp configuration(_group, _attrs), do: {:error, :invalid_meeting_preparation_settings}
+
+  # A missing, unjoined or archived channel has its own reason, so the page can
+  # point at the channel field instead of the whole form.
+  defp team_channel(connect, channel_id) do
+    with true <- valid_text?(channel_id, 128) and channel_id != "",
+         %{"id" => ^channel_id, "is_member" => true} = channel <-
+           API.conversation_info(API.installation(connect), channel_id),
+         true <- channel["is_archived"] != true do
+      {:ok, channel}
+    else
+      _ -> {:error, :meeting_channel_invalid}
+    end
+  end
 
   defp personal_preparation(attrs, previous, connect) do
     existing =

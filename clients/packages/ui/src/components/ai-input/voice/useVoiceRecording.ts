@@ -62,6 +62,10 @@ export function useVoiceRecording({
     setVoiceDuration(0);
     setIsVoiceRecording(true);
     const outcome = onVoicePress?.();
+    if (outcome === false) {
+      resetVoiceRecording(false);
+      return;
+    }
     if (outcome && typeof (outcome as Promise<unknown>).then === "function") {
       (outcome as Promise<unknown>).catch(() => {
         // Native capture refused to start: leave the recording UI instead of

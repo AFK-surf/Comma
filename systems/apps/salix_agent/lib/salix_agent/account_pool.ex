@@ -3,6 +3,83 @@ defmodule SalixAgent.AccountPool do
   alias SalixAgent.SubscriptionStore, as: Store
   alias SalixAgent.SubscriptionLog, as: Log
 
+  # One entry per subscription product. `flows` lists sign-in modes, default
+  # first. The route names the client wire protocol and a reserved
+  # `subscription://` base URL whose host identifies the provider; the worker
+  # receives only the path, and the selected credential chooses its executor.
+  @providers %{
+    "codex" => %{
+      flows: ["callback", "device"],
+      llm_provider: "openai",
+      protocol: "responses",
+      base_url: "subscription://worker/v1"
+    },
+    "claude" => %{
+      flows: ["callback"],
+      llm_provider: "anthropic",
+      protocol: "anthropic",
+      base_url: "subscription://worker"
+    },
+    "gemini" => %{
+      flows: ["callback"],
+      llm_provider: "openai",
+      protocol: "chat_completions",
+      base_url: "subscription://gemini/v1"
+    },
+    "grok" => %{
+      flows: ["device"],
+      llm_provider: "openai",
+      protocol: "responses",
+      base_url: "subscription://grok/v1",
+      # The worker has no Grok compaction (see account-proxy/providers.go).
+      native_compaction: false
+    },
+    "kimi-code" => %{
+      flows: ["device"],
+      llm_provider: "anthropic",
+      protocol: "anthropic",
+      base_url: "subscription://kimi-code"
+    },
+    "github-copilot" => %{
+      flows: ["device"],
+      llm_provider: "openai",
+      protocol: "chat_completions",
+      base_url: "subscription://github-copilot/v1"
+    }
+  }
+
+  @doc "Subscription provider IDs that support sign-in and pooled inference."
+  def providers, do: Map.keys(@providers)
+
+  def provider?(provider), do: is_map_key(@providers, provider)
+
+  @doc """
+  The per-provider dispatch seam: provider ID to `{protocol, base_url}` route.
+  `resolve_config/2` merges this route with the model request ID, and
+  `dispatch/4` maps the route back to the provider whose accounts it selects.
+  """
+  def route(provider) do
+    case @providers[provider] do
+      %{protocol: protocol, base_url: base_url, llm_provider: llm_provider} ->
+        {:ok, %{"provider" => llm_provider, "protocol" => protocol, "base_url" => base_url}}
+
+      nil ->
+        {:error, :invalid_input}
+    end
+  end
+
+  defp route_provider(config) do
+    Enum.find_value(@providers, fn {provider, route} ->
+      if {config["protocol"], config["base_url"]} == {route.protocol, route.base_url},
+        do: provider
+    end)
+  end
+
+  # Antigravity refreshes on its own within five minutes of expiry, but
+  # inference credentials carry no refresh token. Prepare earlier for Gemini.
+  defp refresh_lead("gemini"), do: 360
+  defp refresh_lead(_), do: 30
+
   def connection(tenant) when is_binary(tenant) do
     key = Application.get_env(:salix_agent, :subscription_storage_key)
 
@@ -177,14 +254,14 @@ defmodule SalixAgent.AccountPool do
       else: {:ok, record, credentials}
   end
 
-  def list(tenant, after_id \\ "") do
-    with :ok <- connection(tenant), do: Store.list(tenant, after_id)
+  def list(tenant, after_id \\ "", view \\ :all) do
+    with :ok <- connection(tenant), do: Store.list(tenant, after_id, view)
   end
 
   def create(tenant, %{"credential_kind" => "subscription_oauth"} = attrs) do
     Log.context([tenant_id: tenant], fn ->
       Log.span("subscription_account_create", [], fn ->
-        with true <- attrs["provider"] in ["codex", "claude"],
+        with true <- provider?(attrs["provider"]),
              {:ok, data} <- adapter(tenant, "/normalize", attrs),
              {:ok, record} <-
                Store.connect(tenant, attrs["provider"], data["email"], data["credentials"]) do
@@ -202,6 +279,33 @@ defmodule SalixAgent.AccountPool do
         else
           false -> {:error, :invalid_input}
           other -> other
+        end
+      end)
+    end)
+  end
+
+  # A Profile: an API key for a catalog source. The source decides the endpoint,
+  # protocols and auth scheme; a user endpoint is accepted where the source has
+  # none (Azure, Cloudflare, Custom).
+  def create(tenant, %{"credential_kind" => "provider_api_key", "source" => _} = attrs) do
+    Log.context([tenant_id: tenant], fn ->
+      Log.span("provider_account_create", [], fn ->
+        with :ok <- connection(tenant),
+             {:ok, value, credentials} <- source_value(attrs),
+             id = Store.id(),
+             {:ok, ciphertext} <- Store.seal(tenant, id, credentials),
+             {:ok, record} <-
+               Store.create(
+                 tenant,
+                 Map.merge(value, %{
+                   "id" => id,
+                   "credential_kind" => "provider_api_key",
+                   "provider" => "custom",
+                   "credentials" => ciphertext,
+                   "disabled" => false
+                 })
+               ) do
+          {:ok, Store.public(record)}
         end
       end)
     end)
@@ -245,6 +349,22 @@ defmodule SalixAgent.AccountPool do
     end)
   end
 
+  defp update_record(
+         tenant,
+         %{"credential_kind" => "subscription_oauth"} = record,
+         %{
+           "name" => _,
+           "version" => expected
+         } = attrs
+       )
+       when map_size(attrs) == 2 do
+    with {:ok, name} <- provider_name(attrs["name"]) do
+      Store.update_locked(tenant, record["id"], expected, fn current ->
+        Store.update(tenant, Map.put(current, "name", name), expected)
+      end)
+    end
+  end
+
   defp update_record(tenant, %{"credential_kind" => "subscription_oauth"} = record, attrs) do
     with true <- record["version"] == attrs["version"],
          {:ok, record} <- replacement(tenant, record, attrs["credentials"]),
@@ -276,6 +396,27 @@ defmodule SalixAgent.AccountPool do
         Store.update_locked(tenant, record["id"], expected, fn current ->
           Store.update(tenant, Map.put(current, "disabled", attrs["disabled"]), expected)
         end)
+
+      Map.keys(attrs) |> Enum.sort() == ["api_key", "version"] and is_binary(record["source"]) ->
+        with {:ok, key} <- source_key(record["source"], attrs["api_key"]) do
+          Store.update_locked(
+            tenant,
+            record["id"],
+            expected,
+            fn current ->
+              with {:ok, ciphertext} <- Store.seal(tenant, record["id"], key_credentials(key)) do
+                Store.update(
+                  tenant,
+                  current
+                  |> Map.put("credentials", ciphertext)
+                  |> put_key_hint(key),
+                  expected
+                )
+              end
+            end,
+            true
+          )
+        end
 
       Map.keys(attrs) |> Enum.sort() == ["connection", "credentials", "version"] ->
         with {:ok, value} <-
@@ -353,6 +494,99 @@ defmodule SalixAgent.AccountPool do
          do: Store.list_bindings(tenant, account_id, after_id)
   end
 
+  @source_fields ~w(credential_kind source name api_key base_url protocol models)
+  @wire %{
+    "anthropic" => "anthropic_messages",
+    "chat_completions" => "openai_completions",
+    "responses" => "openai_responses"
+  }
+
+  defp source_value(attrs) do
+    with true <- Enum.all?(Map.keys(attrs), &(&1 in @source_fields)),
+         {:ok, %{"kind" => "api_key"} = source} <- SalixAgent.Models.source(attrs["source"]),
+         {:ok, key} <- source_key(attrs["source"], attrs["api_key"]),
+         {:ok, name} <- provider_name(attrs["name"] || source["name"] <> " API Key"),
+         {:ok, endpoints} <- source_endpoints(source, attrs) do
+      protocol = Enum.find(source["protocols"], &Map.has_key?(endpoints, &1))
+      # Anthropic and an Anthropic-native Custom endpoint take `x-api-key`.
+      auth = if attrs["source"] in ["anthropic", "custom"], do: "api_key", else: "bearer"
+
+      with {:ok, connection} <-
+             provider_connection(%{
+               "endpoint" => endpoints[protocol],
+               "protocol" => @wire[protocol],
+               "auth_scheme" => if(protocol == "anthropic", do: auth, else: "bearer")
+             }) do
+        {:ok,
+         %{
+           "source" => attrs["source"],
+           "name" => name,
+           "endpoints" => endpoints,
+           "connection" => connection
+         }
+         |> put_key_hint(key)
+         |> Map.merge(custom_models(attrs)), key_credentials(key)}
+      end
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_input}
+    end
+  end
+
+  # The source's own endpoints, or the user's one where the source has none.
+  # A user endpoint serves one protocol: the source's only one, or the chosen one.
+  defp source_endpoints(source, attrs) do
+    case {source["endpoint_required"] == true, attrs["base_url"], attrs["protocol"]} do
+      {false, nil, nil} ->
+        {:ok, source["endpoints"]}
+
+      {true, url, protocol} when is_binary(url) ->
+        protocol = protocol || if(length(source["protocols"]) == 1, do: hd(source["protocols"]))
+
+        if protocol in source["protocols"] and SalixAgent.ModelDiscovery.endpoint?(url),
+          do: {:ok, %{protocol => SalixAgent.ModelDiscovery.normalize_url(url, protocol)}},
+          else: {:error, :invalid_input}
+
+      _ ->
+        {:error, :invalid_input}
+    end
+  end
+
+  # A Custom endpoint lists the model ids it serves (from model discovery).
+  # One bad id drops only that id, not the endpoint's other models.
+  defp custom_models(%{"source" => "custom", "models" => models})
+       when is_list(models) and length(models) <= 500 do
+    %{
+      "models" =>
+        models
+        |> Enum.filter(&(is_binary(&1) and &1 != "" and byte_size(&1) <= 200))
+        |> Enum.uniq()
+    }
+  end
+
+  defp custom_models(_), do: %{}
+
+  # A Custom endpoint (Ollama, a self-hosted gateway) may need no key: then it
+  # has no key at all, and dispatch sends no auth header. Every catalog source
+  # needs one.
+  defp source_key("custom", key) when key in [nil, ""], do: {:ok, nil}
+  defp source_key(_source, key), do: provider_key(%{"api_key" => key})
+
+  defp key_credentials(nil), do: %{}
+  defp key_credentials(key), do: %{"api_key" => key}
+
+  # A keyless Profile has no hint; the public `key_hint` is then null.
+  defp put_key_hint(record, nil), do: Map.delete(record, "key_hint")
+  defp put_key_hint(record, key), do: Map.put(record, "key_hint", key_hint(key))
+
+  # Enough to tell keys apart in a list; never enough to use one. Only a long
+  # key shows its last four characters; a shorter key shows none, so four
+  # characters are never a large part of it.
+  defp key_hint(key) do
+    key = String.trim(key)
+    if String.length(key) >= 20, do: "…" <> String.slice(key, -4, 4), else: "…"
+  end
+
   defp provider_value(attrs) when is_map(attrs) and map_size(attrs) == 3 do
     with {:ok, name} <- provider_name(attrs["name"]),
          {:ok, connection} <- provider_connection(attrs["connection"]),
@@ -416,7 +650,7 @@ defmodule SalixAgent.AccountPool do
   # A late result cannot overwrite a replacement or resurrect a deleted record.
   defp prepare(tenant, record) do
     if subscription?(record) and record["prepared"] == true and
-         not expiring?(record["expires_at"]) do
+         not expiring?(record["expires_at"], refresh_lead(record["provider"])) do
       with {:ok, credentials} <- Store.open(tenant, record["id"], record["credentials"]),
            do: {:ok, record, credentials}
     else
@@ -424,11 +658,11 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  defp expiring?(nil), do: false
+  defp expiring?(nil, _lead), do: false
 
-  defp expiring?(value) do
+  defp expiring?(value, lead) do
     case DateTime.from_iso8601(value) do
-      {:ok, time, _} -> DateTime.diff(time, DateTime.utc_now()) < 30
+      {:ok, time, _} -> DateTime.diff(time, DateTime.utc_now()) < lead
       _ -> false
     end
   end
@@ -668,13 +902,17 @@ defmodule SalixAgent.AccountPool do
     end)
   end
 
-  defp start_authorization(tenant, %{"provider" => "codex", "mode" => "device"}, _body),
-    do: adapter(tenant, "/oauth/device/begin", %{})
+  defp start_authorization(tenant, %{"provider" => provider} = attrs, body) do
+    flows = @providers[provider][:flows] || []
 
-  defp start_authorization(_tenant, %{"mode" => mode}, _body) when mode not in ["callback", nil],
-    do: {:error, :invalid_input}
+    mode = attrs["mode"] || List.first(flows)
 
-  defp start_authorization(tenant, _attrs, body), do: adapter(tenant, "/oauth/begin", body)
+    cond do
+      mode not in flows -> {:error, :invalid_input}
+      mode == "device" -> adapter(tenant, "/oauth/device/begin", %{"provider" => provider})
+      true -> adapter(tenant, "/oauth/begin", body)
+    end
+  end
 
   defp oauth_target(tenant, %{"account_id" => id} = attrs) do
     with {:ok, a} <- Store.get(tenant, id),
@@ -748,11 +986,21 @@ defmodule SalixAgent.AccountPool do
         if System.system_time(:second) < attempt["next_poll_at"],
           do: {:ok, %{"status" => "pending"}},
           else:
-            adapter(tenant, "/oauth/device/poll", Map.take(attempt, ~w(device_auth_id user_code)))
+            adapter(
+              tenant,
+              "/oauth/device/poll",
+              Map.take(attempt, ~w(provider device_auth_id user_code context))
+            )
 
       case result do
-        {:ok, %{"status" => "pending"}} ->
-          interval = attempt["interval"]
+        {:ok, %{"status" => "pending"} = pending} ->
+          # RFC 8628 slow_down: add five seconds to every later poll.
+          interval =
+            if pending["slow_down"] == true,
+              do: min(attempt["interval"] + 5, 900),
+              else: attempt["interval"]
+
+          attempt = Map.put(attempt, "interval", interval)
 
           attempt =
             Map.put(
@@ -832,16 +1080,299 @@ defmodule SalixAgent.AccountPool do
   defp authorization_code(_, _), do: {:error, :invalid_input}
 
   def dispatch(opts, call, started? \\ fn -> false end, identity \\ []) do
+    if catalog_route?(opts),
+      do: dispatch_catalog(opts, call, started?, identity),
+      else: dispatch_pool(opts, call, started?, identity)
+  end
+
+  # Subscription plans whose accounts the worker executes, by catalog source.
+  # Every provider is one: its pool route fixes the wire protocol, and the
+  # catalog supplies only the request id (`route["model"]`).
+  # Codex and Claude first, as before the other plans existed.
+  @pool_sources ["codex", "claude", "gemini", "grok", "kimi-code", "github-copilot"]
+  if Enum.sort(@pool_sources) != Enum.sort(Map.keys(@providers)),
+    do: raise("@pool_sources must list every subscription provider")
+
+  # A catalog route names a model, not a credential. Each Profile that serves
+  # the model is a candidate: subscriptions first, then, when the Agent allows
+  # pay-per-use, API keys. A candidate that fails before any output reaches
+  # the caller hands the request to the next one, whatever its provider.
+  defp dispatch_catalog(opts, call, started?, identity) do
+    config = Map.new(opts, fn {k, v} -> {to_string(k), v} end)
+    tenant = config["catalog_tenant"]
+    model = config["catalog_model"]
+
+    base =
+      Map.drop(config, ~w(catalog_tenant catalog_model allow_paid profile_id protocol base_url))
+
+    Log.context([tenant_id: tenant] ++ Log.sanitize(identity), fn ->
+      Log.span("catalog_dispatch", [], fn ->
+        with :ok <- connection(tenant),
+             {:ok, attempts} <- catalog_attempts(tenant, base, model, config) do
+          Log.emit("catalog_candidates", candidate_count: length(attempts))
+          # Output started, or a pool worker already received response bytes:
+          # either way no other Profile may take the request over.
+          received = :atomics.new(1, [])
+          on_received = fn -> :atomics.put(received, 1, 1) end
+          started? = fn -> started?.() or :atomics.get(received, 1) == 1 end
+          run_attempts(attempts, {call, on_received}, started?, identity, unavailable(model))
+        else
+          {:error, :not_configured} ->
+            SalixAgent.LLM.Error.http("catalog", 400, error_message(:not_configured))
+
+          _ ->
+            SalixAgent.LLM.Error.http("catalog", 503, "profile storage unavailable")
+        end
+      end)
+    end)
+  end
+
+  # The Agent kept to one Profile: only it serves, a key included (choosing a
+  # key is choosing to pay for it). Otherwise every Profile that serves the
+  # model, subscriptions first, keys when pay-per-use is allowed.
+  defp catalog_attempts(tenant, base, model, %{"profile_id" => id}) when is_binary(id) do
+    case Store.get(tenant, id) do
+      {:ok, %{"credential_kind" => "subscription_oauth", "provider" => provider}}
+      when provider in @pool_sources ->
+        {:ok,
+         for {:ok, route} <- [plan_route(model, provider)] do
+           {:subscription,
+            fn ->
+              base |> pool_opts(tenant, provider, route["model"]) |> Map.put("account_pin", id)
+            end}
+         end}
+
+      {:ok, %{"credential_kind" => "provider_api_key", "disabled" => false} = record} ->
+        {:ok, key_attempts(tenant, base, model, [record])}
+
+      {:ok, _} ->
+        {:ok, []}
+
+      {:error, :not_found} ->
+        {:ok, []}
+
+      other ->
+        other
+    end
+  end
+
+  defp catalog_attempts(tenant, base, model, config) do
+    with {:ok, keys} <-
+           if(config["allow_paid"] == true, do: Store.usable_api_keys(tenant), else: {:ok, []}) do
+      {:ok, subscription_attempts(tenant, base, model) ++ key_attempts(tenant, base, model, keys)}
+    end
+  end
+
+  @doc "Whether a tenant's Profile can serve a catalog model at all."
+  def profile_serves?(tenant, id, model) when is_binary(id) do
+    case Store.get(tenant, id) do
+      {:ok, %{"credential_kind" => "subscription_oauth", "provider" => provider}}
+      when provider in @pool_sources ->
+        match?({:ok, _}, plan_route(model, provider))
+
+      {:ok, %{"credential_kind" => "provider_api_key"} = record} ->
+        match?({:ok, _, _}, key_route(record, model))
+
+      _ ->
+        false
+    end
+  end
+
+  def profile_serves?(_, _, _), do: false
+
+  @doc "Whether a tenant's Profile is an API key (pay-per-use)."
+  def key_profile?(tenant, id) when is_binary(id),
+    do: match?({:ok, %{"credential_kind" => "provider_api_key"}}, Store.get(tenant, id))
+
+  def key_profile?(_, _), do: false
+
+  # A plan serves a catalog route unless the route needs the Responses API
+  # and the plan's pool does not send it upstream: Copilot sends Chat
+  # Completions for every model, which also carries its Claude models.
+  defp plan_route(model, provider) do
+    with {:ok, route} <- SalixAgent.Models.route(model, provider),
+         true <- route["protocol"] != "responses" or @providers[provider].protocol == "responses" do
+      {:ok, route}
+    else
+      _ -> :error
+    end
+  end
+
+  defp unavailable(model),
+    do: SalixAgent.LLM.Error.http("catalog", 503, "no enabled profile serves #{model}")
+
+  # Only plans with a usable account: an empty pool is not an attempt, so its
+  # "unavailable" never hides the answer of a Profile that could have served.
+  defp subscription_attempts(tenant, base, model) do
+    for source <- @pool_sources,
+        {:ok, route} <- [plan_route(model, source)],
+        {:ok, [_ | _]} <- [Store.candidates(tenant, source, route["model"])] do
+      {:subscription, fn -> pool_opts(base, tenant, source, route["model"]) end}
+    end
+  end
+
+  # Endpoint, credential and header fields a Profile's route replaces. The
+  # rest of `base` is per-request runtime settings (streaming callbacks,
+  # prompt_cache_key, transport_retry, response_format) and passes through.
+  @route_fields ~w(api_key api_key_env auth_token auth_token_env default_headers
+    provider protocol base_url transport account_pool account_pool_tenant account_pin)
+
+  # A plan's pool route on top of the request's own settings.
+  defp pool_opts(base, tenant, provider, model) do
+    {:ok, route} = resolve_config(%{"account_pool" => provider, "model" => model}, tenant)
+    base |> Map.drop(@route_fields) |> Map.merge(route)
+  end
+
+  defp key_attempts(tenant, base, model, keys) do
+    for record <- keys, {:ok, request, protocol} <- [key_route(record, model)] do
+      {:api_key,
+       fn ->
+         case Store.open(tenant, record["id"], record["credentials"]) do
+           {:ok, credentials} when is_map(credentials) ->
+             key_opts(base, record, request, protocol, credentials["api_key"])
+
+           _ ->
+             nil
+         end
+       end}
+    end
+  end
+
+  # The Profile's own credential only: the template's key never reaches a
+  # Profile's endpoint. Only a Custom endpoint may have none.
+  defp key_opts(base, record, request, protocol, key) do
+    base = Map.drop(base, @route_fields)
+
+    auth =
+      cond do
+        is_binary(key) and key != "" and protocol == "anthropic" and
+            record["connection"]["auth_scheme"] == "bearer" ->
+          %{"auth_token" => key}
+
+        is_binary(key) and key != "" ->
+          %{"api_key" => key}
+
+        record["source"] == "custom" ->
+          %{}
+
+        true ->
+          nil
+      end
+
+    if auth do
+      base
+      |> Map.merge(auth)
+      |> Map.merge(%{
+        "provider" => record["source"],
+        "protocol" => protocol,
+        "base_url" => record["endpoints"][protocol],
+        "model" => request,
+        "credential_scope" => "tenant"
+      })
+    end
+  end
+
+  # The catalog names the request id a source uses. A Custom endpoint is not in
+  # the catalog: it serves the model ids it listed when it was connected.
+  defp key_route(%{"source" => "custom", "endpoints" => endpoints} = record, model)
+       when map_size(endpoints) == 1 do
+    if model in List.wrap(record["models"]),
+      do: {:ok, model, hd(Map.keys(endpoints))},
+      else: :error
+  end
+
+  defp key_route(%{"source" => source, "endpoints" => endpoints}, model)
+       when is_binary(source) and is_map(endpoints) do
+    case SalixAgent.Models.route(model, source) do
+      {:ok, %{"model" => request, "protocol" => protocol}} when is_map_key(endpoints, protocol) ->
+        {:ok, request, protocol}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp key_route(_, _), do: :error
+
+  defp run_attempts([], _call, _started?, _identity, last), do: last
+
+  defp run_attempts(
+         [{kind, prepare} | rest],
+         {call, on_received} = calls,
+         started?,
+         identity,
+         last
+       ) do
+    case prepare.() do
+      nil ->
+        run_attempts(rest, calls, started?, identity, last)
+
+      opts ->
+        result =
+          case kind do
+            :subscription -> dispatch_pool(opts, call, started?, identity, on_received)
+            :api_key -> call.(opts)
+          end
+
+        case result do
+          {:error, meta} = error ->
+            # Keep the first answer that another Profile could not change.
+            if not started?.() and fail_over?(meta),
+              do: run_attempts(rest, calls, started?, identity, first_error(last, error)),
+              else: error
+
+          ok ->
+            ok
+        end
+    end
+  end
+
+  # Another Profile helps only when this one could not take the request: its
+  # credential, quota or route was refused, or the provider was down. A timeout
+  # may have done the work already, and a request error would recur anywhere.
+  defp fail_over?(%{} = meta) do
+    status = meta["status"] || meta[:status]
+    status in [401, 402, 403, 404, 429] or status in [500, 502, 503, 529]
+  end
+
+  defp fail_over?(_), do: false
+
+  defp first_error({:error, %{"body" => "no enabled profile serves " <> _}}, error), do: error
+  defp first_error(last, _error), do: last
+
+  def catalog_route?(opts) when is_map(opts) or is_list(opts) do
+    opts = Map.new(opts, fn {key, value} -> {to_string(key), value} end)
+
+    SalixStore.Ids.valid_tenant_id?(opts["catalog_tenant"]) and is_binary(opts["catalog_model"]) and
+      opts["base_url"] == "catalog://"
+  end
+
+  def catalog_route?(_), do: false
+
+  # A pinned account is the only candidate, whatever its rank in the pool. It
+  # still passes the pool's filter: its plan, enabled and active, and quota
+  # left for this model. Otherwise the request is cleanly unavailable.
+  defp pool_candidates(tenant, provider, %{"account_pin" => id} = config) when is_binary(id),
+    do: Store.candidates(tenant, provider, config["model"], id)
+
+  defp pool_candidates(tenant, provider, config),
+    do: Store.candidates(tenant, provider, config["model"])
+
+  # `on_received` runs when a worker passes on the first response bytes.
+  # At most this many accounts serve one request, refills included.
+  @account_attempts 10
+
+  defp dispatch_pool(opts, call, started?, identity, on_received \\ fn -> :ok end) do
     if owns_route?(opts) do
       config = Map.new(opts, fn {k, v} -> {to_string(k), v} end)
       tenant = config["account_pool_tenant"]
-      provider = if config["protocol"] == "responses", do: "codex", else: "claude"
+      provider = route_provider(config)
 
       Log.context([tenant_id: tenant, provider: provider] ++ Log.sanitize(identity), fn ->
         Log.span("subscription_dispatch", [], fn ->
           case with(
                  :ok <- connection(tenant),
-                 do: Store.candidates(tenant, provider, config["model"])
+                 do: pool_candidates(tenant, provider, config)
                ) do
             {:ok, candidates} ->
               {ready, cooling} = Enum.split_with(candidates, &(cooldown_ms(&1) == 0))
@@ -868,14 +1399,28 @@ defmodule SalixAgent.AccountPool do
                     )
                 end
 
+              # An account that rejects a model keeps its rank, so a request
+              # that ran out of fetched candidates asks for the next ones.
+              refill = fn tried ->
+                if is_binary(config["account_pin"]) do
+                  []
+                else
+                  case Store.candidates(tenant, provider, config["model"], nil, tried) do
+                    {:ok, more} -> Enum.filter(more, &(cooldown_ms(&1) == 0))
+                    _ -> []
+                  end
+                end
+              end
+
               execute_candidates(
                 tenant,
                 provider,
                 config,
                 ready,
-                call,
+                {call, on_received},
                 started?,
-                {:error, unavailable}
+                {:error, unavailable},
+                %{tried: [], refill: refill, budget: @account_attempts}
               )
 
             {:error, :not_configured} ->
@@ -908,9 +1453,40 @@ defmodule SalixAgent.AccountPool do
 
   defp cooldown_ms(_), do: 0
 
-  defp execute_candidates(_, _, _, [], _, _, last), do: last
+  # Out of fetched candidates after a model-level rejection (403, 404): fetch
+  # the next accounts this request has not tried, since such an account keeps
+  # its rank. Account-level failures keep the bound of one fetch.
+  defp execute_candidates(tenant, provider, config, [], calls, started?, last, attempts) do
+    model_rejected =
+      match?({:error, meta} when is_map(meta), last) and error_status(elem(last, 1)) in [403, 404]
 
-  defp execute_candidates(tenant, provider, config, [candidate | rest], call, started?, last) do
+    case model_rejected and attempts.budget > 0 and attempts.refill.(attempts.tried) do
+      [_ | _] = more ->
+        execute_candidates(tenant, provider, config, more, calls, started?, last, attempts)
+
+      _ ->
+        last
+    end
+  end
+
+  defp execute_candidates(_, _, _, _, _, _, last, %{budget: 0}), do: last
+
+  defp execute_candidates(
+         tenant,
+         provider,
+         config,
+         [candidate | rest],
+         {call, on_received} = calls,
+         started?,
+         last,
+         attempts
+       ) do
+    attempts = %{
+      attempts
+      | tried: [candidate["id"] | attempts.tried],
+        budget: attempts.budget - 1
+    }
+
     Log.context([account_id: candidate["id"]], fn ->
       Log.emit("subscription_account_selected", candidate_count: length(rest) + 1)
 
@@ -929,7 +1505,10 @@ defmodule SalixAgent.AccountPool do
               path,
               opts,
               credential,
-              fn -> :atomics.put(received, 1, 1) end,
+              fn ->
+                :atomics.put(received, 1, 1)
+                on_received.()
+              end,
               fn -> :atomics.put(received, 2, 1) end
             )
           end
@@ -938,19 +1517,46 @@ defmodule SalixAgent.AccountPool do
           result = Log.span("subscription_account_attempt", [], fn -> call.(resolved) end)
 
           case result do
-            {:error, _} ->
-              if :atomics.get(received, 2) == 1 do
-                result
-              else
-                cool_down(tenant, record)
+            {:error, meta} ->
+              status = error_status(meta)
 
-                if :atomics.get(received, 1) == 1 or started?.() do
+              # Owner decision: a 400, 403 or 404 rejects this model or
+              # request, not the account, so other requests keep it. 401,
+              # 402, 429, 5xx and transport failures still cool it down.
+              # A worker that refused before running says nothing of the account.
+              rejected = :atomics.get(received, 2) == 1
+
+              unless rejected or status in [400, 403, 404], do: cool_down(tenant, record)
+
+              # A 403 for every model means the account itself is refused;
+              # each one is logged against the account so that shows.
+              if status == 403, do: Log.emit("subscription_account_forbidden", http_status: 403)
+
+              cond do
+                rejected ->
+                  result
+
+                # A request-level 400 fails the same way on every account.
+                status == 400 ->
+                  result
+
+                :atomics.get(received, 1) == 1 or started?.() ->
                   Log.emit("subscription_retry_stopped", candidate_count: length(rest))
                   result
-                else
+
+                true ->
                   Log.emit("subscription_retry_next", candidate_count: length(rest))
-                  execute_candidates(tenant, provider, config, rest, call, started?, result)
-                end
+
+                  execute_candidates(
+                    tenant,
+                    provider,
+                    config,
+                    rest,
+                    calls,
+                    started?,
+                    result,
+                    attempts
+                  )
               end
 
             _ ->
@@ -961,10 +1567,13 @@ defmodule SalixAgent.AccountPool do
           SalixAgent.LLM.Error.http(provider, status, code)
 
         _ ->
-          execute_candidates(tenant, provider, config, rest, call, started?, last)
+          execute_candidates(tenant, provider, config, rest, calls, started?, last, attempts)
       end
     end)
   end
+
+  defp error_status(%{} = meta), do: meta["status"] || meta[:status]
+  defp error_status(_), do: nil
 
   defp cool_down(tenant, record) do
     Log.context(
@@ -992,22 +1601,77 @@ defmodule SalixAgent.AccountPool do
 
   def validate_config(config, tenant) do
     case config do
-      %{"account_pool" => provider} when provider in ["codex", "claude"] and is_binary(tenant) ->
+      %{"catalog_model" => model} when is_binary(tenant) ->
+        if is_boolean(config["allow_paid"]) and
+             (is_nil(config["profile_id"]) or is_binary(config["profile_id"])) and
+             known_model?(tenant, model),
+           do: :ok,
+           else: {:error, {:bad_request, "catalog models require a known model and allow_paid"}}
+
+      %{"catalog_model" => _} ->
+        {:error, {:bad_request, "catalog models require a private template"}}
+
+      %{"account_pool" => provider} when is_binary(tenant) and is_map_key(@providers, provider) ->
         :ok
 
       %{"account_pool" => _} ->
-        {:error, {:bad_request, "account pools require a private template and Codex or Claude"}}
+        {:error,
+         {:bad_request, "account pools require a private template and a subscription provider"}}
 
       _ ->
         :ok
     end
   end
 
+  # A catalog model, or a model id that one of the tenant's Custom endpoints
+  # listed (an Ollama `llama3.2:3b` is in no catalog).
+  defp known_model?(tenant, model) do
+    match?({:ok, _}, SalixAgent.Models.get(model)) or Store.custom_model?(tenant, model)
+  end
+
+  @doc "A model a Custom endpoint serves, shaped like a catalog entry."
+  def custom_model(tenant, model) do
+    if Store.custom_model?(tenant, model),
+      do:
+        {:ok,
+         %{
+           "id" => model,
+           "name" => model,
+           "vendor" => nil,
+           "efforts" => [],
+           "max_tokens" => 32_000,
+           "context_tokens" => 0,
+           "images" => false
+         }},
+      else: {:error, :invalid_model_configuration}
+  end
+
+  def resolve_config(%{"catalog_model" => model} = config, tenant) do
+    with :ok <- validate_config(config, tenant) do
+      # The Profile is chosen per request in dispatch; until then the route only
+      # names the model and who may pay for it.
+      {:ok,
+       config
+       |> Map.take(
+         ~w(max_tokens context_tokens reasoning reasoning_effort thinking prompt_caching supports_images credential_scope)
+       )
+       |> Map.merge(%{
+         "model" => model,
+         "catalog_model" => model,
+         "allow_paid" => config["allow_paid"],
+         "profile_id" => config["profile_id"],
+         "catalog_tenant" => tenant,
+         "base_url" => "catalog://"
+       })}
+    end
+  end
+
   def resolve_config(config, tenant) do
     with :ok <- validate_config(config, tenant) do
       case config["account_pool"] do
-        provider when provider in ["codex", "claude"] ->
-          with :ok <- connection(tenant) do
+        provider when is_map_key(@providers, provider) ->
+          with :ok <- connection(tenant),
+               {:ok, route} <- route(provider) do
             # The owning template supplies the tenant. Drop user endpoints and
             # headers: this route must only execute tenant-owned credentials.
             resolved =
@@ -1016,17 +1680,12 @@ defmodule SalixAgent.AccountPool do
                 ~w(model max_tokens context_tokens reasoning reasoning_effort thinking prompt_caching supports_images)
               )
 
-            {:ok,
-             Map.merge(resolved, %{
-               "provider" => if(provider == "codex", do: "openai", else: "anthropic"),
-               "protocol" => if(provider == "codex", do: "responses", else: "anthropic"),
-               "base_url" =>
-                 if(provider == "codex",
-                   do: "subscription://worker/v1",
-                   else: "subscription://worker"
-                 ),
-               "account_pool_tenant" => tenant
-             })}
+            resolved =
+              if @providers[provider][:native_compaction] == false,
+                do: Map.put(resolved, "native_compaction", false),
+                else: resolved
+
+            {:ok, resolved |> Map.merge(route) |> Map.put("account_pool_tenant", tenant)}
           end
 
         _ ->
@@ -1041,10 +1700,7 @@ defmodule SalixAgent.AccountPool do
     opts = Map.new(opts, fn {key, value} -> {to_string(key), value} end)
 
     SalixStore.Ids.valid_tenant_id?(opts["account_pool_tenant"]) and
-      {opts["protocol"], opts["base_url"]} in [
-        {"responses", "subscription://worker/v1"},
-        {"anthropic", "subscription://worker"}
-      ]
+      route_provider(opts) != nil
   end
 
   def owns_route?(_), do: false

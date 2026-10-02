@@ -18,7 +18,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Auth do
 
   alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.Accounts
-  alias BridgeForTeams.CLI.Login, as: CLILogin
   alias Phoenix.LiveView
 
   @session_token_key "comma_session"
@@ -98,7 +97,7 @@ defmodule BridgeForTeamsWeb.Dashboard.Auth do
     * `:ensure_authenticated` — assigns `:current_user`, redirecting to `/login`
       if anonymous.
     * `:require_onboarded` — redirects users who have not finished the first-run
-      onboarding flow to `/onboarding` (CLI device-login approval is exempt).
+      onboarding flow to `/onboarding`.
   """
   def on_mount(:mount_current_user, _params, session, socket) do
     {:cont, mount_current_user(socket, session)}
@@ -124,21 +123,11 @@ defmodule BridgeForTeamsWeb.Dashboard.Auth do
 
   # on_mount `:require_onboarded` — sends users who have not finished the
   # first-run onboarding flow to `/onboarding` before any dashboard surface.
-  # CLIDeviceLoginLive is exempt: a user mid-CLI-device-approval carries a
-  # `user_code` deep link that must not be hijacked into onboarding.
-  # Settings → Composio is exempt: the onboarding integrations step links
-  # admins there to configure the org's Composio API key, and bouncing them
-  # back to /onboarding would make the connect buttons impossible to unlock.
+  # (The React pages that skip it, CLI device login and Settings → Composio,
+  # are served by `SPAController`.)
   def on_mount(:require_onboarded, _params, _session, socket) do
     cond do
       is_nil(socket.assigns[:current_user]) ->
-        {:cont, socket}
-
-      socket.view == BridgeForTeamsWeb.Dashboard.CLIDeviceLoginLive ->
-        {:cont, socket}
-
-      socket.view == BridgeForTeamsWeb.Dashboard.SettingsLive and
-          socket.assigns[:live_action] == :composio ->
         {:cont, socket}
 
       BridgeForTeams.UserOnboardings.onboarded?(socket.assigns.current_user.id) ->
@@ -180,12 +169,6 @@ defmodule BridgeForTeamsWeb.Dashboard.Auth do
     |> build_login_path()
   end
 
-  defp login_path(%{"user_code" => user_code}) when is_binary(user_code) and user_code != "" do
-    %{}
-    |> build_login_query(device_login_return_to(user_code))
-    |> build_login_path()
-  end
-
   defp login_path(params) do
     params
     |> build_login_query(nil)
@@ -209,10 +192,5 @@ defmodule BridgeForTeamsWeb.Dashboard.Auth do
       "" -> conn.request_path
       query_string -> conn.request_path <> "?" <> query_string
     end
-  end
-
-  defp device_login_return_to(user_code) do
-    "/cli/device-login/" <>
-      URI.encode(CLILogin.normalize_user_code(user_code), &URI.char_unreserved?/1)
   end
 end

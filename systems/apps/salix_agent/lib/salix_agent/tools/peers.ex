@@ -762,6 +762,7 @@ defmodule SalixAgent.Tools.Peers do
     %{
       "ok" => false,
       "error_class" => error["error_class"],
+      "reason" => error["reason"],
       "message" => error["message"] || error["error_class"],
       "retryable" => error["retryable"] == true,
       "env_id" => error["env_id"],

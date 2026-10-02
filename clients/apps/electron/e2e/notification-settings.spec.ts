@@ -5,11 +5,12 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
-import type { AppPreferences } from "@comma/native-bridge";
+import type { AppPreferences, SystemNotificationsStatus } from "@comma/native-bridge";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startSessionProjectionStub } from "../../../e2e/helpers/session-fixture";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
@@ -155,9 +156,53 @@ test.describe("notification settings", () => {
       await app.close();
     }
   });
+
+  test("keeps the system switch usable while macOS has not asked about Comma yet", async () => {
+    const userDataPath = join(testDirectory, "undetermined-user-data");
+    const app = await electron.launch({
+      args: electronLaunchArgs(userDataPath),
+      cwd: electronAppDir,
+      env: electronEnv(userDataPath, {
+        COMMA_ELECTRON_E2E_LAUNCH_AT_LOGIN_STATUS: "not-registered",
+        COMMA_ELECTRON_E2E_OPERATING_SYSTEM: "macos",
+        COMMA_ELECTRON_E2E_SYSTEM_NOTIFICATIONS_STATUS: "undetermined",
+      }),
+    });
+
+    try {
+      const mainWindow = await openNotificationSettings(app);
+      await expect
+        .poll(() => readNotificationReadback(mainWindow))
+        .toEqual({
+          revision: expect.any(Number),
+          systemNotifications: true,
+          systemNotificationsStatus: "undetermined",
+        });
+      // macOS asks with the first banner, so nothing is blocked yet.
+      const system = mainWindow.getByRole("switch", { name: "System notifications" });
+      await expect(system).toBeEnabled();
+      await expect(system).toBeChecked();
+      await expect(
+        mainWindow.getByRole("switch", { name: "Router message notifications" })
+      ).toBeEnabled();
+      await expect(
+        mainWindow.getByText("Comma sends system notifications to remind you.")
+      ).toBeVisible();
+      // Asking goes through Main to the OS, which leaves it undecided here.
+      await expect(requestNotificationAuthorization(mainWindow)).resolves.toBe(
+        "undetermined"
+      );
+    } catch (error) {
+      await attachMainLog(userDataPath);
+      throw error;
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function electronEnv(userDataPath: string, overrides: Record<string, string>) {
+  recordElectronOnboardingCompleted(userDataPath, [sessionStub.userId]);
   const {
     COMMA_ELECTRON_STARTUP_SESSION_TOKEN: _sessionToken,
     ELECTRON_RUN_AS_NODE: _electronRunAsNode,
@@ -219,6 +264,20 @@ function readRendererPreferences(page: Page) {
         commaNative: { appPreferences: { state: { get(): Promise<AppPreferences> } } };
       }
     ).commaNative.appPreferences.state.get()
+  );
+}
+
+function requestNotificationAuthorization(page: Page) {
+  return page.evaluate(() =>
+    (
+      window as unknown as {
+        commaNative: {
+          appPreferences: {
+            requestNotificationAuthorization(): Promise<SystemNotificationsStatus>;
+          };
+        };
+      }
+    ).commaNative.appPreferences.requestNotificationAuthorization()
   );
 }
 

@@ -43,6 +43,10 @@ defmodule SalixAgent.AgentManagement.Error do
   }
 
   def public({:creation_failed, id, reason}), do: Map.put(public(reason), "agent_id", id)
+
+  def public(%{"error_class" => "billing_unavailable"} = issue),
+    do: Map.put(issue, "code", "billing_unavailable")
+
   def public(%{"code" => _, "message" => _} = issue), do: issue
 
   def public(reason) do

@@ -7,8 +7,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useCommaMessages } from "@comma/i18n/react";
-import { sessionExpectation, sessionProductLease } from "@comma/session-contract";
+import { useCommaI18n, useCommaMessages } from "@comma/i18n/react";
+import {
+  sessionExpectation,
+  sessionPrincipalKind,
+  sessionProductLease,
+} from "@comma/session-contract";
 import { Button, Text, toast } from "@comma/ui";
 import {
   useSessionHostController,
@@ -28,9 +32,11 @@ import {
 export function CommaAuthGate({
   children,
   signedOutFallback,
+  localManagementEntry,
 }: {
   children: ReactNode;
   signedOutFallback?: ReactNode;
+  localManagementEntry?: ReactNode;
 }) {
   const messages = useCommaMessages();
   const controller = useSessionHostController();
@@ -38,10 +44,33 @@ export function CommaAuthGate({
   const [profile, setProfile] = useState<CommaUserProfile>();
   const signedInSessionId =
     snapshot.phase === "signed_in" ? snapshot.session.sessionId : undefined;
+  const isGuest =
+    snapshot.phase === "signed_in" &&
+    sessionPrincipalKind(snapshot.principal) === "guest";
+  // The notice follows the handoff through the sign-in steps that come after it.
+  const [guestHandoffPending, setGuestHandoffPending] = useState(false);
+  if (
+    snapshot.phase === "signed_out" &&
+    snapshot.reason === "guest_handoff" &&
+    !guestHandoffPending
+  ) {
+    setGuestHandoffPending(true);
+  } else if (snapshot.phase === "signed_in" && guestHandoffPending) {
+    setGuestHandoffPending(false);
+  }
 
   useEffect(() => {
     void controller.initialize();
   }, [controller]);
+
+  const guest = controller.guest;
+  useEffect(
+    () =>
+      guest?.subscribeImported(() => {
+        toast.success(messages.auth_guest_chat_imported());
+      }),
+    [guest, messages]
+  );
 
   // OAuth IdP round trip (RFC §5, PR 7): the API's authorize endpoint
   // lands logged-out users on /login?oauth_handle={uuid}. Capture runs
@@ -132,13 +161,39 @@ export function CommaAuthGate({
     return () => profileRequest.abort();
   }, [api, oauthHandoffActive, signedInSessionId, snapshot.phase]);
 
+  // The app language is an account setting. A signed-in device follows the
+  // account; an account without one takes this device's current language once.
+  const { locale, localePreference, setLocalePreference } = useCommaI18n();
+  const accountLocale = profile?.locale;
+  const profileLoaded = profile !== undefined;
+  useEffect(() => {
+    if (!profileLoaded || !api) return;
+    if (accountLocale) {
+      if (accountLocale !== localePreference) setLocalePreference(accountLocale);
+      return;
+    }
+    void api
+      .updateProfile({ locale })
+      .then(publishProfile)
+      .catch(() => undefined);
+  }, [
+    accountLocale,
+    api,
+    locale,
+    localePreference,
+    profileLoaded,
+    publishProfile,
+    setLocalePreference,
+  ]);
+
   // Another tab can move the shared Web Cookie to a different account. The
   // product tree remounts under the new account (see the Provider key below);
   // tell the user why their view changed.
   const signedInUserId =
     snapshot.phase === "signed_in" ? snapshot.principal.userId : undefined;
+  // A guest's placeholder email is never shown.
   const signedInEmail =
-    snapshot.phase === "signed_in" ? snapshot.principal.email : undefined;
+    snapshot.phase === "signed_in" && !isGuest ? snapshot.principal.email : undefined;
   const previousUserIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (signedInUserId === undefined) {
@@ -162,12 +217,17 @@ export function CommaAuthGate({
     if (!productLease) {
       return undefined;
     }
-    const userDisplayName = profile?.name || snapshot.principal.displayName;
+    const userDisplayName = isGuest
+      ? messages.auth_guest_name()
+      : profile?.name || snapshot.principal.displayName;
+    const beginGuestSignUp = isGuest ? guest?.beginSignUp : undefined;
     return {
       api,
       apiBaseUrl: controller.apiBaseUrl,
-      ...(profile?.avatar_id ? { avatarRevision: profile.avatar_id } : {}),
+      ...(profile?.avatar_id && !isGuest ? { avatarRevision: profile.avatar_id } : {}),
       authenticated: true,
+      ...(beginGuestSignUp ? { beginGuestSignUp } : {}),
+      isGuest,
       productLease,
       sessionSignal: sessionTransport.signal,
       sessionTransport,
@@ -180,6 +240,9 @@ export function CommaAuthGate({
   }, [
     api,
     controller.apiBaseUrl,
+    guest,
+    isGuest,
+    messages,
     profile,
     publishProfile,
     sessionTransport,
@@ -249,13 +312,20 @@ export function CommaAuthGate({
   }
 
   return (
-    <LoginScreen
-      authenticator={controller.authenticator}
-      revocationPending={snapshot.cleanup.revocation === "pending"}
-      {...(oauthResumePending
-        ? { oauthResumeNotice: messages.auth_oauth_continue_notice() }
-        : {})}
-    />
+    <>
+      <LoginScreen
+        authenticator={controller.authenticator}
+        {...(guest && !oauthResumePending ? { guest } : {})}
+        {...(guestHandoffPending
+          ? { guestHandoffNotice: messages.auth_guest_handoff_notice() }
+          : {})}
+        revocationPending={snapshot.cleanup.revocation === "pending"}
+        {...(oauthResumePending
+          ? { oauthResumeNotice: messages.auth_oauth_continue_notice() }
+          : {})}
+      />
+      {localManagementEntry}
+    </>
   );
 }
 

@@ -46,9 +46,25 @@ export interface SessionLifecycleController {
   subscribe(listener: (snapshot: SessionLifecycleSnapshot) => void): () => void;
 }
 
+/**
+ * Guest mode: a server-issued Session for a throwaway guest account. The host
+ * keeps the sign-up claim; renderers never read it.
+ */
+export interface SessionGuestController {
+  /** Whether the server offers guest sessions. Resolves false on failure. */
+  availability(): Promise<boolean>;
+  /** Ends the current guest Session so the next sign-in imports its chat. */
+  beginSignUp(): Promise<void>;
+  /** Starts a guest Session and replaces any pending sign-in attempt. */
+  start(): Promise<void>;
+  /** Notifies after a sign-in imported the previous guest chat. */
+  subscribeImported(listener: () => void): () => void;
+}
+
 export interface SessionHostController {
   readonly apiBaseUrl: string;
   readonly authenticator: SessionAuthenticatorController;
+  readonly guest?: SessionGuestController | undefined;
   readonly lifecycle: SessionLifecycleController;
   dispose?(): void;
   getProductTransport(): CommaApiSessionTransport | undefined;

@@ -1,26 +1,12 @@
 export * from "./tokens";
 export * from "./components";
-export {
-  ModelTemplatesTable,
-  type ModelTemplateRow,
-} from "./components/model-templates/ModelTemplates";
-export {
-  SettingsChoiceTable,
-  type SettingsChoiceTableRow,
-} from "./components/settings-choice-table/SettingsChoiceTable";
-export {
-  SubscriptionAccounts,
-  SubscriptionCredentialInput,
-  SubscriptionProviderChoice,
-  SubscriptionSteps,
-  type SubscriptionAccountRow,
-  type SubscriptionProviderKind,
-  type SubscriptionProviderOption,
-  type SubscriptionStep,
-} from "./components/subscription-accounts/SubscriptionAccounts";
-
 export { PageLoading } from "./components/PageLoading";
 
-export { ModelIcon } from "./components/model-templates/ModelIcon";
+export { ModelIcon, hasModelIcon } from "./components/model-templates/ModelIcon";
+export {
+  ModelVendorIcon,
+  hasModelVendorLogo,
+} from "./components/model-templates/ModelVendorIcon";
 
 export { LoadingIndicator } from "./components/LoadingIndicator";
+export { SubscriptionCredentialInput } from "./components/subscription-accounts/SubscriptionCredentialInput";

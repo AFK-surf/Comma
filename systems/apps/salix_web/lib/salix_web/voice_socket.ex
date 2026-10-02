@@ -369,10 +369,14 @@ defmodule SalixWeb.VoiceSocket do
      %{state | call: nil, codec: codec}}
   end
 
+  defp admit_reason(%{"error_class" => "billing_unavailable"}), do: :billing_unavailable
+
   defp admit_reason(reason) when reason in [:disabled, :node_full, :draining, :not_configured],
     do: reason
 
   defp admit_reason(_reason), do: :unavailable
+
+  defp admit_message(%{"error_class" => "billing_unavailable", "message" => message}), do: message
 
   defp admit_message(:disabled), do: "voice calls are disabled"
   defp admit_message(:node_full), do: "this node has no free call capacity; reconnect"

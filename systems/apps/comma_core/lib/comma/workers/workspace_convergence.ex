@@ -233,6 +233,7 @@ defmodule Comma.Workers.WorkspaceConvergence do
       "default_group_id" => workspace.salix_group_id,
       "router_agent_id" => workspace.salix_router_agent_id,
       "default_worker_agent_id" => workspace.salix_worker_agent_id,
+      "kind" => workspace.kind,
       "vm" => vm,
       "provisioning_generation" => operation.generation,
       "provisioning_idempotency_key" => operation.external_idempotency_key
@@ -298,6 +299,9 @@ defmodule Comma.Workers.WorkspaceConvergence do
   # Provisions the Workspace's Synchronicity org + default network and stores
   # the returned ids on the Workspace. Off (a no-op) unless the integration is
   # configured, so convergence is unchanged where Synchronicity is not in use.
+  # A guest's placeholder email never leaves Comma.
+  defp ensure_synchronicity(%Workspace{kind: "guest"}), do: :ok
+
   defp ensure_synchronicity(workspace) do
     if Comma.Synchronicity.configured?() do
       with {:ok, _result} <-

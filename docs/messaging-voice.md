@@ -92,10 +92,10 @@ Twilio and `comma.voice.v1` calls enter `salix_voice`. GPT-Live delegates to the
 
 - One active call per Group in the cluster, else `busy`. If two calls race, the later `{started_at_ms, call_id}` ends with `busy`.
 - `max_calls_per_node` calls per node, else `node_full`. `max_call_seconds` ends a call after a spoken notice.
-- The carrier attaches within 20 s (Twilio) or 5 s (WebSocket), and GPT-Live starts within 15 s after the [profile](#voice-profile), or the call ends. A stream closed before `start`, failed attach or final Twilio status ends it.
+- The carrier attaches within 20 s (Twilio) or 5 s (WebSocket); GPT-Live starts within 15 s after the [profile](#voice-profile). Otherwise the call ends. A stream closed before `start`, failed attach or final Twilio status ends it.
 - Pod pre-stop runs `SalixVoice.Drain.drain/0` after readiness is withdrawn. New calls get `draining`. Live calls hear a notice and end within 5 s; at 8 s, drain ends the rest.
 
-`BillingCore.VoiceMetering` charges the Group billing owner (`resource_kind: "voice"`, key `voice:<carrier>:<carrier call ID>`) for GPT-Live `model_seconds` and `carrier_seconds`. A GPT-Live transport loss bills at least the elapsed session.
+`BillingCore.VoiceMetering` authorizes at admission and before model start. Financial refusals start no model. End-of-call charges use the Group billing owner, `resource_kind: "voice"`, key `voice:<carrier>:<carrier call ID>`, and model/carrier seconds. Transport loss bills at least elapsed model time.
 No voice prices are seeded; charges stay pending until backfilled. A Group without a billing owner gets no charge. The charge omits the key ID.
 The `salix.voice.*` metrics use only `transport`, `reason` and `outcome` labels.
 

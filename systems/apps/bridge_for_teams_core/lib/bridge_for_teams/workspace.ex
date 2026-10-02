@@ -11,8 +11,7 @@ defmodule BridgeForTeams.Workspace do
   provisioned agent is used (the same resolution as `BridgeForTeams.Sites`).
 
   Writes go back over the same seam through the existing `write_agent_file`
-  callback (see `BridgeForTeams.Sites.publish_project_site/3` / `AssistantChats`
-  uploads) — `write_file/3` resolves the project agent identically to the reads
+  callback (see `BridgeForTeams.Sites.publish_project_site/3`) — `write_file/3` resolves the project agent identically to the reads
   so a reviewable work product (e.g. an edited email draft the user is about to
   send) can be flushed back to the workspace copy.
   """

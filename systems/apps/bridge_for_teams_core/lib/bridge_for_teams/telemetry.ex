@@ -13,7 +13,6 @@ defmodule BridgeForTeams.Telemetry do
     environment_provision: "other",
     runner_claim: "other",
     runner_heartbeat: "other",
-    artifact_sweep: "s3",
     storage_sweep: "s3",
     sourced_context_acquisition: "other",
     sourced_context_derivation: "other",
@@ -83,7 +82,7 @@ defmodule BridgeForTeams.Telemetry do
 
   defp sweeper_tags(metadata) do
     %{
-      operation: finite(metadata[:operation], ~w(artifact_sweep storage_sweep other)),
+      operation: finite(metadata[:operation], ~w(storage_sweep other)),
       outcome: finite(metadata[:outcome], @outcomes)
     }
   end

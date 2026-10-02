@@ -209,7 +209,12 @@ private def modelSummary : String :=
 
 private def noticeCall (binding : Term) : Term :=
   let model := key binding "failure_reason" == b "model"
-  let summary := b (if model then modelSummary else failureSummary)
+  let billing := key binding "billing_reason"
+  let summary := b (if billing == b "insufficient_credits" then
+      "Not enough credits to continue this request. Add credits, then send a new message to try again."
+    else if billing == b "account_inactive" || billing == b "missing_account" then
+      "Billing is unavailable for this request. Ask your workspace administrator to check the billing account, then try again."
+    else if model then modelSummary else failureSummary)
   let target := key binding "reply_target"
   let (tool, params) :=
     if target.isMap then

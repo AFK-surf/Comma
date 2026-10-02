@@ -50,11 +50,34 @@ defmodule BridgeForTeams.FeishuAppBindings do
     {"encrypt_key_configured", "encryption_configured"}
   ]
 
-  @doc "All Feishu app bindings for an org, oldest first."
-  @spec list_bindings(Ecto.UUID.t()) :: [FeishuAppBinding.t()]
-  def list_bindings(org_id) do
-    Repo.all(
-      from(b in FeishuAppBinding, where: b.org_id == ^org_id, order_by: [asc: b.created_at])
+  @doc "Feishu app bindings for an org, oldest first. `:limit` caps the rows."
+  @spec list_bindings(Ecto.UUID.t(), keyword()) :: [FeishuAppBinding.t()]
+  def list_bindings(org_id, opts \\ []) do
+    query =
+      from(b in FeishuAppBinding,
+        where: b.org_id == ^org_id,
+        order_by: [asc: b.created_at, asc: b.id]
+      )
+
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> query |> limit(^limit) |> Repo.all()
+      _ -> Repo.all(query)
+    end
+  end
+
+  @doc """
+  The org's binding enabled for dashboard login, or nil. Older builds could
+  leave more than one SSO-enabled binding behind, so the most recently saved
+  one wins until the next binding save cleans the posture up.
+  """
+  @spec latest_sso_binding(Ecto.UUID.t()) :: FeishuAppBinding.t() | nil
+  def latest_sso_binding(org_id) do
+    Repo.one(
+      from(b in FeishuAppBinding,
+        where: b.org_id == ^org_id and b.sso_enabled == true,
+        order_by: [desc: coalesce(b.updated_at, b.created_at), desc: b.id],
+        limit: 1
+      )
     )
   end
 

@@ -6,6 +6,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
+import { recordOnboardingCompleted } from "../../../e2e/helpers/browser-auth";
 import { emptyRoutineEnvelope } from "../../../e2e/helpers/routine-fixture";
 
 const accountA = {
@@ -40,6 +41,12 @@ const googleLogin = {
   credential: "google-login-credential",
   nonce: "google-login-nonce",
 };
+
+// Both accounts have finished first-launch onboarding on this device; these
+// specs are about the session, not the introduction.
+test.beforeEach(async ({ page }) => {
+  await recordOnboardingCompleted(page, [accountA.userId, accountB.userId]);
+});
 
 test("signing into B revokes A's deferred startup send", async ({ page }) => {
   const stub = await startSessionIsolationStub();
@@ -621,6 +628,38 @@ test("email replaces a prepared Google attempt without completing Google", async
   }
 });
 
+test("guest sign-in replaces a prepared Google attempt", async ({ page }) => {
+  const stub = await startSessionIsolationStub({
+    deferAccountAResolutions: false,
+    googleFlow: "signed_in",
+    guestEnabled: true,
+  });
+
+  try {
+    await installGoogleCredentialStub(page, {
+      apiBaseUrl: stub.baseUrl,
+      credential: googleLogin.credential,
+    });
+    await page.goto("/");
+    await expect(
+      page.getByRole("button", { name: "Continue with Google" })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Try without an account" }).click();
+
+    await expect(page.getByText("You’re trying Comma as a guest.")).toBeVisible();
+    expect(stub.googleAttempts).toEqual([{ platform: "web" }]);
+    expect(stub.googleCompletions).toEqual([]);
+    expect(stub.guestStarts).toHaveLength(1);
+    expect(stub.guestStarts[0]).toMatchObject({
+      pow: { challenge: "guest-test-challenge", nonce: expect.any(String) },
+    });
+    await page.reload();
+    await expect(page.getByText("You’re trying Comma as a guest.")).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});
+
 test("Google conditional linking completes through its purpose-bound OTP", async ({
   page,
 }) => {
@@ -827,10 +866,12 @@ async function startSessionIsolationStub({
   deferAccountASkills = false,
   deferSecondGoogleAttempt = false,
   googleFlow,
+  guestEnabled = false,
 }: {
   deferAccountAResolutions?: boolean;
   deferAccountASkills?: boolean;
   deferSecondGoogleAttempt?: boolean;
+  guestEnabled?: boolean;
   googleFlow?: "credential_rejected" | "otp_required" | "signed_in";
 } = {}) {
   const aResolutionGate = deferred<void>();
@@ -842,6 +883,8 @@ async function startSessionIsolationStub({
   const challenges = new Map<string, typeof accountA | typeof accountB>();
   const emailVerifications: unknown[] = [];
   const googleAttempts: unknown[] = [];
+  const guestStarts: unknown[] = [];
+  let guestCreated = false;
   const googleCompletions: unknown[] = [];
   const googleCompletionTransports: (string | string[] | undefined)[] = [];
   const googleLinkVerifications: unknown[] = [];
@@ -869,6 +912,34 @@ async function startSessionIsolationStub({
     }
 
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+
+    if (guestEnabled && path === "/v1/comma/auth/guest") {
+      if (request.method === "GET") {
+        writeJson(response, {
+          enabled: true,
+          pow: {
+            challenge: "guest-test-challenge",
+            difficulty: 1,
+            expires_at: 4_102_444_800,
+          },
+        });
+      } else if (request.method === "POST") {
+        guestStarts.push(await readJson(request));
+        guestCreated = true;
+        setSessionCookie(response, accountA.token);
+        writeJson(response, {
+          expires_at: 4_102_444_800,
+          session_id: accountA.sessionId,
+          user: {
+            id: accountA.userId,
+            email: "g-test@guest.comma.invalid",
+            name: "Guest",
+            kind: "guest",
+          },
+        });
+      }
+      return;
+    }
 
     if (request.method === "POST" && path === "/v1/comma/auth/email/login") {
       const body = (await readJson(request)) as { email?: string };
@@ -1006,7 +1077,14 @@ async function startSessionIsolationStub({
       writeJson(response, {
         expires_at: 4_102_444_800,
         session_id: account.sessionId,
-        user: { id: account.userId, email: account.email, name: null },
+        user: guestCreated
+          ? {
+              id: account.userId,
+              email: "g-test@guest.comma.invalid",
+              name: "Guest",
+              kind: "guest",
+            }
+          : { id: account.userId, email: account.email, name: null },
       });
       return;
     }
@@ -1161,6 +1239,7 @@ async function startSessionIsolationStub({
       return failedSessionProbeCount;
     },
     googleAttempts,
+    guestStarts,
     googleCompletions,
     googleCompletionTransports,
     googleLinkVerifications,

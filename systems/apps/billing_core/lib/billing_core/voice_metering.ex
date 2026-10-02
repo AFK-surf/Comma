@@ -15,6 +15,33 @@ defmodule BillingCore.VoiceMetering do
 
   require Logger
 
+  @doc "Authorize a metered voice call against the current Group billing owner."
+  def authorize(attrs) do
+    owner = stringify(attrs[:owner_snapshot] || %{})
+
+    if present?(owner["billing_account_id"]) do
+      case BillingCore.FeeControl.authorize(%{
+             billing_account_id: owner["billing_account_id"],
+             resource_kind: :voice,
+             action: :start,
+             mode: :enforce,
+             estimated_credits: 1,
+             provider: "openai",
+             sku: attrs[:sku] || "gpt-live-1",
+             source: "voice_admission",
+             source_key: "voice:#{attrs[:group_id]}:admission",
+             row_context:
+               Map.merge(owner, %{"entrypoint" => "voice_call", "actor_type" => "user"})
+           }) do
+        {:ok, %{allowed?: true}} -> :ok
+        {:ok, decision} -> {:error, {:billing_unavailable, decision}}
+        {:error, _} = error -> error
+      end
+    else
+      :ok
+    end
+  end
+
   @doc """
   Charge one ended call. Returns the engine result, or `{:unattributed, attrs}`
   when the owner snapshot names no billing account.

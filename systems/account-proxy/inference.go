@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"slices"
 	"strings"
 )
 
@@ -20,18 +20,19 @@ func inference(ctx context.Context, c Credential, op string, payload json.RawMes
 	if json.Unmarshal(payload, &in) != nil || in.Model == "" {
 		return &operationError{400, "model_required"}
 	}
-	provider, format := "codex", "openai-response"
-	if op == "/v1/messages" {
-		provider, format = "claude", "claude"
-	}
-	if c.Provider != provider {
+	provider := c.Provider
+	if !slices.Contains(inferenceProviders[op], provider) {
 		return &operationError{400, "provider_mismatch"}
 	}
-	e, err := cliproxy.NewSubscriptionExecutor(provider)
+	format := map[string]string{"/v1/messages": "claude", "/v1/chat/completions": "openai"}[op]
+	if format == "" {
+		format = "openai-response"
+	}
+	e, err := newExecutor(provider)
 	if err != nil {
 		return &operationError{400, "invalid_provider"}
 	}
-	a := &auth.Auth{Provider: provider, Metadata: c.Credentials}
+	a := newAuth(provider, c.Credentials)
 	req := executor.Request{Model: in.Model, Payload: payload}
 	if provider == "codex" {
 		req = auth.SubscriptionModelRequest(req)
@@ -68,6 +69,10 @@ func inference(ctx context.Context, c Credential, op string, payload json.RawMes
 				return ctx.Err()
 			case chunk, ok := <-resp.Chunks:
 				if !ok {
+					if format == "openai" {
+						wrote = true
+						return emit([]byte("data: [DONE]\n\n"))
+					}
 					return nil
 				}
 				if chunk.Err != nil {
@@ -75,11 +80,18 @@ func inference(ctx context.Context, c Credential, op string, payload json.RawMes
 				}
 				wrote = true
 				payload := chunk.Payload
-				// Native Codex translation returns complete SSE data lines without
-				// HTTP event delimiters. The host, as in the upstream handler,
-				// must frame each event before forwarding it to an SSE client.
-				if provider == "codex" && len(bytes.TrimSpace(payload)) > 0 {
+				// Native Responses translation (Codex and xAI) returns complete SSE
+				// data lines without HTTP event delimiters. The host, as in the
+				// upstream handler, must frame each event before forwarding it.
+				if format == "openai-response" && len(bytes.TrimSpace(payload)) > 0 {
 					payload = append(bytes.TrimRight(payload, "\r\n"), '\n', '\n')
+				}
+				// Chat Completions chunks are bare JSON objects. The upstream
+				// handler adds the SSE data prefix and the final [DONE] event.
+				if format == "openai" {
+					if payload = chatEvent(payload); payload == nil {
+						continue
+					}
 				}
 				if err = emit(payload); err != nil {
 					return err
@@ -112,4 +124,17 @@ func inference(ctx context.Context, c Credential, op string, payload json.RawMes
 		}
 	}
 	return err
+}
+
+// chatEvent frames one translated chunk as an SSE event. It drops empty
+// chunks and a translated [DONE], which the stream end emits once.
+func chatEvent(chunk []byte) []byte {
+	data := bytes.TrimSpace(chunk)
+	if rest, ok := bytes.CutPrefix(data, []byte("data:")); ok {
+		data = bytes.TrimSpace(rest)
+	}
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return nil
+	}
+	return append(append([]byte("data: "), data...), '\n', '\n')
 }

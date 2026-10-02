@@ -178,19 +178,50 @@ defmodule BridgeForTeams.MacMiniOnboarding do
     maybe_record_install_code_consumption_event(result, org_id, code_hash, opts)
   end
 
-  @doc "List durable runner keys with the stable runner identity that consumed them."
-  def list_runner_credentials(org_id) when is_binary(org_id) do
-    Repo.all(
-      from(c in MacMiniInstallCode,
-        join: key in ApiKey,
-        on: key.id == c.api_key_id,
-        where: c.org_id == ^org_id,
-        order_by: [desc: key.created_at],
-        select: {c, key}
-      )
+  @doc """
+  List durable runner keys with the stable runner identity that consumed them.
+
+  Options narrow the rows read: `:stable_ids` keeps keys of those runners,
+  `:key_id` keeps one key, and `active_only: true` drops revoked keys.
+  """
+  def list_runner_credentials(org_id, opts \\ []) when is_binary(org_id) do
+    from(c in MacMiniInstallCode,
+      join: key in ApiKey,
+      on: key.id == c.api_key_id,
+      where: c.org_id == ^org_id,
+      order_by: [desc: key.created_at],
+      select: {c, key}
     )
+    |> filter_runner_credentials(opts)
+    |> Repo.all()
     |> Enum.map(fn {install_code, api_key} ->
       %{stable_id: runner_stable_id(install_code), api_key: api_key}
+    end)
+  end
+
+  defp filter_runner_credentials(query, opts) do
+    Enum.reduce(opts, query, fn
+      {:stable_ids, stable_ids}, query ->
+        # Mirrors runner_stable_id/1 so the filter runs in the database.
+        where(
+          query,
+          [c],
+          fragment(
+            "coalesce(nullif(coalesce(?, ? ->> 'runner_stable_id'), ''), 'runner_' || replace(?::text, '-', ''))",
+            c.runner_stable_id,
+            c.audit_metadata,
+            c.id
+          ) in ^stable_ids
+        )
+
+      {:key_id, key_id}, query ->
+        where(query, [_c, key], key.id == ^key_id)
+
+      {:active_only, true}, query ->
+        where(query, [_c, key], is_nil(key.revoked_at))
+
+      _option, query ->
+        query
     end)
   end
 
@@ -204,10 +235,8 @@ defmodule BridgeForTeams.MacMiniOnboarding do
 
         provisioner ->
           org_id
-          |> list_runner_credentials()
-          |> Enum.filter(&(&1.stable_id == provisioner.stable_id))
+          |> list_runner_credentials(stable_ids: [provisioner.stable_id], active_only: true)
           |> Enum.map(& &1.api_key)
-          |> Enum.filter(&is_nil(&1.revoked_at))
           |> Enum.each(fn api_key ->
             case Auth.revoke_api_key(org_id, api_key.id, opts) do
               {:ok, _api_key} -> :ok

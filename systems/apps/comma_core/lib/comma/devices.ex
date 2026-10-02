@@ -29,6 +29,43 @@ defmodule Comma.Devices do
     end
   end
 
+  def probe(_user, %{"restricted" => true}, _workspace_id, _device_id),
+    do: {:error, :forbidden}
+
+  def probe(user, session, workspace_id, device_id) do
+    with {:ok, workspace} <- scope(user, session, workspace_id),
+         {:ok, device} <-
+           Control.get_environment(
+             device_id,
+             workspace["default_group_id"],
+             workspace["salix_tenant_id"]
+           ),
+         :ok <- allow_probe(device),
+         :ok <-
+           Control.discover_runtimes(
+             device_id,
+             workspace["default_group_id"],
+             workspace["salix_tenant_id"]
+           ),
+         {:ok, updated} <-
+           Control.get_environment(
+             device_id,
+             workspace["default_group_id"],
+             workspace["salix_tenant_id"]
+           ) do
+      {:ok, public_device(updated)}
+    else
+      {:error, reason} when reason in [:forbidden, :not_found] -> {:error, reason}
+      {:error, _} -> {:error, {:unavailable, "Device runtime check failed"}}
+    end
+  end
+
+  defp allow_probe(%{"status" => "connected"} = device) do
+    if public_device(device)["allows_operations"], do: :ok, else: {:error, :forbidden}
+  end
+
+  defp allow_probe(_device), do: {:error, :connector_disconnected}
+
   def set_access(_user, %{"restricted" => true}, _workspace_id, _device_id, _params),
     do: {:error, :forbidden}
 

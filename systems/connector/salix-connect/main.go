@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -133,6 +134,7 @@ type config struct {
 }
 
 type connector struct {
+	cloudRuntimeControl   *cloudRuntimeControl
 	cloudRuntimeRequests  int
 	cloudRuntimeParkUntil time.Time
 	cloudRuntimeParkToken string
@@ -335,20 +337,28 @@ type managedProcess struct {
 }
 
 type codexRuntime struct {
-	implementation *codexRuntimeImplementation
-	command        string
-	generation     string
-	cmd            *exec.Cmd
-	listenURL      string
-	connectTimeout time.Duration
-	readLimit      int64
-	ws             *websocket.Conn
-	wsMu           sync.Mutex
-	exited         chan struct{}
-	done           chan struct{}
-	doneOnce       sync.Once
-	stopOnce       sync.Once
-	initMu         sync.Mutex
+	diagnostics     *harnessDiagnosticBuffer
+	implementation  *codexRuntimeImplementation
+	command         string
+	generation      string
+	cmd             *exec.Cmd
+	listenURL       string
+	connectTimeout  time.Duration
+	readLimit       int64
+	ws              *websocket.Conn
+	wsMu            sync.Mutex
+	exited          chan struct{}
+	done            chan struct{}
+	doneOnce        sync.Once
+	stopOnce        sync.Once
+	initMu          sync.Mutex
+	nativeVersion   string
+	versionObserved bool
+	versionError    string
+	// Codex's own model list and per-directory config, cached for this process.
+	defaultsMu  sync.Mutex
+	catalog     *codexModelCatalog
+	configByCwd map[string]codexConfigDefaults
 
 	writeMu                        sync.Mutex
 	mu                             sync.Mutex
@@ -415,6 +425,7 @@ type codexRuntimeImplementation struct {
 	activityMu       sync.RWMutex
 	activityRevision atomic.Uint64
 	mu               sync.Mutex
+	startupMu        sync.Mutex
 	runtimes         map[string]*codexRuntime
 	sessions         map[string]*codexRuntimeSession
 	sessionOrder     []string
@@ -1137,11 +1148,17 @@ func newConnector(cfg config) (*connector, error) {
 		return c, nil
 	}
 
+	_, priorStateErr := os.Lstat(filepath.Join(c.runtimeStateRoot(), "external-runtime"))
+	freshExternalState := errors.Is(priorStateErr, os.ErrNotExist)
 	state, err := newExternalRuntimeState(c)
 	if err != nil {
 		return nil, fmt.Errorf("open external runtime state: %w", err)
 	}
 	c.externalRuntimeState = state
+	if err := c.loadCloudRuntimeControl(freshExternalState); err != nil {
+		state.close()
+		return nil, err
+	}
 	c.workspaceArchiver.runtimeState = state
 	go c.cleanupLoop()
 	codexImplementation := newCodexRuntimeImplementation(c)
@@ -1153,6 +1170,10 @@ func newConnector(cfg config) (*connector, error) {
 	}
 	c.runtimeInventory.run = func(target runtimeProbeTarget) map[string]any {
 		c.cloudRuntimeMu.Lock()
+		if c.cloudRuntimeControl != nil && c.cloudRuntimeControl.Sealed {
+			c.cloudRuntimeMu.Unlock()
+			return map[string]any{"kind": "external", "provider": target.provider, "command": target.identityMaterial, "identity_material": target.identityMaterial, "status": "unavailable", "ready": false, "readiness_issue": "cloud_runtime_sealed"}
+		}
 		c.cloudRuntimeRequests++
 		c.cloudRuntimeMu.Unlock()
 		defer func() { c.cloudRuntimeMu.Lock(); c.cloudRuntimeRequests--; c.cloudRuntimeMu.Unlock() }()
@@ -1174,6 +1195,10 @@ func newConnector(cfg config) (*connector, error) {
 	if err := c.externalRuntimeState.load(); err != nil {
 		c.closeExternalRuntimes()
 		return nil, fmt.Errorf("load external runtime recovery state: %w", err)
+	}
+	if err := c.loadRecoveryArchiveNotice(); err != nil {
+		c.closeExternalRuntimes()
+		return nil, err
 	}
 	// A pinned meetnative callback port must be receivable from process
 	// start: terminal callbacks for meetings joined before a restart arrive
@@ -2019,6 +2044,7 @@ func (c *connector) runVMServer(ctx context.Context) error {
 func (c *connector) vmHTTPHandler(ctx context.Context) http.Handler {
 	_ = c.ensureWorkspaceMarker()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/control", c.handleCloudRuntimeControl)
 	mux.HandleFunc("/healthz", c.handleVMHealth)
 	mux.HandleFunc("/readyz", c.handleVMReady)
 	mux.HandleFunc("/connect", c.handleVMConnect(ctx))
@@ -2055,18 +2081,37 @@ func (c *connector) handleVMConnect(ctx context.Context) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		c.cloudRuntimeMu.Lock()
+		sealed := c.cloudRuntimeControl != nil && c.cloudRuntimeControl.Sealed
+		c.cloudRuntimeMu.Unlock()
+		if sealed && r.URL.Query().Get("archive_repair") != "true" {
+			http.Error(w, "cloud runtime control sealed", 409)
+			return
+		}
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		defer ws.Close()
-		c.serveVMWebSocket(ctx, ws)
+		c.serveVMWebSocket(ctx, ws, r.URL.Query().Get("archive_repair") == "true")
 	}
 }
 
-func (c *connector) serveVMWebSocket(ctx context.Context, ws *websocket.Conn) {
+func (c *connector) serveVMWebSocket(ctx context.Context, ws *websocket.Conn, archiveRepair bool) {
 	writer := newWebSocketWriter(ws)
+	c.cloudRuntimeMu.Lock()
+	if c.cloudRuntimeControl != nil && c.cloudRuntimeControl.Sealed && !archiveRepair {
+		c.cloudRuntimeMu.Unlock()
+		return
+	}
+	if !archiveRepair {
+		if err := c.recordCloudRuntimeBusinessAdmission(); err != nil {
+			c.cloudRuntimeMu.Unlock()
+			return
+		}
+	}
 	session := c.claimConnection(ctx, writer.SendContext, writer.Close)
+	c.cloudRuntimeMu.Unlock()
 	session.sendReply = writer.SendContextBeforeWrite
 	defer func() {
 		session.close(errWebSocketClosed)
@@ -2309,7 +2354,35 @@ func writeTarZstTrees(ctx context.Context, w io.Writer, trees []archiveTree, sta
 }
 
 func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state *externalRuntimeState, fileLimit int64, codec string) error {
+	return writeTarTreesScope(ctx, w, trees, state, fileLimit, codec, "full")
+}
+
+func writeTarTreesScope(ctx context.Context, w io.Writer, trees []archiveTree, state *externalRuntimeState, fileLimit int64, codec, scope string) error {
+	var exclusions, retained []string
 	var err error
+	if scope == "recovery" {
+		if state == nil {
+			return errors.New("recovery archive requires runtime state")
+		}
+		control := state.connector.cloudRuntimeControl
+		if control == nil || !control.Sealed || !control.RecoveryValidated {
+			return errors.New("recovery archive requires a validated seal")
+		}
+		retained = append(retained, control.RecoveryPaths...)
+		for _, path := range retained {
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil || !inArchivePath(real, state.connector.root) {
+				return errors.New("retained archive path changed")
+			}
+		}
+		exclusions, err = state.connector.recoveryArchiveExclusions()
+		if err != nil {
+			return err
+		}
+	} else if scope != "full" {
+		return errors.New("invalid archive scope")
+	}
+
 	for i := range trees {
 		trees[i].source, err = filepath.EvalSymlinks(trees[i].source)
 		if err != nil {
@@ -2345,6 +2418,22 @@ func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state 
 	defer tw.Close()
 
 	seen := map[string]bool{}
+	if state != nil {
+		projection := archiveProjection{Scope: scope, RecoveryNotice: scope == "recovery"}
+		previous, err := state.connector.readArchiveProjection()
+		if err != nil {
+			return err
+		}
+		projection.RecoveryNotice = projection.RecoveryNotice || previous.RecoveryNotice || previous.Scope == "recovery"
+		scopeBody, _ := json.Marshal(projection)
+		if err := tw.WriteHeader(&tar.Header{Name: archiveScopeRelativePath, Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len(scopeBody))}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(scopeBody); err != nil {
+			return err
+		}
+		seen[archiveScopeRelativePath] = true
+	}
 	var expanded int64
 	for _, tree := range trees {
 		root := tree.source
@@ -2366,6 +2455,20 @@ func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state 
 			if rel == "." || strings.HasPrefix(rel, "../") || rel == ".." {
 				return nil
 			}
+			for _, excluded := range exclusions {
+				if inArchivePath(path, excluded) && !recoveryArchiveKeeps(path, retained) {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
+			if state != nil && filepath.ToSlash(filepath.Join(tree.prefix, rel)) == archiveScopeRelativePath {
+				return nil
+			}
+			if state != nil && (state.connector.localControlArchivePath(path) || filepath.Clean(path) == filepath.Join(stateRoot, archiveScopeRelativePath)) {
+				return nil
+			}
 			if state != nil && filepath.Clean(path) == snapshotPath {
 				return nil
 			}
@@ -2381,7 +2484,7 @@ func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state 
 				}
 				return nil
 			}
-			if skipRegenerableArchiveCache(filepath.ToSlash(filepath.Join(tree.prefix, rel)), path, d) {
+			if !recoveryArchiveKeeps(path, retained) && skipRegenerableArchiveCache(filepath.ToSlash(filepath.Join(tree.prefix, rel)), path, d) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -2414,7 +2517,7 @@ func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state 
 			}
 			link := ""
 			if info.Mode()&os.ModeSymlink != 0 {
-				resolved, err := filepath.EvalSymlinks(path)
+				resolved, err := archiveLinkTarget(path)
 				if err != nil {
 					return err
 				}
@@ -2480,6 +2583,37 @@ func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state 
 	return compressor.Close()
 }
 
+func archiveLinkTarget(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return resolved, err
+	}
+	link, err := os.Readlink(path)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(link) {
+		link = filepath.Join(filepath.Dir(path), link)
+	}
+	// Resolve existing parents before mapping an absent target into the archive.
+	// A dangling intermediate symlink remains an error, as does any other failure.
+	suffix := ""
+	for {
+		resolved, err := filepath.EvalSymlinks(link)
+		if err == nil {
+			return filepath.Join(resolved, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if _, statErr := os.Lstat(link); !errors.Is(statErr, os.ErrNotExist) {
+			return "", err
+		}
+		suffix = filepath.Join(filepath.Base(link), suffix)
+		link = filepath.Dir(link)
+	}
+}
+
 type contextArchiveWriter struct {
 	ctx    context.Context
 	writer io.Writer
@@ -2529,6 +2663,8 @@ func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState,
 			return canonicalErr
 		}
 	}
+	projection := archiveProjection{Scope: "full"}
+	scopeSeen := false
 	var snapshot *os.File
 	defer func() {
 		if snapshot != nil {
@@ -2575,9 +2711,8 @@ func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState,
 				if err := rejectSymlinkPath(root, resolved); err != nil {
 					return err
 				}
-				if _, err := os.Stat(resolved); err != nil {
-					return err
-				}
+				// A retained link can point to an omitted cache or package.
+				// Restore the link even when its workspace target is absent.
 				if err := ensureSafeArchiveParent(root, target); err != nil {
 					return err
 				}
@@ -2602,11 +2737,25 @@ func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState,
 			if err := syncRestoredDirectories(changedDirectories); err != nil {
 				return err
 			}
+			if projection.Scope == "recovery" && (state == nil || snapshot == nil) {
+				return errors.New("recovery archive lacks managed state snapshot")
+			}
 			if state != nil && snapshot != nil {
 				if err := snapshot.Close(); err != nil {
 					return err
 				}
-				return state.restoreArchiveSnapshot(snapshot.Name())
+				if err := state.restoreArchiveSnapshot(snapshot.Name()); err != nil {
+					return err
+				}
+			}
+			if state != nil {
+				projection.RecoveryNotice = projection.RecoveryNotice || projection.Scope == "recovery"
+				if err := state.connector.saveArchiveProjection(projection); err != nil {
+					return err
+				}
+				if projection.RecoveryNotice {
+					state.connector.noteRecoveryArchive()
+				}
 			}
 			return nil
 		}
@@ -2622,6 +2771,20 @@ func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState,
 			return err
 		}
 		rel, _ := filepath.Rel(root, target)
+		if filepath.ToSlash(rel) == archiveScopeRelativePath {
+			if scopeSeen || header.Typeflag != tar.TypeReg || header.Size > 128 {
+				return errors.New("invalid archive scope")
+			}
+			var manifest archiveProjection
+			if json.NewDecoder(io.LimitReader(tr, header.Size)).Decode(&manifest) != nil || (manifest.Scope != "full" && manifest.Scope != "recovery") {
+				return errors.New("invalid archive scope")
+			}
+			projection, scopeSeen = manifest, true
+			continue
+		}
+		if state != nil && state.connector.localControlArchivePath(target) {
+			return errors.New("archive contains runtime control")
+		}
 		if state != nil && filepath.ToSlash(rel) == externalRuntimeStateRelativePath {
 			if snapshot != nil || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > fileLimit {
 				return errors.New("invalid managed state snapshot")
@@ -5123,7 +5286,7 @@ func (i *codexRuntimeImplementation) Send(ctx context.Context, input externalRun
 		session.mu.Lock()
 		turnStartedSeq := session.turnStartedSeq
 		session.mu.Unlock()
-		turnID, err := runtime.startTurn(ctx, threadID, nativeInput, input.model)
+		turnID, err := runtime.startTurn(ctx, threadID, nativeInput, input.workspace, input.model, input.reasoningEffort)
 		if err != nil {
 			if recoveryMessage != "" {
 				session.mu.Lock()
@@ -5323,7 +5486,9 @@ func (i *codexRuntimeImplementation) continueSessionRecovery(
 		ctx,
 		threadID,
 		[]map[string]any{textInput(recoveryMessage)},
+		input.workspace,
 		input.model,
+		input.reasoningEffort,
 	)
 	if err != nil {
 		session.mu.Lock()
@@ -5500,44 +5665,31 @@ func (i *codexRuntimeImplementation) ensureRuntime(
 	input externalRuntimeInput,
 	session *codexRuntimeSession,
 ) (*codexRuntime, error) {
-	c := i.connector
-	bridgeURL, err := c.ensureRuntimeBridge()
+	runtime, err := i.ensureCodexRuntime(ctx, input.command)
 	if err != nil {
-		return nil, err
+		var stopped *codexStartupNormalExit
+		if runtime != nil && errors.As(err, &stopped) && i.connector.externalRuntimeState.watched("codex", input.sessionID) {
+			session.mu.Lock()
+			restored := session.recoveryPending && session.threadID != "" &&
+				session.executionID != "" && session.executionID == input.executionID &&
+				session.recoveryInput.executionID == input.executionID &&
+				session.recoveryInput.command == input.command
+			if restored {
+				session.runtime = runtime
+			}
+			session.mu.Unlock()
+			if restored {
+				// The process exited before admission could attach the restored
+				// Session. Apply its existing normal-exit lifecycle exactly once.
+				i.finishSession(runtime, session, "codex app-server exited", false)
+			}
+		}
+		return runtime, err
 	}
-	i.mu.Lock()
-	if i.closed {
-		i.mu.Unlock()
-		return nil, errCodexAppServerUnavailable
-	}
-	existing := i.runtimes[input.command]
-	if existing != nil && existing.isRunning() {
-		session.mu.Lock()
-		session.runtime = existing
-		session.token = input.token
-		session.mu.Unlock()
-		i.mu.Unlock()
-		return existing, nil
-	}
-	runtime, err := i.startRuntime(input, bridgeURL)
-	if err != nil {
-		i.mu.Unlock()
-		return nil, err
-	}
-	i.runtimes[input.command] = runtime
 	session.mu.Lock()
 	session.runtime = runtime
 	session.token = input.token
 	session.mu.Unlock()
-	runtime.start()
-	err = runtime.connect(ctx)
-	i.mu.Unlock()
-	if err != nil {
-		if runtime.isRunning() {
-			_ = stopExternalRuntime(ctx, runtime.terminate, runtime.done)
-		}
-		return nil, err
-	}
 	return runtime, nil
 }
 
@@ -5546,6 +5698,10 @@ func (i *codexRuntimeImplementation) startRuntime(input externalRuntimeInput, br
 }
 
 func (i *codexRuntimeImplementation) startRuntimeAtHome(input externalRuntimeInput, bridgeURL, home string) (*codexRuntime, error) {
+	return i.startRuntimeCommand(input, bridgeURL, home, input.command)
+}
+
+func (i *codexRuntimeImplementation) startRuntimeCommand(input externalRuntimeInput, bridgeURL, home, launchCommand string) (*codexRuntime, error) {
 	c := i.connector
 	cliDir, err := c.ensureSalixCLI("codex")
 	if err != nil {
@@ -5559,14 +5715,14 @@ func (i *codexRuntimeImplementation) startRuntimeAtHome(input externalRuntimeInp
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(codexExecutionPath(command), codexAppServerArgs(listenURL)...)
+	cmd := exec.Command(codexExecutionPath(launchCommand), codexAppServerArgs(listenURL)...)
 	configureProcessGroup(cmd)
 	cmd.Dir = c.root
 	cmd.Env = execEnv(map[string]any{
 		"SALIX_CONNECT_URL": bridgeURL,
 		"SALIX_CLI":         filepath.Join(cliDir, "salix"),
 		"SALIX_ENV_ROOT":    c.root,
-		"PATH":              runtimeCommandPath(command, cliDir),
+		"PATH":              runtimeCommandPath(launchCommand, cliDir),
 	})
 
 	if home != "" {
@@ -5577,18 +5733,16 @@ func (i *codexRuntimeImplementation) startRuntimeAtHome(input externalRuntimeInp
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
+	diagnostics := &harnessDiagnosticBuffer{}
+	cmd.Stderr = diagnostics
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, &harnessStartupError{err}
 	}
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
-	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 
 	runtime := &codexRuntime{
 		implementation: i,
+		diagnostics:    diagnostics,
 		command:        command,
 		generation:     randomHex(16),
 		cmd:            cmd,
@@ -5792,10 +5946,11 @@ func (r *codexRuntime) ensureInitialized(ctx context.Context) error {
 	if r.initialized {
 		return nil
 	}
-	if _, err := r.rpc(ctx, "initialize", map[string]any{
+	result, err := r.rpc(ctx, "initialize", map[string]any{
 		"clientInfo":   map[string]any{"name": "salix", "title": "Salix", "version": "0.1.0"},
 		"capabilities": map[string]any{"experimentalApi": true, "requestAttestation": false},
-	}, 15*time.Second); err != nil {
+	}, 15*time.Second)
+	if err != nil {
 		// A transport error or timeout is ambiguous: the app-server may have
 		// applied initialize and lost the response, making a same-connection retry
 		// invalid. An explicit JSON-RPC error is a complete rejection and leaves
@@ -5810,6 +5965,7 @@ func (r *codexRuntime) ensureInitialized(ctx context.Context) error {
 		}
 		return err
 	}
+	r.nativeVersion = strings.TrimSpace(stringParam(result, "userAgent"))
 	r.initialized = true
 	return nil
 }
@@ -5883,7 +6039,18 @@ func (r *codexRuntime) threadReady(ctx context.Context, threadID string) (bool, 
 	return false, err
 }
 
-func (r *codexRuntime) startTurn(ctx context.Context, threadID string, input []map[string]any, model string) (string, error) {
+// startTurn sends the effective model and reasoning effort on every turn.
+// Codex app-server `turn/start` takes `effort` as a non-empty string or null
+// (checked against codex-cli 0.153.0, the version the runtime image pins).
+// Both override "this turn and subsequent turns", and null does not clear an
+// override. So a blank choice sends Codex's own default explicitly: a return
+// to the runtime default then replaces an earlier override in the same thread.
+// A field Codex reports no default for is omitted. The default comes from
+// `config/read` for the thread's cwd, not from thread/resume, which reports the
+// thread's current values, earlier overrides included. An effort the model
+// does not list as supported is mapped to the closest supported one.
+func (r *codexRuntime) startTurn(ctx context.Context, threadID string, input []map[string]any, cwd, model, effort string) (string, error) {
+	model, effort = r.turnSettings(ctx, cwd, model, effort)
 	params := map[string]any{
 		"threadId":       threadID,
 		"input":          input,
@@ -5891,6 +6058,9 @@ func (r *codexRuntime) startTurn(ctx context.Context, threadID string, input []m
 	}
 	if model != "" {
 		params["model"] = model
+	}
+	if effort != "" {
+		params["effort"] = effort
 	}
 	result, err := r.rpc(ctx, "turn/start", params, 30*time.Second)
 	if err != nil {
@@ -5916,6 +6086,11 @@ func (r *codexRuntime) steer(ctx context.Context, threadID, activeTurnID string,
 }
 
 func (r *codexRuntime) rpc(ctx context.Context, method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	id := strconv.Itoa(r.nextID)
 	r.nextID++
@@ -5924,10 +6099,13 @@ func (r *codexRuntime) rpc(ctx context.Context, method string, params map[string
 	payload := map[string]any{"id": id, "method": method, "params": params}
 	r.mu.Unlock()
 
-	if err := r.sendCodexMessage(payload); err != nil {
+	if err := r.sendCodexMessage(ctx, payload); err != nil {
 		r.mu.Lock()
 		delete(r.pending, id)
 		r.mu.Unlock()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("codex %s timed out: %w", method, err)
+		}
 		return nil, err
 	}
 
@@ -5948,15 +6126,13 @@ func (r *codexRuntime) rpc(ctx context.Context, method string, params map[string
 			return nil, fmt.Errorf("codex %s: %v", method, errValue)
 		}
 		return mapParam(msg, "result"), nil
-	case <-time.After(timeout):
-		r.mu.Lock()
-		delete(r.pending, id)
-		r.mu.Unlock()
-		return nil, fmt.Errorf("codex %s timed out", method)
 	case <-ctx.Done():
 		r.mu.Lock()
 		delete(r.pending, id)
 		r.mu.Unlock()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("codex %s timed out: %w", method, ctx.Err())
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -6057,11 +6233,15 @@ func codexServerRequestResult(method string) map[string]any {
 
 func (r *codexRuntime) writeCodexResponse(id string, payload map[string]any) error {
 	payload["id"] = id
-	return r.sendCodexMessage(payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return r.sendCodexMessage(ctx, payload)
 }
 
-func (r *codexRuntime) sendCodexMessage(payload map[string]any) error {
-	r.writeMu.Lock()
+func (r *codexRuntime) sendCodexMessage(ctx context.Context, payload map[string]any) error {
+	if err := lockRuntimeContext(ctx, &r.writeMu); err != nil {
+		return err
+	}
 	defer r.writeMu.Unlock()
 	r.wsMu.Lock()
 	ws := r.ws
@@ -6069,7 +6249,14 @@ func (r *codexRuntime) sendCodexMessage(payload map[string]any) error {
 	if ws == nil {
 		return errCodexAppServerUnavailable
 	}
+	deadline, _ := ctx.Deadline()
+	if err := ws.SetWriteDeadline(deadline); err != nil {
+		return errCodexAppServerUnavailable
+	}
 	if err := ws.WriteJSON(payload); err != nil {
+		// A failed write makes this socket unusable. The read-loop owner handles
+		// transport loss and fences this exact runtime generation.
+		_ = ws.Close()
 		return errCodexAppServerUnavailable
 	}
 	return nil
@@ -7068,4 +7255,178 @@ func (c *connector) deviceSystemInfo() map[string]any {
 	}
 	info["client_source"] = source
 	return info
+}
+
+// codexModelCatalog is Codex's own model list for one app-server process.
+type codexModelCatalog struct {
+	listedDefault string
+	efforts       map[string]string
+	supported     map[string][]string
+}
+
+// codexConfigDefaults is the effective config for one working directory.
+type codexConfigDefaults struct {
+	model  string
+	effort string
+}
+
+const (
+	codexDefaultsPageLimit   = 5
+	codexConfigCacheLimit    = 64
+	codexDefaultsReadTimeout = 10 * time.Second
+)
+
+// Codex reasoning efforts from least to most.
+var codexEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
+// turnSettings fills a blank model or effort with Codex's own default and
+// maps an effort the model does not support to its closest supported one.
+// The workspace config wins over the model catalog, as it does in Codex.
+func (r *codexRuntime) turnSettings(ctx context.Context, cwd, model, effort string) (string, string) {
+	catalog := r.modelCatalog(ctx)
+	if model == "" || effort == "" {
+		config := r.configDefaults(ctx, cwd)
+		if model == "" {
+			model = config.model
+			if model == "" && catalog != nil {
+				model = catalog.listedDefault
+			}
+		}
+		if effort == "" {
+			effort = config.effort
+			if effort == "" && catalog != nil {
+				effort = catalog.efforts[model]
+			}
+		}
+	}
+	if catalog != nil && effort != "" {
+		if supported := catalog.supported[model]; len(supported) > 0 {
+			if mapped := closestCodexEffort(effort, supported); mapped != effort {
+				logf("codex effort %q is not supported by model %q; sending %q", effort, model, mapped)
+				effort = mapped
+			}
+		}
+	}
+	return model, effort
+}
+
+// closestCodexEffort returns effort when supported, else the nearest supported
+// effort (the lower one on a tie), or "" when effort is not a known level.
+func closestCodexEffort(effort string, supported []string) string {
+	if slices.Contains(supported, effort) {
+		return effort
+	}
+	want := slices.Index(codexEffortOrder, effort)
+	if want < 0 {
+		return ""
+	}
+	best, bestDistance := "", len(codexEffortOrder)
+	for _, candidate := range supported {
+		index := slices.Index(codexEffortOrder, candidate)
+		if index < 0 {
+			continue
+		}
+		distance := want - index
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < bestDistance || (distance == bestDistance && index < want) {
+			best, bestDistance = candidate, distance
+		}
+	}
+	return best
+}
+
+// modelCatalog reads `model/list` once for this app-server process. The lock
+// is not held across the request. A failed read is not cached: a later turn
+// retries it, and the fields it would fill stay omitted meanwhile.
+func (r *codexRuntime) modelCatalog(ctx context.Context) *codexModelCatalog {
+	r.defaultsMu.Lock()
+	cached := r.catalog
+	r.defaultsMu.Unlock()
+	if cached != nil {
+		return cached
+	}
+	catalog := &codexModelCatalog{efforts: map[string]string{}, supported: map[string][]string{}}
+	cursor := ""
+	for page := 0; page < codexDefaultsPageLimit; page++ {
+		params := map[string]any{"limit": 100, "includeHidden": true}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		list, err := r.rpc(ctx, "model/list", params, codexDefaultsReadTimeout)
+		if err != nil {
+			return nil
+		}
+		items, _ := list["data"].([]any)
+		for _, item := range items {
+			entry, _ := item.(map[string]any)
+			names := []string{stringParam(entry, "model"), stringParam(entry, "id")}
+			var supported []string
+			options, _ := entry["supportedReasoningEfforts"].([]any)
+			for _, option := range options {
+				value, _ := option.(map[string]any)
+				if effort := stringParam(value, "reasoningEffort"); effort != "" {
+					supported = append(supported, effort)
+				}
+			}
+			for _, name := range names {
+				if name == "" {
+					continue
+				}
+				if effort := stringParam(entry, "defaultReasoningEffort"); effort != "" {
+					catalog.efforts[name] = effort
+				}
+				if len(supported) > 0 {
+					catalog.supported[name] = supported
+				}
+			}
+			if entry["isDefault"] == true && catalog.listedDefault == "" {
+				catalog.listedDefault = defaultString(names[0], names[1])
+			}
+		}
+		cursor = stringParam(list, "nextCursor")
+		if cursor == "" {
+			break
+		}
+	}
+	r.defaultsMu.Lock()
+	defer r.defaultsMu.Unlock()
+	if r.catalog == nil {
+		r.catalog = catalog
+	}
+	return r.catalog
+}
+
+// configDefaults reads `config/read` for the thread's working directory, so a
+// workspace `.codex/config.toml` applies. It is cached per directory for this
+// process, without holding the lock across the request. A failed read is not
+// cached.
+func (r *codexRuntime) configDefaults(ctx context.Context, cwd string) codexConfigDefaults {
+	r.defaultsMu.Lock()
+	cached, ok := r.configByCwd[cwd]
+	r.defaultsMu.Unlock()
+	if ok {
+		return cached
+	}
+	params := map[string]any{}
+	if cwd != "" {
+		params["cwd"] = cwd
+	}
+	result, err := r.rpc(ctx, "config/read", params, codexDefaultsReadTimeout)
+	if err != nil {
+		return codexConfigDefaults{}
+	}
+	values := mapParam(result, "config")
+	config := codexConfigDefaults{
+		model:  strings.TrimSpace(stringParam(values, "model")),
+		effort: strings.TrimSpace(stringParam(values, "model_reasoning_effort")),
+	}
+	r.defaultsMu.Lock()
+	defer r.defaultsMu.Unlock()
+	if r.configByCwd == nil || len(r.configByCwd) >= codexConfigCacheLimit {
+		r.configByCwd = map[string]codexConfigDefaults{}
+	}
+	r.configByCwd[cwd] = config
+	return config
 }

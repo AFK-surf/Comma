@@ -11,6 +11,7 @@ import {
   createCurrentMainSessionApiBinding,
   type MainSessionTransportAuthority,
 } from "../session/main-session-transport";
+import { readMainLocale, type MainLocaleSource } from "../../main-locale";
 export * from "@comma/app/chat-coordinator";
 
 export function createMainChatCoordinatorOptions({
@@ -26,7 +27,7 @@ export function createMainChatCoordinatorOptions({
 }: {
   fetch?: typeof fetch;
   getClientDeviceId?: (workspaceId: string) => string | undefined;
-  locale?: CommaLocale;
+  locale?: MainLocaleSource;
   onCanonicalMessagesAppended?: (input: {
     conversation: CommaConversation;
     messages: readonly ChatMessage[];
@@ -41,20 +42,27 @@ export function createMainChatCoordinatorOptions({
   session: MainSessionTransportAuthority;
   transcodeAttachment?: AttachmentTranscoder;
 }) {
-  return {
+  const options = {
     createSessionBoundApi: () =>
       createCurrentMainSessionApiBinding({
         ...(fetchImpl ? { fetch: fetchImpl } : {}),
         session,
       }),
     ...(getClientDeviceId ? { getClientDeviceId } : {}),
-    ...(locale ? { locale } : {}),
     ...(onCanonicalMessagesAppended ? { onCanonicalMessagesAppended } : {}),
     ...(onLocalFilesCommitted ? { onLocalFilesCommitted } : {}),
     ...(onStateChanged ? { onStateChanged } : {}),
     renderGroupImagePreview,
     ...(transcodeAttachment ? { transcodeAttachment } : {}),
   } satisfies ConstructorParameters<typeof ChatCoordinator>[0];
+  // Each new chat entry reads Main's language at that moment.
+  if (locale) {
+    Object.defineProperty(options, "locale", {
+      enumerable: true,
+      get: () => readMainLocale(locale),
+    });
+  }
+  return options as typeof options & { locale?: CommaLocale };
 }
 
 export function createMainChatCoordinator(

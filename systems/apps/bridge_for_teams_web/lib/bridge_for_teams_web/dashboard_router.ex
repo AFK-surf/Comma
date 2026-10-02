@@ -128,6 +128,229 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/session", DashboardAPIController, :session)
     get("/orgs/:org/context", DashboardAPIController, :context)
     get("/orgs/:org/overview", DashboardAPIController, :overview)
+    # The first-run checklist on the Overview.
+    get("/orgs/:org/onboarding", DashboardAPIController, :onboarding)
+    post("/orgs/:org/onboarding/dismiss", DashboardAPIController, :dismiss_onboarding)
+    get("/orgs/:org/health", DashboardAPIController, :health)
+    get("/orgs/:org/audit", DashboardAPIController, :audit)
+    get("/orgs/:org/projects", DashboardAPIController, :projects)
+    post("/orgs/:org/projects", DashboardAPIController, :create_project)
+    get("/orgs/:org/projects/:id/overview", DashboardAPIController, :project_overview)
+
+    # One Agent Swarm's React pages: Agents (with the agent detail rail),
+    # Devices (with Compute environments), Tasks (with its Scheduled view),
+    # the Overview's Websites panel, and Settings with Access.
+    scope "/orgs/:org/projects/:id" do
+      get("/agents", DashboardAPIController, :project_agents)
+      post("/agents", DashboardAPIController, :create_project_agent)
+      get("/agents/targets", DashboardAPIController, :project_agent_targets)
+      get("/agents/workloads", DashboardAPIController, :project_agent_workloads)
+      get("/agents/:agent_id", DashboardAPIController, :project_agent)
+      patch("/agents/:agent_id", DashboardAPIController, :configure_project_agent)
+      get("/agents/:agent_id/config", DashboardAPIController, :project_agent_config)
+      put("/agents/:agent_id/runtime", DashboardAPIController, :rebind_project_agent)
+      post("/agents/:agent_id/archive", DashboardAPIController, :archive_project_agent)
+
+      post(
+        "/agents/:agent_id/router-session",
+        DashboardAPIController,
+        :switch_project_agent_session
+      )
+
+      get("/devices", DashboardAPIController, :project_devices)
+      post("/devices", DashboardAPIController, :create_project_device)
+      get("/devices/provisioning", DashboardAPIController, :project_device_provisioning)
+      get("/devices/runners", DashboardAPIController, :project_device_runners)
+      put("/devices/cloud", DashboardAPIController, :set_project_cloud_computer)
+      post("/devices/:device_id/disconnect", DashboardAPIController, :disconnect_project_device)
+      delete("/devices/:device_id", DashboardAPIController, :delete_project_device)
+
+      post(
+        "/compute/:environment_id/shell",
+        DashboardAPIController,
+        :create_project_shell_workload
+      )
+
+      post("/compute/:environment_id/drain", DashboardAPIController, :drain_project_environment)
+      post("/compute/:environment_id/revoke", DashboardAPIController, :revoke_project_environment)
+      get("/websites", DashboardAPIController, :project_websites)
+      get("/tasks", DashboardAPIController, :project_tasks)
+      post("/tasks", DashboardAPIController, :create_project_task)
+      get("/schedules", DashboardAPIController, :project_schedules)
+      delete("/schedules/:schedule_id", DashboardAPIController, :delete_project_schedule)
+      get("/settings", DashboardAPIController, :project_settings)
+      patch("/settings", DashboardAPIController, :update_project_settings)
+      post("/archive", DashboardAPIController, :archive_project)
+      get("/access", DashboardAPIController, :project_access)
+      post("/access", DashboardAPIController, :grant_project_access)
+      patch("/access/:user_id", DashboardAPIController, :update_project_access)
+      delete("/access/:user_id", DashboardAPIController, :remove_project_access)
+    end
+
+    get("/orgs/:org/plugins", DashboardAPIController, :plugins)
+    post("/orgs/:org/plugins", DashboardAPIController, :create_plugin)
+    put("/orgs/:org/plugins/:plugin_id", DashboardAPIController, :update_plugin)
+
+    # Meetings and Data policy: owner/admin pages of one Agent Swarm.
+    get("/orgs/:org/meetings/:project_id", DashboardAPIController, :meetings)
+    put("/orgs/:org/meetings/:project_id/settings", DashboardAPIController, :save_meetings)
+    get("/orgs/:org/meetings/:project_id/:read", DashboardAPIController, :meetings_read)
+    get("/orgs/:org/data-policy/:project_id", DashboardAPIController, :data_policy)
+    patch("/orgs/:org/data-policy/:project_id", DashboardAPIController, :update_data_policy)
+
+    scope "/orgs/:org/data-policy/:project_id/connects/:connect_id" do
+      put("/scopes/:scope_id", DashboardAPIController, :classify_data_policy_scope)
+      delete("/scopes/:scope_id", DashboardAPIController, :reset_data_policy_scope)
+      post("/clearances", DashboardAPIController, :grant_data_policy_clearance)
+      # The tag and principal travel in the JSON body: a tag such as `.` or
+      # `..` does not survive as a path segment.
+      delete("/clearances", DashboardAPIController, :withdraw_data_policy_clearance)
+
+      put("/placements/:user_id", DashboardAPIController, :place_data_policy_principal)
+    end
+
+    # Slack triage: owner/admin pages for one router Agent (`agent` param).
+    scope "/orgs/:org/triage" do
+      get("/", DashboardAPIController, :triage)
+      get("/evaluation", DashboardAPIController, :triage_evaluation)
+      get("/channels", DashboardAPIController, :triage_channels)
+      put("/sources/:connect_id", DashboardAPIController, :set_triage_source)
+      post("/sources/:connect_id/channels", DashboardAPIController, :add_triage_channels)
+
+      put(
+        "/sources/:connect_id/channels/:channel_id",
+        DashboardAPIController,
+        :set_triage_channel
+      )
+
+      get("/worker", DashboardAPIController, :triage_worker)
+      put("/worker", DashboardAPIController, :save_triage_worker)
+      get("/activity", DashboardAPIController, :triage_activity)
+      post("/reveal", DashboardAPIController, :reveal_triage_text)
+      get("/heatmap", DashboardAPIController, :triage_heatmap)
+      get("/processing", DashboardAPIController, :triage_processing)
+      get("/delegation", DashboardAPIController, :triage_delegation)
+      get("/knowledge", DashboardAPIController, :triage_knowledge)
+    end
+
+    get("/orgs/:org/members", DashboardAPIController, :members)
+    post("/orgs/:org/members", DashboardAPIController, :invite_member)
+    patch("/orgs/:org/members/:user_id", DashboardAPIController, :update_member)
+    delete("/orgs/:org/members/:user_id", DashboardAPIController, :remove_member)
+
+    get("/orgs/:org/runners", DashboardAPIController, :runners)
+    get("/orgs/:org/runners/onboarding", DashboardAPIController, :runner_onboarding)
+
+    post(
+      "/orgs/:org/runners/install-commands",
+      DashboardAPIController,
+      :create_runner_install_command
+    )
+
+    delete("/orgs/:org/runners/keys/:id", DashboardAPIController, :revoke_runner_key)
+    post("/orgs/:org/runners/keys/:id/rotate", DashboardAPIController, :rotate_runner_key)
+    get("/orgs/:org/runners/:id/connectors", DashboardAPIController, :runner_connectors)
+    delete("/orgs/:org/runners/:id", DashboardAPIController, :remove_runner)
+
+    get("/orgs/:org/settings/general", DashboardAPIController, :settings_general)
+    patch("/orgs/:org/settings/general", DashboardAPIController, :update_settings_general)
+
+    delete(
+      "/orgs/:org/settings/cli-sessions/:id",
+      DashboardAPIController,
+      :revoke_settings_cli_session
+    )
+
+    get("/orgs/:org/settings/models", DashboardAPIController, :settings_models)
+    put("/orgs/:org/settings/models", DashboardAPIController, :update_settings_models)
+
+    scope "/orgs/:org/settings/models" do
+      get("/templates", DashboardAPIController, :model_templates)
+      post("/templates", DashboardAPIController, :create_model_template)
+      post("/templates/discover", DashboardAPIController, :discover_template_models)
+      put("/templates/:id", DashboardAPIController, :update_model_template)
+      delete("/templates/:id", DashboardAPIController, :delete_model_template)
+      get("/accounts", DashboardAPIController, :model_accounts)
+      post("/accounts", DashboardAPIController, :create_model_account)
+      post("/accounts/oauth", DashboardAPIController, :begin_model_account_oauth)
+
+      post(
+        "/accounts/oauth/:attempt_id/complete",
+        DashboardAPIController,
+        :complete_model_account_oauth
+      )
+
+      patch("/accounts/:id", DashboardAPIController, :update_model_account)
+      delete("/accounts/:id", DashboardAPIController, :delete_model_account)
+      post("/accounts/:id/quota", DashboardAPIController, :refresh_model_account_quota)
+      post("/accounts/:id/reset", DashboardAPIController, :reset_model_account_quota)
+      get("/accounts/:id/usage", DashboardAPIController, :model_account_usage)
+    end
+
+    get("/orgs/:org/settings/sso", DashboardAPIController, :settings_sso)
+    put("/orgs/:org/settings/sso", DashboardAPIController, :update_settings_sso)
+    post("/orgs/:org/settings/sso/checks", DashboardAPIController, :run_settings_sso_checks)
+    get("/orgs/:org/settings/integrations", DashboardAPIController, :settings_integrations)
+
+    put(
+      "/orgs/:org/settings/integrations/oauth/:provider",
+      DashboardAPIController,
+      :save_settings_oauth_app
+    )
+
+    delete(
+      "/orgs/:org/settings/integrations/oauth/:provider",
+      DashboardAPIController,
+      :delete_settings_oauth_app
+    )
+
+    put(
+      "/orgs/:org/settings/integrations/composio",
+      DashboardAPIController,
+      :save_settings_composio
+    )
+
+    delete(
+      "/orgs/:org/settings/integrations/composio",
+      DashboardAPIController,
+      :delete_settings_composio
+    )
+
+    put("/orgs/:org/settings/integrations/signal", DashboardAPIController, :save_settings_signal)
+
+    post(
+      "/orgs/:org/settings/integrations/feishu/apps",
+      DashboardAPIController,
+      :create_settings_feishu_app
+    )
+
+    put(
+      "/orgs/:org/settings/integrations/feishu/apps/:id",
+      DashboardAPIController,
+      :update_settings_feishu_app
+    )
+
+    delete(
+      "/orgs/:org/settings/integrations/feishu/apps/:id",
+      DashboardAPIController,
+      :delete_settings_feishu_app
+    )
+
+    post(
+      "/orgs/:org/settings/integrations/feishu/routes",
+      DashboardAPIController,
+      :connect_settings_feishu_route
+    )
+
+    post(
+      "/orgs/:org/settings/integrations/feishu/projects/:project_id/routes/:connect_id/disable",
+      DashboardAPIController,
+      :disable_settings_feishu_route
+    )
+
+    get("/cli/device-login/:user_code", DashboardAPIController, :cli_login)
+    post("/cli/device-login/:user_code/approve", DashboardAPIController, :approve_cli_login)
+    post("/cli/device-login/:user_code/deny", DashboardAPIController, :deny_cli_login)
   end
 
   scope "/dashboard", BridgeForTeamsWeb do
@@ -189,19 +412,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     get("/cli/sessions", CLIAuthController, :sessions)
     delete("/cli/sessions/:session_id", CLIAuthController, :revoke_session)
-    get("/cli/device-authorizations/:user_code", CLIAuthController, :device_authorization)
-
-    post(
-      "/cli/device-authorizations/:user_code/approve",
-      CLIAuthController,
-      :approve_device_authorization
-    )
-
-    post(
-      "/cli/device-authorizations/:user_code/cancel",
-      CLIAuthController,
-      :cancel_device_authorization
-    )
   end
 
   scope "/v1", BridgeForTeamsWeb do
@@ -456,12 +666,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     pipe_through([:browser, :require_authenticated])
 
     get(
-      "/orgs/:org/projects/:id/tasks/:conversation_id/debug-trace",
-      ConversationTraceController,
-      :show
-    )
-
-    get(
       "/orgs/:org/projects/:id/tasks/:conversation_id/messages/:message_id/attachments/:index",
       ConversationAttachmentController,
       :show
@@ -478,7 +682,61 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     # Pages owned by the React dashboard (clients/apps/bft). Pages move here
     # from the LiveView live_session one at a time.
     get("/", SPAController, :index)
+    # The organization picker is the top-bar switcher; `/orgs` opens the
+    # first organization like `/`.
+    get("/orgs", SPAController, :index)
     get("/orgs/:org", SPAController, :index)
+    get("/orgs/:org/projects", SPAController, :index)
+    get("/orgs/:org/projects/:id", SPAController, :index)
+    # Agent Swarm pages: Agents (an agent's address opens it in the detail
+    # rail), Devices, Tasks (the retired Schedules page is its Scheduled
+    # view), Settings (Access is a section of it), and the retired Websites
+    # page, which opens the Overview.
+    for page <- ~w(agents devices tasks schedules settings access websites) do
+      get("/orgs/:org/projects/:id/#{page}", SPAController, :index)
+    end
+
+    get("/orgs/:org/projects/:id/agents/:agent_id", SPAController, :index)
+
+    get("/orgs/:org/plugins", SPAController, :index)
+    get("/orgs/:org/meetings", SPAController, :index)
+    get("/orgs/:org/meetings/past", SPAController, :index)
+    get("/orgs/:org/meetings/settings", SPAController, :index)
+    get("/orgs/:org/information-flow", SPAController, :index)
+    # Health replaced the Operations console; old tab bookmarks land on it.
+    get("/orgs/:org/operations", SPAController, :index)
+    get("/orgs/:org/operations/:tab", SPAController, :index)
+    get("/orgs/:org/members", SPAController, :index)
+    # Slack triage: Overview, Timeline and Knowledge. The retired Context,
+    # Memory and Raw data addresses open the Overview.
+    get("/orgs/:org/triage", SPAController, :index)
+
+    for page <- ~w(timeline knowledge context memory data) do
+      get("/orgs/:org/triage/#{page}", SPAController, :index)
+    end
+
+    # The Runners page keeps the URL of the retired Fin page.
+    get("/orgs/:org/fin", SPAController, :index)
+    # Settings: General, AI models, Single sign-on and Integrations. The
+    # retired OAuth, Signal and Feishu tab URLs open the Integrations page.
+    get("/orgs/:org/settings", SPAController, :index)
+    get("/orgs/:org/settings/models", SPAController, :index)
+    get("/orgs/:org/settings/sso", SPAController, :index)
+    get("/orgs/:org/settings/oauth", SPAController, :index)
+    get("/orgs/:org/settings/signal", SPAController, :index)
+    get("/orgs/:org/settings/feishu", SPAController, :index)
+    # The onboarding integrations step sends admins to Composio before they
+    # finish onboarding, so these two pages skip the first-run gate.
+    get("/orgs/:org/settings/integrations", SPAController, :before_onboarding)
+    get("/orgs/:org/settings/composio", SPAController, :before_onboarding)
+    # The retired private-template and organization-account pages are
+    # sections of AI models now.
+    get("/orgs/:org/settings/models/templates", SPAController, :index)
+    get("/orgs/:org/settings/subscriptions", SPAController, :index)
+    # BFT CLI device-login approval: owners and admins only, and exempt from
+    # the first-run gate so a deep link from the terminal is not lost.
+    get("/cli/device-login", SPAController, :cli_device_login)
+    get("/cli/device-login/:user_code", SPAController, :cli_device_login)
 
     get("/impersonate", ImpersonationController, :new)
     post("/impersonate", ImpersonationController, :create)
@@ -486,6 +744,8 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     # Reopen the first-run flow (user-menu action; available to everyone,
     # onboarded or not). Same scope as the wizard: authenticated, not gated.
     post("/onboarding/restart", OnboardingController, :restart)
+    # The retired tasks step: stale tabs and bookmarks resume the wizard.
+    get("/onboarding/tasks", OnboardingController, :resume)
 
     # First-run onboarding: authenticated but NOT gated by :require_onboarded
     # (this is where the gate sends people). Steps are live_actions so the
@@ -498,7 +758,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       live("/onboarding", OnboardingLive, :capabilities)
       live("/onboarding/profile", OnboardingLive, :profile)
       live("/onboarding/integrations", OnboardingLive, :integrations)
-      live("/onboarding/tasks", OnboardingLive, :tasks)
     end
 
     live_session :authenticated,
@@ -512,60 +771,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
         # flow renders without the shell and does not use these assigns.
         BridgeForTeamsWeb.Dashboard.Onboarding
       ] do
-      # slice "orgs-shell"
-      live("/orgs", OrgLive.Index, :index)
-      live("/cli/device-login", CLIDeviceLoginLive, :new)
-      live("/cli/device-login/:user_code", CLIDeviceLoginLive, :show)
-
-      # slice "projects"
-      live("/orgs/:org/projects", ProjectLive.Index, :index)
-
-      # slice "operations"
-      live("/orgs/:org/operations", OperationsLive.Index, :overview)
-      live("/orgs/:org/operations/delivery", OperationsLive.Index, :delivery)
-      live("/orgs/:org/operations/integrations", OperationsLive.Index, :integrations)
-      live("/orgs/:org/operations/runners", OperationsLive.Index, :runners)
-      live("/orgs/:org/operations/events", OperationsLive.Index, :events)
-      live("/orgs/:org/operations/checks", OperationsLive.Index, :checks)
-      live("/orgs/:org/operations/audit", OperationsLive.Index, :audit)
-
-      # slice "triage" — owner/admin product surface. Source/channel/listening
-      # authority is enforced inside the focused setup and again at ingress.
-      live("/orgs/:org/triage", TriageLive.Index, :overview)
-      live("/orgs/:org/triage/context", TriageLive.Index, :context)
-      live("/orgs/:org/triage/timeline", TriageLive.Index, :timeline)
-      live("/orgs/:org/triage/knowledge", TriageLive.Index, :knowledge)
-      live("/orgs/:org/triage/memory", TriageLive.Index, :memory)
-      live("/orgs/:org/triage/data", TriageLive.Index, :data)
-
-      live("/orgs/:org/meetings", MeetingPreparationLive, :index)
-      live("/orgs/:org/meetings/past", MeetingPreparationLive, :past)
-      live("/orgs/:org/meetings/settings", MeetingPreparationLive, :settings)
-
-      # slice "information-flow" — owner/admin only. Decides what the assistant
-      # may carry between conversations; the mode is written through the group
-      # control API, which validates it.
-      live("/orgs/:org/information-flow", InformationFlowLive, :index)
-
-      # slice "fin"
-      live("/orgs/:org/fin", FinLive.Index, :index)
-
-      # slice "plugins" — org-level plugin catalog and tenant definitions.
-      live("/orgs/:org/plugins", PluginLive.Index, :index)
-
       # slice "project-detail"
-      live("/orgs/:org/projects/:id", ProjectLive.Show, :show)
-      live("/orgs/:org/projects/:id/agents", ProjectLive.Show, :agents)
-      live("/orgs/:org/projects/:id/agents/:agent_id", AgentLive.Show, :show)
-      live("/orgs/:org/projects/:id/tasks", ProjectLive.Show, :tasks)
-      live("/orgs/:org/projects/:id/schedules", ProjectLive.Show, :schedules)
       live("/orgs/:org/projects/:id/integrations", ProjectLive.Show, :integrations)
       live("/orgs/:org/projects/:id/connections", ProjectLive.Show, :connections)
       live("/orgs/:org/projects/:id/plugins", ProjectLive.Show, :plugins)
       live("/orgs/:org/projects/:id/plugins/:plugin_id", ProjectLive.Show, :plugin)
       live("/orgs/:org/projects/:id/skills", ProjectLive.Show, :skills)
-      live("/orgs/:org/projects/:id/settings", ProjectLive.Show, :settings)
-      live("/orgs/:org/projects/:id/access", ProjectLive.Show, :settings)
 
       live(
         "/orgs/:org/projects/:id/tasks/:conversation_id",
@@ -578,21 +789,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
         ConversationSessionLive.Show,
         :show
       )
-
-      live("/orgs/:org/projects/:id/devices", ProjectLive.Show, :environments)
-      live("/orgs/:org/projects/:id/websites", ProjectLive.Show, :websites)
-
-      # slice "members-settings"
-      live("/orgs/:org/members", MemberLive.Index, :index)
-      live("/orgs/:org/settings", SettingsLive, :index)
-      live("/orgs/:org/settings/models", SettingsLive, :models)
-      live("/orgs/:org/settings/models/templates", PrivateTemplatesLive, :index)
-      live("/orgs/:org/settings/subscriptions", SubscriptionsLive, :index)
-      live("/orgs/:org/settings/sso", SettingsLive, :sso)
-      live("/orgs/:org/settings/oauth", SettingsLive, :oauth)
-      live("/orgs/:org/settings/composio", SettingsLive, :composio)
-      live("/orgs/:org/settings/signal", SettingsLive, :signal)
-      live("/orgs/:org/settings/feishu", SettingsLive, :feishu)
     end
   end
 

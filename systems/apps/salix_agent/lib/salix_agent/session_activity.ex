@@ -122,6 +122,10 @@ defmodule SalixAgent.SessionActivity do
   defp error_text("visible_reply_repair_exhausted"),
     do: "the session could not produce a visible reply"
 
+  defp error_text("insufficient_credits"), do: "not enough credits; add credits and try again"
+  defp error_text("account_inactive"), do: "the billing account is unavailable"
+  defp error_text("missing_account"), do: "this operation has no billing account"
+
   defp error_text("model_connection_failed"), do: "the model could not be reached"
 
   defp error_text("session_activity_unknown"), do: "session activity is unknown"

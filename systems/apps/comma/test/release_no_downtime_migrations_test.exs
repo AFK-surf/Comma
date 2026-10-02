@@ -19,7 +19,10 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                                  "salix-20260918090000",
                                  "salix-20260921090000",
                                  "salix-20260924000101",
-                                 "comma-20260918000000"
+                                 "comma-20260918000000",
+                                 # Contract: drops the retired Routine profile locale.
+                                 "comma-20261001190001",
+                                 "salix-20261001000200"
                                ])
   @recertification_versions [20_260_910_140_001, 20_260_915_183_001]
 

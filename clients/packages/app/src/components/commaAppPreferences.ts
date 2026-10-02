@@ -12,9 +12,11 @@ export function useCommaAppPreferences() {
     launchAtLogin: available && (bridge.os === "macos" || bridge.os === "windows"),
     notifications: available,
     showInAirDrop: available && bridge.os === "macos",
+    keepAwakeWhenLidClosed: available && bridge.os === "macos",
     showInDock: available && bridge.os === "macos",
     showInMenuBar: available,
     showInNotch: available && bridge.os === "macos",
+    sideChat: available,
   };
   const showInSystemTray = available && bridge.os !== "macos";
   const [preferences, setPreferences] = useState<AppPreferences | null>(null);
@@ -66,15 +68,18 @@ export function useCommaAppPreferences() {
     };
   }, [acceptPreferences, available, bridge, pending]);
 
+  // Resolves the snapshot Main acknowledged, or undefined when the update
+  // failed and the preferences fell back to Main's state.
   const update = useCallback(
-    async (patch: AppPreferencesPatch) => {
-      if (!available) return;
+    async (patch: AppPreferencesPatch): Promise<AppPreferences | undefined> => {
+      if (!available) return undefined;
       const operation = ++operationRef.current;
       updatePendingRef.current = true;
       setPending(true);
       try {
         const acknowledged = await bridge.appPreferences.update(patch);
         if (operationRef.current === operation) acceptPreferences(acknowledged);
+        return acknowledged;
       } catch {
         if (operationRef.current === operation) {
           try {
@@ -83,6 +88,7 @@ export function useCommaAppPreferences() {
             // Keep the last acknowledged snapshot when native recovery also fails.
           }
         }
+        return undefined;
       } finally {
         if (operationRef.current === operation) {
           updatePendingRef.current = false;
@@ -98,11 +104,27 @@ export function useCommaAppPreferences() {
     return bridge.appPreferences.openNotificationSettings();
   }, [available, bridge]);
 
+  // macOS: where the user allows the sleep guard daemon. Main reads the
+  // approval back when a window regains focus.
+  const openLoginItemsSettings = useCallback(async () => {
+    if (!available) return { opened: false as const };
+    return bridge.appPreferences.openLoginItemsSettings();
+  }, [available, bridge]);
+
+  // macOS prompts while it has not asked about Comma yet. Main publishes the
+  // answer through the state event the preferences follow, and resolves with it.
+  const requestNotificationAuthorization = useCallback(
+    () => bridge.appPreferences.requestNotificationAuthorization(),
+    [bridge]
+  );
+
   return {
     availability,
+    openLoginItemsSettings,
     openNotificationSettings,
     pending,
     preferences,
+    requestNotificationAuthorization,
     showInSystemTray,
     update,
   };

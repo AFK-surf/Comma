@@ -11,17 +11,13 @@ defmodule BridgeForTeams.Triage do
 
   ## Org scoping is a BFT-side join
 
-  Buckets and receipts carry a `connect_id` and no tenant or group. The org's
+  Receipts carry a `connect_id` and no tenant or group. The org's
   projects each map 1:1 to a Salix group, so the scope is built by fanning
   `connect_posture/2` out over the org's groups and inverting the result into a
   `connect_id => %{group_id, project_id, project_name}` map. Rows whose
   `connect_id` is not in that map are **dropped before render** and counted as
   `foreign_count` — defense in depth on top of the org-scoped route, and an
   honest number rather than a silent filter.
-
-  A bucket derives its `connect_id` from both open and sealed receipts. It is
-  unattributable only when those durable receipts do not prove one unique
-  connect; it counts as foreign too.
 
   When a group's posture read fails, that group contributes no connects, so its
   rows would be indistinguishable from another org's. Results therefore carry
@@ -37,9 +33,8 @@ defmodule BridgeForTeams.Triage do
 
   ## Row shapes are not rewritten
 
-  Receipt rows are string-keyed maps from Salix; bucket rows are atom-keyed
-  views. Rather than mix key types or duplicate a project name onto every row,
-  scoped results carry the join separately as `owners` — the same
+  Receipt rows are string-keyed maps from Salix. Rather than duplicate a project
+  name onto every row, scoped results carry the join separately as `owners` — the same
   `connect_id => %{group_id, project_id, project_name}` map, restricted to the
   connects actually present. `SalixIM.Triage.ReadModel` stays the single
   authority for what a row looks like.
@@ -59,9 +54,7 @@ defmodule BridgeForTeams.Triage do
 
     * **One build per render, not one per card.** The *assembled scope* is the
       cache entry (`{:triage_connect_scope, org_id}`), not the individual
-      posture reads. Overview builds it once for the switch card and the
-      window; the Data tab reuses it across receipts, buckets, and bucket
-      detail.
+      posture reads. The receipt window reuses it for the short scope TTL.
     * **Failures ride inside the cached value.** A group whose posture read
       failed is part of a perfectly successful scope — it is in
       `unavailable_groups` with `scope_complete: false` — so caching the scope
@@ -121,7 +114,6 @@ defmodule BridgeForTeams.Triage do
   @scope_group_timeout_ms 3_500
   @scope_deadline_ms 3_000
 
-  @bucket_page_limit 25
   @channel_page_limit 100
   @max_channel_cursor_bytes 1_024
 
@@ -141,27 +133,10 @@ defmodule BridgeForTeams.Triage do
   @audit_reveal_resource_type "im_triage_message_text"
   @audit_reveal_action "integration.slack.triage_text_revealed"
 
-  # A router agent's `/memory` file is raw user data too — the agent wrote it
-  # out of the conversations it triaged — so reading one is its own audited
-  # access event, separable from a message-text reveal and from a switch write.
-  #
-  # The action is named for the *attempt*, not for a completed read, because the
-  # row has to be written before the body is fetched (see
-  # `record_memory_read_attempt/5`) and the fetch can still fail afterwards. The
-  # outcome lives in `result`, the way every other attempt in this codebase
-  # reports it: `"ok"` — the access was authorized and the body was requested,
-  # `"denied"` — the role gate refused, `"failed"` — the body could not be
-  # fetched and nothing was rendered.
-  @audit_memory_read_resource_type "im_triage_agent_memory"
-  @audit_memory_read_action "integration.slack.triage_memory_read_attempted"
-
   # An audit `resource_id` is an opaque locator, not free text. Receipt refs are
   # `"s3://" <> key`; the bound is defense against a caller stuffing a page of
   # anything into an audit row.
   @max_receipt_ref_bytes 512
-
-  # Workspace paths are shorter still, and bounded for the same reason.
-  @max_memory_path_bytes 1_024
 
   @type org_ref :: Organization.t() | Ecto.UUID.t()
   @type actor_ref :: User.t() | Ecto.UUID.t()
@@ -362,18 +337,13 @@ defmodule BridgeForTeams.Triage do
     do: {:error, :connect_not_found}
 
   @doc """
-  The org's group router agents — the Memory lens's picker.
-
-  Memory is per-agent workspace state and the memory tools are router-role only
-  (RFC §3.3): a worker carries no semantic memory at all, so the group's router
-  agent is the only agent whose `/memory/**` tree is worth browsing, and by
-  convention it is the group's de facto team memory.
+  The org's group router agents — the Workbench Agent picker.
 
   This is a purely BFT-local read over the same project set `connect_posture/1`
   fans out over (projects with a Salix group), so it degrades with the database
   rather than with the ring: a Salix outage still renders the picker. Only
   provisioned agents are listed — an agent with no `salix_agent_id` has no
-  workspace to read.
+  Salix identity to evaluate with.
   """
   @spec router_agents(org_ref()) :: {:ok, [map()]} | {:error, term()}
   def router_agents(org) do
@@ -414,84 +384,6 @@ defmodule BridgeForTeams.Triage do
     }
 
   @doc """
-  One bounded page of durable buckets, filtered to the org's connects.
-
-  `invalid_count` and `unavailable_count` are the read model's honest-scan
-  counts (objects the page refused to emit, and objects it could not read);
-  `foreign_count` and `unattributed_count` are this module's — rows dropped
-  because their `connect_id` is outside the org, including buckets with no open
-  receipts to attribute, split by whether the scope was complete enough to say
-  so.
-  """
-  @spec list_buckets(org_ref(), String.t() | nil, pos_integer()) :: result()
-  def list_buckets(org, cursor \\ nil, limit \\ @bucket_page_limit) do
-    with {:ok, scope} <- read_scope(org),
-         {:ok, page} <-
-           cached({:triage_buckets, scope.namespace, cursor, limit}, @scan_cache_ttl_ms, fn ->
-             client().triage_list_buckets(scope.namespace, cursor, limit)
-           end) do
-      {kept, foreign_count, unattributed_count} =
-        scope_rows(page.buckets, scope, & &1.connect_id)
-
-      {:ok,
-       page
-       |> Map.put(:buckets, kept)
-       |> put_drop_counts(foreign_count, unattributed_count)
-       |> put_scope_fields(scope, kept, & &1.connect_id)}
-    end
-  end
-
-  @doc """
-  One durable bucket by its exact raw S3 key, if it belongs to this org.
-
-  A bucket outside the org is `{:error, :not_found}` — the same answer as a key
-  that does not exist, so the endpoint does not confirm the existence of
-  another org's records. An unattributable bucket (no unique connect across
-  its open and sealed receipts) is also `:not_found`: there is no evidence it
-  belongs here.
-  """
-  @spec get_bucket(org_ref(), String.t()) :: result()
-  def get_bucket(org, bucket_key) do
-    with {:ok, scope} <- read_scope(org),
-         {:ok, bucket} <-
-           cached({:triage_bucket, scope.namespace, bucket_key}, @scan_cache_ttl_ms, fn ->
-             client().triage_get_bucket(scope.namespace, bucket_key)
-           end) do
-      case Map.get(scope.connects, bucket.connect_id) do
-        nil -> {:error, :not_found}
-        owner -> {:ok, Map.put(bucket, :owner, owner)}
-      end
-    end
-  end
-
-  @doc """
-  One bounded global page of typed Slack Triage receipts, filtered to the org.
-
-  The receipt keyspace is key-ordered, not time-ordered: this is a scan
-  position, not a timeline. `legacy_count`, `invalid_count`, and
-  `unavailable_count` come from the read model unchanged and describe the
-  *unfiltered* page — they are scan health, not org content.
-  """
-  @spec list_receipts(org_ref(), String.t() | nil) :: result()
-  def list_receipts(org, cursor \\ nil) do
-    with {:ok, scope} <- read_scope(org),
-         {:ok, page} <-
-           cached({:triage_receipts, cursor}, @scan_cache_ttl_ms, fn ->
-             client().triage_list_receipts(cursor)
-           end) do
-      {kept, foreign_count, unattributed_count} =
-        scope_rows(page.receipts, scope, & &1["connect_id"])
-
-      {:ok,
-       page
-       |> Map.put(:receipts, kept)
-       |> Map.put(:connect_ids, Enum.filter(page.connect_ids, &Map.has_key?(scope.connects, &1)))
-       |> put_drop_counts(foreign_count, unattributed_count)
-       |> put_scope_fields(scope, kept, & &1["connect_id"])}
-    end
-  end
-
-  @doc """
   Receipts created at or after `since_ms`, newest first, filtered to the org.
 
   `truncated: true` means the read model's page budget ran out before the scan
@@ -519,46 +411,6 @@ defmodule BridgeForTeams.Triage do
        |> Map.put(:receipts, kept)
        |> put_drop_counts(foreign_count, unattributed_count)
        |> put_scope_fields(scope, kept, & &1["connect_id"])}
-    end
-  end
-
-  @doc """
-  Recent durable Triage processing, grouped by evaluation generation and
-  filtered to connects owned by this org.
-
-  Each item is content-free and carries one representative receipt locator,
-  the batch `receipt_count`, a durable state, and public timing. Terminal
-  status/action appears only after the exact fence agrees with the verified
-  public ledger projection; until then the batch is `:finalizing`.
-
-  The Salix scan remains globally bounded (`:page_budget`, `:limit` max 20).
-  Rows outside the org are removed before return. Every kept item embeds its
-  owning project as `:owner`; the page also retains the ordinary
-  `scope_complete`, `unavailable_groups`, `foreign_count`, and
-  `unattributed_count` honesty fields.
-  """
-  @spec recent_processing(org_ref(), non_neg_integer(), keyword()) :: result()
-  def recent_processing(org, since_ms, opts \\ []) do
-    with {:ok, scope} <- read_scope(org),
-         {:ok, projection} <-
-           cached(
-             {:triage_recent_processing, scope.namespace, since_ms, opts},
-             @scan_cache_ttl_ms,
-             fn -> client().triage_recent_processing(scope.namespace, since_ms, opts) end
-           ) do
-      {kept, foreign_count, unattributed_count} =
-        scope_rows(projection.items, scope, & &1.connect_id)
-
-      owned =
-        Enum.map(kept, fn item ->
-          Map.put(item, :owner, Map.fetch!(scope.connects, item.connect_id))
-        end)
-
-      {:ok,
-       projection
-       |> Map.put(:items, owned)
-       |> put_drop_counts(foreign_count, unattributed_count)
-       |> put_scope_fields(scope, kept, & &1.connect_id)}
     end
   end
 
@@ -629,23 +481,29 @@ defmodule BridgeForTeams.Triage do
 
   def product_heatmap(_org, _agent, _roster), do: {:error, :agent_not_found}
 
-  def processing_detail(org, %{group_id: group_id} = agent, receipt_ref)
+  # `roster`, as in `product_heatmap/3`, is a `router_agents/1` result the
+  # caller already holds; without it the Agent is checked against a fresh read.
+  def processing_detail(org, agent, receipt_ref, roster \\ nil)
+
+  def processing_detail(org, %{group_id: group_id} = agent, receipt_ref, roster)
       when is_binary(receipt_ref) do
-    with :ok <- authorize_product_agent(org, agent) do
+    with :ok <- authorize_product_agent(org, agent, roster) do
       client().triage_processing_detail(group_id, receipt_ref)
     end
   end
 
-  def processing_detail(_org, _agent, _receipt_ref), do: {:error, :invalid}
+  def processing_detail(_org, _agent, _receipt_ref, _roster), do: {:error, :invalid}
 
-  def source_presentation(org, %{group_id: group_id} = agent, refs)
+  def source_presentation(org, agent, refs, roster \\ nil)
+
+  def source_presentation(org, %{group_id: group_id} = agent, refs, roster)
       when is_list(refs) and length(refs) <= 20 do
-    with :ok <- authorize_product_agent(org, agent) do
+    with :ok <- authorize_product_agent(org, agent, roster) do
       client().triage_source_presentation(group_id, refs)
     end
   end
 
-  def source_presentation(_org, _agent, _refs), do: {:error, :invalid}
+  def source_presentation(_org, _agent, _refs, _roster), do: {:error, :invalid}
 
   @doc """
   Reads the existing canonical Task for one selected Triage delegation.
@@ -655,15 +513,18 @@ defmodule BridgeForTeams.Triage do
   lookup; list rendering never calls this function. The result retains the
   canonical API's string keys and never changes the stored Triage outcome.
   """
-  @spec delegation_task(org_ref(), map(), String.t(), 0 | 1) :: result()
+  @spec delegation_task(org_ref(), map(), String.t(), 0 | 1, result() | nil) :: result()
+  def delegation_task(org, agent, obligation_id, index, roster \\ nil)
+
   def delegation_task(
         org,
         %{agent_id: agent_id, project_id: project_id, group_id: group_id} = agent,
         obligation_id,
-        index
+        index,
+        roster
       )
       when is_binary(agent_id) and is_binary(project_id) and is_binary(group_id) do
-    with :ok <- authorize_product_agent(org, agent),
+    with :ok <- authorize_product_agent(org, agent, roster),
          true <- is_binary(obligation_id) and obligation_id != "" and index in 0..1,
          {:ok, task} <-
            client().triage_delegation_task(project_id, group_id, agent_id, obligation_id, index) do
@@ -675,7 +536,7 @@ defmodule BridgeForTeams.Triage do
     end
   end
 
-  def delegation_task(_org, _agent, _obligation_id, _index),
+  def delegation_task(_org, _agent, _obligation_id, _index, _roster),
     do: {:error, :agent_not_found}
 
   @doc """
@@ -683,10 +544,10 @@ defmodule BridgeForTeams.Triage do
   batch detail. Rechecks administrator and project access before either read.
   A failed Message snapshot preserves the exact Task link, not stale content.
   """
-  def delegation_task_preview(org, agent, actor_id, obligation_id, index) do
+  def delegation_task_preview(org, agent, actor_id, obligation_id, index, roster \\ nil) do
     with :ok <- Memberships.authorize(actor_id, :manage, %{org_id: org.id, min_org_role: "admin"}),
          {:ok, project} <- worker_project(org, agent, actor_id, :read),
-         {:ok, task} <- delegation_task(org, agent, obligation_id, index) do
+         {:ok, task} <- delegation_task(org, agent, obligation_id, index, roster) do
       {:ok, put_task_preview(task, project)}
     end
   end
@@ -808,111 +669,6 @@ defmodule BridgeForTeams.Triage do
 
   defp worker_project(_, _, _, _), do: {:error, :forbidden}
 
-  @doc "Reads retained model evidence only after current administrator authorization and audit."
-  def model_debug(%Organization{} = org, agent, actor_id, kind, id)
-      when is_map(agent) and kind in ["outcome", "receipt"] and is_binary(id) and
-             byte_size(id) in 1..2048 do
-    with :ok <- Memberships.authorize(actor_id, :manage, %{org_id: org.id, min_org_role: "admin"}),
-         :ok <- authorize_product_agent(org, agent),
-         :ok <-
-           strict_audit(
-             %{
-               org_id: org.id,
-               actor_user_id: actor_id,
-               action: "integration.slack.triage_debug_read_attempted",
-               resource_type: "im_triage_model_debug",
-               resource_id: id,
-               resource_label: "Triage model debug",
-               result: "ok",
-               request_id: Ecto.UUID.generate(),
-               metadata: %{
-                 "project_id" => agent.project_id,
-                 "agent_id" => agent.agent_id,
-                 "subject_type" => kind
-               }
-             },
-             audit_writer()
-           ) do
-      client().triage_model_debug(agent.project_id, agent.group_id, agent.agent_id, kind, id)
-    end
-  end
-
-  def model_debug(_, _, _, _, _), do: {:error, :forbidden}
-
-  @doc "Appends internal feedback after rechecking administrator and exact subject access."
-  def add_feedback(%Organization{} = org, agent, reviewer_id, type, id, attrs)
-      when is_map(attrs) do
-    with :ok <- authorize_feedback_subject(org, agent, reviewer_id, type, id) do
-      %BridgeForTeams.Schema.TriageFeedback{}
-      |> BridgeForTeams.Schema.TriageFeedback.changeset(%{
-        org_id: org.id,
-        project_id: agent.project_id,
-        agent_id: agent.agent_id,
-        reviewer_id: reviewer_id,
-        subject_type: type,
-        subject_id: id,
-        score: attrs["score"],
-        comment: attrs["comment"]
-      })
-      |> BridgeForTeams.Repo.insert()
-    end
-  rescue
-    _ -> {:error, :unavailable}
-  end
-
-  @doc "Reads the latest 20 internal reviews of one authorized activity or follow-up."
-  def feedback(%Organization{} = org, agent, reviewer_id, type, id) do
-    with :ok <- authorize_feedback_subject(org, agent, reviewer_id, type, id) do
-      import Ecto.Query
-
-      rows =
-        BridgeForTeams.Repo.all(
-          from(f in BridgeForTeams.Schema.TriageFeedback,
-            where:
-              f.org_id == ^org.id and f.project_id == ^agent.project_id and
-                f.agent_id == ^agent.agent_id and f.subject_type == ^type and f.subject_id == ^id,
-            order_by: [desc: f.inserted_at, desc: f.id],
-            limit: 21
-          )
-        )
-
-      {:ok, %{items: Enum.take(rows, 20), truncated: length(rows) > 20}}
-    end
-  rescue
-    _ -> {:error, :unavailable}
-  end
-
-  defp authorize_feedback_subject(org, agent, reviewer_id, type, id)
-       when is_map(agent) and type in ["outcome", "follow_up"] and is_binary(id) and
-              byte_size(id) in 1..256 do
-    with :ok <-
-           Memberships.authorize(reviewer_id, :manage, %{org_id: org.id, min_org_role: "admin"}),
-         :ok <- authorize_product_agent(org, agent),
-         opts =
-           if(type == "outcome",
-             do: [page: true, obligation_id: id, limit: 1, context_limit: 0],
-             else: [page: true, context_entry_id: id, limit: 1, context_limit: 1]
-           ),
-         {:ok, activity} <- product_activity(org, agent, opts),
-         true <- feedback_subject_present?(activity, type, id) do
-      :ok
-    else
-      false -> {:error, :subject_not_found}
-      {:error, _} = error -> error
-      _ -> {:error, :unavailable}
-    end
-  end
-
-  defp authorize_feedback_subject(_, _, _, _, _), do: {:error, :invalid_subject}
-
-  defp feedback_subject_present?(activity, "outcome", id),
-    do: Enum.any?(activity.outcomes, &(&1[:obligation_id] == id))
-
-  defp feedback_subject_present?(activity, "follow_up", id),
-    do: Enum.any?(activity.context, &(&1[:entry_id] == id and &1.kind == "follow_up"))
-
-  defp authorize_product_agent(org, selected, roster \\ nil)
-
   defp authorize_product_agent(org, selected, nil),
     do: authorize_product_agent(org, selected, router_agents(org))
 
@@ -952,28 +708,6 @@ defmodule BridgeForTeams.Triage do
   end
 
   def refresh_evaluation_status(_invalid), do: {:error, :invalid_evaluation_agent}
-
-  @doc """
-  Invalidates only one org-visible recent-processing query.
-
-  The exact `since_ms` and options are part of the cache key. This does not
-  invalidate evaluator status and performs no Salix write.
-  """
-  @spec refresh_recent_processing(org_ref(), non_neg_integer(), keyword()) ::
-          :ok | {:error, term()}
-  def refresh_recent_processing(org, since_ms, opts \\ [])
-
-  def refresh_recent_processing(org, since_ms, opts)
-      when is_integer(since_ms) and since_ms >= 0 and is_list(opts) do
-    with {:ok, _org} <- fetch_org(org),
-         {:ok, namespace} <- namespace() do
-      :ok = ReadCache.invalidate({:triage_recent_processing, namespace, since_ms, opts})
-      :ok
-    end
-  end
-
-  def refresh_recent_processing(_org, _since_ms, _opts),
-    do: {:error, :invalid_recent_processing_refresh}
 
   @doc """
   Flip one connect's Slack Triage authority on behalf of an org owner/admin.
@@ -1162,183 +896,6 @@ defmodule BridgeForTeams.Triage do
             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
             surface: "integration",
             metadata: %{"receipt_ref" => receipt_ref}
-          },
-          write_attempt_writer()
-        )
-
-        {:error, :forbidden}
-    end
-  end
-
-  @doc """
-  Record that an operator is about to be shown one router agent's `/memory`
-  file, and return the `request_id` that ties the attempt to its outcome.
-
-  Owner decision, 2026-08-19 (revises the §7 rationale): the Memory tab is the
-  one tab surface that is **not** redacted metadata — it renders the body of an
-  arbitrary `/memory/**` file, which is raw user data the agent distilled out of
-  the conversations it triaged. So a memory body gets the same strictness as a
-  raw-text reveal: the row is written *before* the content is fetched, and a
-  read whose audit cannot be persisted is refused rather than degraded.
-
-  That ordering is what the row's semantics have to match. Written before the
-  seam answers, the row cannot claim the body was read — it claims exactly what
-  is true at write time: this actor was authorized to read this file and the
-  body was requested. A fetch that then fails (`:not_found`, a stale link, a
-  Salix timeout) is reported by `record_memory_read_failure/6`, which appends a
-  `"failed"` row under the same `request_id`. A successful read therefore leaves
-  exactly one row and a failed one leaves two, the second saying what went
-  wrong; no row ever asserts a read that did not happen.
-
-  Like `record_text_reveal/4` this only writes the record — it does not read the
-  file and is not the access control for it (the page's flag and role gates
-  are). The re-check is defense in depth and a denial is itself audited.
-
-  The row names the file through `resource_id`, **byte for byte** as the caller
-  will fetch it (see `validate_memory_path/1`); metadata carries the agent's
-  identity under the same fixed-allowlist discipline as the other write paths,
-  and never the file's contents. `opts` accepts `:actor_label`, `:request_id`,
-  and `:surface`.
-  """
-  @spec record_memory_read_attempt(org_ref(), actor_ref(), map(), String.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def record_memory_read_attempt(org, actor_user, agent, path, opts \\ []) do
-    request_id = Keyword.get(opts, :request_id) || Ecto.UUID.generate()
-
-    with {:ok, %Organization{} = org} <- fetch_org(org),
-         {:ok, actor_id, opts} <- resolve_actor(actor_user, opts),
-         {:ok, agent} <- validate_memory_agent(agent),
-         {:ok, path} <- validate_memory_path(path),
-         :ok <- authorize_memory_read(org, actor_id, agent, path, request_id, opts),
-         :ok <-
-           strict_audit(
-             %{
-               org_id: org.id,
-               actor_user_id: actor_id,
-               actor_label: Keyword.get(opts, :actor_label),
-               action: @audit_memory_read_action,
-               resource_type: @audit_memory_read_resource_type,
-               resource_id: path,
-               resource_label: "Slack Triage",
-               result: "ok",
-               request_id: request_id,
-               metadata: memory_read_metadata(agent, opts)
-             },
-             audit_writer()
-           ) do
-      {:ok, request_id}
-    end
-  end
-
-  @doc """
-  Record that a `/memory` body could not be fetched after its access attempt was
-  authorized and audited, so nothing was rendered.
-
-  Pass the `request_id` returned by `record_memory_read_attempt/5` (through
-  `opts`) so the two rows read as one operator action. The row carries the seam
-  failure as `reason_class` and never any file content.
-
-  This one is fire-and-forget, and correct here for the mirror of the reason the
-  attempt is strict: the attempt row is the price of *showing* a body, and no
-  body was shown. Losing this row cannot leak anything; it can only leave the
-  trail less specific, which is logged rather than raised at an operator who
-  already got nothing.
-  """
-  @spec record_memory_read_failure(
-          org_ref(),
-          actor_ref(),
-          map(),
-          String.t(),
-          term(),
-          keyword()
-        ) :: :ok | {:error, term()}
-  def record_memory_read_failure(org, actor_user, agent, path, reason, opts \\ []) do
-    with {:ok, %Organization{} = org} <- fetch_org(org),
-         {:ok, actor_id, opts} <- resolve_actor(actor_user, opts),
-         {:ok, agent} <- validate_memory_agent(agent),
-         {:ok, path} <- validate_memory_path(path) do
-      audit(
-        %{
-          org_id: org.id,
-          actor_user_id: actor_id,
-          actor_label: Keyword.get(opts, :actor_label),
-          action: @audit_memory_read_action,
-          resource_type: @audit_memory_read_resource_type,
-          resource_id: path,
-          resource_label: "Slack Triage",
-          result: "failed",
-          reason: reason,
-          request_id: Keyword.get(opts, :request_id) || Ecto.UUID.generate(),
-          surface: Keyword.get(opts, :surface),
-          metadata: memory_read_metadata(agent, opts)
-        },
-        write_attempt_writer()
-      )
-    end
-  end
-
-  # The file is named by `resource_id`, not by a metadata key: `Observability`
-  # redacts every path-shaped metadata key by policy (a filesystem path is
-  # usually incidental and often sensitive), so a `"path"` entry here would
-  # store `[REDACTED]` and the row would name no file at all. `resource_id` is
-  # the audit schema's locator column and is stored verbatim, which is exactly
-  # what "the row names the file" needs.
-  defp memory_read_metadata(agent, opts) do
-    %{
-      "agent_id" => trim_or_nil(agent[:agent_id]),
-      "salix_agent_id" => trim_or_nil(agent[:salix_agent_id]),
-      "project_id" => trim_or_nil(agent[:project_id]),
-      "group_id" => trim_or_nil(agent[:group_id]),
-      "surface" => trim_or_nil(Keyword.get(opts, :surface))
-    }
-  end
-
-  # The row has to name *whose* memory was read, so an agent with no identity
-  # is not auditable and therefore not readable.
-  defp validate_memory_agent(%{agent_id: agent_id} = agent) when is_map(agent) do
-    if trim(agent_id) != "", do: {:ok, agent}, else: {:error, :invalid_memory_agent}
-  end
-
-  defp validate_memory_agent(_agent), do: {:error, :invalid_memory_agent}
-
-  # Validated, never rewritten. A workspace path is an opaque VFS key on the
-  # far side: Salix's normalization only prepends a leading slash and keeps the
-  # rest byte for byte, so `"/memory/x "` and `"/memory/x"` are two different
-  # files and either one can exist. Trimming the path here — while the caller
-  # fetches the path it passed in — would name one file in the audit row and
-  # render another. Blankness is decided on a trimmed *copy*; the value that
-  # reaches `resource_id` is the caller's own bytes, which is the only thing
-  # that makes the row's `resource_id` and the fetched key the same string.
-  defp validate_memory_path(path) when is_binary(path) do
-    if String.trim(path) != "" and byte_size(path) <= @max_memory_path_bytes do
-      {:ok, path}
-    else
-      {:error, :invalid_memory_path}
-    end
-  end
-
-  defp validate_memory_path(_path), do: {:error, :invalid_memory_path}
-
-  defp authorize_memory_read(%Organization{} = org, actor_id, agent, path, request_id, opts) do
-    case Memberships.authorize(actor_id, :manage, %{org_id: org.id, min_org_role: "admin"}) do
-      :ok ->
-        :ok
-
-      {:error, :forbidden} ->
-        audit(
-          %{
-            org_id: org.id,
-            actor_user_id: actor_id,
-            actor_label: Keyword.get(opts, :actor_label),
-            action: @audit_memory_read_action,
-            resource_type: @audit_memory_read_resource_type,
-            resource_id: path,
-            resource_label: "Slack Triage",
-            result: "denied",
-            reason: :forbidden,
-            request_id: request_id,
-            surface: "integration",
-            metadata: %{"agent_id" => trim_or_nil(agent[:agent_id])}
           },
           write_attempt_writer()
         )
@@ -1654,8 +1211,8 @@ defmodule BridgeForTeams.Triage do
         &Observability.record_write_attempt/1
       )
 
-  # A fixed allowlist. Message text is stored in the receipts and buckets this
-  # module reads, and none of it may ever reach a BFT audit row.
+  # A fixed allowlist. Message text is stored in the receipts this module
+  # reads, and none of it may ever reach a BFT audit row.
   defp audit_metadata(before, later, action) do
     %{
       "action" => action_name(action),

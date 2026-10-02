@@ -37,6 +37,7 @@ defmodule CommaWeb.Proactive do
          {:ok, saved} <-
            ConversationServer.configure_proactive(group, home, user["id"], enabled, request_id) do
       if saved["enabled"], do: resume(saved, workspace, user, session, group)
+      CommaWeb.ProactiveNotebook.enqueue(group, user["id"])
       {:ok, %{"enabled" => saved["enabled"]}}
     else
       false -> {:error, :forbidden}
@@ -82,10 +83,16 @@ defmodule CommaWeb.Proactive do
   def message(text, title, url) when is_binary(url) and url != "" do
     if String.contains?(text, url),
       do: text,
-      else: text <> "\n\n[" <> link_label(title) <> "](" <> link_target(url) <> ")"
+      else: text <> "\n\n" <> link(title, url)
   end
 
   def message(text, _title, _url), do: text
+
+  @doc "A Markdown link to a source, or its escaped title when it has no URL."
+  def link(title, url) when is_binary(url) and url != "",
+    do: "[" <> link_label(title) <> "](" <> link_target(url) <> ")"
+
+  def link(title, _url), do: link_label(title)
 
   defp link_label(title) do
     label =
@@ -156,8 +163,10 @@ defmodule CommaWeb.Proactive do
 
       with {:ok, command} <- HomeMail.retire_completed_task(command, ctx, home),
            {:ok, result} <-
-             ConversationServer.mail_interaction(ctx.group_id, home, owner, ctx.agent_id, command),
-           do: {:ok, Map.put(result, "key", key)}
+             ConversationServer.mail_interaction(ctx.group_id, home, owner, ctx.agent_id, command) do
+        CommaWeb.ProactiveNotebook.enqueue(ctx.group_id, owner)
+        {:ok, Map.put(result, "key", key)}
+      end
     else
       false -> {:error, :invalid_proactive_reference}
       error -> error
@@ -267,9 +276,10 @@ defmodule CommaWeb.Proactive do
   defp source_key(read, ref),
     do: MailInteraction.key(source_account(read), ref)
 
-  defp source_account(%{"tool" => "recommendation.read", "arguments" => args}),
+  @doc "The account part of a matter key for a read recipe, shared with watch wakes."
+  def source_account(%{"tool" => "recommendation.read", "arguments" => args}),
     do: args["source_id"] || "internal"
 
-  defp source_account(read),
+  def source_account(read),
     do: get_in(read, ["arguments", "connected_account_id"]) || "internal"
 end

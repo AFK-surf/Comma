@@ -193,6 +193,22 @@
     }
   },
   "comma": {
+    "apns": {
+      "sandbox": {
+        "team_id": "FAKE_TEAM_ID",
+        "key_id": "FAKE_KEY_ID",
+        "private_key": "replace-with-secret-stored-p8-pem",
+        "allowed_bundle_ids": ["surf.comma.ios.dev"],
+        "legacy_bundle_id": null
+      },
+      "production": {
+        "team_id": "FAKE_TEAM_ID",
+        "key_id": "FAKE_KEY_ID",
+        "private_key": "replace-with-secret-stored-p8-pem",
+        "allowed_bundle_ids": ["surf.comma.ios", "surf.comma.ios.dev"],
+        "legacy_bundle_id": null
+      }
+    },
     "database": {
       "url": "ecto://comma:password@127.0.0.1:5432/comma",
       "pool_size": 8
@@ -217,6 +233,7 @@
     "google_auth": {
       "web_client_id": "replace-with-web-client-id.apps.googleusercontent.com",
       "electron_client_id": "replace-with-desktop-client-id.apps.googleusercontent.com",
+      "android_client_ids": [],
       "electron_client_secret": "replace-with-desktop-client-secret"
     },
     "synchronicity": {

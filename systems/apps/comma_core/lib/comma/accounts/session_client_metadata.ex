@@ -7,8 +7,8 @@ defmodule Comma.Accounts.SessionClientMetadata do
   factor, or a fraud signal.
   """
 
-  @client_kinds ~w(web electron api ssh)
-  @client_platforms ~w(android ios windows macos linux unknown)
+  @client_kinds ~w(web electron android ios watch api ssh)
+  @client_platforms ~w(android ios watchos windows macos linux unknown)
 
   @spec attributes(map()) :: map()
   def attributes(attrs) when is_map(attrs) do
@@ -66,6 +66,10 @@ defmodule Comma.Accounts.SessionClientMetadata do
   defp device_label("electron", "macos"), do: "Comma Desktop on macOS"
   defp device_label("electron", "linux"), do: "Comma Desktop on Linux"
   defp device_label("electron", _platform), do: "Comma Desktop"
+
+  defp device_label("android", _platform), do: "Comma Android app"
+  defp device_label("ios", _platform), do: "Comma on iPhone"
+  defp device_label("watch", _platform), do: "Comma on Apple Watch"
 
   defp device_label("ssh", _platform), do: "Comma SSH"
 

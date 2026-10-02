@@ -68,15 +68,6 @@
   cursor: wait;
 }
 
-/* Triage: while a tab or filter patch is in flight, the current content dims
-   at once, so the old tab does not look like the answer to the new click. */
-#triage-workbench:has(a[data-phx-link="patch"].phx-click-loading)
-  [data-role="workbench-content"] {
-  opacity: 0.5;
-  pointer-events: none;
-  transition: opacity 0.15s ease-out;
-}
-
 /* topbar.js progress bar accent. */
 #nprogress .bar {
   @apply bg-brand-500;

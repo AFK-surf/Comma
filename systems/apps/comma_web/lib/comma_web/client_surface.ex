@@ -14,12 +14,17 @@ defmodule CommaWeb.ClientSurface do
     "/v1/comma/integrations/telegram/webhook"
   ]
   @public_auth_paths [
+    "/v1/comma/auth/apple/attempt",
+    "/v1/comma/auth/apple",
+    "/v1/comma/auth/apple/link/verify",
+    "/v1/comma/auth/watch/exchange",
     "/v1/comma/auth/email/login",
     "/v1/comma/auth/email/verify",
     "/v1/comma/auth/google/attempt",
     "/v1/comma/auth/google",
     "/v1/comma/auth/google/link/verify",
-    "/v1/comma/auth/telegram-miniapp"
+    "/v1/comma/auth/telegram-miniapp",
+    "/v1/comma/auth/guest"
   ]
   @session_lifecycle_paths [
     "/v1/comma/auth/session",
@@ -149,6 +154,7 @@ defmodule CommaWeb.ClientSurface do
           "/v1/comma/admin/users",
           "/v1/comma/admin/billing",
           "/v1/comma/admin/model-selection-policy",
+          "/v1/comma/admin/guest-mode",
           "/v1/comma/admin/oauth-clients",
           "/v1/comma/admin/compute/agent-vmm"
         ],

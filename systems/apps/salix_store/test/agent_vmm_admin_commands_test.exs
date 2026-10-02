@@ -95,6 +95,16 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
     assert reused.id == hd(results)
     assert reused.template_key == "shell.default"
 
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^reused.id),
+      set: [observed_state: "failed"]
+    )
+
+    assert {:ok, same_failed} =
+             Compute.ensure_node_workload("tenant", "environment", "initial-host")
+
+    assert same_failed.id == reused.id
+    assert Repo.aggregate(Compute.Workload, :count) == 1
+
     registration = Repo.get!(SalixStore.AgentVMM.Registration, "initial-host")
 
     assert {:ok, disabled} =

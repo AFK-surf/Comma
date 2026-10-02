@@ -25,6 +25,92 @@ defmodule SalixAgent.SubscriptionWorkerTest do
       )
     end
 
+    # Antigravity serves Gemini through Cloud Code SSE, also for blocking calls.
+    def call(%{request_path: "/v1internal:" <> _} = conn, owner) do
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(owner, {:upstream, conn.request_path, Jason.decode!(body)})
+
+      event = %{
+        "response" => %{
+          "candidates" => [
+            %{
+              "content" => %{"role" => "model", "parts" => [%{"text" => "Hello"}]},
+              "finishReason" => "STOP"
+            }
+          ],
+          "usageMetadata" => %{
+            "promptTokenCount" => 3,
+            "candidatesTokenCount" => 1,
+            "totalTokenCount" => 4
+          },
+          "modelVersion" => "gemini-3-flash"
+        }
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.send_resp(200, "data: " <> Jason.encode!(event) <> "\n\n")
+    end
+
+    def call(%{request_path: "/chat/completions"} = conn, owner) do
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      data = Jason.decode!(body)
+      send(owner, {:upstream, conn.request_path, data})
+      usage = %{"prompt_tokens" => 3, "completion_tokens" => 1, "total_tokens" => 4}
+
+      if data["stream"] do
+        chunks = [
+          %{
+            "choices" => [
+              %{"index" => 0, "delta" => %{"role" => "assistant", "content" => "Hello"}}
+            ]
+          },
+          %{
+            "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}],
+            "usage" => usage
+          }
+        ]
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(
+          200,
+          Enum.map_join(
+            chunks,
+            "",
+            &("data: " <>
+                Jason.encode!(
+                  Map.merge(&1, %{
+                    "id" => "c",
+                    "object" => "chat.completion.chunk",
+                    "model" => data["model"]
+                  })
+                ) <> "\n\n")
+          ) <>
+            "data: [DONE]\n\n"
+        )
+      else
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(
+          200,
+          Jason.encode!(%{
+            "id" => "c",
+            "object" => "chat.completion",
+            "model" => data["model"],
+            "choices" => [
+              %{
+                "index" => 0,
+                "message" => %{"role" => "assistant", "content" => "Hello"},
+                "finish_reason" => "stop"
+              }
+            ],
+            "usage" => usage
+          })
+        )
+      end
+    end
+
     def call(conn, owner) do
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       data = Jason.decode!(body)
@@ -239,12 +325,38 @@ defmodule SalixAgent.SubscriptionWorkerTest do
   defp credentials(provider),
     do: %{
       "provider" => provider,
-      "credentials" => %{
-        "access_token" => "synthetic",
-        "account_uuid" => "11111111-1111-4111-8111-111111111111",
-        "claude_device_ids" => [String.duplicate("a", 64)]
-      }
+      "credentials" =>
+        Map.merge(
+          %{
+            "access_token" => "synthetic",
+            "account_uuid" => "11111111-1111-4111-8111-111111111111",
+            "claude_device_ids" => [String.duplicate("a", 64)],
+            "expired" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 3600))
+          },
+          case provider do
+            "gemini" ->
+              %{"project_id" => "project-1"}
+
+            "kimi-code" ->
+              %{"device_id" => "device-1"}
+
+            "github-copilot" ->
+              %{"access_token" => "tid=1;proxy-ep=proxy.individual.githubcopilot.com"}
+
+            _ ->
+              %{}
+          end
+        )
     }
+
+  @models %{
+    "codex" => {"gpt-5.5", SalixLlm.OpenAIResponses},
+    "claude" => {"claude-sonnet-4-6", SalixLlm.Anthropic},
+    "gemini" => {"gemini-3-flash", SalixLlm.OpenAIChat},
+    "grok" => {"grok-build", SalixLlm.OpenAIResponses},
+    "kimi-code" => {"kimi-for-coding", SalixLlm.Anthropic},
+    "github-copilot" => {"gpt-4.1", SalixLlm.OpenAIChat}
+  }
 
   @tag :subscription_runtime
   test "runtime access refreshes centrally and a repeated rejected revision uses the replacement" do
@@ -291,7 +403,9 @@ defmodule SalixAgent.SubscriptionWorkerTest do
   end
 
   test "native providers stream and complete through the pipe and existing parsers" do
-    for provider <- ["codex", "claude"], stream <- [false, true] do
+    for provider <- AccountPool.providers(), stream <- [false, true] do
+      {model, module} = @models[provider]
+
       tenant = SalixStore.Ids.new_tenant_id()
       id = SubscriptionStore.id()
       {:ok, sealed} = SubscriptionStore.seal(tenant, id, credentials(provider)["credentials"])
@@ -311,7 +425,7 @@ defmodule SalixAgent.SubscriptionWorkerTest do
         AccountPool.resolve_config(
           %{
             "account_pool" => provider,
-            "model" => if(provider == "codex", do: "gpt-5.5", else: "claude-sonnet-4-6")
+            "model" => model
           },
           tenant
         )
@@ -320,7 +434,6 @@ defmodule SalixAgent.SubscriptionWorkerTest do
 
       result =
         AccountPool.dispatch(config, fn opts ->
-          module = if provider == "codex", do: SalixLlm.OpenAIResponses, else: SalixLlm.Anthropic
           messages = [%{"role" => "user", "content" => "hello"}]
 
           if stream,
@@ -334,10 +447,12 @@ defmodule SalixAgent.SubscriptionWorkerTest do
             else: module.complete(messages, [], opts)
         end)
 
-      assert {:final, "Hello", meta} = result
+      assert {:final, "Hello", meta} = result, "#{provider} stream=#{stream}: #{inspect(result)}"
       assert meta["usage"]["prompt_tokens"] == 3
       if stream, do: assert_receive({:delta, "Hello"})
       assert_receive {:upstream, _, _}
+      # Pooled subscription traffic stays on the billing-exempt worker route.
+      assert AccountPool.owns_route?(config)
     end
   end
 

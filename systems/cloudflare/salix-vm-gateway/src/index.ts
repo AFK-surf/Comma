@@ -1,14 +1,14 @@
-import { getSandbox, Sandbox } from "@cloudflare/sandbox";
 import { createGateway, type GatewayEnv } from "./app";
-export { Sandbox } from "@cloudflare/sandbox";
-export class SandboxStandard1 extends Sandbox {}
+import { ManagedSandbox } from "./managed_sandbox";
+export class Sandbox extends ManagedSandbox {}
+export class SandboxStandard1 extends ManagedSandbox {}
 export { ReplayGuard } from "./replay_guard";
 
 export default createGateway<GatewayEnv>({
-  getSandbox(env, id, opts, profile) {
-    return getSandbox(profile === "cf-standard-1" ? env.SandboxStandard1 : env.Sandbox, id, {
-      keepAlive: opts?.keepAlive,
-      transport: "rpc",
-    });
+  getSandbox(env, id, profile) {
+    const binding = profile === "cf-standard-1" ? env.SandboxStandard1 : env.Sandbox;
+    // getSandbox() configures the DO asynchronously, outside the owner permit.
+    // idFromName preserves the SDK's existing name -> DO identity mapping.
+    return binding.get(binding.idFromName(id));
   },
 });

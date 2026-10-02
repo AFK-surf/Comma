@@ -91,22 +91,61 @@ test("a Task owner previews a Task, then creates, copies, and stops its public l
     await dialog.getByRole("button", { name: "Create public link" }).click();
 
     await expect(dialog.getByTestId("task-share-url")).toHaveValue(shareUrl);
-    // Creating removes the pressed button, so Copy link takes the focus.
-    const copy = dialog.getByRole("button", { name: "Copy link" });
-    await expect(copy).toBeFocused();
+    // Creating copies the new link, and the copy button takes the focus.
+    const readClipboard = () => page.evaluate(() => navigator.clipboard.readText());
+    await expect.poll(readClipboard).toBe(shareUrl);
+    const copied = dialog.getByRole("button", { name: "Link copied" });
+    await expect(copied).toBeFocused();
+    const toast = page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: "Link copied" });
+    await expect(toast).toBeVisible();
     await expect(dialog.getByText("2 files are public.")).toBeVisible();
-    await copy.click();
-    await expect
-      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-      .toBe(shareUrl);
-    await expect(dialog.getByRole("button", { name: "Link copied" })).toBeVisible();
+
+    // A later copy confirms again.
+    await page.evaluate(() => navigator.clipboard.writeText(""));
+    await copied.click();
+    await expect.poll(readClipboard).toBe(shareUrl);
+    await expect(copied).toBeVisible();
+    await expect(toast).toBeVisible();
 
     await dialog.getByRole("button", { name: "Link actions" }).click();
     await page.getByRole("menuitem", { name: "Stop sharing" }).click();
-    await expect(
-      dialog.getByRole("button", { name: "Create public link" })
-    ).toBeFocused();
-    expect(calls).toEqual(["GET", "PUT", "DELETE"]);
+    const create = dialog.getByRole("button", { name: "Create public link" });
+    await expect(create).toBeFocused();
+
+    // Safari denies the copy that follows the create request. The link is
+    // still created and offered, with no failure toast.
+    await page.evaluate(() => {
+      const denied = window as Window & { copyDenied?: boolean };
+      navigator.clipboard.writeText = () => {
+        denied.copyDenied = true;
+        return Promise.reject(new DOMException("Denied", "NotAllowedError"));
+      };
+    });
+    await create.click();
+    await expect(dialog.getByTestId("task-share-url")).toHaveValue(shareUrl);
+    await expect(dialog.getByRole("button", { name: "Copy link" })).toBeFocused();
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as Window & { copyDenied?: boolean }).copyDenied)
+      )
+      .toBe(true);
+    // A failure toast would render within a frame or two of the denial.
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        )
+    );
+    // Counted once: a retrying assertion would pass when the toast times out.
+    expect(
+      await page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: "Couldn’t copy" })
+        .count()
+    ).toBe(0);
+    expect(calls).toEqual(["GET", "PUT", "DELETE", "PUT"]);
   } finally {
     await stub.close();
   }
@@ -319,6 +358,14 @@ test("a public link shows the shared Task and its files without a Comma session"
   await page.goto(`/s/${token}`);
   await expect(page.getByRole("heading", { name: "Quarterly report" })).toBeVisible();
   await expect(page).toHaveTitle("Quarterly report");
+  // Public shares use window width, including at the exact desktop breakpoint.
+  for (const width of [639, 640, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect(page.locator(".comma-app-shell")).toHaveCSS(
+      "padding-left",
+      width < 640 ? "4px" : "8px"
+    );
+  }
   const thread = page.getByTestId("share-view-thread");
   await expect(thread.getByText("Summarize Q3.")).toBeVisible();
   await expect(thread.locator("strong", { hasText: "report" })).toBeVisible();

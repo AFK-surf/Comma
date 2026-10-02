@@ -427,12 +427,8 @@ defmodule CommaWeb.TelegramTaskCards do
 
   ## Records
 
-  defp owner_language(workspace_id, owner) do
-    case Comma.Recommendations.get_runtime_profile(workspace_id, owner) do
-      {:ok, %{locale: locale}} -> CommaWeb.TelegramCommands.language(locale)
-      _ -> "en"
-    end
-  end
+  defp owner_language(_workspace_id, owner),
+    do: CommaWeb.TelegramCommands.language(Comma.Accounts.locale(owner))
 
   defp read_card(id) when is_binary(id) do
     if Regex.match?(~r/\A[0-9a-f]{16}\z/, id),

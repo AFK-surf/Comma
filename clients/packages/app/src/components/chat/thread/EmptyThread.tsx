@@ -1,6 +1,7 @@
 import { commaLogoUrl, commaProductMarkPathData } from "@comma/config";
 import { useCommaMessages } from "@comma/i18n/react";
 import { useId } from "react";
+import { useOnboardingOpen } from "../../onboarding/onboardingPresence";
 
 export function EmptyThread({
   exiting = false,
@@ -10,6 +11,7 @@ export function EmptyThread({
   variant: "default" | "side-chat";
 }) {
   const messagesApi = useCommaMessages();
+  const onboardingOpen = useOnboardingOpen();
 
   if (variant === "side-chat") {
     return (
@@ -32,8 +34,15 @@ export function EmptyThread({
     );
   }
 
+  // The first-launch onboarding covers this window's product: the hero waits
+  // under it, so none of its text shows through the onboarding's column, and
+  // returns as the onboarding leaves.
   return (
-    <div className="comma-chat-empty" data-testid="chat-empty">
+    <div
+      className="comma-chat-empty"
+      data-onboarding-hold={onboardingOpen ? "true" : undefined}
+      data-testid="chat-empty"
+    >
       <EmptyThreadMark />
       <div className="comma-chat-empty-copy">
         <h2>{messagesApi.chat_empty_title()}</h2>

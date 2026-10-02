@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import * as oidc from "openid-client";
 import * as oauth from "oauth4webapi";
 import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
+import { readMainLocale, type MainLocaleSource } from "./main-locale";
 
 const googleIssuer = new URL("https://accounts.google.com");
 const callbackPath = "/oauth2/callback";
@@ -81,7 +82,7 @@ const openIdClientAdapter: OpenIdClientAdapter = {
 };
 
 export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
-  readonly #locale: CommaLocale;
+  readonly #locale: MainLocaleSource;
   readonly #oidc: OpenIdClientAdapter;
   readonly #openExternal: (url: string) => Promise<void>;
   readonly #timeoutMs: number;
@@ -92,7 +93,7 @@ export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
     openExternal,
     timeoutMs = defaultTimeoutMs,
   }: {
-    locale?: CommaLocale;
+    locale?: MainLocaleSource;
     oidcAdapter?: OpenIdClientAdapter | undefined;
     openExternal: (url: string) => Promise<void>;
     timeoutMs?: number | undefined;
@@ -120,7 +121,7 @@ export class SystemBrowserGoogleAuth implements DesktopGoogleAuthProvider {
     try {
       throwIfAborted(operationSignal);
       callback = await LoopbackCallback.open({
-        locale: this.#locale,
+        locale: readMainLocale(this.#locale),
         signal: operationSignal,
       });
       const configuration = await waitForOperation(

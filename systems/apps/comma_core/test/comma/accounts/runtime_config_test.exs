@@ -169,6 +169,34 @@ defmodule Comma.Accounts.RuntimeConfigTest do
   end
 
   @tag :tmp_dir
+  test "Android Google client IDs are trimmed and blank entries fail at boot", %{
+    tmp_dir: tmp_dir
+  } do
+    config_path =
+      write_runtime_config!(tmp_dir, %{
+        comma: %{google_auth: %{android_client_ids: [" android.apps.example "]}}
+      })
+
+    {output, 0} =
+      read_runtime_config(config_path,
+        comma_environment: "staging",
+        expression:
+          ~S|ids = get_in(Config.Reader.read!("config/runtime.exs", env: :prod, target: :host), [:comma_core, :google_auth, :android_client_ids]); IO.puts("ANDROID_IDS=" <> inspect(ids))|
+      )
+
+    assert output =~ ~s|ANDROID_IDS=["android.apps.example"]|
+
+    blank_path =
+      write_runtime_config!(tmp_dir, %{comma: %{google_auth: %{android_client_ids: ["  "]}}})
+
+    {blank_output, blank_status} =
+      read_runtime_config(blank_path, comma_environment: "staging")
+
+    refute blank_status == 0
+    assert blank_output =~ "android_client_ids must contain nonempty strings"
+  end
+
+  @tag :tmp_dir
   test "unknown Comma environment names fail closed instead of inheriting local origins", %{
     tmp_dir: tmp_dir
   } do

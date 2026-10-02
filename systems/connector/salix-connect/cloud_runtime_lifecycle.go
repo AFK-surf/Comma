@@ -15,6 +15,8 @@ const cloudRuntimeQuietProcessLimit = 128
 // Send, recovery and credential mutation while native quiet checks run. Durable
 // inputs, recovery obligations and unacknowledged outputs always prevent quiet.
 func (c *connector) quietManagedCloudRuntimes(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, cloudRuntimeQuietTimeout)
+	defer cancel()
 	if c.cloudRuntimeRequests != 0 {
 		return errRuntimeNotQuiet
 	}
@@ -101,6 +103,10 @@ func (c *connector) quietManagedCloudRuntimes(ctx context.Context) error {
 }
 
 func (c *connector) expireCloudRuntimeQuiesce() {
+	if c.cloudRuntimeControl != nil && c.cloudRuntimeControl.Sealed {
+		c.cloudRuntimeQuiesced = true
+		return
+	}
 	if c.cloudRuntimeQuiesced && !c.cloudRuntimeReleased && time.Now().After(c.cloudRuntimeParkUntil) {
 		c.cloudRuntimeQuiesced = false
 		c.cloudRuntimeParkToken = ""
@@ -111,7 +117,11 @@ func (c *connector) methodCloudRuntimeLifecycle(ctx context.Context, method stri
 	if strings.TrimSpace(os.Getenv("SALIX_MANAGED_RUNTIME_ROOT")) == "" {
 		return nil, errors.New("not a managed runtime connector")
 	}
-	c.cloudRuntimeMu.Lock()
+	ctx, cancel := context.WithTimeout(ctx, cloudRuntimeQuietTimeout)
+	defer cancel()
+	if err := lockRuntimeContext(ctx, &c.cloudRuntimeMu); err != nil {
+		return nil, err
+	}
 	defer c.cloudRuntimeMu.Unlock()
 	c.expireCloudRuntimeQuiesce()
 	token := stringParam(params, "token")
@@ -145,7 +155,7 @@ func (c *connector) methodCloudRuntimeLifecycle(ctx context.Context, method stri
 		return nil, errRuntimeNotQuiet
 	}
 	if method == "cloud_runtime_resume" {
-		if c.cloudRuntimeReleased {
+		if (c.cloudRuntimeControl != nil && c.cloudRuntimeControl.Sealed) || c.cloudRuntimeReleased {
 			return nil, errRuntimeNotQuiet
 		}
 		c.cloudRuntimeQuiesced = false

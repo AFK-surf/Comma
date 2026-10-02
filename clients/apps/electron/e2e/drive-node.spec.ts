@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { startSessionProjectionStub } from "../../../e2e/helpers/session-fixture";
 
 /**
@@ -43,13 +44,11 @@ test.describe("drive over the node", () => {
 
   test("finds and attaches Drive files through @ without visiting Drive", async () => {
     const stub = await startChatSmokeStub({ sessionEmail: DRIVE_E2E_EMAIL });
+    const userDataPath = join(testDirectory, "mentions");
+    recordElectronOnboardingCompleted(userDataPath, [stub.userId]);
     const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...env } = process.env;
     const app = await electron.launch({
-      args: [
-        electronMain,
-        "--lang=en-US",
-        `--user-data-dir=${join(testDirectory, "mentions")}`,
-      ],
+      args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataPath}`],
       cwd: electronAppDir,
       env: {
         ...env,
@@ -130,6 +129,7 @@ test.describe("drive over the node", () => {
 
   test("shows the node's tree, reads, writes, settles and pins through it", async () => {
     const userDataPath = join(testDirectory, "user-data");
+    recordElectronOnboardingCompleted(userDataPath, [sessionStub.userId]);
     const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...env } = process.env;
     const app = await electron.launch({
       args: [electronMain, "--lang=en-US", `--user-data-dir=${userDataPath}`],

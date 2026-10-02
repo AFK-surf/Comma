@@ -146,7 +146,9 @@ function isWithinLocalImagePreviewActivationBand(
 }
 
 function shouldDeferLocalImagePreviewSync(element: Element, root: Element | null) {
-  if (!(root instanceof HTMLElement)) return false;
+  // Reports do not pin to the latest turn. Their first screen can load immediately.
+  if (!(root instanceof HTMLElement) || !element.closest(".comma-chat-thread"))
+    return false;
   if (root.scrollTop > 1 || root.scrollHeight <= root.clientHeight + 1) {
     return false;
   }

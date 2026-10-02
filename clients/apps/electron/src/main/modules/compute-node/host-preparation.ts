@@ -1,5 +1,6 @@
+import { assertMaintenanceCapable } from "./host-maintenance-protocol";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, realpathSync } from "node:fs";
+import { constants, createReadStream, realpathSync } from "node:fs";
 import { access, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -28,6 +29,7 @@ export interface HostConfiguration {
   downloadUrl: string;
   instance: string;
   directory: string;
+  maintenanceDirectory: string;
   appPath: string;
   lifecyclePath: string;
   serviceArgs: string[];
@@ -68,6 +70,12 @@ export function resolveHostConfiguration(
       env.COMMA_VMM_DOWNLOAD_URL?.trim() || getPublishedAssetUrl(publishedHost.path),
     instance,
     directory,
+    maintenanceDirectory: join(
+      home,
+      "Library",
+      "Application Support",
+      "Agent VMM Maintenance"
+    ),
     appPath,
     lifecyclePath: join(appPath, "Contents", "Helpers", "agent-vmm-lifecycle"),
     serviceArgs: ["--service-type", "agent"],
@@ -115,6 +123,108 @@ export class AgentVMMHostPreparation implements HostPreparation {
     return this.prepare(true, report);
   }
 
+  /** Prepare a verified helper outside both the installed application and VM data.
+   * Maintenance must also work when the installed helper is old, broken or absent.
+   */
+  async stageMaintenance(
+    requestId: string,
+    report: (state: HostPreparationState) => void,
+    artifact = publishedHost,
+    execute?: (bundle: {
+      sourceApp: string;
+      targetReleaseId: string;
+      artifactSha256?: string;
+      artifactSize?: number;
+    }) => Promise<void>
+  ): Promise<{
+    sourceApp: string;
+    targetReleaseId: string;
+    artifactSha256?: string;
+    artifactSize?: number;
+  }> {
+    if (!/^[a-f0-9-]{36}$/.test(requestId))
+      throw new Error("Invalid maintenance request.");
+    const phase = (value: HostPreparationState["phase"]) => {
+      this.phase = value;
+      report(this.state());
+    };
+    await mkdir(this.config.directory, { recursive: true, mode: 0o700 });
+    const lock = new DatabaseSync(join(this.config.directory, ".prepare.sqlite"));
+    try {
+      lock.exec("BEGIN IMMEDIATE");
+      const sourceDirectory = join(this.config.directory, `.maintenance-${requestId}`);
+      if (
+        (await pathExists(sourceDirectory)) &&
+        (await lstat(sourceDirectory)).isSymbolicLink()
+      )
+        throw new Error("Maintenance bundle directory cannot be a symbolic link.");
+      const sourceApp = join(sourceDirectory, APP_NAME);
+      const prepared = join(this.config.directory, ".prepared");
+      if (await pathExists(sourceApp)) {
+        try {
+          await this.verifyBundle(sourceApp);
+          if (!this.config.sourcePath) {
+            const helper = join(
+              sourceApp,
+              "Contents",
+              "Helpers",
+              "agent-vmm-lifecycle"
+            );
+            const version = JSON.parse(await this.run(helper, ["version", "--json"]));
+            if (version.release_id !== artifact.release_id)
+              throw new Error("Cached maintenance bundle has a different release.");
+          }
+        } catch {
+          await rm(sourceApp, { recursive: true, force: true });
+        }
+      }
+      if (!(await pathExists(sourceApp))) {
+        await mkdir(sourceDirectory, { recursive: true, mode: 0o700 });
+        await mkdir(prepared, { recursive: true, mode: 0o700 });
+        const staged = this.config.sourcePath
+          ? await this.build(prepared, phase)
+          : await this.download(prepared, phase, artifact);
+        await this.verifyBundle(staged);
+        await rename(staged, sourceApp);
+      }
+      await this.verifyBundle(sourceApp);
+      const helper = join(sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle");
+      const version = JSON.parse(await this.run(helper, ["version", "--json"]));
+      const targetReleaseId = this.config.sourcePath
+        ? (this.buildReleaseId ?? version.release_id)
+        : artifact.release_id;
+      if (version.release_id !== targetReleaseId)
+        throw new Error("Host bundle release does not match the selected artifact.");
+      const digest = this.config.sourcePath
+        ? {}
+        : { artifactSha256: artifact.sha256, artifactSize: artifact.size };
+      phase("ready");
+      const bundle = { sourceApp, targetReleaseId, ...digest };
+      // Keep Comma's preparation lock through native maintenance. Native owns
+      // the cross-application lock and policy at the actual mutation boundary.
+      await execute?.(bundle);
+      return bundle;
+    } catch (error) {
+      phase("failed");
+      throw error;
+    } finally {
+      lock.close();
+    }
+  }
+
+  private async verifyBundle(appPath: string) {
+    if ((await lstat(appPath)).isSymbolicLink())
+      throw new Error("Host bundle cannot be a symbolic link.");
+    await this.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath]);
+    for (const executable of [
+      "Helpers/agent-vmm-lifecycle",
+      "Helpers/agent-vmm-service-executor",
+      "Helpers/agent-vmm",
+      "MacOS/agent-vmm-host",
+    ])
+      await access(join(appPath, "Contents", executable), constants.X_OK);
+  }
+
   private async prepare(
     rebuild: boolean,
     report: (state: HostPreparationState) => void
@@ -138,6 +248,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
       );
     }
     try {
+      await this.assertSetupAllowed();
       const pendingFile = join(this.config.directory, ".pending-update.json");
       if (await pathExists(pendingFile)) {
         phase("installing");
@@ -163,34 +274,23 @@ export class AgentVMMHostPreparation implements HostPreparation {
         ? await this.build(preparedDirectory, phase)
         : await this.download(preparedDirectory, phase);
       phase("installing");
-      const stagedHelper = join(
-        stagedApp,
-        "Contents",
-        "Helpers",
-        "agent-vmm-lifecycle"
-      );
       try {
-        await this.run("/usr/bin/codesign", [
-          "--verify",
-          "--deep",
-          "--strict",
-          stagedApp,
-        ]);
-        for (const executable of [
-          stagedHelper,
-          join(stagedApp, "Contents", "MacOS", "agent-vmm-host"),
-          join(stagedApp, "Contents", "Helpers", "agent-vmm"),
-          join(stagedApp, "Contents", "Helpers", "agent-vmm-service-executor"),
-        ]) {
-          await access(executable, constants.X_OK);
-        }
+        await this.verifyBundle(stagedApp);
       } catch (error) {
         if (!this.config.sourcePath)
           await rm(join(preparedDirectory, "download.json"), { force: true });
         throw error;
       }
       if (!installed) {
-        await rename(stagedApp, this.config.appPath);
+        await this.assertSetupAllowed();
+        if (this.config.sourcePath) await rename(stagedApp, this.config.appPath);
+        else
+          await this.run(
+            join(stagedApp, "Contents", "Helpers", "agent-vmm-lifecycle"),
+            ["publish-host", "--source-app", stagedApp, ...this.config.serviceArgs],
+            undefined,
+            10 * 60_000
+          );
         await this.activateSource();
       } else {
         const requestId = `comma-update-${randomUUID()}`;
@@ -201,7 +301,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
         await rename(stagedApp, stagedSibling);
         const pending: PendingHostUpdate = {
           sourceApp: stagedSibling,
-          targetReleaseId: this.buildReleaseId!,
+          targetReleaseId: this.buildReleaseId ?? publishedHost.release_id,
           requestId,
         };
         const record = await open(`${pendingFile}.tmp`, "w", 0o600);
@@ -227,8 +327,42 @@ export class AgentVMMHostPreparation implements HostPreparation {
     }
   }
 
+  private async assertSetupAllowed() {
+    if (this.config.sourcePath) return;
+    let policy: unknown;
+    try {
+      policy = JSON.parse(
+        await readFile(join(this.config.maintenanceDirectory, "state.json"), "utf8")
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error(
+        "Local Host maintenance policy is unreadable; automatic setup is paused.",
+        { cause: error }
+      );
+    }
+    if (
+      !policy ||
+      typeof policy !== "object" ||
+      !("version" in policy) ||
+      policy.version !== 1 ||
+      !("uninstalled" in policy) ||
+      typeof policy.uninstalled !== "boolean" ||
+      ("activeRequest" in policy && policy.activeRequest) ||
+      policy.uninstalled
+    )
+      throw new Error(
+        "Continue local Host maintenance or explicitly reinstall Agent VMM before automatic setup."
+      );
+  }
+
   private async activateSource() {
     if (this.config.sourcePath) {
+      await assertMaintenanceCapable(
+        this.config.lifecyclePath,
+        this.run,
+        this.config.serviceArgs
+      );
       // Managed enrollment reuses any healthy shared Host. Repair first so an
       // explicit source selection also selects the running service binary.
       await this.run(
@@ -253,6 +387,11 @@ export class AgentVMMHostPreparation implements HostPreparation {
     ) {
       throw new Error("The pending Host update record is invalid.");
     }
+    await assertMaintenanceCapable(
+      this.config.lifecyclePath,
+      this.run,
+      this.config.serviceArgs
+    );
     await this.run(
       this.config.lifecyclePath,
       [
@@ -272,9 +411,13 @@ export class AgentVMMHostPreparation implements HostPreparation {
 
   private async download(
     directory: string,
-    phase: (phase: HostPreparationState["phase"]) => void
+    phase: (phase: HostPreparationState["phase"]) => void,
+    artifact?: typeof publishedHost
   ) {
-    const url = new URL(this.config.downloadUrl);
+    const selected = artifact ?? publishedHost;
+    const url = new URL(
+      artifact ? getPublishedAssetUrl(artifact.path) : this.config.downloadUrl
+    );
     if (url.protocol !== "https:" || url.username || url.password) {
       throw new Error(
         "COMMA_VMM_DOWNLOAD_URL must be a public HTTPS URL without credentials."
@@ -289,6 +432,12 @@ export class AgentVMMHostPreparation implements HostPreparation {
         (await pathExists(archive));
     } catch {
       /* Download only after an explicit action. */
+    }
+    if (cached && url.href === getPublishedAssetUrl(selected.path)) {
+      const digest = await archiveDigest(archive);
+      cached =
+        digest.artifactSha256 === selected.sha256 &&
+        digest.artifactSize === selected.size;
     }
     if (!cached) {
       phase("downloading");
@@ -321,8 +470,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
         await file.close();
       }
       if (
-        url.href === getPublishedAssetUrl(publishedHost.path) &&
-        (bytes !== publishedHost.size || digest.digest("hex") !== publishedHost.sha256)
+        url.href === getPublishedAssetUrl(selected.path) &&
+        (bytes !== selected.size || digest.digest("hex") !== selected.sha256)
       ) {
         throw new Error(
           "Host download does not match the selected published artifact. Retry the download."
@@ -451,4 +600,14 @@ function displayDownloadLocation(value: string) {
   } catch {
     return "Invalid download URL";
   }
+}
+
+async function archiveDigest(path: string) {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+    bytes += chunk.length;
+  }
+  return { artifactSha256: hash.digest("hex"), artifactSize: bytes };
 }

@@ -19,6 +19,7 @@ import {
 import {
   hasRecommendationLinkPreview,
   loadRecommendationLinkPreview,
+  peekRecommendationLinkPreview,
 } from "../../../recommendations/linkPreviewCache";
 
 /**
@@ -59,6 +60,13 @@ export function ChatLinkHoverCard({
 
   const handleOpenChange = (open: boolean) => {
     if (!open || preview !== undefined || !hasRecommendationLinkPreview(href)) return;
+    // A settled answer renders at once: no skeleton flash, no request.
+    const cached = peekRecommendationLinkPreview(api, workspaceId, { href });
+    if (cached === "missing") return;
+    if (cached) {
+      setPreview(cached);
+      return;
+    }
     const generation = ++requestGeneration.current;
     setPreview("loading");
     void loadRecommendationLinkPreview(api, workspaceId, { href }).then(

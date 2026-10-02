@@ -1,0 +1,18 @@
+{
+  "challenge": {
+    "purpose": "agent-vmm/comma-recovery/1",
+    "audience": "https://api.example.test",
+    "subject": "原用户",
+    "session_id": "new-session",
+    "tenant_id": "tenant",
+    "group_id": "group",
+    "scope_key": "workspace",
+    "environment_id": "environment",
+    "operation_id": "operation",
+    "registration_id": "registration",
+    "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "revision": 19,
+    "expires_at": 1790848520
+  },
+  "wire": "agent-vmm/comma-recovery/1\naHR0cHM6Ly9hcGkuZXhhbXBsZS50ZXN0\n5Y6f55So5oi3\nbmV3LXNlc3Npb24\ndGVuYW50\nZ3JvdXA\nd29ya3NwYWNl\nZW52aXJvbm1lbnQ\nb3BlcmF0aW9u\ncmVnaXN0cmF0aW9u\nQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ\n19\n1790848520\n"
+}

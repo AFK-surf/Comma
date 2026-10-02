@@ -7,7 +7,17 @@ import Foundation
 
 if #available(macOS 14.0, *) {
     MainActor.assumeIsolated {
-        if CommandLine.arguments.contains("--permissions-status") {
+        if CommandLine.arguments.contains("--prepare-app") {
+            do {
+                print(try StandaloneApplication.prepare().path)
+            } catch {
+                fputs("Could not install Comma Computer Use: \(error)\n", stderr)
+                exit(1)
+            }
+        } else if StandaloneApplication.isNested(Bundle.main.bundleURL) {
+            fputs("Run --prepare-app and open the returned application before using Computer Use.\n", stderr)
+            exit(1)
+        } else if CommandLine.arguments.contains("--permissions-status") {
             do {
                 let response = CommaComputerUseResponse.success(permissions: commaPermissionInfo())
                 let data = try JSONEncoder().encode(response)

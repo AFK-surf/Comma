@@ -51,6 +51,15 @@ for (const width of [1280, 390]) {
       await expect(
         browser.getByRole("link", { name: "Open in browser" })
       ).toHaveAttribute("href", "https://example.com/docs?q=1&b=2");
+      // The page itself stays quiet; only the reader's own press offers the Mac app.
+      const prompt = page.getByRole("dialog", { name: "Get Comma for Mac" });
+      await expect(prompt).toHaveCount(0);
+      await browser.getByRole("button", { name: "Download for Mac" }).click();
+      await expect(prompt).toContainText(
+        "The built-in browser needs the Comma app for Mac."
+      );
+      await prompt.getByRole("button", { name: "Cancel" }).click();
+      await expect(prompt).not.toBeVisible();
       await page.screenshot({
         path: testInfo.outputPath("text-links.png"),
         fullPage: true,

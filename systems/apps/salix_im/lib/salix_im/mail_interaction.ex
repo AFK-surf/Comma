@@ -290,17 +290,33 @@ defmodule SalixIM.MailInteraction do
           "read" => command["read"] || base["read"],
           "run_at" => run_at,
           "schedule_id" => schedule_id,
+          # When the matter last changed, for the owner's notebook.
+          "changed_at" => now,
           # Whether the latest handoff was automatic. The Router's decision on
           # an automatic matter spends the notification budget.
           "automatic" =>
             if(action == "present", do: command["automatic"] == true, else: base["automatic"]),
           "urgency" => if(action == "present", do: command["urgency"], else: base["urgency"]),
+          # The latest Loop wakes on this matter, so a redelivered older wake is
+          # recognized as a duplicate instead of re-presenting the matter.
+          "loop_requests" =>
+            if(String.starts_with?(command["request_id"] || "", "loop:"),
+              do: Enum.take(Enum.uniq([command["request_id"] | base["loop_requests"] || []]), 8),
+              else: base["loop_requests"]
+            ),
           # The Router's latest decision and its reason, shown to the owner.
           "decision" =>
-            if(action in ~w(notify quiet),
-              do: %{"decision" => action, "reason" => command["reason"], "decided_at" => now},
-              else: base["decision"]
-            ),
+            cond do
+              action in ~w(notify quiet) ->
+                %{"decision" => action, "reason" => command["reason"], "decided_at" => now}
+
+              # A new handoff awaits a new decision.
+              action == "present" ->
+                nil
+
+              true ->
+                base["decision"]
+            end,
           "pending" => %{"command" => command, "old_schedule_id" => old_schedule}
         })
 

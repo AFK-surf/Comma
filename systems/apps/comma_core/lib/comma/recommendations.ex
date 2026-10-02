@@ -21,12 +21,6 @@ defmodule Comma.Recommendations do
   @manual_runs_per_hour 6
   @source_kinds ~w(native_mcp_oauth managed_oauth composio im_connect)
 
-  # The client's UI language tags, mirrored from `@comma/i18n` `supportedLocales`.
-  # This is an allowlist rather than a length check on purpose: the stored value
-  # reaches the briefing renderer's system prompt, so an attacker-controlled
-  # query parameter must never become free prompt text.
-  @locales ~w(en zh-CN)
-
   def sync_sources(user, session, workspace_id, discovered) when is_list(discovered) do
     with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id),
          :ok <- validate_discovered_sources(discovered) do
@@ -372,9 +366,9 @@ defmodule Comma.Recommendations do
   Read the member's envelope. The rail's own read passes `exposure: true`;
   settings and refresh preparation also read here and are not exposures.
   """
-  def get(user, session, workspace_id, timezone \\ nil, locale \\ nil, opts \\ []) do
+  def get(user, session, workspace_id, timezone \\ nil, opts \\ []) do
     with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id),
-         {:ok, profile} <- ensure_profile(workspace_id, user["id"], timezone, locale) do
+         {:ok, profile} <- ensure_profile(workspace_id, user["id"], timezone) do
       envelope = public_envelope(profile)
       if opts[:exposure], do: record_exposure(profile, envelope)
       {:ok, envelope}
@@ -729,7 +723,7 @@ defmodule Comma.Recommendations do
     end
   end
 
-  defp ensure_profile(workspace_id, user_id, timezone, locale \\ nil) do
+  defp ensure_profile(workspace_id, user_id, timezone) do
     case Repo.get_by(RecommendationProfile, workspace_id: workspace_id, user_id: user_id) do
       nil ->
         %RecommendationProfile{}
@@ -737,38 +731,69 @@ defmodule Comma.Recommendations do
           workspace_id: workspace_id,
           user_id: user_id,
           timezone: normalize_timezone(timezone),
-          relevance_mode: "member",
-          locale: normalize_locale(locale)
+          relevance_mode: "member"
         })
         |> Repo.insert(on_conflict: :nothing, conflict_target: [:workspace_id, :user_id])
         |> case do
+          # A concurrent read inserted it first, possibly without a timezone.
           {:ok, %RecommendationProfile{id: nil}} ->
-            {:ok,
-             Repo.get_by!(RecommendationProfile, workspace_id: workspace_id, user_id: user_id)}
+            RecommendationProfile
+            |> Repo.get_by!(workspace_id: workspace_id, user_id: user_id)
+            |> fill_timezone(timezone)
 
           result ->
             result
         end
 
       profile ->
-        sync_locale(profile, normalize_locale(locale))
+        fill_timezone(profile, timezone)
     end
   end
 
-  # Only a client fetch carries a language preference, so an unreported locale
-  # leaves the stored one alone: the scheduled run has no client in the loop and
-  # must keep using the last preference the user actually expressed. The
-  # schedule timezone is a setting, not a client fact: the settings form saves
-  # the timezone of the device the member sets the delivery time on, and a read
-  # never moves the daily run between devices.
-  defp sync_locale(profile, nil), do: {:ok, profile}
-  defp sync_locale(%RecommendationProfile{locale: locale} = profile, locale), do: {:ok, profile}
+  @doc """
+  The account's app language changed. Each profile with enabled sources
+  regenerates once, so its briefing is written in the new language. The
+  language itself is an account setting (`Comma.Accounts.locale/1`).
+  """
+  def language_changed(user_id) when is_binary(user_id) do
+    locale = Comma.Accounts.locale(user_id)
 
-  defp sync_locale(profile, locale) do
-    profile
-    |> RecommendationProfile.locale_changeset(locale)
-    |> Repo.update()
+    from(profile in RecommendationProfile, where: profile.user_id == ^user_id)
+    |> Repo.all()
+    |> Enum.filter(&(enabled_sources(&1) != []))
+    |> Enum.each(fn profile ->
+      case create_internal_run(
+             profile,
+             "agent_tool",
+             "locale:#{locale}:#{profile.requested_generation}"
+           ) do
+        {:error, reason} ->
+          Logger.warning("routine language refresh failed reason=#{inspect(reason, limit: 3)}")
+
+        _ ->
+          :ok
+      end
+    end)
   end
+
+  # The schedule timezone is a setting, not a client fact: the settings form
+  # saves the timezone of the device the member sets the delivery time on, and
+  # a read never moves the daily run between devices.
+
+  # A read that carries no timezone creates the profile with the Etc/UTC
+  # default, so the daily run would start at 08:00 UTC. Etc/UTC therefore means
+  # unset: the first read that reports a device timezone fills it once. A member
+  # whose device is on UTC reports UTC and keeps it. The caller reconciles the
+  # schedule after the read.
+  defp fill_timezone(%RecommendationProfile{timezone: "Etc/UTC"} = profile, timezone) do
+    case strict_timezone(timezone) do
+      {:ok, "Etc/UTC"} -> {:ok, profile}
+      {:ok, zone} -> profile |> Ecto.Changeset.change(timezone: zone) |> Repo.update()
+      :error -> {:ok, profile}
+    end
+  end
+
+  defp fill_timezone(profile, _timezone), do: {:ok, profile}
 
   defp locked_profile(workspace_id, user_id) do
     case Repo.one(
@@ -1095,13 +1120,6 @@ defmodule Comma.Recommendations do
 
   defp normalize_timezone(_value), do: "Etc/UTC"
 
-  defp normalize_locale(value) when is_binary(value) do
-    trimmed = String.trim(value)
-    if trimmed in @locales, do: trimmed, else: nil
-  end
-
-  defp normalize_locale(_value), do: nil
-
   defp strict_timezone(value) when is_binary(value) do
     timezone = String.trim(value)
 
@@ -1287,7 +1305,31 @@ defmodule Comma.Recommendations do
       runtime.member_subjects_valid?(profile, subjects)
   end
 
+  # A source whose latest read failed for a reason only the member can fix, such
+  # as a missing scope or a revoked grant. A later successful read clears it.
+  defp reconnect_source_ids(%RecommendationProfile{id: id}) when is_binary(id) do
+    from(state in Comma.Data.MemberSourceState,
+      where: state.profile_id == ^id and fragment("?->>'class' = 'reconnect'", state.failure),
+      select: state.source_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp reconnect_source_ids(_profile), do: MapSet.new()
+
+  defp public_source(source, reconnect) do
+    source
+    |> Map.take(~w(appId appName connectionId enabled iconUrl kind label))
+    |> Map.put(
+      "needsReconnect",
+      source["enabled"] == true and MapSet.member?(reconnect, source["connectionId"])
+    )
+  end
+
   defp public_envelope(profile) do
+    reconnect = reconnect_source_ids(profile)
+
     identity_valid? =
       is_nil(profile.snapshot) or
         member_subjects_valid?(
@@ -1350,11 +1392,7 @@ defmodule Comma.Recommendations do
             else: nil
           ),
         "sourceRevision" => profile.source_revision,
-        "sources" =>
-          Enum.map(
-            profile.sources,
-            &Map.take(&1, ~w(appId appName connectionId enabled iconUrl kind label))
-          )
+        "sources" => Enum.map(profile.sources, &public_source(&1, reconnect))
       },
       "snapshot" => snapshot,
       "state" => state,

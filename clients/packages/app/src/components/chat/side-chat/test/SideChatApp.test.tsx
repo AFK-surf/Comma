@@ -795,6 +795,64 @@ describe("SideChatApp", () => {
     );
   });
 
+  it("names the Router by the workspace's stored name, flush beside Chinese copy", async () => {
+    const routerModel = {
+      agent_id: "agent_router",
+      model: "model-a",
+      name: "小逗",
+      provider: "comma",
+      role: "router",
+      source: "platform_default",
+      template_id: "tpl_default",
+      template_name: "Default",
+    };
+    const browserFetch = globalThis.fetch;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith("/v1/comma/workspaces/wsp_1/agent-models")
+        ? Promise.resolve(
+            Response.json({
+              agents: {
+                router: routerModel,
+                worker: { ...routerModel, name: "Worker", role: "worker" },
+              },
+              available_models: [],
+              platform_defaults: { router: null, worker: null },
+              worker_default_template_id: null,
+              workers: { items: [], next_cursor: null },
+              workspace_id: "wsp_1",
+            })
+          )
+        : browserFetch(input, init)
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const session = readyChatState.sessions[0]!;
+    installSideChatBridge({
+      chatState: {
+        ...readyChatState,
+        sessions: [
+          {
+            ...session,
+            state: {
+              ...session.state,
+              participantStatuses: [
+                activeParticipant("router", "router", "Default workspace Router"),
+                activeParticipant("worker_1", "worker", "Designer"),
+              ],
+            },
+          },
+        ],
+      },
+      sessionState: signedInSessionSnapshot,
+    });
+
+    renderSideChatApp("zh-CN");
+
+    expect(await screen.findByText("小逗和 Designer 正在思考")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/agent-models"))
+    ).toHaveLength(1);
+  });
+
   it("closes with Escape without clearing chat and accepts an owner projection reset", async () => {
     const chatState = createControllableStateBridge(readyChatState);
     const bridge = installSideChatBridge({
@@ -1150,6 +1208,24 @@ const openPresentation: SideChatPresentation = {
   progress: 1,
   revision: 2,
 };
+
+// Participants keep the Agent name from when they joined.
+function activeParticipant(
+  participantId: string,
+  actorRole: "router" | "worker",
+  name: string
+) {
+  return {
+    actorId: `actor_${participantId}`,
+    actorRole,
+    conversationId: "cnv_assistant",
+    name,
+    participantId,
+    state: "active" as const,
+    status: "is thinking...",
+    updatedAt: 1,
+  };
+}
 
 const readyChatState: ChatRuntimeSnapshot = {
   protocolVersion: 3,

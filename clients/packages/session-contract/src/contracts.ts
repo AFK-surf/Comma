@@ -35,9 +35,17 @@ export const sessionCleanupSchema = z.discriminatedUnion("revocation", [
   }),
 ]);
 
+/**
+ * A guest principal is a throwaway server User created without sign-in. Hosts
+ * never show its placeholder email. Older snapshots omit the kind; they are
+ * registered accounts.
+ */
+export const sessionPrincipalKindSchema = z.enum(["guest", "registered"]);
+
 export const sessionPrincipalSchema = z.strictObject({
   displayName: z.string().min(1).max(512).optional(),
   email: z.string().min(1).max(320),
+  kind: sessionPrincipalKindSchema.optional(),
   userId: boundedIdSchema,
 });
 
@@ -144,7 +152,13 @@ export const signedOutSessionSnapshotSchema = z.strictObject({
   ...snapshotHeaderShape,
   phase: z.literal("signed_out"),
   principal: z.null(),
-  reason: z.enum(["no_session", "user_signed_out", "unauthorized", "expired"]),
+  reason: z.enum([
+    "no_session",
+    "user_signed_out",
+    "unauthorized",
+    "expired",
+    "guest_handoff",
+  ]),
   session: z.null(),
 });
 
@@ -269,6 +283,8 @@ export const sessionOperationNameSchema = z.enum([
   "cancel_auth_attempt",
   "reconcile",
   "sign_out",
+  "start_guest_session",
+  "begin_guest_sign_up",
 ]);
 
 export const sessionOperationErrorCodeSchema = z.enum([
@@ -318,6 +334,19 @@ const waitForHostChange = {
 } as const satisfies OperationErrorRule;
 
 export const sessionOperationErrorPolicy = {
+  begin_guest_sign_up: {
+    cancelled: noRetry,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    credential_store_unreadable: waitForHostChange,
+    network_unavailable: retryOperation,
+    protocol_mismatch: waitForHostChange,
+    provider_unavailable: retryOperation,
+    rate_limited: retryOperation,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
   cancel_auth_attempt: {
     cancelled: noRetry,
     conflict: noRetry,
@@ -370,6 +399,18 @@ export const sessionOperationErrorPolicy = {
     credential_store_unreadable: waitForHostChange,
     network_unavailable: retryOperation,
     protocol_mismatch: waitForHostChange,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
+  start_guest_session: {
+    cancelled: noRetry,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    network_unavailable: retryOperation,
+    protocol_mismatch: waitForHostChange,
+    provider_unavailable: retryOperation,
+    rate_limited: retryOperation,
     unsupported: noRetry,
     unknown: noRetry,
   },
@@ -538,6 +579,7 @@ export type SessionAuthorityKind = z.output<typeof sessionAuthorityKindSchema>;
 export type SessionAuthority = z.output<typeof sessionAuthoritySchema>;
 export type SessionCleanup = z.output<typeof sessionCleanupSchema>;
 export type SessionPrincipal = z.output<typeof sessionPrincipalSchema>;
+export type SessionPrincipalKind = z.output<typeof sessionPrincipalKindSchema>;
 export type SessionDescriptor = z.output<typeof sessionDescriptorSchema>;
 export type SessionProblemCode = z.output<typeof sessionProblemCodeSchema>;
 export type SessionProblemOperation = z.output<typeof sessionProblemOperationSchema>;
@@ -666,6 +708,13 @@ export function createSessionOperationErrorOrUnknown<
     retryable: rule.retryable,
     ...(retryAfterMs !== undefined && rule.retryAfterAllowed ? { retryAfterMs } : {}),
   });
+}
+
+/** A principal without a kind predates guest mode and is a registered account. */
+export function sessionPrincipalKind(
+  principal: Pick<SessionPrincipal, "kind">
+): SessionPrincipalKind {
+  return principal.kind ?? "registered";
 }
 
 export function sessionRecoveryRef(

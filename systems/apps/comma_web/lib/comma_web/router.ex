@@ -277,6 +277,46 @@ defmodule CommaWeb.Router do
     end
   end
 
+  post "/v1/comma/auth/apple/attempt" do
+    case Comma.AppleAuth.start_attempt(auth_request_attrs(conn)) do
+      {:ok, attempt} -> send_json(conn, 200, attempt)
+      error -> apple_auth_error(conn, error)
+    end
+  end
+
+  post "/v1/comma/auth/apple" do
+    case Comma.AppleAuth.complete(auth_request_attrs(conn)) do
+      {:ok, result} -> send_auth_result(conn, 200, result)
+      error -> apple_auth_error(conn, error)
+    end
+  end
+
+  post "/v1/comma/auth/apple/link/verify" do
+    case Comma.AppleAuth.verify_link(conn.body_params || %{}) do
+      {:ok, session} -> send_auth_result(conn, 200, session)
+      error -> apple_auth_error(conn, error)
+    end
+  end
+
+  post "/v1/comma/auth/watch/pairing" do
+    with_session_management(conn, fn user, session ->
+      case Comma.WatchPairing.create(user, session) do
+        {:ok, grant} -> send_json(conn, 201, grant)
+        {:error, :rate_limited, retry_after} -> send_rate_limited(conn, retry_after)
+        {:error, :forbidden} -> send_error(conn, 403, :forbidden)
+        {:error, _} -> send_error(conn, 503, :auth_unavailable)
+      end
+    end)
+  end
+
+  post "/v1/comma/auth/watch/exchange" do
+    case Comma.WatchPairing.exchange(conn.body_params || %{}) do
+      {:ok, session} -> send_auth_result(conn, 200, session)
+      {:error, :invalid_watch_pairing} -> send_error(conn, 401, :invalid_watch_pairing)
+      {:error, _} -> send_error(conn, 503, :auth_unavailable)
+    end
+  end
+
   post "/v1/comma/auth/email/login" do
     case Comma.AuthChallenges.request_email_login(auth_request_attrs(conn)) do
       {:ok, challenge} ->
@@ -305,6 +345,106 @@ defmodule CommaWeb.Router do
       {:error, :disabled} -> send_error(conn, 403, :disabled)
       {:error, _internal_reason} -> send_error(conn, 503, :auth_unavailable)
     end
+  end
+
+  get "/v1/comma/auth/guest" do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> send_json(200, Comma.GuestMode.public_status())
+  end
+
+  # Guest mode is a web-only product surface: native and bearer clients still
+  # require sign-in.
+  post "/v1/comma/auth/guest" do
+    case guest_web_only(conn, &Comma.GuestMode.create_guest(&1.body_params || %{})) do
+      {:ok, session} ->
+        send_auth_result(conn, 200, session)
+
+      {:error, :guest_web_only} ->
+        send_error(conn, 403, :guest_web_only)
+
+      {:error, :guest_mode_disabled} ->
+        send_error(conn, 404, :guest_mode_disabled)
+
+      {:error, :guest_pow_invalid} ->
+        send_error(conn, 400, :guest_pow_invalid)
+
+      {:error, :guest_daily_limit} ->
+        send_rate_limited(conn, seconds_until_utc_midnight(), :guest_rate_limited)
+
+      {:error, _reason} ->
+        send_error(conn, 503, :guest_mode_unavailable)
+    end
+  end
+
+  post "/v1/comma/auth/guest/handoff" do
+    with_user(conn, fn user, _session ->
+      case guest_web_only(conn, fn _conn -> Comma.GuestMode.handoff(user) end) do
+        {:ok, claim} ->
+          conn
+          |> put_resp_header("cache-control", "no-store")
+          |> CommaWeb.SessionCookie.clear_user()
+          |> CommaWeb.SessionCookie.put_guest_claim(claim)
+          |> send_json(200, Map.take(claim, ["expires_at"]))
+
+        {:error, :guest_web_only} ->
+          send_error(conn, 403, :guest_web_only)
+
+        {:error, :guest_only} ->
+          send_error(conn, 403, :guest_only)
+
+        {:error, :guest_already_imported} ->
+          send_error(conn, 409, :guest_already_imported)
+
+        {:error, _reason} ->
+          send_error(conn, 503, :guest_mode_unavailable)
+      end
+    end)
+  end
+
+  post "/v1/comma/guest-imports" do
+    with_user(conn, fn user, session ->
+      # Only the web holds a guest claim, in its HttpOnly Cookie. It is
+      # cleared after a redemption or a definitive rejection, and kept for a
+      # retry after a transient failure.
+      claim =
+        if CommaWeb.ClientSurface.web_cookie?(conn),
+          do: CommaWeb.SessionCookie.fetch_guest_claim(conn)
+
+      cond do
+        session["restricted"] == true ->
+          send_error(conn, 403, :forbidden)
+
+        not is_binary(claim) ->
+          send_error(conn, 404, :guest_claim_invalid)
+
+        true ->
+          case Comma.GuestMode.redeem(user, claim) do
+            {:ok, import} ->
+              conn |> CommaWeb.SessionCookie.clear_guest_claim() |> send_json(202, import)
+
+            {:error, :guest_claim_invalid} ->
+              conn
+              |> CommaWeb.SessionCookie.clear_guest_claim()
+              |> send_error(404, :guest_claim_invalid)
+
+            {:error, :guest_forbidden} ->
+              send_error(conn, 403, :guest_forbidden)
+
+            {:error, _reason} ->
+              send_error(conn, 503, :guest_mode_unavailable)
+          end
+      end
+    end)
+  end
+
+  get "/v1/comma/guest-imports/:import_id" do
+    with_user(conn, fn user, _session ->
+      case Comma.GuestMode.import_status(user, import_id) do
+        {:ok, import} -> send_json(conn, 200, import)
+        {:error, :not_found} -> send_error(conn, 404, :not_found)
+      end
+    end)
   end
 
   post "/v1/comma/auth/google/attempt" do
@@ -442,8 +582,19 @@ defmodule CommaWeb.Router do
       send_json(conn, 200, %{
         "expires_at" => session["expires_at"],
         "session_id" => session["id"],
-        "user" => Map.take(user, ["id", "email", "name", "status"])
+        "user" => Map.take(user, ["id", "email", "name", "status", "kind"])
       })
+    end)
+  end
+
+  # The desktop App reports that its user is at the computer. Proactive
+  # reminders then stay in the App instead of also reaching Telegram/WeChat.
+  post "/v1/comma/auth/session/activity" do
+    with_user(conn, fn _user, session ->
+      case Comma.Accounts.touch_session_active(session) do
+        :ok -> send_json(conn, 200, %{"ok" => true})
+        {:error, reason} -> send_error(conn, 403, reason)
+      end
     end)
   end
 
@@ -458,7 +609,7 @@ defmodule CommaWeb.Router do
 
   patch "/v1/comma/me/profile" do
     with_profile_management(conn, fn user, _session ->
-      case Comma.ProfileAvatar.update_name(user["id"], conn.body_params || %{}) do
+      case Comma.ProfileAvatar.update(user["id"], conn.body_params || %{}) do
         {:ok, profile} -> send_json(conn, 200, profile)
         {:error, reason} -> send_profile_error(conn, reason)
       end
@@ -1111,6 +1262,39 @@ defmodule CommaWeb.Router do
     end
   end
 
+  get "/v1/comma/admin/guest-mode" do
+    with_admin_query(conn, fn ->
+      case Comma.GuestMode.get_policy() do
+        {:ok, policy} -> send_json(conn, 200, policy)
+        {:error, reason} -> send_error(conn, 503, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/admin/guest-mode" do
+    conn
+    |> run_admin_command(
+      "update_guest_policy",
+      "guest_policy",
+      "comma",
+      "update-guest-policy:comma",
+      fn _actor, attrs -> Comma.GuestMode.update_policy(attrs) end
+    )
+    |> send_guest_policy_result(conn)
+  end
+
+  post "/v1/comma/admin/guest-mode/tenant" do
+    conn
+    |> run_admin_command(
+      "create_guest_tenant",
+      "guest_policy",
+      "comma",
+      "create-guest-tenant:comma",
+      fn _actor, attrs -> Comma.GuestMode.create_tenant(attrs) end
+    )
+    |> send_guest_policy_result(conn)
+  end
+
   get "/v1/comma/admin/billing/free-router-models" do
     with_admin_query(conn, fn ->
       case Comma.Billing.RouterModels.get() do
@@ -1342,6 +1526,26 @@ defmodule CommaWeb.Router do
     end
   end
 
+  post "/v1/comma/notifications/devices" do
+    CommaWeb.NativePushEndpoints.register(conn, "device")
+  end
+
+  delete "/v1/comma/notifications/devices" do
+    CommaWeb.NativePushEndpoints.unregister_device(conn)
+  end
+
+  post "/v1/comma/notifications/push-to-start" do
+    CommaWeb.NativePushEndpoints.register(conn, "push_to_start")
+  end
+
+  post "/v1/comma/notifications/live-activities" do
+    CommaWeb.NativePushEndpoints.register(conn, "live_activity")
+  end
+
+  delete "/v1/comma/notifications/registrations/:id" do
+    CommaWeb.NativePushEndpoints.unregister(conn, id)
+  end
+
   get "/v1/comma/workspaces" do
     with_user(conn, fn user, session ->
       case Comma.Workspaces.list_for_user(user["id"], session) do
@@ -1351,6 +1555,18 @@ defmodule CommaWeb.Router do
         {:error, reason} ->
           comma_error(conn, reason)
       end
+    end)
+  end
+
+  # Platform data: every model, and the request id each source uses for it.
+  get "/v1/comma/model-catalog" do
+    with_user(conn, fn _user, _session ->
+      conn
+      |> put_resp_header("cache-control", "private, max-age=300")
+      |> send_json(200, %{
+        "sources" => SalixAgent.Models.sources(),
+        "models" => SalixAgent.Models.list()
+      })
     end)
   end
 
@@ -1372,7 +1588,10 @@ defmodule CommaWeb.Router do
 
   get "/v1/comma/workspaces/:workspace_id/subscription-accounts" do
     with_subscription_accounts(conn, workspace_id, fn tenant ->
-      SalixAgent.AccountPool.list(tenant, conn.params["after"] || "")
+      # Apps that know Profiles ask for them; older apps get the accounts
+      # they can parse.
+      view = if conn.params["view"] == "profiles", do: :all, else: :legacy
+      SalixAgent.AccountPool.list(tenant, conn.params["after"] || "", view)
     end)
   end
 
@@ -1539,6 +1758,40 @@ defmodule CommaWeb.Router do
         conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
       else
         {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/agents/:agent_id/model" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, result} <-
+             CommaWeb.SalixClient.update_user_workspace_agent_selection(
+               workspace,
+               agent_id,
+               conn.body_params["selection"]
+             ) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  patch "/v1/comma/workspaces/:workspace_id/agents/:agent_id" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, result} <-
+             CommaWeb.SalixClient.rename_workspace_agent(
+               workspace,
+               agent_id,
+               conn.body_params["name"]
+             ) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+      else
         {:error, reason} -> comma_error(conn, reason)
       end
     end)
@@ -1729,6 +1982,15 @@ defmodule CommaWeb.Router do
   get "/v1/comma/workspaces/:workspace_id/devices/:device_id" do
     with_user(conn, fn user, session ->
       case Comma.Devices.get(user, session, workspace_id, device_id) do
+        {:ok, device} -> send_json(conn, 200, device)
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/devices/:device_id/probe" do
+    with_user(conn, fn user, session ->
+      case Comma.Devices.probe(user, session, workspace_id, device_id) do
         {:ok, device} -> send_json(conn, 200, device)
         {:error, reason} -> comma_error(conn, reason)
       end
@@ -2104,11 +2366,128 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  post "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/local-mappings" do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+
+    with_user(conn, fn user, session ->
+      case Comma.Compute.local_mappings(user, session, workspace_id, conn.body_params["targets"]) do
+        {:ok, mappings} -> send_json(conn, 200, %{"mappings" => mappings})
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/local-workloads" do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+
+    with_user(conn, fn user, session ->
+      case Comma.Compute.local_workloads(
+             user,
+             session,
+             workspace_id,
+             conn.body_params["target"],
+             conn.body_params["after_id"] || ""
+           ) do
+        {:ok, page} -> send_json(conn, 200, page)
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/recovery/candidates" do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+
+    with_user(conn, fn user, session ->
+      case Comma.Compute.agent_vmm_recovery_candidates(
+             user,
+             session,
+             workspace_id,
+             conn.body_params["registration_ids"]
+           ) do
+        {:ok, candidates} -> send_json(conn, 200, %{"candidates" => candidates})
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/install-operations/:operation_id/recovery/:action" do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+
+    with_user(conn, fn user, session ->
+      result =
+        case action do
+          "challenge" ->
+            Comma.Compute.agent_vmm_recovery_challenge(user, session, workspace_id, operation_id)
+
+          "preview" ->
+            Comma.Compute.recover_agent_vmm_install(
+              user,
+              session,
+              workspace_id,
+              operation_id,
+              conn.body_params["proof"],
+              false
+            )
+
+          "consume" ->
+            Comma.Compute.recover_agent_vmm_install(
+              user,
+              session,
+              workspace_id,
+              operation_id,
+              conn.body_params["proof"],
+              true
+            )
+
+          "abandon" ->
+            if conn.body_params["confirmed"] == true,
+              do:
+                Comma.Compute.abandon_agent_vmm_install(user, session, workspace_id, operation_id),
+              else: {:error, :invalid_recovery_confirmation}
+
+          _ ->
+            {:error, :not_found}
+        end
+
+      case result do
+        {:ok, value} ->
+          send_json(conn, 200, %{
+            if(action == "challenge", do: "recovery", else: "operation") => value
+          })
+
+        {:error, reason} ->
+          compute_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/install-operations/requests/:request_id" do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+
+    with_user(conn, fn user, session ->
+      case Comma.Compute.get_unexchanged_agent_vmm_request(
+             user,
+             session,
+             workspace_id,
+             request_id
+           ) do
+        {:ok, operation} ->
+          send_json(conn, 200, %{
+            "operation" =>
+              Map.take(operation, [:id, :registration_id, :authorization_status, :scope_key])
+          })
+
+        {:error, reason} ->
+          compute_error(conn, reason)
+      end
+    end)
+  end
+
   get "/v1/comma/workspaces/:workspace_id/compute-nodes/agent-vmm/install-operations/:operation_id" do
     conn = put_resp_header(conn, "cache-control", "no-store")
 
     with_user(conn, fn user, session ->
-      case Comma.Compute.get_agent_vmm_install(user, session, workspace_id, operation_id) do
+      case Comma.Compute.observe_agent_vmm_install(user, session, workspace_id, operation_id) do
         {:ok, operation} -> send_json(conn, 200, %{"operation" => operation})
         {:error, reason} -> compute_error(conn, reason)
       end
@@ -2265,7 +2644,12 @@ defmodule CommaWeb.Router do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
            {:ok, conversation} <-
-             Comma.AssistantChats.ensure_chat(user, session, group_id) do
+             Comma.AssistantChats.ensure_chat(
+               user,
+               session,
+               group_id,
+               conversation_transcript_options(conn)
+             ) do
         # Home entry starts the owner's source collection chain off the request
         # path. A later entry restarts a chain that stopped.
         case CommaWeb.MemberSourceIngest.enqueue(user, session, group_id) do
@@ -2453,13 +2837,13 @@ defmodule CommaWeb.Router do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           :ok <- adopt_client_locale(user, conn.query_params["locale"]),
            {:ok, recommendations} <-
              CommaWeb.RecommendationRuntime.ensure(
                user,
                session,
                workspace,
                conn.query_params["timezone"],
-               conn.query_params["locale"],
                exposure: true
              ) do
         send_json(conn, 200, recommendations)
@@ -3170,7 +3554,8 @@ defmodule CommaWeb.Router do
              session,
              group_id,
              conversation_id,
-             conn.body_params || %{}
+             conn.body_params || %{},
+             conversation_transcript_options(conn)
            ) do
         {:ok, conversation} -> send_json(conn, 202, conversation)
         {:error, reason} -> conversation_error(conn, reason)
@@ -3185,20 +3570,10 @@ defmodule CommaWeb.Router do
              session,
              group_id,
              conversation_id,
-             conn.body_params || %{}
+             conn.body_params || %{},
+             conversation_transcript_options(conn)
            ) do
         {:ok, conversation} -> send_json(conn, 200, conversation)
-        {:error, reason} -> conversation_error(conn, reason)
-      end
-    end)
-  end
-
-  post "/v1/comma/groups/:group_id/conversations/:conversation_id/suggestions" do
-    with_user(conn, fn user, session ->
-      case Comma.ChatSuggestions.generate(user, session, group_id, conversation_id,
-             locale: conn.query_params["locale"]
-           ) do
-        {:ok, suggestions} -> send_json(conn, 200, %{"data" => suggestions})
         {:error, reason} -> conversation_error(conn, reason)
       end
     end)
@@ -3265,7 +3640,13 @@ defmodule CommaWeb.Router do
       wait_ms = comma_sse_wait_ms(wait_param)
       stream_window_ms = comma_sse_stream_window_ms(wait_param, wait_ms)
 
-      case Comma.Conversations.events(user, session, group_id, conversation_id) do
+      case Comma.Conversations.events(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conversation_transcript_options(conn)
+           ) do
         {:ok, snapshot, events, stream_context} ->
           send_comma_sse(
             conn,
@@ -3856,6 +4237,23 @@ defmodule CommaWeb.Router do
     end
   end
 
+  defp compute_error(conn, reason)
+       when reason in [
+              :authorization_changed,
+              :invalid_recovery_challenge,
+              :invalid_recovery_proof,
+              :recovery_target_unavailable,
+              :operation_not_abandonable
+            ],
+       do: send_error(conn, 409, reason)
+
+  defp compute_error(conn, reason) when reason in [:original_subject_unknown],
+    do: send_error(conn, 403, reason)
+
+  defp compute_error(conn, reason)
+       when reason in [:invalid_recovery_candidates, :invalid_recovery_confirmation],
+       do: send_error(conn, 400, reason)
+
   defp compute_error(conn, :compute_node_not_ready),
     do: send_error(conn, 409, :compute_node_not_ready)
 
@@ -3955,6 +4353,10 @@ defmodule CommaWeb.Router do
 
   defp comma_error(conn, {:conflict, _message}), do: send_error(conn, 409, :conflict)
   defp comma_error(conn, :exists), do: send_error(conn, 409, :exists)
+
+  defp comma_error(conn, :runtime_model_pinned),
+    do: send_error(conn, 409, :runtime_model_pinned)
+
   defp comma_error(conn, :unsupported_for_kind), do: send_error(conn, 409, :unsupported_for_kind)
 
   defp comma_error(conn, {:unsupported_for_kind, kind, operation}) do
@@ -5869,6 +6271,52 @@ defmodule CommaWeb.Router do
     """
   end
 
+  defp apple_auth_error(conn, {:error, :apple_not_configured}) do
+    send_json(conn, 503, %{
+      error: "apple_not_configured",
+      message:
+        "Configure COMMA_APPLE_CLIENT_ID with the Sign in with Apple enabled iOS bundle identifier."
+    })
+  end
+
+  defp apple_auth_error(conn, {:error, :rate_limited, retry_after}),
+    do: send_rate_limited(conn, retry_after)
+
+  defp apple_auth_error(conn, {:error, :provider_unavailable, retry_after}),
+    do: send_unavailable(conn, :email_delivery_unavailable, retry_after)
+
+  defp apple_auth_error(conn, {:error, reason})
+       when reason in [
+              :invalid_apple_attempt,
+              :invalid_apple_credential,
+              :invalid_verification_code
+            ],
+       do: send_error(conn, 401, reason)
+
+  defp apple_auth_error(conn, {:error, :disabled}), do: send_error(conn, 403, :disabled)
+
+  defp apple_auth_error(conn, {:error, reason})
+       when reason in [:identity_conflict, :provider_already_linked, :apple_link_changed],
+       do: send_error(conn, 409, reason)
+
+  defp apple_auth_error(conn, {:error, :apple_email_required}) do
+    send_json(conn, 400, %{
+      error: "apple_email_required",
+      message:
+        "Use email sign in for this Apple account; a verified email is required for its first Comma login."
+    })
+  end
+
+  defp apple_auth_error(conn, {:error, :apple_provider_unavailable}) do
+    send_json(conn, 503, %{
+      error: "apple_provider_unavailable",
+      message:
+        "Apple identity verification is unavailable. Start a new Sign in with Apple attempt and retry."
+    })
+  end
+
+  defp apple_auth_error(conn, _error), do: send_error(conn, 503, :auth_unavailable)
+
   defp send_auth_result(conn, status, session, cookie_kind \\ :user)
 
   defp send_auth_result(conn, status, %{"token" => _token} = session, cookie_kind) do
@@ -5966,10 +6414,31 @@ defmodule CommaWeb.Router do
     end
   end
 
-  defp send_rate_limited(conn, retry_after) do
+  defp send_rate_limited(conn, retry_after, error \\ :rate_limited) do
     conn
     |> put_resp_header("retry-after", Integer.to_string(max(retry_after, 1)))
-    |> send_error(429, :rate_limited)
+    |> send_error(429, error)
+  end
+
+  defp guest_web_only(conn, fun) do
+    if CommaWeb.ClientSurface.web_cookie?(conn),
+      do: fun.(conn),
+      else: {:error, :guest_web_only}
+  end
+
+  defp send_guest_policy_result(result, conn) do
+    case result do
+      {:ok, policy} -> send_json(conn, 200, policy)
+      {:error, :guest_policy_conflict} -> send_error(conn, 409, :guest_policy_conflict)
+      {:error, :guest_tenant_required} -> send_error(conn, 422, :guest_tenant_required)
+      {:error, :invalid_guest_policy} -> send_error(conn, 400, :invalid_guest_policy)
+      {:error, reason} -> admin_command_error(conn, reason)
+    end
+  end
+
+  defp seconds_until_utc_midnight do
+    tomorrow = Date.utc_today() |> Date.add(1) |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+    DateTime.diff(tomorrow, DateTime.utc_now())
   end
 
   defp send_unavailable(conn, reason, retry_after) do
@@ -5989,6 +6458,19 @@ defmodule CommaWeb.Router do
     })
   end
 
+  # Clients released before the account language report their UI language on
+  # Routine reads. It fills an account that has none, once; it never replaces
+  # a language the account already has.
+  defp adopt_client_locale(user, locale) do
+    if Comma.Accounts.adopt_locale(user["id"], locale) == :adopted do
+      %{"user_id" => user["id"]}
+      |> Comma.Workers.RecommendationLanguageRefresh.new()
+      |> then(&Oban.insert(Comma.Oban, &1))
+    end
+
+    :ok
+  end
+
   defp send_profile_error(conn, reason)
 
   defp send_profile_error(conn, reason)
@@ -5996,6 +6478,7 @@ defmodule CommaWeb.Router do
               :avatar_required,
               :avatar_too_large,
               :invalid_avatar,
+              :invalid_locale,
               :invalid_profile,
               :name_required,
               :name_too_long,
@@ -6041,6 +6524,13 @@ defmodule CommaWeb.Router do
     case Integer.parse(to_string(value)) do
       {int, _} -> int
       :error -> default
+    end
+  end
+
+  defp conversation_transcript_options(conn) do
+    case conn.query_params["message_limit"] do
+      nil -> []
+      value -> [message_limit: value |> parse_int(1_000) |> max(1) |> min(1_000)]
     end
   end
 end

@@ -132,19 +132,4 @@ defmodule BridgeForTeamsWeb.DashboardCase do
       salix_group_id: SalixStore.Ids.new_group_id(org.salix_tenant_id)
     })
   end
-
-  @doc """
-  Asserts a rendered Phoenix.LiveView.JS command starts the local `phx-remove`
-  transition before pushing the LiveView state-sync event.
-  """
-  def assert_local_close_before_push(html, selector, event) do
-    local_close =
-      ~s([&quot;exec&quot;,{&quot;to&quot;:&quot;#{selector}&quot;,&quot;attr&quot;:&quot;phx-remove&quot;}])
-
-    state_sync = ~s([&quot;push&quot;,{&quot;event&quot;:&quot;#{event}&quot;}])
-
-    assert html =~ local_close
-    assert html =~ state_sync
-    assert html =~ local_close <> "," <> state_sync
-  end
 end

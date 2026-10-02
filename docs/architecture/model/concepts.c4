@@ -135,17 +135,12 @@ model {
 
   comma_chat_product .maps_to product_conversation '当前 Chat 对应 kind = user_chat 的 Conversation；mutation 仍走既有 Chat path'
 
-  bft_chat_product = concept 'BFT New Home Chat' {
-    description '每个 User × Agent Swarm 的 Chat'
-  }
-
   product_account_scope .maps_to comma_workspace_product 'Comma 产品命名'
   product_account_scope .maps_to bft_organization_product 'BFT 产品命名'
   product_agent_scope .maps_to comma_workspace_product 'Comma 中两层合一'
   product_agent_scope .maps_to bft_swarm_product 'BFT 产品命名'
   bft_organization_product .owns bft_swarm_product '0:N；Organization 可以尚未创建 Agent Swarm'
   product_chat .maps_to comma_chat_product 'Comma 产品命名'
-  product_chat .maps_to bft_chat_product 'BFT 产品命名'
 
   // 第三层：协作事实与执行上下文。Single Session 指这里的 Router runtime session。
   product_participant_target = concept 'Participant（接收目标）' {
@@ -213,10 +208,6 @@ model {
     description '控制面显式重新指定 Group Router 前，产品 Chat binding 已经指向的 Conversation'
   }
 
-  reassignment_replacement_conversation = concept 'BFT 替代 Conversation' {
-    description 'BFT 检测既有 Conversation 的 required Router Participant 不匹配后创建的替代 Conversation'
-  }
-
   product_conversation .owns product_participant_target '0..N 个接收目标'
   router_participant_target .maps_to product_participant_target '一种 Agent target'
   assigned_worker_participant_target .maps_to product_participant_target '一种 Agent target'
@@ -279,8 +270,8 @@ model {
   }
 
   impl_chat_binding = code_module '当前 Chat Binding' {
-    description 'Comma AssistantChats 授权当前 Group 后直接解析 Group 固定 router_conversation_id；BFT UserAssistantChat 继续使用 User×Project 唯一键'
-    technology 'Salix Group fixed Conversation + BFT PostgreSQL binding'
+    description 'Comma AssistantChats 授权当前 Group 后直接解析 Group 固定 router_conversation_id'
+    technology 'Salix Group fixed Conversation'
     link ../../../systems/apps/comma_core/lib/comma/assistant_chats.ex 'Comma fixed Chat entry'
   }
 
@@ -415,7 +406,6 @@ model {
   bft_organization_product .maps_to impl_bft_scope 'Organization record'
   bft_swarm_product .maps_to impl_bft_scope 'Project record'
   comma_chat_product .maps_to impl_chat_binding '当前 Group 固定 Chat 入口'
-  bft_chat_product .maps_to impl_chat_binding '当前 Binding'
   product_conversation .maps_to impl_conversation '权威消息事实 owner'
   product_conversation .maps_to impl_conversation_read_model '公开权威 snapshot 读取；无 lazy transcript projection'
   product_task .maps_to impl_task_create '显式 Task 创建入口'

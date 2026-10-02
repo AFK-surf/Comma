@@ -107,6 +107,7 @@ defmodule CommaWeb.Auth do
         |> assign(:auth_token, token)
         |> assign(:comma_user, user)
         |> assign(:comma_session, session)
+        |> CommaWeb.GuestRoutes.enforce(user)
 
       {:error, _reason} ->
         deny(conn)
@@ -208,7 +209,16 @@ defmodule CommaWeb.Auth do
       |> assign(:auth_token, token)
       |> assign(:comma_user, user)
       |> assign(:comma_session, session)
+      |> CommaWeb.GuestRoutes.enforce(user)
 
+    if conn.halted do
+      conn
+    else
+      assign_cookie_admin(conn, user, session)
+    end
+  end
+
+  defp assign_cookie_admin(conn, user, session) do
     if CommaWeb.ClientSurface.admin_cookie?(conn) and Comma.Admin.admin_user?(user) and
          session["restricted"] != true do
       assign(conn, :admin_actor, :comma_user)

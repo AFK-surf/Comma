@@ -13,7 +13,7 @@ metadata:
   name: comma
 spec:
   serviceName: comma
-  replicas: {{ if .Values.maintenance.enabled }}0{{ else }}1{{ end }}
+  replicas: {{ if .Values.maintenance.enabled }}0{{ else }}{{ .Values.replicas | default 1 }}{{ end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: comma
@@ -25,6 +25,12 @@ spec:
       containers:
         - name: comma
           image: {{ .Values.image }}
+          {{- if .Values.unready }}
+          readinessProbe:
+            exec:
+              command: ["/missing-readiness-probe"]
+            periodSeconds: 1
+          {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

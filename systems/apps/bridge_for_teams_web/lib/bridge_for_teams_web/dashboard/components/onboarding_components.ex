@@ -175,19 +175,9 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingComponents do
         <h4 class="mt-3 text-[15px] font-semibold">{gettext("Setup complete!")}</h4>
         <p class="mt-1 text-xs leading-[18px] text-neutral-500">{done_summary(@onboarding)}</p>
         <div class="mt-3.5 flex flex-wrap items-center justify-center gap-2">
-          <.link
-            :if={
-              @onboarding.slack_context_preview? and @onboarding.admin? and
-                not is_nil(@onboarding.first_project_agent_id)
-            }
-            id="onboarding-slack-context-cta"
-            navigate={
-              "/orgs/#{@onboarding.org.slug}/triage/context?agent=#{@onboarding.first_project_agent_id}"
-            }
-            class="inline-flex h-7 items-center justify-center rounded-md border border-neutral-300 bg-white px-3.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
-          >
-            {gettext("Let Comma learn about your team")}
-          </.link>
+          <%!-- The "Let Comma learn about your team" call to action opened the
+               Slack history import, which the React Slack triage does not have
+               yet. It returns with that page. --%>
           <button
             type="button"
             phx-click="onboarding-celebrate"
@@ -448,10 +438,10 @@ defmodule BridgeForTeamsWeb.Dashboard.OnboardingComponents do
             )}
           </p>
           <.link
-            navigate={"/orgs/#{@alert.org.slug}/settings/oauth"}
+            href={"/orgs/#{@alert.org.slug}/settings/integrations"}
             class="mt-1 inline-block text-xs font-medium text-brand-600 hover:underline"
           >
-            {gettext("Go to Settings → OAuth")} →
+            {gettext("Go to Settings → Integrations")} →
           </.link>
         </div>
         <button

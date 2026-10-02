@@ -2,6 +2,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { ChevronDownSmallIcon, isReducedMotionEnabled } from "@comma/ui";
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { animateOutgoingBubble } from "../../../motion/outgoingBubbleMotion";
+import { getMessagePlatformBubbleStyle } from "../../../MessagePlatformBadge";
 import type { OutgoingPresentation } from "../../outgoing/outgoingPresentation";
 import {
   measureUserBubble,
@@ -9,18 +10,33 @@ import {
   userBubbleOverflows,
 } from "./userBubbleMeasurement";
 
+/**
+ * What the send motion reads of an outgoing presentation. A transcript row
+ * passes its whole presentation; a surface without a composer (the
+ * first-launch greeting) passes a launch whose source frame is empty, which
+ * plays the motion's no-source path.
+ */
+export type UserBubbleOutgoingPresentation = Pick<OutgoingPresentation, "turnKey"> & {
+  launch: Pick<
+    OutgoingPresentation["launch"],
+    "id" | "motionConfig" | "playbackRate" | "sourceFrame"
+  >;
+};
+
 export function UserMessageBubble({
   content: mentionContent,
   onAnchorOutgoingTurn,
   onOutgoingAnimationComplete,
   outgoingPresentation,
+  platform,
   text,
 }: {
   /** Mention- and URL-aware content; plain text renders when absent. */
   content?: ReactNode | undefined;
   onAnchorOutgoingTurn?: ((turnKey: string) => void) | undefined;
   onOutgoingAnimationComplete?: ((launchId: number) => void) | undefined;
-  outgoingPresentation?: OutgoingPresentation | undefined;
+  outgoingPresentation?: UserBubbleOutgoingPresentation | undefined;
+  platform?: string | undefined;
   text: string;
 }) {
   const messagesApi = useCommaMessages();
@@ -160,6 +176,7 @@ export function UserMessageBubble({
             : undefined
         }
         ref={bubbleElementRef}
+        style={getMessagePlatformBubbleStyle(platform)}
       >
         <div
           className="comma-chat-user-bubble-content"

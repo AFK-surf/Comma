@@ -162,6 +162,20 @@ defmodule SalixIM.ConversationServer do
     end
   end
 
+  def append_platform_message(
+        group_id,
+        conversation_id,
+        presentation,
+        idempotency_key,
+        reply_source \\ nil
+      ),
+      do:
+        call(
+          group_id,
+          conversation_id,
+          {:append_platform_message, presentation, idempotency_key, reply_source}
+        )
+
   def ensure_group_conversation_provider_participant(group_id, conversation_id, attrs)
       when is_map(attrs),
       do:

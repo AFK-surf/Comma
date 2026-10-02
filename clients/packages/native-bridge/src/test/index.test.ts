@@ -601,6 +601,7 @@ describe("native bridge contracts", () => {
       "session.signOut",
     ]);
     expect(requiredIds).toEqual([
+      "onboarding.presentWindow",
       "subscriptionAuthorization.start",
       "tokenDanceAuthorization.start",
       "tokenDanceAuthorization.status",
@@ -686,6 +687,8 @@ describe("native bridge contracts", () => {
       "browserSidebar.openTabRequested",
       "surfaces.changed",
       "surfaces.windowFullScreen.changed",
+      "onboarding.window.changed",
+      "onboarding.handoff",
       "notch.event",
       "session.state.changed",
       "sessionHistory.state.changed",
@@ -751,6 +754,18 @@ describe("native bridge contracts", () => {
         id: "surfaces.windowFullScreen.changed",
         permission: "surfaces.state.read",
         target: { type: "all" },
+      },
+      {
+        channel: "comma:onboarding:window-changed",
+        id: "onboarding.window.changed",
+        permission: "onboarding.window.read",
+        target: { type: "all" },
+      },
+      {
+        channel: "comma:onboarding:handoff",
+        id: "onboarding.handoff",
+        permission: "onboarding.window.read",
+        target: { type: "window", windowId: "win_main" },
       },
       {
         channel: "comma:notch:event",
@@ -886,6 +901,7 @@ describe("native bridge contracts", () => {
       "connectorRuntime.state",
       "surfaces.state",
       "surfaces.windowFullScreen",
+      "onboarding.window",
       "session.state",
       "sessionHistory.state",
       "productInbox.state",
@@ -988,6 +1004,24 @@ describe("native bridge contracts", () => {
           channel: "comma:surfaces:window-full-screen-changed",
           id: "surfaces.windowFullScreen.changed",
           permission: "surfaces.state.read",
+          target: { type: "all" },
+        },
+      },
+      {
+        bridge: { method: "window", namespace: "onboarding" },
+        get: {
+          channel: "comma:onboarding:window",
+          id: "onboarding.window",
+          permission: "onboarding.window.read",
+          sessionAdmission: "local_only",
+          sessionAdmissionRationale:
+            "Reads whether the local onboarding window is open, without Session state or authenticated transport.",
+        },
+        id: "onboarding.window",
+        subscribe: {
+          channel: "comma:onboarding:window-changed",
+          id: "onboarding.window.changed",
+          permission: "onboarding.window.read",
           target: { type: "all" },
         },
       },

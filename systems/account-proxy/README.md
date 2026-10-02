@@ -10,12 +10,15 @@ It has no account database, tenant registry, Manager, model-registration lifecyc
 The local build requires Go and Git.
 The systems image uses a Go build stage and copies the binary into the Salix release.
 The build uses CLIProxyAPI v8.0.4 at commit `d33f63f8e3d98428440ebca5a5b6a981a61ff71e` and `patches/embedded-sdk.patch`.
-The patch exports `NewSubscriptionExecutor`, `oauth.Begin`, `oauth.Exchange`, and split-phase Codex device authorization helpers.
+The patch exports `NewSubscriptionExecutor`, `oauth.Begin`, `oauth.Exchange`, and split-phase device authorization helpers for Codex, xAI, and Kimi.
+It adds the Antigravity, xAI, Kimi, and OpenAI-compatible executors to `NewSubscriptionExecutor`, and Antigravity to the callback flow.
 The adapter uses native request conversion and disables Claude prompt cloaking.
 The pinned SDK's static model table rejects newer Codex reasoning efforts, including `ultra`.
 `SubscriptionModelRequest` uses its existing request-local user-defined-model path.
 It preserves selected model and effort values through normal SDK conversion. Codex validates support.
 Adapter tests cover this behavior for blocking and streaming requests.
+
+`bootstrap.sh` preserves an existing `.upstream` checkout. After a patch change, remove `.upstream` and run it again.
 
 For Go tests, run:
 
@@ -30,6 +33,43 @@ Without a key, Salix starts, but subscription operations fail with a configurati
 Keep the existing key when you update a deployment.
 The worker requires no service token, listener, separate image, storage volume, or encryption key.
 Remove `SALIX_SDK_BASE_URL`, `SALIX_SDK_TOKEN`, and the old adapter container from deployment configuration.
+
+## Subscription providers
+
+Salix provider IDs name subscription products. The worker maps each ID to one native CLIProxyAPI executor.
+
+| Provider | Executor | Sign-in | Inference protocol | Quota source |
+| --- | --- | --- | --- | --- |
+| `codex` | Codex | Callback or device code | Responses | `wham/usage` |
+| `claude` | Claude | Callback | Anthropic Messages | `api/oauth/usage` |
+| `gemini` | Antigravity | Callback | Chat Completions | `fetchAvailableModels`, per model |
+| `grok` | xAI (Grok Build proxy) | Device code | Responses | `billing?format=credits` |
+| `kimi-code` | Kimi | Device code | Anthropic Messages | `coding/v1/usages` |
+| `github-copilot` | OpenAI-compatible | Device code | Chat Completions | `copilot_internal/user` |
+
+`SalixAgent.AccountPool.route/1` maps a provider to its protocol and reserved base URL.
+Each base URL is unique, for example `subscription://grok/v1`. Its host names the provider; the worker receives only the path.
+`dispatch/4` maps the route back to the provider and selects only that provider's accounts.
+The worker rejects a credential whose provider does not serve the requested protocol.
+
+CLIProxyAPI has no GitHub Copilot provider. `copilot.go` ports the device login and token exchange from pi.
+The GitHub OAuth token is the stored refresh token. Preparation exchanges it for a short-lived Copilot token.
+Requests use the Copilot API host named in that token. The worker accepts only `*.githubcopilot.com` hosts.
+GitHub Enterprise domains and Copilot model-policy enablement are not supported.
+Copilot accounts use only the numeric GitHub account id (`id:github:<id>`) for reconnect matching, so a change to the email or login does not make a second account. Sign-in and imports both read the id from GitHub `/user` with the GitHub token. They fail when the profile has no id.
+
+Imported credentials keep identity and token fields only. The worker drops endpoint fields such as `base_url` and `token_endpoint`.
+A tenant-supplied URL therefore cannot choose where the worker sends a bearer token.
+Kimi keeps its device ID, which its token endpoint requires for refresh. Gemini keeps its Cloud Code project ID.
+Gemini preparation starts six minutes before expiry, because Antigravity refreshes inside a five-minute window.
+
+Quota windows follow the existing selection rules. A missing or malformed provider value remains unknown.
+Gemini windows apply only to requests for the reporting model. Copilot premium requests use the `premium` scope.
+They do not exclude an account, because included models remain available.
+Kimi, Grok, Gemini, and Copilot quota parsers follow their official clients or known response shapes.
+They have only synthetic tests. Real-account validation is required before relying on them.
+Model discovery remains Codex and Claude only.
+Grok has no native compaction. Upstream sends compaction for OAuth credentials to `api.x.ai`, not to the Grok Build proxy, and no subscription token was checked there. Salix uses its own summary compaction for Grok.
 
 ## Reconnect an account
 
@@ -95,11 +135,12 @@ Operations retain their path names, but they are local dispatch names, not HTTP 
 | `/quota/reset` | Result of one Codex reset-credit request |
 | `/oauth/begin` | Authorization URL and private PKCE context |
 | `/oauth/exchange` | Provider credentials |
-| `/oauth/device/begin` | Private device ID, user code, verification URL, and polling interval |
-| `/oauth/device/poll` | One provider check: pending status or normal Codex credentials |
-| `/v1/responses` | Native Codex JSON or SSE bytes |
+| `/oauth/device/begin` | Private device code and context, user code, verification URL, and polling interval |
+| `/oauth/device/poll` | One provider check: pending status, optional `slow_down`, or normal credentials |
+| `/v1/responses` | Native Codex or Grok JSON or SSE bytes |
 | `/v1/responses/compact` | Native Codex compaction result |
-| `/v1/messages` | Native Claude JSON or SSE bytes |
+| `/v1/messages` | Native Claude or Kimi JSON or SSE bytes |
+| `/v1/chat/completions` | Chat Completions JSON or SSE bytes from Gemini or Copilot |
 | `/v1/images/generations` | Codex image generation through the SDK image adapter |
 | `/v1/images/edits` | Codex image edits through the SDK JSON image adapter |
 
@@ -265,7 +306,7 @@ Quota snapshots are rebuilt. Old pending OAuth attempts must restart.
 Go tests exercise native executors against synthetic providers, including streaming, tool calls, system instructions, and compaction.
 Protocol tests cover frame reassembly, slow consumers, cancellation, admission limits, and parent exit.
 Elixir integration tests run the actual Go worker against synthetic providers.
-They cover both provider parsers, caller cancellation, partial-stream failure, and subprocess restart.
+They cover each provider's protocol parser, caller cancellation, partial-stream failure, and subprocess restart.
 Salix tests cover tenant access, credential encryption, versions, refresh concurrency, late refresh after deletion, quota ranking, and Dashboard flows.
 The existing financial and archive seams remain in `SalixAgent.LLM`; this change does not alter agent ownership or delivery protocols.
 No new TLA+ model is introduced for account lifecycle behavior.

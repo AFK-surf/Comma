@@ -42,7 +42,7 @@ final class PermissionAuthWindowController {
             flow.resetDroppedApps()
             flow.authorize(
                 pane: Self.translate(pane),
-                suggestedAppURLs: [permissionAuthorizationAppURL(for: pane, helperBundleURL: Bundle.main.bundleURL)]
+                suggestedAppURLs: [Bundle.main.bundleURL]
             )
         }
         viewModel.onAllGranted = { [weak self] in
@@ -173,23 +173,6 @@ final class PermissionAuthWindowController {
         case .screenRecording: .screenRecording
         }
     }
-}
-
-// TCC attributes screen capture to the outer app when the helper is nested.
-// Accessibility uses the helper's own bundle identity.
-func permissionAuthorizationAppURL(for pane: PermissionPane, helperBundleURL: URL) -> URL {
-    let helper = helperBundleURL.standardizedFileURL
-    guard pane == .screenRecording else { return helper }
-
-    var target = helper
-    var ancestor = helper.deletingLastPathComponent()
-    while ancestor.path != "/" {
-        if ancestor.pathExtension.lowercased() == "app" {
-            target = ancestor
-        }
-        ancestor.deleteLastPathComponent()
-    }
-    return target
 }
 
 private final class AuthWindowDelegate: NSObject, NSWindowDelegate {

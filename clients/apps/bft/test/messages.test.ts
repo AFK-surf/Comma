@@ -7,5 +7,7 @@ describe("messagesFor", () => {
     expect(messagesFor("en").overview.title).toBe("Overview");
     expect(messagesFor(undefined).overview.title).toBe("Overview");
     expect(messagesFor("fr").overview.title).toBe("Overview");
+    expect(messagesFor("en").health.title).toBe("Health");
+    expect(messagesFor("zh_Hans").health.title).toBe("运行状况");
   });
 });

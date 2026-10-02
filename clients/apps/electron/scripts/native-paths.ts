@@ -4,6 +4,8 @@ import { getCommaReleaseConfig } from "../src/release-config";
 
 export const notchBinaryName = "NotchHost";
 export const micCaptureBinaryName = "MicCaptureHost";
+export const sleepGuardBinaryName = "CommaSleepGuard";
+export const sleepGuardAddonName = "comma-sleep-guard.node";
 export const sideChatAppName = "CommaSideChatHost";
 export const sideChatBackdropAddonName = "comma-side-chat-backdrop.node";
 export const fileApplicationsAddonName = "comma-file-applications.node";
@@ -145,6 +147,18 @@ export function packagedComputerUseAppPath(
     "native/macos",
     `${computerUseAppName}.app`
   );
+}
+
+export function sleepGuardDistPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), sleepGuardBinaryName);
+}
+
+export function sleepGuardAddonDistPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), sleepGuardAddonName);
+}
+
+export function packagedSleepGuardPath(appBundle: string) {
+  return resolve(appBundle, "Contents/Resources/native/macos", sleepGuardBinaryName);
 }
 
 export function micCaptureHostDistPath(appDir: string) {

@@ -392,6 +392,12 @@ function sessionDeviceLabel(session: AdminSession) {
       return "Web browser";
     case "electron":
       return "Comma Desktop";
+    case "android":
+      return "Comma Android app";
+    case "ios":
+      return "Comma on iPhone";
+    case "watch":
+      return "Comma on Apple Watch";
     case "api":
       return "API client";
     case "ssh":
@@ -407,6 +413,12 @@ function clientKindLabel(clientKind: AdminSession["client_kind"]) {
       return "Web";
     case "electron":
       return "Desktop";
+    case "android":
+      return "Android";
+    case "ios":
+      return "iPhone";
+    case "watch":
+      return "Apple Watch";
     case "api":
       return "API";
     case "ssh":
@@ -422,6 +434,10 @@ function authMethodLabel(session: AdminSession) {
       return "Email OTP";
     case "google":
       return "Google";
+    case "apple":
+      return "Apple";
+    case "watch_pairing":
+      return "Paired Watch";
     case "ssh_public_key":
       return "SSH public key";
     default:

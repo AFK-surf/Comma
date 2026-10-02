@@ -38,6 +38,24 @@ describe("initializeElectronMainI18n", () => {
     expect(messages.nav_inbox()).toBe(inbox);
   });
 
+  it("follows the stored app language before the operating system", () => {
+    expect(
+      initializeElectronMainI18n({
+        appLocale: "en-US",
+        localePreference: "zh-CN",
+        preferredSystemLanguages: ["en-US"],
+      })
+    ).toBe("zh-CN");
+    // A device that has not stored one yet follows the operating system.
+    expect(
+      initializeElectronMainI18n({
+        appLocale: "zh-CN",
+        localePreference: "system",
+        preferredSystemLanguages: [],
+      })
+    ).toBe("zh-CN");
+  });
+
   it("localizes the shutdown-safety dialog in Electron Main", () => {
     expect(
       messages.electron_shutdown_blocked_title(

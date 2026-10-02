@@ -1,4 +1,4 @@
-# Local preview of the production LiveView with explicit, isolated test data.
+# Local preview of the production Dashboard with explicit, isolated test data.
 # Run with MIX_ENV=test, --no-start, and MEETING_PREVIEW_DB_PORT on local Postgres.
 unless Mix.env() == :test, do: raise("meeting preview requires MIX_ENV=test")
 

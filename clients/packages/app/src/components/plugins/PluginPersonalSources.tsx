@@ -172,6 +172,8 @@ function PersonalSourceRow({
   const messages = useCommaMessages();
   const { confirmation, pending, prepare, confirm, cancel } = personalSources;
   const needsAuthorization = source.state === "needs_authorization";
+  // The grant exists but lacks a scope the plugin needs now, or was revoked.
+  const needsReauthorization = source.state === "needs_reauthorization";
   const activeConfirmation =
     confirmation?.toolkit === source.toolkit ? confirmation : undefined;
   const candidates =
@@ -210,7 +212,9 @@ function PersonalSourceRow({
             ? messages.plugins_personal_source_ready()
             : source.state === "needs_confirmation"
               ? messages.plugins_personal_source_needs_confirmation()
-              : messages.plugins_personal_source_needs_authorization()}
+              : needsReauthorization
+                ? messages.plugins_personal_source_needs_reauthorization()
+                : messages.plugins_personal_source_needs_authorization()}
         </span>
       </span>
       <div className="flex items-center gap-xs">
@@ -238,7 +242,11 @@ function PersonalSourceRow({
               : messages.plugins_reconnect_named({ name })
           }
           className={rowActionClassName}
-          hierarchy={needsAuthorization ? "secondary-gray" : "tertiary-gray"}
+          hierarchy={
+            needsAuthorization || needsReauthorization
+              ? "secondary-gray"
+              : "tertiary-gray"
+          }
           iconLeading={
             reauthorizing ? <LoaderIcon className="animate-spin" /> : undefined
           }

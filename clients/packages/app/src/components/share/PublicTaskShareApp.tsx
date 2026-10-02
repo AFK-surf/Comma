@@ -180,7 +180,7 @@ export function PublicTaskShareApp({ client }: { client: PublicShareClient }) {
 /** The app window: the gray canvas with one rounded content surface. */
 function ShareFrame({ children }: { children: ReactNode }) {
   return (
-    <div className="comma-app-shell flex h-full min-h-0 w-full min-w-0 flex-col bg-window px-xs pb-xs text-primary sm:px-md sm:pb-md">
+    <div className="comma-app-shell flex h-full min-h-0 w-full min-w-0 flex-col bg-window px-xs pb-xs text-primary @min-[640px]/comma-window:px-md @min-[640px]/comma-window:pb-md">
       <header className="flex h-10 shrink-0 items-center gap-sm px-xs">
         <img alt="" className="size-5 rounded-sm" src="/brand/comma/icon.png" />
         <span className="text-sm font-medium text-secondary">Comma</span>

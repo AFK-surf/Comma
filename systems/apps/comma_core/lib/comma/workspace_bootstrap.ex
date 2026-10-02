@@ -29,8 +29,8 @@ defmodule Comma.WorkspaceBootstrap do
         %User{status: "disabled"} ->
           Repo.rollback(:disabled)
 
-        %User{} ->
-          with {:ok, workspace} <- load_or_create_default(user_id),
+        %User{} = user ->
+          with {:ok, workspace} <- load_or_create_default(user),
                {:ok, result} <- public_result(workspace) do
             result
           else
@@ -42,7 +42,7 @@ defmodule Comma.WorkspaceBootstrap do
 
   def ensure_default(_user_id), do: {:error, :not_found}
 
-  defp load_or_create_default(user_id) do
+  defp load_or_create_default(%User{id: user_id} = user) do
     rows =
       Repo.all(
         from(workspace in Workspace,
@@ -54,7 +54,7 @@ defmodule Comma.WorkspaceBootstrap do
 
     case rows do
       [] ->
-        Workspaces.create_for_user(user_id)
+        create_default(user)
 
       [workspace] ->
         if Workspaces.active_owner?(workspace, user_id) do
@@ -67,6 +67,21 @@ defmodule Comma.WorkspaceBootstrap do
         {:error, :workspace_invariant}
     end
   end
+
+  defp create_default(%User{kind: "guest", id: user_id}) do
+    case Comma.GuestMode.get_policy() do
+      {:ok, %{"salix_tenant_id" => tenant_id}} when is_binary(tenant_id) ->
+        Workspaces.create_guest_for_user(user_id, tenant_id)
+
+      {:ok, _policy} ->
+        {:error, :guest_mode_disabled}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp create_default(%User{id: user_id}), do: Workspaces.create_for_user(user_id)
 
   defp public_result(%{"status" => "active"} = workspace) do
     {:ok,

@@ -46,8 +46,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationLive.Show do
        |> assign(:current_org, org)
        |> assign(:current_org_role, org_role)
        |> assign(:content_chrome, :workbench)
-       |> assign(:can_view_operations, org_role in ["owner", "admin"])
-       |> assign(:can_view_audit, org_role in ["owner", "admin"])
        |> assign(:project, project)
        |> assign(:conversation, conversation)
        |> assign(:task_schedule_error, task_schedule_error)
@@ -864,34 +862,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationLive.Show do
           </div>
         </div>
 
-        <.dropdown
-          :if={@can_view_operations || @can_view_audit}
-          id="task-detail-operations"
-          align="right"
-        >
-          <:trigger>
-            <button
-              type="button"
-              class="grid h-8 w-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
-              aria-label={gettext("Task operations")}
-              title={gettext("Task operations")}
-            >
-              <.icon name="ellipsis" class="h-4 w-4" />
-            </button>
-          </:trigger>
-          <.dropdown_item
-            :if={@can_view_operations}
-            href={~p"/orgs/#{@current_org.slug}/operations/events?#{%{project_id: @project.id, domain: "conversation", resource_id: @conversation["conversation_id"]}}"}
-          >
-            {gettext("View events")}
-          </.dropdown_item>
-          <.dropdown_item
-            :if={@can_view_audit}
-            href={~p"/orgs/#{@current_org.slug}/operations/audit?#{%{resource_type: "project_conversation", resource_id: @conversation["conversation_id"]}}"}
-          >
-            {gettext("View audit")}
-          </.dropdown_item>
-        </.dropdown>
       </header>
 
       <div class={[

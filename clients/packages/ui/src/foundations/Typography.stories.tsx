@@ -14,11 +14,11 @@ type Story = StoryObj<typeof meta>;
 
 export const Overview: Story = {
   render: () => (
-    <div className="grid w-full max-w-[760px] gap-5 p-4 sm:p-8">
+    <div className="grid w-full max-w-[760px] gap-5 p-4 @min-[640px]/comma-window:p-8">
       {Object.entries(typeScale).map(([name, style]) => (
         <div
           key={name}
-          className="grid grid-cols-1 items-baseline gap-2 border-b border-secondary pb-4 sm:grid-cols-[160px_minmax(0,1fr)] sm:gap-6"
+          className="grid grid-cols-1 items-baseline gap-2 border-b border-secondary pb-4 @min-[640px]/comma-window:grid-cols-[160px_minmax(0,1fr)] @min-[640px]/comma-window:gap-6"
         >
           <span className="text-sm font-medium text-tertiary">{name}</span>
           <p
@@ -39,7 +39,7 @@ export const Overview: Story = {
 
 export const TextComponent: Story = {
   render: () => (
-    <div className="grid w-full max-w-[720px] gap-4 p-4 sm:p-8">
+    <div className="grid w-full max-w-[720px] gap-4 p-4 @min-[640px]/comma-window:p-8">
       <Text as="h1" size="displayMd" weight="semibold" className="text-primary">
         Design system typography
       </Text>

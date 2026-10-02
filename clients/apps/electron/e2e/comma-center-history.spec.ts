@@ -9,6 +9,7 @@ import {
   chatSmokeWorkspace,
   startChatSmokeStub,
 } from "../../../e2e/p0/chat-stub";
+import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
 import { openTaskDetails, taskDoneButton } from "../../../e2e/helpers/task-panel";
 import { findElectronWindowByRole } from "../src/test-support/electron-window";
 
@@ -98,6 +99,7 @@ test("Home history survives a Session credential reconcile on a task route", asy
     taskStatus: "ready_for_review",
     workspaceChatDelayMs: WORKSPACE_CHAT_DELAY_MS,
   });
+  recordElectronOnboardingCompleted(userDataDir, [stub.userId]);
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -189,6 +191,7 @@ test("the Home conversation target resolves after a renderer reload on a non-Hom
     workspaceChatDelayMs: WORKSPACE_CHAT_DELAY_MS,
     workspaceChatFirstResolutionDelayMs: 0,
   });
+  recordElectronOnboardingCompleted(userDataDir, [stub.userId]);
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,
@@ -250,6 +253,7 @@ test("reload bootstrap keeps the selected Workspace on a non-Home route", async 
     workspaceChatDelayMs: WORKSPACE_CHAT_DELAY_MS,
     workspaceChatFirstResolutionDelayMs: 0,
   });
+  recordElectronOnboardingCompleted(userDataDir, [stub.userId]);
   const app = await electron.launch({
     args: [electronMain, `--user-data-dir=${userDataDir}`],
     cwd: electronAppDir,

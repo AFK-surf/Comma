@@ -3,9 +3,8 @@ import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 
 // Settings › Channels › Signal (docs/messaging-voice.md): a connection code is
 // shown once and the card picks up the chat that sends it, a connected chat can
-// be disconnected, and the workspace can set its own Signal number, with the
-// server's refusal shown in the dialog.
-test("creates a one-time Signal code, shows the new chat, disconnects a chat, and sets the workspace number", async ({
+// be disconnected, and the workspace number is shown without a way to change it.
+test("creates a one-time Signal code, shows the new chat, disconnects a chat, and shows the workspace number", async ({
   page,
 }, testInfo) => {
   const base = "http://127.0.0.1:65534";
@@ -93,15 +92,6 @@ test("creates a one-time Signal code, shows the new chat, disconnects a chat, an
       await respond(status());
       return;
     }
-    if (path === `${signal}/number`) {
-      if (body.number === "+15559999999") {
-        await respond({ error: "signal_account_scope" }, 422);
-        return;
-      }
-      override = body.number ? { e164: body.number, state: "active" } : null;
-      await respond(numberView());
-      return;
-    }
     await respond({ error: "not_found" }, 404);
   });
 
@@ -168,32 +158,16 @@ test("creates a one-time Signal code, shows the new chat, disconnects a chat, an
     path: "/v1/comma/workspaces/wsp_signal/integrations/signal/bindings/sgb_alice",
   });
 
-  // The workspace number: a refused number keeps the dialog open with its reason.
+  // The workspace number is shown; changing it is not offered.
   const numberRow = page.locator('[data-setting-id="signal.number"]');
   await expect(numberRow).toContainText(`Uses the Comma number ${platform}.`);
-  await numberRow.getByRole("button", { name: "Change number", exact: true }).click();
-  const dialog = page.getByRole("dialog", {
-    name: "Workspace Signal number",
-    exact: true,
-  });
-  const field = dialog.getByRole("textbox", { name: "Signal number", exact: true });
-  await field.fill("+15559999999");
-  await dialog.getByRole("button", { name: "Save number", exact: true }).click();
-  await expect(dialog).toContainText("This number belongs to another organization.");
-  await field.fill(own);
-  await dialog.getByRole("button", { name: "Save number", exact: true }).click();
-  await expect(dialog).toHaveCount(0);
+  await expect(numberRow.getByRole("button")).toHaveCount(0);
+
+  // A preset own number is shown the same way, without a way back to the Comma number.
+  override = { e164: own, state: "active" };
+  await page.reload();
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
   await expect(numberRow).toContainText(`Uses this workspace's own number ${own}.`);
-  expect(writes.slice(2)).toEqual([
-    {
-      method: "PUT",
-      path: "/v1/comma/workspaces/wsp_signal/integrations/signal/number",
-      body: { number: "+15559999999" },
-    },
-    {
-      method: "PUT",
-      path: "/v1/comma/workspaces/wsp_signal/integrations/signal/number",
-      body: { number: own },
-    },
-  ]);
+  await expect(numberRow.getByRole("button")).toHaveCount(0);
+  expect(writes).toHaveLength(2);
 });

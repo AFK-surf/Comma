@@ -21,6 +21,7 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   page,
 }) => {
   let name = "Ada";
+  let locale: string | null = "en";
   let avatarId: string | null = null;
   let avatarFetches = 0;
   let uploadContentType: string | undefined;
@@ -30,6 +31,7 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
     avatar_id: avatarId,
     email: session.email,
     id: session.userId,
+    locale,
     name,
   });
   const handleProfileRequest = async (route: Route) => {
@@ -43,7 +45,10 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
     }
 
     if (request.method() === "PATCH" && url.pathname === "/v1/comma/me/profile") {
-      name = (request.postDataJSON() as { name: string }).name;
+      // Sign-in also records the device language on an account without one.
+      const body = request.postDataJSON() as { locale?: string; name?: string };
+      if (body.name !== undefined) name = body.name;
+      if (body.locale !== undefined) locale = body.locale;
     } else if (request.method() === "PUT" && url.pathname === "/v1/comma/me/avatar") {
       uploadContentType = request.headers()["content-type"];
       uploadBody = request.postDataBuffer() ?? undefined;
@@ -95,6 +100,9 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await settingsButton.click();
   await expect(settingsDialog).toBeVisible();
   await page.getByRole("button", { name: "Profile" }).click();
+  await expect(
+    settingsDialog.getByRole("heading", { name: `Account · ${session.email}` })
+  ).toBeVisible();
   await page.getByRole("button", { name: "Edit name: Ada" }).click();
   const nameInput = page.getByRole("textbox", { name: "Name" });
   await expect(nameInput).toHaveValue("Ada");
@@ -151,14 +159,12 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await page.getByRole("button", { name: "Profile", exact: true }).click();
   const avatarRow = page.locator('[data-setting-id="account.avatar"]');
   await page.locator('input[type="file"]').setInputFiles({
-    buffer: Buffer.alloc(101 * 1024),
+    buffer: Buffer.alloc(2 * 1024 * 1024 + 1),
     mimeType: "image/png",
-    name: "unreadable.png",
+    name: "oversized.png",
   });
   const avatarError = avatarRow.locator(".text-error-primary");
-  await expect(avatarError).toHaveText(
-    "This image could not be read. Choose another image."
-  );
+  await expect(avatarError).toHaveText("JPEG, PNG, or WebP. Maximum 2 MB.");
   const rowBox = (await avatarRow.boundingBox())!;
   const errorBox = (await avatarError.boundingBox())!;
   const buttonBox = (await avatarRow
@@ -168,33 +174,57 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   expect(errorBox.y).toBeGreaterThanOrEqual(buttonBox.y + buttonBox.height);
   await expect(avatarError).toHaveCSS("text-align", "left");
   await page.screenshot({ path: test.info().outputPath("avatar-error-layout.png") });
-
-  // A large, non-square photo is center-cropped and compressed before upload.
-  // Red side bands fall outside the centered square; noise keeps it over 100 KB.
-  const photo = Buffer.from(
-    await page.evaluate(async () => {
-      const canvas = new OffscreenCanvas(1600, 900);
-      const context = canvas.getContext("2d")!;
-      const pixels = context.createImageData(1600, 900);
-      for (let index = 0; index < pixels.data.length; index += 4) {
-        const x = (index / 4) % 1600;
-        const side = x < 350 || x >= 1250;
-        pixels.data[index] = side ? 255 : 0;
-        pixels.data[index + 1] = side ? 0 : Math.random() * 255;
-        pixels.data[index + 2] = side ? 0 : Math.random() * 255;
-        pixels.data[index + 3] = 255;
-      }
-      context.putImageData(pixels, 0, 0);
-      const blob = await canvas.convertToBlob({ type: "image/png" });
-      return Array.from(new Uint8Array(await blob.arrayBuffer()));
-    })
-  );
-  expect(photo.byteLength).toBeGreaterThan(100 * 1024);
-  await page.locator('input[type="file"]').setInputFiles({
-    buffer: photo,
-    mimeType: "image/png",
-    name: "photo.png",
+  // A noisy landscape PNG well above the old 100 KB bound and above the
+  // compression target, so it must be cropped square and re-encoded.
+  const landscape = await page.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1200;
+    canvas.height = 800;
+    const context = canvas.getContext("2d")!;
+    const pixels = context.createImageData(canvas.width, canvas.height);
+    let seed = 7;
+    for (let index = 0; index < pixels.data.length; index += 4) {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      pixels.data[index] = seed % 256;
+      pixels.data[index + 1] = (index / 4) % 256;
+      pixels.data[index + 2] = (seed >> 8) % 256;
+      pixels.data[index + 3] = 255;
+    }
+    context.putImageData(pixels, 0, 0);
+    const blob = await new Promise<Blob>((resolve) =>
+      canvas.toBlob((value) => resolve(value!), "image/png")
+    );
+    return Array.from(new Uint8Array(await blob.arrayBuffer()));
   });
+  const landscapeBuffer = Buffer.from(landscape);
+  expect(landscapeBuffer.length).toBeGreaterThan(200 * 1024);
+  expect(landscapeBuffer.length).toBeLessThanOrEqual(2 * 1024 * 1024);
+  await page.locator('input[type="file"]').setInputFiles({
+    buffer: landscapeBuffer,
+    mimeType: "image/png",
+    name: "landscape.png",
+  });
+
+  const cropDialog = page.getByRole("dialog", { name: "Crop avatar" });
+  await expect(cropDialog).toBeVisible();
+  const cropArea = cropDialog.getByTestId("avatar-crop-area");
+  await expect(cropArea.locator("img")).toBeVisible();
+  // The open animation scales the panel from 95%, so settle before measuring.
+  await expect.poll(async () => (await cropArea.boundingBox())?.width).toBe(280);
+  const cropBox = (await cropArea.boundingBox())!;
+  expect(cropBox.height).toBe(280);
+  await cropArea.hover();
+  await page.mouse.wheel(0, -200);
+  await page.mouse.down();
+  await page.mouse.move(
+    cropBox.x + cropBox.width / 2 + 40,
+    cropBox.y + cropBox.height / 2
+  );
+  await page.mouse.up();
+  await page.screenshot({ path: test.info().outputPath("avatar-crop-dialog.png") });
+  expect(uploadBody).toBeUndefined();
+  await cropDialog.getByRole("button", { name: /Save/ }).click();
+  await expect(cropDialog).toBeHidden();
 
   await expect(avatarError).toHaveCount(0);
 
@@ -218,30 +248,23 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await expect(sidebarAvatar).toHaveCSS("width", "32px");
   await expect(sidebarAvatar).toHaveCSS("height", "32px");
   expect(uploadContentType).toContain("multipart/form-data; boundary=");
-  const boundary = `--${uploadContentType!.split("boundary=")[1]}`;
-  const part = uploadBody!
-    .subarray(0, uploadBody!.lastIndexOf(`\r\n${boundary}--`))
-    .subarray(uploadBody!.indexOf(boundary));
-  const headerEnd = part.indexOf("\r\n\r\n");
-  expect(part.subarray(0, headerEnd).toString()).toContain("Content-Type: image/webp");
-  const uploaded = part.subarray(headerEnd + 4);
-  expect(uploaded.byteLength).toBeLessThanOrEqual(102_400);
-  const uploadedImage = await page.evaluate(async (bytes) => {
+  // The upload is a square WebP compressed under the 200 KB target.
+  const riff = uploadBody!.indexOf("RIFF");
+  expect(riff).toBeGreaterThan(0);
+  expect(uploadBody!.subarray(riff + 8, riff + 12).toString()).toBe("WEBP");
+  const webp = uploadBody!.subarray(
+    riff,
+    riff + 8 + uploadBody!.readUInt32LE(riff + 4)
+  );
+  expect(webp.length).toBeLessThanOrEqual(200 * 1024);
+  const uploaded = await page.evaluate(async (bytes) => {
     const bitmap = await createImageBitmap(
-      new Blob([Uint8Array.from(bytes)], { type: "image/webp" })
+      new Blob([new Uint8Array(bytes)], { type: "image/webp" })
     );
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const context = canvas.getContext("2d")!;
-    context.drawImage(bitmap, 0, 0);
-    const edges = [
-      context.getImageData(1, bitmap.height / 2, 1, 1).data[0]!,
-      context.getImageData(bitmap.width - 2, bitmap.height / 2, 1, 1).data[0]!,
-    ];
-    return { edges, height: bitmap.height, width: bitmap.width };
-  }, Array.from(uploaded));
-  expect(uploadedImage.width).toBe(uploadedImage.height);
-  expect(uploadedImage.width).toBeLessThanOrEqual(512);
-  expect(Math.max(...uploadedImage.edges)).toBeLessThan(128);
+    return { height: bitmap.height, width: bitmap.width };
+  }, Array.from(webp));
+  expect(uploaded.width).toBe(uploaded.height);
+  expect(uploaded.width).toBeLessThanOrEqual(512);
 });
 
 test("renames from a dialog built to the Figma spec, driven by the keyboard", async ({
@@ -269,6 +292,7 @@ test("renames from a dialog built to the Figma spec, driven by the keyboard", as
         avatar_id: null,
         email: session.email,
         id: session.userId,
+        locale: "en",
         name,
       }),
       headers: { ...responseHeaders, "content-type": "application/json" },
@@ -349,48 +373,4 @@ test("renames from a dialog built to the Figma spec, driven by the keyboard", as
   await expect(page.getByRole("dialog", { name: "Name" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Name" })).toBeHidden();
-});
-
-test("saves meeting recording preferences and restores them after reload", async ({
-  page,
-}) => {
-  await installBrowserTestSession(page, session);
-  await page.goto("/#/settings");
-  await page.getByRole("button", { name: "Meeting", exact: true }).click();
-
-  const recording = page.getByRole("button", { name: /Start recording$/ });
-  const hideRecorder = page.getByRole("switch", {
-    name: "Hide recorder notch for others",
-  });
-  const smartSummary = page.getByRole("switch", { name: "Smart summary" });
-  await expect(recording).toBeEnabled();
-  await recording.click();
-  await page.getByRole("option", { name: "Auto", exact: true }).click();
-  await expect(hideRecorder).not.toBeChecked();
-  await hideRecorder.focus();
-  await hideRecorder.press("Space");
-  await expect(smartSummary).toBeChecked();
-  await smartSummary.focus();
-  await smartSummary.press("Space");
-
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const settings = JSON.parse(
-          localStorage.getItem("comma.client-settings") ?? "{}"
-        );
-        return [
-          settings.meetingStartRecording,
-          settings.meetingHideRecorder,
-          settings.meetingSmartSummary,
-        ];
-      })
-    )
-    .toEqual(["auto", true, false]);
-
-  await page.reload();
-  await page.getByRole("button", { name: "Meeting", exact: true }).click();
-  await expect(recording).toContainText("Auto");
-  await expect(hideRecorder).toBeChecked();
-  await expect(smartSummary).not.toBeChecked();
 });

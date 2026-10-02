@@ -6,8 +6,8 @@ defmodule BridgeForTeams.Meetings do
   connected IM channel (e.g. Slack), the group's hidden meeting agent joins
   the call, captures captions/chat, and produces a summary with key points
   and action items (`SalixMeet`). This context reads those records over
-  `:erpc` (`SalixMeet.list_group_meetings/1`) so the dashboard can show each
-  meeting and turn its action items into board tasks.
+  `:erpc` (`SalixMeet.list_group_meetings_bounded/2`) so Triage can use each
+  meeting's summary and action items as context.
 
   The deployed meeting-summary replay claim, immutable request identity, model
   side effect, and settlement protocol are machine-checked in
@@ -29,45 +29,6 @@ defmodule BridgeForTeams.Meetings do
   # innermost value.
   @triage_deadline_ms 3_000
   @triage_source_deadline_ms 2_000
-
-  @doc """
-  List the project's meeting records, newest first.
-
-  Each record is a string-keyed map: `meeting_id`, `title`, `status`
-  (`provisioning/joining/active/processing/done/failed/cancelled`),
-  `reason_code` and localized `reason_message` distinguish refusal, full, removal,
-  and admission timeout without exposing raw runtime errors.
-  `provider`, `meet_url`, `start_at` (unix seconds), `summary`
-  (`title`/`key_points`/`action_items`), `captions_count`, `artifacts`
-  (kinds present, e.g. `["audio", "transcript"]`), and the Slack thread ref
-  (`slack_channel_id`/`slack_thread_ts`). Delivery observability includes
-  `delivery_status`, the finite `delivery_failure_kind`,
-  `notes_delivery_status` (`visible/pending/unavailable`),
-  `notes_delivery_surface` (`canvas/canvas_link_message/message_fallback`),
-  `published_at`, `canvas_id`, `canvas_create_status`, `canvas_url`,
-  `canvas_url_source`, `canvas_link_status`, and `canvas_access_status`; raw
-  provider/runtime error text stays internal. `published_at` remains
-  Canvas-specific even when full notes are visible through a Slack message
-  fallback. `canvas_id` includes a durable provisional Canvas when access failed
-  before publication. Public Canvas stages are normalized to
-  finite values (`created/creating/retrying/reconciling/unavailable`,
-  `resolved/resolving/unavailable`, and
-  `granted/link_shared/granting/unavailable`). `canvas_url_source` is one of
-  `files_info`, explicitly unverified `derived`, or `legacy` for a persisted URL
-  whose original lookup provenance predates this field.
-
-  Best-effort by design: New Home must render when Salix is down, so any
-  error collapses to an empty list.
-  """
-  @spec list_meetings(Project.t() | nil) :: [map()]
-  def list_meetings(%Project{salix_group_id: group_id}) when is_binary(group_id) do
-    case Client.impl().list_group_meetings(group_id) do
-      {:ok, meetings} when is_list(meetings) -> Enum.filter(meetings, &is_map/1)
-      _ -> []
-    end
-  end
-
-  def list_meetings(_project), do: []
 
   @doc "Run an authenticated, idempotent, no-delivery meeting-summary replay."
   @spec replay_summary(Organization.t(), Project.t(), User.t(), String.t(), String.t(), keyword()) ::
@@ -318,8 +279,7 @@ defmodule BridgeForTeams.Meetings do
   @doc """
   Typed, bounded meeting source for one Triage evaluation.
 
-  Unlike `list_meetings/1` this never collapses an error to an empty list: a
-  frozen Triage context must not silently claim the project has no meeting
+  This never collapses an error to an empty list: a frozen Triage context must not silently claim the project has no meeting
   facts. It reaches `SalixMeet.list_group_meetings_bounded/2`, which reads only
   the group's own sealed PostgreSQL projection; a Salix whose projection is not yet backfilled and
   sealed fails closed with `:meeting_source_unsealed` rather than

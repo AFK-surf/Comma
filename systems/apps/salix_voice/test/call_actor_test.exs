@@ -21,6 +21,7 @@ defmodule SalixVoice.CallActorTest do
       model_mod: Fake,
       fake_model_observer: self(),
       test_pid: self(),
+      test_admission: :ok,
       ingress_mod: TestStubs.Ingress,
       group_directory_mod: TestStubs.GroupDirectory,
       metering_mod: TestStubs.Metering,
@@ -75,6 +76,31 @@ defmodule SalixVoice.CallActorTest do
       overrides
     )
     |> SalixVoice.admit()
+  end
+
+  test "insufficient credits refuses admission before a call or model is started" do
+    Application.put_env(
+      :salix_voice,
+      :test_admission,
+      {:error,
+       {:billing_unavailable,
+        struct!(BillingCore.FeeControl.Decision, allowed?: false, reason: "insufficient_credits")}}
+    )
+
+    group = "grp_credit_denied"
+
+    assert {:error,
+            %{
+              "error_class" => "billing_unavailable",
+              "reason" => "insufficient_credits",
+              "retryable" => false
+            }} = admit(%{group_id: group})
+
+    refute SalixVoice.group_busy?(group)
+    refute_receive {:fake_model, _, {:started, _}}, 20
+    Application.put_env(:salix_voice, :test_admission, :ok)
+    assert {:ok, %{call_id: call}} = admit(%{group_id: group})
+    assert is_pid(SalixVoice.whereis(call))
   end
 
   # Admit and attach the test process as the carrier socket; returns the call
@@ -231,6 +257,32 @@ defmodule SalixVoice.CallActorTest do
     emit(model, call, {:started, "late-profile-session"})
     assert_receive {:fake_model, ^model, {:append, :instructions, nil, greeting}}
     assert greeting =~ "English"
+  end
+
+  test "credits exhausted after admission stop the call before model startup" do
+    put_timer(:profile_ms, 1_000)
+
+    Application.put_env(
+      :salix_voice,
+      :test_profile_decision,
+      {:sleep, 200, {:ok, %{"answers" => %{}}}}
+    )
+
+    {:ok, %{call_id: id}} = admit(%{carrier: :signal, key_id: nil})
+    call = SalixVoice.whereis(id)
+    assert {:ok, ^call, _} = SalixVoice.attach(id, self())
+    assert_receive {:profile_decide, _, _, _}
+
+    Application.put_env(
+      :salix_voice,
+      :test_admission,
+      {:error,
+       {:billing_unavailable,
+        struct!(BillingCore.FeeControl.Decision, allowed?: false, reason: "insufficient_credits")}}
+    )
+
+    await_end(call, :billing_unavailable)
+    refute_receive {:fake_model, _, {:started, _}}, 20
   end
 
   test "a call that ends while its profile is pending never starts the model" do

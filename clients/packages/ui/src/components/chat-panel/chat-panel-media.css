@@ -356,7 +356,16 @@
     flex: none;
   }
 
+  /* The slider's popover. Its material and the slider's colours are
+     properties on the popover itself, so a host on another surface can set
+     them for its own background (MediaVolumeControl.tsx). */
   .chat-panel-media-volume-popover {
+    --chat-panel-media-volume-surface: var(--color-markdown-sound-video-bg-player-bar);
+    --chat-panel-media-volume-ring: var(--color-markdown-sound-video-bar-border);
+    --chat-panel-media-volume-ink: var(--color-markdown-sound-video-icon-primary);
+    --chat-panel-media-volume-fill: var(--color-markdown-sound-video-bg-tracker);
+    --chat-panel-media-volume-rest: var(--color-markdown-sound-video-bg-progress);
+
     position: absolute;
     z-index: 60;
     bottom: calc(100% + var(--spacing-md));
@@ -377,6 +386,15 @@
       opacity var(--motion-duration-menu-exit) var(--motion-easing-surface-smooth-out),
       transform var(--motion-duration-menu-exit) var(--motion-easing-surface-smooth-out),
       visibility 0s linear var(--motion-duration-menu-exit);
+  }
+
+  /* Opened below its button, it drops from the button into place. */
+  .chat-panel-media-volume-popover[data-placement="bottom"] {
+    top: calc(100% + var(--spacing-md));
+    bottom: auto;
+    transform: translate3d(-50%, calc(-1 * var(--spacing-xxs)), 0)
+      scale(var(--motion-scale-pressed));
+    transform-origin: 50% 0;
   }
 
   .chat-panel-media-volume-popover[data-open="true"] {
@@ -404,12 +422,12 @@
     justify-content: center;
     border: 0;
     border-radius: var(--radius-md);
-    background: var(--color-markdown-sound-video-bg-player-bar);
+    background: var(--chat-panel-media-volume-surface);
     backdrop-filter: blur(var(--blur-lg));
     box-shadow:
-      inset 0 0 0 var(--border-width-0-5) var(--color-markdown-sound-video-bar-border),
+      inset 0 0 0 var(--border-width-0-5) var(--chat-panel-media-volume-ring),
       var(--shadow-md);
-    color: var(--color-markdown-sound-video-icon-primary);
+    color: var(--chat-panel-media-volume-ink);
     outline: none;
   }
 
@@ -432,10 +450,10 @@
     border-radius: var(--radius-full);
     background: linear-gradient(
       to right,
-      var(--color-markdown-sound-video-bg-tracker) 0,
-      var(--color-markdown-sound-video-bg-tracker) var(--chat-panel-media-volume),
-      var(--color-markdown-sound-video-bg-progress) var(--chat-panel-media-volume),
-      var(--color-markdown-sound-video-bg-progress) 100%
+      var(--chat-panel-media-volume-fill) 0,
+      var(--chat-panel-media-volume-fill) var(--chat-panel-media-volume),
+      var(--chat-panel-media-volume-rest) var(--chat-panel-media-volume),
+      var(--chat-panel-media-volume-rest) 100%
     );
   }
 
@@ -445,10 +463,10 @@
     border-radius: var(--radius-full);
     background: linear-gradient(
       to right,
-      var(--color-markdown-sound-video-bg-tracker) 0,
-      var(--color-markdown-sound-video-bg-tracker) var(--chat-panel-media-volume),
-      var(--color-markdown-sound-video-bg-progress) var(--chat-panel-media-volume),
-      var(--color-markdown-sound-video-bg-progress) 100%
+      var(--chat-panel-media-volume-fill) 0,
+      var(--chat-panel-media-volume-fill) var(--chat-panel-media-volume),
+      var(--chat-panel-media-volume-rest) var(--chat-panel-media-volume),
+      var(--chat-panel-media-volume-rest) 100%
     );
   }
 
@@ -459,7 +477,7 @@
     border: 0;
     border-radius: var(--radius-full);
     appearance: none;
-    background: var(--color-markdown-sound-video-bg-tracker);
+    background: var(--chat-panel-media-volume-fill);
   }
 
   .chat-panel-media-volume-slider::-moz-range-thumb {
@@ -467,7 +485,7 @@
     height: var(--spacing-md);
     border: 0;
     border-radius: var(--radius-full);
-    background: var(--color-markdown-sound-video-bg-tracker);
+    background: var(--chat-panel-media-volume-fill);
   }
 
   .chat-panel-media-volume-slider:focus-visible::-webkit-slider-thumb {

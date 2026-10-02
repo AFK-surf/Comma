@@ -44,6 +44,18 @@ macro_rules
             · rename_i missing; exact (bne_nil_false missing).symm)
          | split))
 
+/-- Result metadata that `runtimeAppend` puts on a runtime message keeps its identity fields. -/
+theorem runtime_identity_put {e m : Term} {name : String} (fields : RuntimeIdentityFields e m)
+    (safe : RecordShape.SafeName name) (id : name ≠ "id") (runtimeId : name ≠ "runtime_message_id")
+    (source : name ≠ "source_message_id") (content : name ≠ "content")
+    (accepted : name ≠ "accepted_input") (dedupe : name ≠ "dedupe_key") (value : Term) :
+    RuntimeIdentityFields e (m.put (a name) value) := by
+  obtain ⟨⟨hid, hruntime, hsource, hcontent, haccepted, shape⟩, hdedupe⟩ := fields
+  exact ⟨⟨(get_put_other _ _ id).trans hid, (get_put_other _ _ runtimeId).trans hruntime,
+    (get_put_other _ _ source).trans hsource, (get_put_other _ _ content).trans hcontent,
+    (get_put_other _ _ accepted).trans haccepted, shape.put safe value⟩,
+    (get_put_other _ _ dedupe).trans hdedupe⟩
+
 /-- Runtime content keeps the event's content-or-summary rule, even when result metadata is attached. -/
 theorem runtime_append_stores_identity {s e t : Term} {j r : List Term}
     (h : runtimeAppend s e j = .ok (t, r)) :
@@ -75,6 +87,8 @@ theorem runtime_append_stores_identity {s e t : Term} {j r : List Term}
       subst value
     replace h := bind_ok h
     obtain ⟨merged, _, hm, h⟩ := h
+    -- Both result branches put metadata on this message. Prove its fields once.
+    have base : RuntimeIdentityFields e (present merged) := by runtime_record_fields
     replace h := bind_ok h
     obtain ⟨kind, _, _, h⟩ := h
     split at h
@@ -98,7 +112,11 @@ theorem runtime_append_stores_identity {s e t : Term} {j r : List Term}
     refine ⟨_, ⟨s, appended, _, _, _, seq, ha, ⟨xs, before, read⟩, rfl⟩, ?_, ?_⟩
     · refine record_survives (s := appended) ?_ ⟨_, read, List.mem_append_right _ (by simp)⟩
       transcript_walk h
-    · runtime_record_fields
+    · repeat' first
+        | exact base
+        | refine runtime_identity_put ?_ (by simp +decide [RecordShape.SafeName]) (by decide) (by decide)
+            (by decide) (by decide) (by decide) (by decide) _
+        | split
 
 theorem runtime_append_stores_fields {s e t : Term} {j r : List Term}
     (h : runtimeAppend s e j = .ok (t, r)) :

@@ -66,8 +66,13 @@ import {
 import { buildBrowserElementInspectionMessage } from "./browserElementInspection";
 import { FilePreviewPanel } from "./FilePreviewPanel";
 import { DrivePreviewPanel } from "../drive/DrivePreviewPanel";
-import { SessionHistoryPage } from "../chat/session-history/SessionHistory";
+import {
+  SessionHistoryPage,
+  sessionParticipantName,
+} from "../chat/session-history/SessionHistory";
+import { useRouterDisplayName } from "../router-identity/RouterIdentityProvider";
 import { useCommaClientSettings } from "../commaClientSettings";
+import { needsDesktopApp, requestDesktopApp } from "../DesktopAppPrompt";
 
 const nativeBrowserUnavailable =
   "The embedded browser is unavailable here. Open the link in your browser instead.";
@@ -154,6 +159,7 @@ export function ChatSidebarSurface({
   const api = useChatApi();
   const registry = useChatRegistry();
   const messages = useCommaMessages();
+  const routerName = useRouterDisplayName();
   const { settings } = useCommaClientSettings();
   const {
     activeHost,
@@ -358,7 +364,7 @@ export function ChatSidebarSurface({
     ...historyPages.map((page) => ({
       closable: true,
       id: historyTabId(page.id),
-      label: `${messages.session_history_title()} · ${page.participant.name?.replace(/^Default workspace\s+/i, "").trim() || messages.chat_actor_router()}`,
+      label: `${messages.session_history_title()} · ${sessionParticipantName(page.participant, routerName, messages.chat_actor_worker())}`,
       panelId: `chat-sidebar-history-panel-${page.id}`,
     })),
     ...browserPages.map((page) => ({
@@ -1898,9 +1904,20 @@ function BrowserUnavailable({
   reason: string;
   url: string;
 }) {
+  const messages = useCommaMessages();
   return (
     <div className="comma-chat-sidebar-browser-unavailable">
       <p>{reason}</p>
+      {needsDesktopApp() ? (
+        <Button
+          className="h-7 px-lg"
+          hierarchy="secondary-gray"
+          onPress={() => requestDesktopApp("browser")}
+          size="sm"
+        >
+          {messages.desktop_app_get_mac()}
+        </Button>
+      ) : null}
       {canOpenExternal ? (
         <a href={url} rel="noopener noreferrer" target="_blank">
           Open in browser

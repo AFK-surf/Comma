@@ -62,6 +62,7 @@ defmodule SalixIM.TaskWorkerWatch do
   @messages_window 50
   # The runtime cannot run
   # the Worker, so a reminder would only bounce.
+  @billing_denial_issues ~w(insufficient_credits account_inactive missing_account)
   @blocking_failure_issues ~w(
     authentication_required
     model_unavailable
@@ -69,7 +70,7 @@ defmodule SalixIM.TaskWorkerWatch do
     rate_limited
     recovery_exhausted
     runtime_failed
-  )
+  ) ++ @billing_denial_issues
 
   @nudge_type "task_worker_nudge"
   @notify_type "task_worker_stopped"
@@ -482,6 +483,15 @@ defmodule SalixIM.TaskWorkerWatch do
       "Do not wait_for it again or retry it repeatedly while limited. " <>
       "The Task has not completed; use im_api.internal.update_conversation to mark it failed, " <>
       "or explicitly arrange a later retry."
+  end
+
+  defp notify_content(reason, _activity) when reason in @billing_denial_issues do
+    "The Worker for this Task is blocked by billing (#{reason}): the workspace cannot pay " <>
+      "for the Worker's model requests. Tell the requester that the workspace is out of " <>
+      "usage credits or its billing account is unavailable, and that they must add credits " <>
+      "or fix billing before the Task can continue. This is not a platform outage. " <>
+      "Do not wait_for it again or retry it until billing changes. " <>
+      "The Task has not completed; use im_api.internal.update_conversation to mark it failed."
   end
 
   defp notify_content(reason, _activity) do

@@ -64,6 +64,23 @@ theorem issue_not_query (context : Context) (result saved operation args request
   all_goals simp_all [issueWrite, preparedWrite, invalid, RevisionFence.invalid, a]
   all_goals split at h <;> simp_all
 
+/-- `issue` on the command forms that the input proofs build. Each equation holds by `rfl`. A
+`simp` that unfolds `issue` generates the splitter of its `match` again in every module. -/
+theorem issue_finish (context : Context) (result checkpoint : Term) :
+    issue context (Command.finish result checkpoint) =
+      (some context.pack, .tuple [a "return", result, checkpoint]) := rfl
+
+theorem issue_duplicateInput (context : Context) :
+    issue context Command.duplicateInput =
+      (some (.tuple [a "session_command_driver_fence", context.pack, b "input_duplicate_fenced"]),
+        .tuple [a "fence"]) := rfl
+
+theorem issue_workspace (context : Context) (operation metadata workspace billing continuation : Term) :
+    issue context (Command.perform (.tuple [a "workspace", operation, metadata, workspace, billing]) continuation) =
+      (some (.tuple [a "session_command_driver_effect", context.pack, continuation,
+          .tuple [a "workspace", operation, metadata, workspace, billing]]),
+        .tuple [a "effect", .tuple [a "workspace", operation, metadata, workspace, billing]]) := rfl
+
 theorem query_observation_captured {context other : Context} {operation args mode payload request : Term}
     {observations captured : List Term}
     (h : query context operation args observations =

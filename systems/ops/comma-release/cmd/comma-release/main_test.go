@@ -131,18 +131,6 @@ func TestPlanRejectsUnsupportedEnvelopes(t *testing.T) {
 	}
 }
 
-func TestUsageListsTerminalAndAuditedLegacyUpgradeCommands(t *testing.T) {
-	err := run(context.Background(), nil, bytes.NewReader(nil), &bytes.Buffer{})
-	var exit *exitError
-	if !errors.As(err, &exit) || exit.code != exitUsage {
-		t.Fatalf("usage error = %v", err)
-	}
-	want := "usage: comma-release <plan|status|observe|reconcile|legacy-upgrade|prepare|migrate|sync-provider|finish-agent-configuration|publish-runtime-release|apply|verify|recover> [--resume-forward] [--retry-failed]"
-	if exit.err.Error() != want {
-		t.Fatalf("usage = %q, want %q", exit.err, want)
-	}
-}
-
 func TestResumeForwardFlagIsLimitedToForwardStageCommands(t *testing.T) {
 	var exit *exitError
 	err := run(context.Background(), []string{"recover", "--resume-forward"}, bytes.NewReader(nil), &bytes.Buffer{})

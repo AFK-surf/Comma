@@ -10,6 +10,10 @@ const maskPath =
 const commaPath =
   "M429.061 468.826C465.24 406.162 545.367 384.693 608.03 420.871C668.125 455.568 690.333 530.683 660.141 592.052C660.216 592.125 660.291 592.197 660.366 592.27C659.322 594.203 658.133 596.254 656.801 598.406C656.532 598.885 656.261 599.364 655.986 599.84C649.213 611.571 640.898 621.858 631.448 630.594C600.921 662.613 550.308 698.191 480.175 708.083C477.447 708.468 475.903 705.159 477.946 703.31C490.729 691.748 505.726 678.045 520.57 663.529C505.64 660.994 490.898 655.812 477.015 647.796C414.351 611.617 392.882 531.489 429.061 468.826Z";
 
+/** Places the next comma in the lower right of the current one. */
+const nestedTransform =
+  "translate(606.44863 595.56644) scale(0.3602739726) translate(-542.5 -534.5)";
+
 const easingCurves = {
   easeInOut: "cubic-bezier(0.77, 0, 0.175, 1)",
   easeOut: "cubic-bezier(0.23, 1, 0.32, 1)",
@@ -19,6 +23,12 @@ const easingCurves = {
 type CommaLogoEasing = keyof typeof easingCurves;
 
 export type CommaLogoAnimationProps = Omit<ComponentProps<"svg">, "children"> & {
+  /**
+   * Cuts the next comma's aperture out of the mark instead of painting it in
+   * the page background (`--color-bg-primary`), so the mark reads on any
+   * surface, a coloured or translucent one included.
+   */
+  cutout?: boolean;
   easing?: CommaLogoEasing;
   /** Finite hold duration >= 0. Invalid numeric inputs throw RangeError. */
   intervalSeconds?: number;
@@ -33,6 +43,7 @@ export type CommaLogoAnimationProps = Omit<ComponentProps<"svg">, "children"> & 
 };
 
 export const CommaLogoAnimation = ({
+  cutout = false,
   easing = "easeInOut",
   intervalSeconds = 1.4,
   nestedDelayPercent = 1,
@@ -69,6 +80,18 @@ export const CommaLogoAnimation = ({
   const zoomAnimation = `comma-logo-zoom-${animationId}`;
   const nestedAnimation = `comma-logo-nested-${animationId}`;
   const boundaryId = `comma-logo-boundary-${animationId}`;
+  const apertureId = `comma-logo-aperture-${animationId}`;
+  const aperture = {
+    cx: "530.35544005",
+    cy: "535.69550225",
+    r: "196.33236187",
+  } as const;
+  const mark = (
+    <>
+      <path className="comma-logo-animation__outer" d={logoPath} />
+      <path className="comma-logo-animation__comma" d={commaPath} />
+    </>
+  );
 
   return (
     <svg
@@ -125,21 +148,38 @@ export const CommaLogoAnimation = ({
         <clipPath id={boundaryId}>
           <path d={maskPath} />
         </clipPath>
+        {cutout ? (
+          // The aperture grows with the next comma, as a hole in the mark.
+          <mask
+            height="730"
+            id={apertureId}
+            maskUnits="userSpaceOnUse"
+            width="730"
+            x="0"
+            y="0"
+          >
+            <rect fill="white" height="730" width="730" />
+            <g className="comma-logo-animation__nested-comma">
+              <g transform={nestedTransform}>
+                <circle {...aperture} fill="black" />
+              </g>
+            </g>
+          </mask>
+        ) : null}
       </defs>
 
       <g clipPath={`url(#${boundaryId})`}>
         <g className="comma-logo-animation__scene">
-          <path className="comma-logo-animation__outer" d={logoPath} />
-          <path className="comma-logo-animation__comma" d={commaPath} />
+          {cutout ? <g mask={`url(#${apertureId})`}>{mark}</g> : mark}
 
           <g className="comma-logo-animation__nested-comma">
-            <g transform="translate(606.44863 595.56644) scale(0.3602739726) translate(-542.5 -534.5)">
-              <circle
-                className="comma-logo-animation__nested-aperture"
-                cx="530.35544005"
-                cy="535.69550225"
-                r="196.33236187"
-              />
+            <g transform={nestedTransform}>
+              {cutout ? null : (
+                <circle
+                  className="comma-logo-animation__nested-aperture"
+                  {...aperture}
+                />
+              )}
               <path className="comma-logo-animation__nested-comma-path" d={commaPath} />
             </g>
           </g>

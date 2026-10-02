@@ -70,5 +70,16 @@
   "meetnative": {
     "repository": "https://github.com/afk-surf/meetnative.git",
     "revision": "7f90984c6dd17cd4b63d01f534361e889806f25c"
+  },
+  "claudeAmd64": {
+    "package": "@anthropic-ai/claude-code-linux-x64",
+    "version": "2.1.258",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.258.tgz",
+    "integrity": "sha512-y1O9xbBzr/2J3cojc5aecHmJzpihx3BMBXnFTHdYU+4gpDkjpEvn4xXSfoKe3UzdUrMCSMdkPD0Ru6byQ3vojA=="
+  },
+  "uv": {
+    "version": "0.12.22",
+    "image": "ghcr.io/astral-sh/uv:0.12.22@sha256:f513a91fc62fe7c17567eee97230dd198e43edb8a9fbecca843714a4358fe1bc",
+    "license": "MIT OR Apache-2.0"
   }
 }

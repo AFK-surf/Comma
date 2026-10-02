@@ -61,6 +61,15 @@ def modelNotificationParked (state : Term) : KernelM Bool := do
     integerValue (get "id") > integerValue hwm && get "no_wake" != a "true" &&
       [b "user", b "runtime", b "assistant"].contains (get "role")))
 
+/-- Financial details use the stopped input and its existing notice projection. -/
+def billingFailureReason (state : Term) : KernelM Term := do
+  if ← terminalFailure state then
+    let reason := (← field state "llm_failure_streak").get (b "billing_reason")
+    if reason.isBinary then return reason
+  if ← modelNotificationParked state then
+    return (← field state "runtime_failure_reply").get (b "billing_reason")
+  return nil
+
 def repairExhausted (state : Term) : KernelM Bool := do
   let repair := state.get (a "visible_reply_repair")
   if repair.isMap then return (← alias repair (b "status") (a "status")) == b "exhausted"

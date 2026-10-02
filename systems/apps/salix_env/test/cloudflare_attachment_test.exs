@@ -286,6 +286,158 @@ defmodule SalixEnv.VM.Providers.Cloudflare.AttachmentTest do
     assert wait_until(fn -> is_nil(Attachments.whereis(env_id)) end, 500)
   end
 
+  @tag :gateway_claim
+  test "failed TCP connections cannot exhaust managed attachment admission", context do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {{127, 0, 0, 1}, port}} = :inet.sockname(socket)
+    :ok = :gen_tcp.close(socket)
+    opts = managed_opts(context, "http://127.0.0.1:#{port}")
+
+    for async? <- [false, true], _ <- 1..65 do
+      case Attachments.ensure(Keyword.put(opts, :async, async?)) do
+        {:ok, pid} ->
+          ref = Process.monitor(pid)
+          assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+
+        {:error, %WebSockex.ConnError{original: :econnrefused}} ->
+          refute async?
+      end
+
+      assert {:ok, %{"active_operation_count" => 0}} =
+               Compute.group_workload(context.group_id)
+    end
+  end
+
+  @tag :gateway_claim
+  test "unknown handshakes retain one exact start claim and recover without losing other operations",
+       context do
+    opts = managed_opts(context, MockConnectGateway.base_url(context.gateway))
+    group = context.group_id
+
+    assert {:ok, "unrelated"} =
+             Compute.begin_cloudflare_gateway_attempt(
+               group,
+               "unrelated",
+               :normal,
+               "cf-standard-1:sb-1"
+             )
+
+    assert :ok =
+             Compute.mark_cloudflare_gateway_starting(group, "unrelated", "cf-standard-1:sb-1")
+
+    assert {:ok, "active"} =
+             Compute.begin_cloudflare_gateway_attempt(
+               group,
+               "active",
+               :normal,
+               "cf-standard-2:sb-1"
+             )
+
+    :ok = MockConnectGateway.set_connect_status(context.gateway, 503)
+
+    for async? <- [false, true], _ <- 1..65 do
+      case Attachments.ensure(Keyword.put(opts, :async, async?)) do
+        {:ok, pid} ->
+          ref = Process.monitor(pid)
+          assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+
+        {:error, %WebSockex.RequestError{code: 503}} ->
+          refute async?
+      end
+
+      assert {:ok, %{"active_operation_count" => 3} = rec} = Compute.group_workload(group)
+
+      assert [{_, %{"state" => "pending_start", "target_resource" => "cf-standard-2:sb-1"}}] =
+               Enum.reject(rec["active_operations"], fn {id, _} ->
+                 id in ["active", "unrelated"]
+               end)
+
+      refute Bridge.local?(context.env_id)
+    end
+
+    assert {:skipped, :active_operations} =
+             SalixWeb.ComputeProviders.Cloudflare.archive_idle_once(group, force: true)
+
+    # An HTTP ready response retires only the uncertain starts for this exact profile.
+    assert {:ok, %{"status" => "ready"}} = Client.ensure(opts[:client], "sb-1")
+    assert {:ok, %{"active_operations" => remaining}} = Compute.group_workload(group)
+    assert Map.keys(remaining) |> Enum.sort() == ["active", "unrelated"]
+
+    assert {:error, %WebSockex.RequestError{code: 503}} = Attachments.ensure(opts)
+    :ok = MockConnectGateway.set_connect_status(context.gateway, 101)
+    assert {:ok, _pid} = Attachments.ensure(opts)
+    assert wait_until(fn -> Bridge.local?(context.env_id) end)
+    assert {:ok, %{"active_operations" => remaining}} = Compute.group_workload(group)
+    assert Map.keys(remaining) |> Enum.sort() == ["active", "unrelated"]
+
+    assert {:ok, %{"exit_code" => 0}} =
+             Bridge.rpc(
+               context.env_id,
+               %{
+                 "id" => "after-outage",
+                 "type" => "request",
+                 "method" => "exec",
+                 "params" => %{"command" => "true"}
+               },
+               2_000
+             )
+
+    # Reusing the existing attachment must not leave a fresh admission claim behind.
+    assert {:ok, _pid} = Attachments.ensure(opts)
+    assert {:ok, %{"active_operation_count" => 2}} = Compute.group_workload(group)
+  end
+
+  @tag :gateway_claim
+  test "ready observation cannot settle a handshake that is still in flight", context do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {{127, 0, 0, 1}, port}} = :inet.sockname(listener)
+    on_exit(fn -> :gen_tcp.close(listener) end)
+    opts = managed_opts(context, "http://127.0.0.1:#{port}")
+    test = self()
+
+    gateway =
+      Task.async(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener)
+        {:ok, _request} = :gen_tcp.recv(socket, 0, 1_000)
+        send(test, :handshake_received)
+
+        receive do
+          :drop_connection -> :gen_tcp.close(socket)
+        after
+          2_000 -> :gen_tcp.close(socket)
+        end
+      end)
+
+    {:ok, pid} = Attachments.ensure(Keyword.put(opts, :async, true))
+    ref = Process.monitor(pid)
+    assert_receive :handshake_received, 1_000
+    ready_client = %{opts[:client] | base_url: MockConnectGateway.base_url(context.gateway)}
+    assert {:ok, %{"status" => "ready"}} = Client.ensure(ready_client, "sb-1")
+    assert {:ok, %{"active_operations" => operations}} = Compute.group_workload(context.group_id)
+
+    assert [{_, %{"state" => "active", "target_resource" => "cf-standard-2:sb-1"}}] =
+             Map.to_list(operations)
+
+    send(gateway.pid, :drop_connection)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+    Task.await(gateway)
+    assert {:ok, %{"active_operations" => operations}} = Compute.group_workload(context.group_id)
+
+    assert [{_, %{"state" => "pending_start", "target_resource" => "cf-standard-2:sb-1"}}] =
+             Map.to_list(operations)
+
+    assert {:ok, %{"status" => "ready"}} = Client.ensure(ready_client, "sb-1")
+    assert {:ok, %{"active_operation_count" => 0}} = Compute.group_workload(context.group_id)
+  end
+
+  @tag :gateway_claim
+  test "a rejected handshake settles its managed attempt", context do
+    opts = managed_opts(context, MockConnectGateway.base_url(context.gateway))
+    :ok = MockConnectGateway.set_connect_status(context.gateway, 401)
+    assert {:error, %WebSockex.RequestError{code: 401}} = Attachments.ensure(opts)
+    assert {:ok, %{"active_operation_count" => 0}} = Compute.group_workload(context.group_id)
+  end
+
   test "stop_all returns counts and marks connected envs disconnected", %{
     env_id: _env_id,
     opts: opts,
@@ -686,6 +838,29 @@ defmodule SalixEnv.VM.Providers.Cloudflare.AttachmentTest do
     end
 
     opts
+  end
+
+  defp managed_opts(context, base_url) do
+    assert {:ok, _, _} =
+             Compute.ensure_group_workload(%{
+               "tenant_id" => context.tenant_id,
+               "group_id" => context.group_id,
+               "provider" => "cloudflare",
+               "provider_resource_name" => "sb-1",
+               "provider_resource_id" => "sb-1",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
+               "status" => "ready",
+               "created_at" => System.system_time(:millisecond)
+             })
+
+    assert {:ok, _} =
+             Compute.prepare_cloudflare_control(context.group_id, "cf-standard-2:sb-1", :open)
+
+    Keyword.put(
+      context.opts,
+      :client,
+      Client.new(base_url: base_url, secret: "test-secret", group_id: context.group_id)
+    )
   end
 
   defp wait_until(fun, remaining_ms \\ 2_000)

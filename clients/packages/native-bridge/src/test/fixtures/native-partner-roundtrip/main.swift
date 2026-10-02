@@ -5,11 +5,12 @@ encoder.outputFormatting = [.sortedKeys]
 let decoder = JSONDecoder()
 
 let linkedMessageData = Data(
-    #"{"attachments":[],"delivery":"sent","messageId":"reply","refs":[],"replyToMessageId":"source","threadRootMessageId":"root","role":"assistant","source":"server","text":"Reply"}"#.utf8
+    #"{"attachments":[],"delivery":"sent","messageId":"reply","platformSource":"telegram","refs":[],"replyToMessageId":"source","threadRootMessageId":"root","role":"assistant","source":"server","text":"Reply"}"#.utf8
 )
 let linkedMessage = try decoder.decode(CommaChatMessage.self, from: linkedMessageData)
 precondition(linkedMessage.replyToMessageId == "source")
 precondition(linkedMessage.threadRootMessageId == "root")
+precondition(linkedMessage.platformSource == "telegram")
 let linkedMessageRoundTrip = try decoder.decode(CommaChatMessage.self, from: encoder.encode(linkedMessage))
 precondition(linkedMessageRoundTrip == linkedMessage)
 

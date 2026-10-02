@@ -180,6 +180,7 @@ def continuationRunnable (state : Term) : KernelM Bool := do
   if (← retryAt state) != nil then return false
   if ← terminalReplyTail state then return false
   if ← hasRunningAsyncTool state then return false
+  if (← billingFailureReason state).isBinary then return false
   if (← failuresExhausted state) || (← modelNotificationParked state) then return false
   if ← repairExhausted state then return false
   if ← modelGuardExhausted state then return false
@@ -206,6 +207,7 @@ def hasPendingStableInput (state : Term) : KernelM Bool := do
 /-- `State.has_unprocessed_stable_work?/1`. -/
 def hasUnprocessedStableWork (state : Term) : KernelM Bool := do
   if ← waiting state then return false
+  if (← billingFailureReason state).isBinary then return false
   if (← failuresExhausted state) || (← modelNotificationParked state) then return false
   if ← repairExhausted state then return false
   if ← modelGuardExhausted state then return false

@@ -30,6 +30,7 @@ type HelmRevision struct {
 
 type HelmUpgradeOptions struct {
 	DryRunServer bool
+	DeferWait    bool
 }
 
 type RollbackAuthorization struct {
@@ -65,7 +66,10 @@ func (h HelmAdapter) Upgrade(ctx context.Context, options HelmUpgradeOptions) (H
 	}
 	args := []string{"upgrade", h.Release, h.Chart,
 		"--namespace", h.Namespace, "--reset-values",
-		"--history-max", strconv.Itoa(historyMax), "--timeout", timeout.String(), "--wait=watcher"}
+		"--history-max", strconv.Itoa(historyMax), "--timeout", timeout.String()}
+	if !options.DeferWait {
+		args = append(args, "--wait=watcher")
+	}
 	args = append(args, "--server-side=true", "--force-conflicts")
 	input := h.ValuesJSON
 	if len(input) > 0 {

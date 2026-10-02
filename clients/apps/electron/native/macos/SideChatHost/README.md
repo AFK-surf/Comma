@@ -1,19 +1,21 @@
 # Comma Side Chat Gesture Host
 
 This bundled macOS helper is the thin native input partner for Comma's Electron
-side-chat window. It does not render chat UI, own messages, hold credentials,
-or create a visible AppKit/SwiftUI window. Electron owns the side-chat window
-and all product UI.
+side-chat window. It does not render chat UI, own messages, or hold
+credentials. Its only visible AppKit UI is the menu-bar item (see
+[Menu-bar item](#menu-bar-item)). Electron owns the side-chat window and all
+other product UI.
 
 The separate `../SideChatBackdrop` Node-API addon is the only native visual
-piece. It installs the original feathered `CABackdropLayer` inside the same
-Electron `NSWindow`; this helper never coordinates a second blur or overlay
-window.
+piece of Side Chat. It installs the original feathered `CABackdropLayer` inside
+the same Electron `NSWindow`; this helper never coordinates a second blur or
+overlay window.
 
-The helper remains native for one narrow reason: Comma's left-edge two-finger
+The helper remains native for two narrow reasons. Comma's left-edge two-finger
 interaction reads physical contacts from `MultitouchSupport.framework` before
 an Electron window is visible. Electron's public swipe event is a discrete
-three-finger window event and cannot preserve that interaction.
+three-finger window event and cannot preserve that interaction. The menu-bar
+menu needs a main thread that Electron Main does not share.
 
 Build it through the Electron package:
 
@@ -39,6 +41,10 @@ Supported controls are:
 - `side-chat.interactive-complete`
 - `side-chat.shortcut`
 - `side-chat.stop`
+- `side-chat.enabled` (off drops the edge gesture and the global shortcut and
+  closes the surface; Main sends it before the shortcut replay)
+- `status-menu.show`
+- `status-menu.hide`
 
 The helper emits `side-chat.presentation` snapshots containing a monotonic
 helper-local revision, reveal phase and progress, the exact horizontal content
@@ -77,8 +83,34 @@ pnpm --dir clients --filter @comma/native-bridge generate:partners
 The helper registers Control-Z as the default global hotkey and accepts
 `side-chat.shortcut` controls from Electron Main to replace it. Main sends the
 stored shortcut again after every bounded helper restart. The helper must not
-grow renderer behavior, chat commands, settings UI, a status item, or any
-authentication/data access.
+grow renderer behavior, chat commands, settings UI, or any authentication/data
+access.
+
+## Menu-bar item
+
+On macOS the helper also shows the Comma item in the menu bar and its menu.
+AppKit tracks a menu on the main thread of the process that owns it. In
+Electron Main that thread also runs the product runtime, and its tasks delayed
+the hover highlight by up to about 190 ms. The main thread of this helper is
+otherwise idle. This changes the earlier rule that the helper has no status
+item; the change was decided on 2026-10-01 to keep the menu hover off Main's
+thread.
+
+Electron Main owns the menu. `status-menu.show` carries the rows, the path of
+the template icon, the tooltip, and the menu width in points. Main sends it
+again after every helper restart, and `status-menu.hide` removes the item. The
+helper reports a chosen row as `status-menu.select` with the row id and runs
+nothing itself. Quit is also a row that Main runs. When the running helper is lost
+(it exits, its stream fails, or Main kills it, for example because another app
+took the saved shortcut), Main draws the menu with Electron's Tray until the
+menu-bar item is next turned off and on, so the item and its Settings and Quit
+rows stay usable.
+
+No row has an AppKit key equivalent, so AppKit reserves no key-equivalent
+column. A shortcut is secondary text at a right-aligned tab stop, and a long
+Task title ends with "…" at the right edge. The helper measures AppKit's
+padding on each update, because it differs between macOS versions. Rows that
+arrive while the menu is open wait until it closes.
 
 Electron Main treats renderer crash/load failure/unresponsiveness and every
 backdrop attach/geometry/reveal/health failure as fail-closed: it hides the

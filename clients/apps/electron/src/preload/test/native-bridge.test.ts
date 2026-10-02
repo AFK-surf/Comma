@@ -101,6 +101,20 @@ describe("createNativeBridgePreload", () => {
     expect(bridge.self).toEqual(expected);
   });
 
+  it("recognizes the full-screen onboarding renderer role", () => {
+    const bridge = createNativeBridgePreload(
+      { invoke: vi.fn(), on: vi.fn(), off: vi.fn() },
+      {
+        argv: ["--window-id=win_onboarding", "--window-role=onboarding-window"],
+      }
+    );
+
+    expect(bridge.self).toEqual({
+      role: "onboarding-window",
+      windowId: "win_onboarding",
+    });
+  });
+
   it("binds every runtime leaf to its generated main channel", async () => {
     const invoke = vi.fn(async (channel: string) => ({
       ok: true,
@@ -747,10 +761,7 @@ function sampleCommandInput(id: string) {
       return {
         session: TEST_SESSION_PRODUCT_LEASE,
         requestId: "11111111-1111-4111-8111-111111111111",
-        model: "model",
-        name: "Model",
-        maxTokens: 4096,
-        contextTokens: 0,
+        name: "TokenDance",
       };
     case "tokenDanceAuthorization.status":
     case "tokenDanceAuthorization.cancel":
@@ -760,6 +771,10 @@ function sampleCommandInput(id: string) {
         session: TEST_SESSION_PRODUCT_LEASE,
         requestId: "11111111-1111-4111-8111-111111111111",
       };
+    case "onboarding.presentWindow":
+      return { session: TEST_SESSION_PRODUCT_LEASE };
+    case "onboarding.closeWindow":
+      return {};
     case "applicationMenu.update":
       return {
         locale: "en",
@@ -810,6 +825,31 @@ function sampleCommandInput(id: string) {
       };
     case "computeNode.configure":
       return { desiredEnabled: true };
+    case "computeNode.maintainHost":
+      return { action: "update", dataPolicy: "preserve" };
+    case "computeNode.resumeHostMaintenance":
+      return { requestId: "00000000-0000-4000-8000-000000000001" };
+    case "computeNode.localOverview":
+      return {};
+    case "computeNode.disposeLocal":
+    case "computeNode.localWorkloads":
+      return { key: "local-environment-1" };
+    case "computeNode.resumeLocalDisposal":
+      return { requestId: "00000000-0000-4000-8000-000000000001" };
+    case "computeNode.recoveryCandidates":
+      return { workspaceId: "workspace-1" };
+    case "computeNode.recover":
+      return {
+        key: "00000000-0000-4000-8000-000000000001",
+        confirmationId: "authority-1:3",
+      };
+    case "computeNode.abandon":
+      return {
+        workspaceId: "workspace-1",
+        installationId: "installation-1",
+        confirmationId: "authority-1:3",
+        bindingRevision: 1,
+      };
     case "appearance.setResolvedTheme":
       return "light";
     case "appPreferences.initializeClientSettings":

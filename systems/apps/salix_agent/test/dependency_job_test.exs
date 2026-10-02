@@ -21,6 +21,22 @@ defmodule SalixAgent.DependencyJobTest do
     :ok
   end
 
+  test "a Tenant profile override replaces the per-Tenant admission limit" do
+    Application.put_env(:salix_agent, :dependency_max_children, 3)
+    send(SalixAgent.DependencyAdmission, {:tenant_limits, %{"guest-tenant" => 2}})
+    on_exit(fn -> send(SalixAgent.DependencyAdmission, {:tenant_limits, %{}}) end)
+
+    blocker = fn -> Process.sleep(:infinity) end
+    assert {:ok, first} = DependencyJob.start(:llm, "guest-tenant", blocker)
+    assert {:ok, second} = DependencyJob.start(:llm, "guest-tenant", blocker)
+    assert {:error, :dependency_saturated} = DependencyJob.start(:llm, "guest-tenant", blocker)
+
+    assert {:ok, other} = DependencyJob.start(:llm, "other-tenant", blocker)
+    assert {:error, :dependency_saturated} = DependencyJob.start(:llm, "other-tenant", blocker)
+
+    Enum.each([first, second, other], &DependencyJob.cancel/1)
+  end
+
   test "owner death cancels its task and releases global and tenant admission" do
     test_pid = self()
 

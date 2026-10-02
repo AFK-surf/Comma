@@ -265,7 +265,7 @@ html[data-comma-window-role="side-chat"] #root {
   border-radius: 20px;
   background: var(--comma-chat-user-bubble-background);
   padding-inline: 13px;
-  color: white;
+  color: var(--comma-chat-user-bubble-foreground, white);
 }
 
 .comma-chat-route[data-variant="side-chat"] .comma-chat-message-assistant {

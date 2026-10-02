@@ -9,7 +9,7 @@ defmodule BridgeForTeams.Conversations do
 
   require Logger
 
-  alias BridgeForTeams.{Accounts, Memberships, Observability, WorkspaceItems}
+  alias BridgeForTeams.{Accounts, Memberships, Observability}
   alias BridgeForTeams.Salix.Client
   alias BridgeForTeams.Schema.{Agent, Project}
   alias SalixStore.Ids
@@ -24,30 +24,6 @@ defmodule BridgeForTeams.Conversations do
     "notification_filter" => %{"messages" => "none", "statuses" => "none"}
   }
   @transient [:unavailable, :timeout]
-
-  @doc "Update generic mutable fields on a project conversation."
-  @spec update_project_conversation(Project.t(), String.t(), map()) ::
-          {:ok, map()} | {:error, term()}
-  def update_project_conversation(
-        %Project{salix_group_id: group_id} = project,
-        conversation_id,
-        attrs
-      )
-      when is_binary(conversation_id) and is_map(attrs) do
-    client = Client.impl()
-    attrs = stringify(attrs)
-
-    with {:ok, attrs} <-
-           preserve_workspace_presentation_on_update(
-             client,
-             group_id,
-             conversation_id,
-             attrs
-           ) do
-      client.update_group_conversation(group_id, conversation_id, attrs)
-      |> project_committed_conversation(project)
-    end
-  end
 
   @doc "Create a canonical agent Task with a Router delegator and Worker target."
   @spec create_project_task_conversation(
@@ -103,189 +79,14 @@ defmodule BridgeForTeams.Conversations do
   @spec accept_project_task_review(Project.t(), String.t(), pos_integer()) ::
           {:ok, map()} | {:error, term()}
   def accept_project_task_review(
-        %Project{salix_group_id: group_id} = project,
+        %Project{salix_group_id: group_id},
         conversation_id,
         review_version
       )
       when is_binary(conversation_id) and is_integer(review_version) and
              review_version > 0 do
     Client.impl().accept_task_review(group_id, conversation_id, review_version)
-    |> project_committed_conversation(project)
   end
-
-  @doc "Synchronously project one committed Conversation onto local workspace rows."
-  @spec project_project_conversation(Project.t(), String.t() | map()) ::
-          {:ok, [BridgeForTeams.WorkspaceItems.Item.t()]} | {:error, term()}
-  def project_project_conversation(%Project{} = project, conversation_id)
-      when is_binary(conversation_id) do
-    with {:ok, conversation} <- get_project_conversation(project, conversation_id) do
-      project_project_conversation(project, conversation)
-    end
-  end
-
-  def project_project_conversation(%Project{} = project, conversation)
-      when is_map(conversation) do
-    BridgeForTeams.DashboardProjection.project_conversations(project, [conversation])
-  end
-
-  @doc "Apply a user workspace edit to its canonical Conversation, then reread the projection."
-  @spec update_workspace_item(Project.t(), WorkspaceItems.Item.t(), map()) ::
-          {:ok, WorkspaceItems.Item.t()} | {:error, term()}
-  def update_workspace_item(%Project{} = project, %WorkspaceItems.Item{} = item, attrs)
-      when is_map(attrs) do
-    case item.salix_conversation_id do
-      conversation_id when is_binary(conversation_id) and conversation_id != "" ->
-        update_canonical_workspace_item(project, item, conversation_id, stringify(attrs))
-
-      _local_only ->
-        WorkspaceItems.update_task(item, attrs)
-    end
-  end
-
-  @doc "Soft-archive a workspace item through its canonical Conversation when linked."
-  @spec archive_workspace_item(Project.t(), WorkspaceItems.Item.t()) ::
-          {:ok, WorkspaceItems.Item.t()} | {:error, term()}
-  def archive_workspace_item(%Project{} = project, %WorkspaceItems.Item{} = item) do
-    case item.salix_conversation_id do
-      conversation_id when is_binary(conversation_id) and conversation_id != "" ->
-        with {:ok, conversation} <- get_project_conversation(project, conversation_id),
-             {:ok, archived} <-
-               Client.impl().set_task_archived(
-                 project.salix_group_id,
-                 conversation_id,
-                 :archive,
-                 conversation["updated_at"]
-               ),
-             {:ok, _items} <- project_project_conversation(project, archived),
-             {:ok, projected} <- reread_workspace_item(item, project, conversation_id) do
-          {:ok, projected}
-        end
-
-      _local_only ->
-        WorkspaceItems.update_task(item, %{
-          "status" => "archived",
-          "archived_at" => DateTime.utc_now()
-        })
-    end
-  end
-
-  @doc "Accept the exact reviewed Task version and synchronously reread its workspace row."
-  @spec accept_workspace_item_review(Project.t(), WorkspaceItems.Item.t()) ::
-          {:ok, WorkspaceItems.Item.t()} | {:error, term()}
-  def accept_workspace_item_review(
-        %Project{} = project,
-        %WorkspaceItems.Item{salix_conversation_id: conversation_id} = item
-      )
-      when is_binary(conversation_id) and conversation_id != "" do
-    with {:ok, %{"kind" => "agent_task", "updated_at" => review_version}}
-         when is_integer(review_version) and review_version > 0 <-
-           get_project_conversation(project, conversation_id),
-         {:ok, accepted} <-
-           accept_project_task_review(project, conversation_id, review_version),
-         {:ok, _items} <- project_project_conversation(project, accepted),
-         {:ok, projected} <- reread_workspace_item(item, project, conversation_id) do
-      {:ok, projected}
-    else
-      {:ok, %{"kind" => _other}} -> update_workspace_item(project, item, %{"status" => "done"})
-      {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_response}
-    end
-  end
-
-  def accept_workspace_item_review(%Project{} = project, %WorkspaceItems.Item{} = item),
-    do: update_workspace_item(project, item, %{"status" => "done"})
-
-  defp update_canonical_workspace_item(project, item, conversation_id, attrs) do
-    with {:ok, conversation} <- get_project_conversation(project, conversation_id),
-         updates <- canonical_workspace_updates(conversation, item, attrs),
-         {:ok, updated} <- update_project_conversation(project, conversation_id, updates),
-         {:ok, _items} <- project_project_conversation(project, updated),
-         {:ok, projected} <- reread_workspace_item(item, project, conversation_id) do
-      {:ok, projected}
-    end
-  end
-
-  defp canonical_workspace_updates(conversation, item, attrs) do
-    metadata =
-      conversation
-      |> Map.get("metadata", %{})
-      |> map_value()
-      |> put_workspace_metadata("workspace_category", attrs, "category", item.category)
-      |> put_workspace_metadata("payload", attrs, "payload", item.payload || %{})
-      |> put_workspace_metadata("source", attrs, "source", item.source)
-      |> put_workspace_metadata("platform", attrs, "platform", item.platform)
-      |> put_workspace_metadata("description", attrs, "description", item.description)
-      |> put_workspace_metadata(
-        "external_source",
-        attrs,
-        "external_source",
-        item.external_source
-      )
-      |> put_workspace_metadata("external_id", attrs, "external_id", item.external_id)
-      |> put_workspace_metadata(
-        "archived_at",
-        attrs,
-        "archived_at",
-        encode_datetime(item.archived_at)
-      )
-      |> Map.delete("workflow_summary")
-      |> Map.reject(fn {_key, value} -> is_nil(value) end)
-
-    %{"metadata" => metadata}
-    |> put_if_present("title", attrs, "title")
-    |> put_if_present("activity_status", attrs, "activity_status")
-    |> put_if_present("labels", attrs, "labels")
-    |> put_if_present("latest_artifact", attrs, "latest_artifact")
-    |> put_if_present("artifact_manifest", attrs, "artifact_manifest")
-    |> put_conversation_status(conversation, attrs)
-  end
-
-  defp put_workspace_metadata(metadata, key, attrs, attr_key, fallback) do
-    value =
-      case Map.fetch(attrs, attr_key) do
-        {:ok, value} -> encode_metadata_value(value)
-        :error -> Map.get(metadata, key, encode_metadata_value(fallback))
-      end
-
-    Map.put(metadata, key, value)
-  end
-
-  defp put_conversation_status(updates, conversation, attrs) do
-    case Map.fetch(attrs, "status") do
-      {:ok, status} ->
-        Map.put(updates, "status", conversation_status(conversation["kind"], status))
-
-      :error ->
-        updates
-    end
-  end
-
-  defp conversation_status("agent_task", "done"), do: "completed"
-
-  defp conversation_status("agent_task", status) when status in ["accepted", "in_progress"],
-    do: "active"
-
-  defp conversation_status(_kind, status), do: status
-
-  defp put_if_present(result, key, attrs, attr_key) do
-    case Map.fetch(attrs, attr_key) do
-      {:ok, value} -> Map.put(result, key, value)
-      :error -> result
-    end
-  end
-
-  defp reread_workspace_item(item, project, conversation_id) do
-    WorkspaceItems.get_task(item.row_user_id || item.user_id, conversation_id,
-      project_id: project.id
-    )
-  end
-
-  defp encode_metadata_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
-  defp encode_metadata_value(value), do: value
-  defp encode_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
-  defp encode_datetime(_value), do: nil
-  defp map_value(value) when is_map(value), do: value
-  defp map_value(_value), do: %{}
 
   @doc "Add or update the canonical Schedule on an existing Task conversation."
   @spec put_project_task_schedule(Project.t(), String.t(), map(), keyword()) ::
@@ -325,17 +126,37 @@ defmodule BridgeForTeams.Conversations do
     end
   end
 
-  @doc "List conversations for a project's Salix group."
+  @doc "List the first page of conversations for a project's Salix group."
   @spec list_project_conversations(Project.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def list_project_conversations(%Project{salix_group_id: group_id} = project, opts \\ []) do
+  def list_project_conversations(%Project{} = project, opts \\ []) do
+    with {:ok, page} <- page_project_conversations(project, Keyword.delete(opts, :cursor)),
+         do: {:ok, page.items}
+  end
+
+  @doc """
+  Read one page of conversations for a project's Salix group, most recently
+  updated first. `:limit` (default #{@default_limit}) bounds the page and
+  `:cursor` continues after a previous page's `next_cursor`.
+  """
+  @spec page_project_conversations(Project.t(), keyword()) ::
+          {:ok, %{items: [map()], next_cursor: String.t() | nil}} | {:error, term()}
+  def page_project_conversations(%Project{salix_group_id: group_id} = project, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
+    list_opts = [limit: limit] ++ if(opts[:cursor], do: [cursor: opts[:cursor]], else: [])
 
     result =
-      case Client.impl().list_group_conversations(group_id, limit: limit) do
-        {:ok, %{"data" => conversations}} when is_list(conversations) -> {:ok, conversations}
-        {:ok, conversations} when is_list(conversations) -> {:ok, conversations}
-        {:ok, _other} -> {:ok, []}
-        {:error, reason} -> {:error, reason}
+      case Client.impl().list_group_conversations(group_id, list_opts) do
+        {:ok, %{"data" => conversations} = page} when is_list(conversations) ->
+          {:ok, %{items: conversations, next_cursor: next_cursor(page)}}
+
+        {:ok, conversations} when is_list(conversations) ->
+          {:ok, %{items: conversations, next_cursor: nil}}
+
+        {:ok, _other} ->
+          {:ok, %{items: [], next_cursor: nil}}
+
+        {:error, reason} ->
+          {:error, reason}
       end
 
     maybe_record_conversation_list_diagnostic(project, limit, result)
@@ -388,13 +209,17 @@ defmodule BridgeForTeams.Conversations do
 
   defp maybe_record_conversation_list_diagnostic(_project, _limit, _result), do: :ok
 
+  defp next_cursor(%{"next_cursor" => cursor}) when is_binary(cursor) and cursor != "",
+    do: cursor
+
+  defp next_cursor(_page), do: nil
+
   @doc """
   Create a project conversation bound to an agent participant.
 
   `attrs["kind"]` keeps the BFT presentation term. `"user_chat"` (the default)
   is written to Salix as `user_chat`; every work-item term is written as the
-  canonical `agent_task` kind and, when recognized, retains its dashboard
-  category in conversation metadata.
+  canonical `agent_task` kind.
   """
   @spec create_project_conversation(Project.t(), Agent.t(), map(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -416,7 +241,6 @@ defmodule BridgeForTeams.Conversations do
         "participants" => participants(agent)
       }
       |> Map.merge(conversation_create_extras(attrs))
-      |> put_workspace_presentation(attrs["kind"])
 
     result =
       Client.impl().create_group_conversation(group_id, conversation_attrs)
@@ -426,65 +250,12 @@ defmodule BridgeForTeams.Conversations do
         persisted_conversation_id = conversation["conversation_id"]
         record_conversation_event(project, agent, persisted_conversation_id, "ok", nil, opts)
         maybe_record_conversation_audit(project, agent, persisted_conversation_id, opts)
-        maybe_project_conversation(project, conversation)
         {:ok, conversation}
 
       {:error, reason} = err ->
         record_conversation_event(project, agent, nil, "failed", reason, opts)
         maybe_record_conversation_write_attempt(err, project, agent, nil, opts)
         err
-    end
-  end
-
-  @doc """
-  Record a completed BFT work session as a canonical `agent_task` conversation
-  containing the agent's execution-log messages. This is how proactively
-  finished work (the New Home board) carries a real, inspectable session: the
-  dashboard shows the log, and the user reviews the result.
-
-  Participants suppress ordinary message notifications so recording the log
-  does not schedule the agent runtime. Returns `{:ok, conversation_id}`.
-  """
-  @spec record_agent_session(Project.t(), Agent.t(), String.t(), [String.t()]) ::
-          {:ok, String.t()} | {:error, term()}
-  def record_agent_session(
-        %Project{salix_group_id: group_id},
-        %Agent{} = agent,
-        title,
-        log_messages
-      )
-      when is_binary(title) and is_list(log_messages) do
-    participants =
-      participants(agent)
-      |> Enum.map(
-        &Map.put(
-          &1,
-          "notification_filter",
-          %{"messages" => "none", "statuses" => "none"}
-        )
-      )
-
-    with {:ok, conversation} <-
-           Client.impl().create_group_conversation(group_id, %{
-             "title" => title,
-             "kind" => "agent_task",
-             "participants" => participants
-           }) do
-      persisted_id = conversation["conversation_id"]
-
-      Enum.each(log_messages, fn text ->
-        Client.impl().append_group_conversation_message(group_id, persisted_id, %{
-          "client_request_id" => "tasklog-" <> Ecto.UUID.generate(),
-          "kind" => "message",
-          "actor_type" => "agent",
-          "agent_id" => agent.salix_agent_id,
-          "agent_name" => agent.salix["name"],
-          "content" => [%{"type" => "text", "text" => text}],
-          "metadata" => %{"source" => "bridge_for_teams_dashboard"}
-        })
-      end)
-
-      {:ok, persisted_id}
     end
   end
 
@@ -592,92 +363,6 @@ defmodule BridgeForTeams.Conversations do
   end
 
   @doc """
-  The runtime session id under which `agent` runs `conversation_id`'s turns.
-  A worker uses its per-conversation session. A router uses the canonical
-  session persisted on its Salix agent control record.
-  """
-  @spec conversation_session_ids(Project.t(), Agent.t() | nil, String.t() | nil) :: [String.t()]
-  def conversation_session_ids(
-        %Project{} = project,
-        %Agent{role: "worker", salix_agent_id: agent_id},
-        conversation_id
-      )
-      when is_binary(conversation_id) and conversation_id != "",
-      do: conversation_participant_session_ids(project, conversation_id, agent_id)
-
-  def conversation_session_ids(
-        %Project{salix_group_id: group_id},
-        %Agent{role: "router", salix_agent_id: agent_id},
-        _conversation_id
-      )
-      when is_binary(group_id) and group_id != "" and is_binary(agent_id) and agent_id != "" do
-    with true <- Ids.valid_group_id?(group_id),
-         tenant_id <- Ids.tenant_id_from_group!(group_id),
-         {:ok, router_agent} <- Client.impl().get_agent_projection(agent_id, tenant_id),
-         {:ok, session_id} <-
-           SalixStore.RuntimeIds.persisted_router_session_id(router_agent) do
-      [session_id]
-    else
-      _ -> []
-    end
-  end
-
-  def conversation_session_ids(%Project{} = project, nil, conversation_id)
-      when is_binary(conversation_id) and conversation_id != "" do
-    conversation_participant_session_ids(project, conversation_id, nil)
-  end
-
-  def conversation_session_ids(%Project{}, nil, _conversation_id), do: []
-
-  def conversation_session_ids(%Project{}, _agent, _conversation_id), do: []
-
-  defp conversation_participant_session_ids(project, conversation_id, agent_id) do
-    case get_project_conversation(project, conversation_id) do
-      {:ok, conversation} ->
-        conversation
-        |> trace_participant_candidates()
-        |> Enum.filter(&(is_nil(agent_id) or &1.agent_id == agent_id))
-        |> Enum.map(& &1.session_id)
-        |> Enum.uniq()
-
-      {:error, _reason} ->
-        []
-    end
-  end
-
-  @doc """
-  The compaction marker for `conversation_id`'s chat: the summed
-  `summary_sequence` of the runtime sessions the agent may run it in
-  (`conversation_session_ids/3`). It grows whenever one of those sessions
-  compacts its transcript, so a caller that wrote durable context into the
-  conversation can tell "the transcript was summarized since my last send"
-  and re-send. Best-effort: an unreachable runtime (or a scripted test client
-  without the read) answers 0.
-  """
-  @spec conversation_compaction_marker(Project.t(), Agent.t() | nil, String.t() | nil) ::
-          non_neg_integer()
-  def conversation_compaction_marker(%Project{} = project, agent, conversation_id) do
-    impl = Client.impl()
-
-    with %Agent{salix_agent_id: agent_id} when is_binary(agent_id) and agent_id != "" <- agent,
-         sessions when sessions != [] <- conversation_session_ids(project, agent, conversation_id),
-         true <- Code.ensure_loaded?(impl) and function_exported?(impl, :list_sessions, 2),
-         {:ok, listed} when is_list(listed) <- impl.list_sessions(agent_id, include_hidden: true) do
-      listed
-      |> Enum.filter(&(is_map(&1) and &1["session_id"] in sessions))
-      |> Enum.map(fn session ->
-        case session["summary_sequence"] do
-          seq when is_integer(seq) and seq > 0 -> seq
-          _missing -> 0
-        end
-      end)
-      |> Enum.sum()
-    else
-      _missing_or_error -> 0
-    end
-  end
-
-  @doc """
   The agent's current in-memory activity surface — the last live
   thinking/typing/execution signal per running session (see
   `SalixAgent.ActivitySurface`) — for seeding a status display on connect.
@@ -730,8 +415,6 @@ defmodule BridgeForTeams.Conversations do
     end
   end
 
-  def bft_participant_attrs, do: @bft_participant
-
   def ensure_project_bft_participant(
         %Project{salix_group_id: group_id},
         conversation_id
@@ -739,7 +422,7 @@ defmodule BridgeForTeams.Conversations do
     Client.impl().ensure_group_conversation_provider_participant(
       group_id,
       conversation_id,
-      bft_participant_attrs()
+      @bft_participant
     )
   end
 
@@ -986,101 +669,6 @@ defmodule BridgeForTeams.Conversations do
 
   defp conversation_create_extras(attrs) do
     Map.take(attrs, @conversation_create_extra_fields)
-  end
-
-  defp put_workspace_presentation(conversation_attrs, requested_kind)
-       when is_binary(requested_kind) do
-    kind = String.trim(requested_kind)
-
-    if kind != "agent_task" and kind in WorkspaceItems.kinds() do
-      case Map.get(conversation_attrs, "metadata") do
-        nil ->
-          Map.put(conversation_attrs, "metadata", %{
-            "workspace_category" => WorkspaceItems.category_for_kind(kind)
-          })
-
-        metadata when is_map(metadata) ->
-          Map.put(
-            conversation_attrs,
-            "metadata",
-            Map.put_new(metadata, "workspace_category", WorkspaceItems.category_for_kind(kind))
-          )
-
-        _invalid_metadata ->
-          conversation_attrs
-      end
-    else
-      conversation_attrs
-    end
-  end
-
-  defp put_workspace_presentation(conversation_attrs, _requested_kind),
-    do: conversation_attrs
-
-  defp preserve_workspace_presentation_on_update(
-         client,
-         group_id,
-         conversation_id,
-         %{"metadata" => metadata} = attrs
-       )
-       when is_map(metadata) do
-    case client.get_group_conversation(group_id, conversation_id) do
-      {:ok, %{"metadata" => existing_metadata}} when is_map(existing_metadata) ->
-        workspace_category = existing_metadata["workspace_category"]
-
-        if is_binary(workspace_category) and workspace_category != "" do
-          {:ok,
-           Map.put(
-             attrs,
-             "metadata",
-             Map.put_new(metadata, "workspace_category", workspace_category)
-           )}
-        else
-          {:ok, attrs}
-        end
-
-      {:ok, _conversation} ->
-        {:ok, attrs}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp preserve_workspace_presentation_on_update(
-         _client,
-         _group_id,
-         _conversation_id,
-         attrs
-       ),
-       do: {:ok, attrs}
-
-  defp project_committed_conversation({:ok, conversation} = result, project) do
-    maybe_project_conversation(project, conversation)
-    result
-  end
-
-  defp project_committed_conversation(result, _project), do: result
-
-  defp maybe_project_conversation(project, conversation) do
-    case BridgeForTeams.DashboardProjection.project_conversations(project, [conversation]) do
-      {:ok, _items} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "project_conversation_projection_failed project_id=#{project.id} reason=#{inspect(reason)}"
-        )
-
-        :ok
-    end
-  rescue
-    error ->
-      Logger.warning(
-        "project_conversation_projection_failed project_id=#{project.id} reason=#{Exception.message(error)}"
-      )
-
-      :ok
   end
 
   defp participants(agent) do

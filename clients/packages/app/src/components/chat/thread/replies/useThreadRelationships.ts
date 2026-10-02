@@ -29,6 +29,7 @@ export function useThreadRelationships({
   replyChain,
   revealTurn,
   turnWindow: { visibleCanonicalTurns },
+  variant,
 }: {
   api: CommaApiClient | undefined;
   assistantDraft: ChatAssistantDraft | undefined;
@@ -44,6 +45,7 @@ export function useThreadRelationships({
   replyChain: ReturnType<typeof useReplyChainHighlight>;
   revealTurn: RevealTurn;
   turnWindow: Pick<ThreadTurnWindow, "visibleCanonicalTurns">;
+  variant: "default" | "side-chat";
 }) {
   const { historyBoundaryMessageId, messages } = history;
   const highlightedMessageId = replyChain.messageId;
@@ -96,29 +98,29 @@ export function useThreadRelationships({
       turn.entries.flatMap((entry) => (entry.message ? [entry.message] : []))
     );
     if (draftRelationship) visibleMessages.push(draftRelationship);
-    const layout = messageRelationships(
-      visibleMessages,
-      new Set([
-        ...visibleCanonicalTurns.flatMap((turn) =>
-          turn.timestamp ? [turn.timestamp.messageId] : []
-        ),
-        ...(historyBoundaryMessageId ? [historyBoundaryMessageId] : []),
-      ])
-    );
+    const groupBreaks = new Set([
+      ...visibleCanonicalTurns.flatMap((turn) =>
+        variant !== "side-chat" && turn.timestamp ? [turn.timestamp.messageId] : []
+      ),
+      ...(historyBoundaryMessageId ? [historyBoundaryMessageId] : []),
+    ]);
+    const layout = messageRelationships(visibleMessages, groupBreaks);
     const tailMessageIds = new Set(
       visibleMessages
         .filter((message, index) => {
           const next = visibleMessages[index + 1];
           return (
             !next ||
+            groupBreaks.has(next.messageId) ||
             message.role !== next.role ||
+            message.platformSource !== next.platformSource ||
             (message.role === "user" && message.createdBy !== next.createdBy)
           );
         })
         .map((message) => message.messageId)
     );
     return { ...layout, tailMessageIds };
-  }, [draftRelationship, historyBoundaryMessageId, visibleCanonicalTurns]);
+  }, [draftRelationship, historyBoundaryMessageId, variant, visibleCanonicalTurns]);
   // Stays the same object while only the draft changes.
   const messageById = useMemo(
     () => new Map(messages.map((message) => [message.messageId, message])),

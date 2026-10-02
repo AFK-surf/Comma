@@ -89,14 +89,15 @@ CI runs the same flow in the `dashboard-e2e` job of
 
 ## Meeting preparation preview
 
-Use the production LiveView with local provider fixtures and clearly labeled sample meetings:
+Use the production Dashboard with local provider fixtures and clearly labeled sample meetings:
 
 ```sh
 MIX_ENV=test MEETING_PREVIEW_DB_PORT=<local-postgres-port> \
   mix run --no-start apps/bridge_for_teams_web/e2e/meeting_preparation_preview.exs
 ```
 
-Run this command from `systems/` after building the Dashboard assets.
+Run this command from `systems/` after building the Dashboard assets and the React dashboard
+(`pnpm --dir clients --filter @comma/bft build`).
 It creates dedicated `*_meeting_preview` databases on loopback and serves port 4411.
 Open the printed login URL. The preview creates no schedules, model runs, or provider messages.
 Its calendar accounts, channel, meeting statuses, reports, and history links are local test data.

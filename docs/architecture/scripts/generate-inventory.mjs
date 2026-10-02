@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,6 +59,7 @@ function collectClientPackages() {
 
 function collectOtpApps() {
   return immediateDirectories(join(repositoryRoot, "systems/apps"))
+    .filter((directory) => existsSync(join(directory, "mix.exs")))
     .map((directory) => {
       const mixPath = join(directory, "mix.exs");
       const source = read(mixPath);
@@ -245,24 +246,6 @@ const productConceptAnchorSpecs = [
     path: "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/project.ex",
   },
   {
-    concept: "BFT 当前 Assistant Chat",
-    layer: "产品绑定",
-    implementation: "BridgeForTeams.Schema.UserAssistantChat",
-    path: "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/schema/user_assistant_chat.ex",
-  },
-  {
-    concept: "Agent 工作范围的 Chat-ready 条件",
-    layer: "产品生命周期",
-    implementation: "BridgeForTeams.AssistantChats.ensure_chat/4",
-    path: "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex",
-    tests: [
-      {
-        path: "systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs",
-        name: "invalid router config creates no chat",
-      },
-    ],
-  },
-  {
     concept: "Conversation",
     layer: "协作事实",
     implementation: "SalixIM.ConversationActor",
@@ -409,18 +392,6 @@ const productConceptAnchorSpecs = [
       {
         path: "systems/apps/salix_im/test/conversations_test.exs",
         name: "concurrent Router reassignment cannot deactivate both desired Router participants",
-      },
-    ],
-  },
-  {
-    concept: "BFT 控制面显式重新指定 Group Router",
-    layer: "产品生命周期",
-    implementation: "BridgeForTeams.AssistantChats",
-    path: "systems/apps/bridge_for_teams_core/lib/bridge_for_teams/assistant_chats.ex",
-    tests: [
-      {
-        path: "systems/apps/bridge_for_teams_core/test/contexts/assistant_chats_test.exs",
-        name: "revalidates canonical kind, current Router, and BFT provider before reuse",
       },
     ],
   },

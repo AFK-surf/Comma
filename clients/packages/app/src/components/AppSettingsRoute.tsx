@@ -4,8 +4,7 @@ import { useProactiveSetting } from "./recommendations/useProactiveSetting";
 import { useComputeNodeCategory } from "./useComputeNodeCategory";
 import { useComputerUsePermissions } from "./useComputerUsePermissions";
 import { useWeChatIntegration } from "./useWeChatIntegration";
-import { useSubscriptionAccountsSections } from "./useSubscriptionAccountsSections";
-import { useModelTemplatesCategory } from "./useModelTemplatesCategory";
+import { useModelsCategory } from "./models/useModelsCategory";
 import { useArchivedTasksCategory } from "./tasks/useArchivedTasksCategory";
 import { useSharedTasksCategory } from "./tasks/useSharedTasksCategory";
 import { useDeviceSettingsCategory } from "./devices/useDeviceSettingsCategory";
@@ -13,7 +12,7 @@ import { useTaskLabelsCategory } from "./tasks/useTaskLabelsCategory";
 import { useRouterApiKeysCategory } from "./inbound-api/useRouterApiKeysCategory";
 import { useVoiceSettingsCategory } from "./voice/useVoiceSettingsCategory";
 import { useSignalIntegration } from "./signal/useSignalIntegration";
-import type { CommaLocalePreference } from "@comma/i18n";
+import { supportedLocales, type CommaLocale } from "@comma/i18n";
 import {
   getNativeBridge,
   notchSideWidthRange,
@@ -30,11 +29,13 @@ import {
   NotchWidthSetting,
   SettingsDialog,
   TelegramProviderLogo,
+  toast,
   Tooltip,
   VolumeFullIcon,
   type AppKeybinding,
   type DropdownItem,
   type SettingsCategoryDefinition,
+  type SettingsCategoryGroupDefinition,
   type SettingsControl,
   type SettingsPanelItem,
 } from "@comma/ui";
@@ -67,9 +68,12 @@ import { useOptionalChatActionRegistry } from "./chat/ChatProvider";
 import { UserAvatar } from "./UserAvatar";
 import { LinkProviderIcon } from "./links/linkPreviewCards";
 import { useProfileAvatarUrl } from "./useProfileAvatarUrl";
-import { ProfileAvatarImageError, prepareProfileAvatar } from "./profileAvatarImage";
+import { AvatarCropDialog } from "./profile/AvatarCropDialog";
+import { avatarTypes, isAcceptedAvatarFile } from "./profile/avatarImage";
 import { useOptionalCommandPalette } from "./search/CommandPaletteContext";
 import { useCommaSettingsOverlay } from "./settingsOverlay";
+import { useOnboardingReplaySection } from "./onboarding/useOnboardingReplaySection";
+import { needsDesktopApp, requestDesktopApp } from "./DesktopAppPrompt";
 import {
   appShortcutDefinitions,
   type AppShortcutId,
@@ -87,7 +91,6 @@ import {
   openNativePlatformExternalUrlFromUserAction,
 } from "../runtime-chat/nativePlatformActions";
 
-const localePreferences = ["system", "en", "zh-CN"] as const;
 const fontSizePreferences = ["small", "default", "large"] as const;
 // Font menu keys. The prefix keeps a family named "default" apart from Comma's own.
 const defaultFontFamilyKey = "default";
@@ -126,12 +129,59 @@ function abortableDelay(milliseconds: number, signal: AbortSignal) {
   });
 }
 
-function isLocalePreference(value: string): value is CommaLocalePreference {
-  return localePreferences.some((preference) => preference === value);
+function isLocale(value: string): value is CommaLocale {
+  return supportedLocales.some((locale) => locale === value);
 }
 
 function isFontSizePreference(value: string): value is CommaFontSizePreference {
   return fontSizePreferences.some((preference) => preference === value);
+}
+
+// A guest Session keeps only device-local preferences and its account row.
+const guestSettingsCategoryIds = new Set([
+  "general",
+  "profile",
+  "appearance",
+  "notifications",
+  "keyboard-shortcuts",
+]);
+const guestHiddenSettingsSectionIds = new Set([
+  "general.permissions",
+  "general.airdrop",
+  // A guest Session has no onboarding to replay.
+  "general.onboarding",
+]);
+const guestHiddenShortcutIds = new Set<AppShortcutId>([
+  "go-inbox",
+  "go-drive",
+  "go-tasks",
+  "go-plugins",
+  "toggle-right-sidebar",
+]);
+
+function guestSettingsGroups(
+  groups: readonly SettingsCategoryGroupDefinition[],
+  accountItems: SettingsPanelItem[]
+): SettingsCategoryGroupDefinition[] {
+  return groups.flatMap((group) => {
+    const categories = group.categories
+      .filter((category) => guestSettingsCategoryIds.has(category.id))
+      .map((category): SettingsCategoryDefinition => {
+        // General's overlay renames this device for AirDrop from the account.
+        const { overlay: _overlay, ...withoutOverlay } = category;
+        return {
+          ...(category.id === "general" ? withoutOverlay : category),
+          sections: category.sections
+            .filter((section) => !guestHiddenSettingsSectionIds.has(section.id))
+            .map((section) =>
+              section.id === "profile.account"
+                ? { ...section, items: accountItems }
+                : section
+            ),
+        };
+      });
+    return categories.length > 0 ? [{ ...group, categories }] : [];
+  });
 }
 
 // Read from the hash rather than the router: this route also renders in the
@@ -171,7 +221,7 @@ export function AppSettingsRoute({
   // menu links straight to Routines). Local state still owns the
   // selection afterwards, so clicking another category does not fight the URL.
   const linkedCategoryId = useLinkedSettingsCategory();
-  const [activeCategoryId, setActiveCategoryId] = useState(
+  const [selectedCategoryId, setActiveCategoryId] = useState(
     () => linkedCategoryId ?? "general"
   );
   useEffect(() => {
@@ -180,7 +230,27 @@ export function AppSettingsRoute({
   const m = useCommaMessages();
   const clientSettings = useCommaClientSettings();
   const clientSettingsPending = useCommaClientSettingsPending();
+  const onboardingReplay = useOnboardingReplaySection();
   const auth = useCommaAuth();
+  const guest = auth.isGuest === true;
+  // Every category reader below keys off this id, so a guest never loads the
+  // account-wide categories it cannot open.
+  const activeCategoryId =
+    guest && !guestSettingsCategoryIds.has(selectedCategoryId)
+      ? "general"
+      : selectedCategoryId;
+  const [guestDiscardOpen, setGuestDiscardOpen] = useState(false);
+  const [guestSignUpPending, setGuestSignUpPending] = useState(false);
+  const beginGuestSignUp = () => {
+    if (!auth.beginGuestSignUp || guestSignUpPending) return;
+    setGuestSignUpPending(true);
+    void auth
+      .beginGuestSignUp()
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setGuestSignUpPending(false));
+  };
   const { closeSettings } = useCommaSettingsOverlay();
   // The palette opened over Settings renders inside the modal, so its focus
   // scope nests in the modal's rather than contending with it.
@@ -193,15 +263,7 @@ export function AppSettingsRoute({
   // once. A render without a product session uses the signed-in client.
   const api = useOptionalChatActionRegistry()?.api ?? auth.api;
   const browserCategory = useBrowserSettingsCategory(api);
-  const subscriptionAccounts = useSubscriptionAccountsSections(
-    api,
-    activeCategoryId === "models"
-  );
-  const modelTemplates = useModelTemplatesCategory(
-    api,
-    activeCategoryId === "models",
-    subscriptionAccounts.modelCatalogRevision
-  );
+  const models = useModelsCategory(api, activeCategoryId === "models");
   const devicesCategory = useDeviceSettingsCategory(
     api,
     activeCategoryId === "devices"
@@ -218,7 +280,7 @@ export function AppSettingsRoute({
     useTaskLabelsCategory(
       api,
       activeCategoryId === "labels",
-      activeCategoryId === "general"
+      activeCategoryId === "general" && !guest
     );
   const routerApiKeysCategory = useRouterApiKeysCategory(
     api,
@@ -235,10 +297,12 @@ export function AppSettingsRoute({
   const [nameDialogOpen, setNameDialogOpen] = useState(false);
   const [notificationPermissionDialogOpen, setNotificationPermissionDialogOpen] =
     useState(false);
+  const [keepAwakeApprovalDialogOpen, setKeepAwakeApprovalDialogOpen] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [avatarPending, setAvatarPending] = useState(false);
   const [namePending, setNamePending] = useState(false);
   const [avatarError, setAvatarError] = useState<string>();
+  const [avatarCropFile, setAvatarCropFile] = useState<File>();
   const [nameError, setNameError] = useState<string>();
   const [recommendationWorkspaceId, setRecommendationWorkspaceId] = useState<string>();
   const [recommendations, setRecommendations] = useState<CommaRecommendationEnvelope>();
@@ -268,7 +332,7 @@ export function AppSettingsRoute({
     ? (profile.avatar_id ?? undefined)
     : auth.avatarRevision;
   const avatarUrl = useProfileAvatarUrl(avatarRevision);
-  const { locale, localePreference, setLocalePreference } = useCommaI18n();
+  const { locale, setLocalePreference } = useCommaI18n();
   const {
     fontFamily,
     fontSize,
@@ -349,6 +413,8 @@ export function AppSettingsRoute({
     activeCategoryId === "compute-node"
   );
   const computerUse = useComputerUsePermissions(activeCategoryId === "computer-use");
+  // In a browser, the desktop app's controls stay live and offer the Mac app.
+  const desktopOnly = needsDesktopApp();
   const permissionStatus = (granted: boolean | undefined) =>
     !computerUse.available
       ? m.settings_computer_use_macos_only()
@@ -360,7 +426,9 @@ export function AppSettingsRoute({
 
   // The web client shows no Drive, so it offers no shortcut to it.
   const settingsShortcutDefinitions = appShortcutDefinitions.filter(
-    (definition) => definition.id !== "go-drive" || driveSynchronicityAvailable()
+    (definition) =>
+      (definition.id !== "go-drive" || driveSynchronicityAvailable()) &&
+      !(guest && guestHiddenShortcutIds.has(definition.id))
   );
   const generalShortcutCopy: Record<
     AppShortcutId,
@@ -421,6 +489,7 @@ export function AppSettingsRoute({
     preferences: appPreferences,
     showInSystemTray,
     update: updateAppPreferences,
+    openLoginItemsSettings,
     openNotificationSettings,
   } = useCommaAppPreferences();
   const airDropName = useAirDropNameSetting({
@@ -449,7 +518,7 @@ export function AppSettingsRoute({
   };
 
   useEffect(() => {
-    if (activeCategoryId !== "profile" || profile) return;
+    if (activeCategoryId !== "profile" || profile || guest) return;
     const controller = new AbortController();
     setProfileLoading(true);
     setAvatarError(undefined);
@@ -473,7 +542,7 @@ export function AppSettingsRoute({
       });
 
     return () => controller.abort();
-  }, [activeCategoryId, api, m, profile]);
+  }, [activeCategoryId, api, guest, m, profile]);
 
   useEffect(() => {
     if (activeCategoryId !== "recommendations") {
@@ -496,7 +565,6 @@ export function AppSettingsRoute({
           workspaces[0];
         if (!workspace) throw new Error("workspace unavailable");
         let envelope = await api.getRecommendations(workspace.id, {
-          locale,
           signal: controller.signal,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         });
@@ -514,7 +582,6 @@ export function AppSettingsRoute({
         ) {
           await abortableDelay(recommendationSourcePollDelayMs, controller.signal);
           envelope = await api.getRecommendations(workspace.id, {
-            locale,
             signal: controller.signal,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           });
@@ -533,7 +600,7 @@ export function AppSettingsRoute({
       });
 
     return () => controller.abort();
-  }, [activeCategoryId, api, locale]);
+  }, [activeCategoryId, api]);
 
   useEffect(() => {
     if (activeCategoryId !== "channels") return;
@@ -808,22 +875,40 @@ export function AppSettingsRoute({
     setAvatarError(undefined);
     try {
       publishProfile(await operation());
-    } catch (error) {
-      setAvatarError(
-        error instanceof ProfileAvatarImageError
-          ? m.settings_profile_avatar_invalid()
-          : m.settings_profile_save_failed()
-      );
+    } catch {
+      setAvatarError(m.settings_profile_save_failed());
     } finally {
       setAvatarPending(false);
     }
   };
 
-  const uploadAvatar = (file?: File) => {
+  const chooseAvatar = (file?: File) => {
     if (!file) return;
-    void runAvatarOperation(async () =>
-      api.uploadAvatar(await prepareProfileAvatar(file))
-    );
+    if (!isAcceptedAvatarFile(file)) {
+      setAvatarError(m.settings_profile_avatar_help());
+      return;
+    }
+    setAvatarError(undefined);
+    setAvatarCropFile(file);
+  };
+
+  // Close the crop dialog only after the upload settles: while it runs the
+  // Choose image button is disabled, and focus could not return to it.
+  const uploadAvatar = async (file: File) => {
+    await runAvatarOperation(() => api.uploadAvatar(file));
+    setAvatarCropFile(undefined);
+  };
+
+  // The language belongs to the account, so every device and server-written
+  // text follow it. This device switches once the account has it.
+  const saveLocale = async (next: CommaLocale) => {
+    if (next === locale) return;
+    try {
+      publishProfile(await api.updateProfile({ locale: next }));
+      setLocalePreference(next);
+    } catch {
+      toast.error(m.settings_profile_save_failed());
+    }
   };
 
   const saveName = async () => {
@@ -950,10 +1035,15 @@ export function AppSettingsRoute({
   // The OS decides whether Comma may notify at all. When it says no, the master
   // switch still reads as off and stays interactive: turning it on opens a
   // dialog that jumps to System Settings. The stored choice is kept for when
-  // the OS allows it again.
+  // the OS allows it again. An OS that has not asked the user yet
+  // (`undetermined`) reads like an available one: its prompt comes with the
+  // first banner. So does one Main could not ask (`unknown`): Electron decides
+  // when the banner is posted.
   const systemNotificationsStatus =
     appPreferences?.systemNotificationsStatus ?? "available";
-  const systemNotificationsBlocked = systemNotificationsStatus !== "available";
+  const systemNotificationsBlocked =
+    systemNotificationsStatus === "denied" ||
+    systemNotificationsStatus === "unsupported";
   const systemNotificationsOn =
     (appPreferences?.systemNotifications ?? false) && !systemNotificationsBlocked;
   const systemNotificationsChecked =
@@ -978,7 +1068,44 @@ export function AppSettingsRoute({
       systemNotifications: next,
     });
   };
-  const registry = createSettingsRegistry({
+  // macOS runs the sleep guard only after the user allows it once in Login
+  // Items. Until then the choice waits: the switch reads off, turning it on
+  // explains where to allow Comma, and Main's readback when a window regains
+  // focus turns it on. Cancelling withdraws the choice, so a later approval
+  // does not keep the Mac awake without the user asking again.
+  const keepAwakeStatus = appPreferences?.keepAwakeWhenLidClosedStatus;
+  const keepAwakeChosen = appPreferences?.keepAwakeWhenLidClosed ?? false;
+  const keepAwakeWaiting =
+    keepAwakeStatus === "not-registered" || keepAwakeStatus === "requires-approval";
+  const keepAwakeOn =
+    keepAwakeChosen &&
+    (keepAwakeStatus === undefined || keepAwakeStatus === "available");
+  const keepAwakeDescription =
+    appPreferencesAvailability.keepAwakeWhenLidClosed &&
+    keepAwakeStatus === "unavailable"
+      ? m.settings_keep_awake_lid_closed_unavailable_description()
+      : keepAwakeChosen && keepAwakeWaiting
+        ? m.settings_keep_awake_lid_closed_requires_approval_description()
+        : m.settings_keep_awake_lid_closed_description();
+  const handleKeepAwakeChange = async (event: { target: { checked: boolean } }) => {
+    if (!event.target.checked) {
+      setKeepAwakeApprovalDialogOpen(false);
+      void updateAppPreferences({ keepAwakeWhenLidClosed: false });
+      return;
+    }
+    const acknowledged = await updateAppPreferences({ keepAwakeWhenLidClosed: true });
+    if (
+      acknowledged?.keepAwakeWhenLidClosed &&
+      acknowledged.keepAwakeWhenLidClosedStatus === "requires-approval"
+    ) {
+      setKeepAwakeApprovalDialogOpen(true);
+    }
+  };
+  const cancelKeepAwakeApproval = () => {
+    setKeepAwakeApprovalDialogOpen(false);
+    void updateAppPreferences({ keepAwakeWhenLidClosed: false });
+  };
+  const accountRegistry = createSettingsRegistry({
     groups: [
       {
         id: "preferences",
@@ -1029,10 +1156,9 @@ export function AppSettingsRoute({
                     keywords: ["locale", "语言"],
                     control: {
                       type: "dropdown",
-                      value: localePreference,
+                      value: locale,
                       placeholder: m.settings_language_select(),
                       items: [
-                        { id: "system", label: m.settings_language_system() },
                         { id: "en", label: m.settings_language_english() },
                         {
                           id: "zh-CN",
@@ -1040,9 +1166,7 @@ export function AppSettingsRoute({
                         },
                       ],
                       onChange: (value) => {
-                        if (isLocalePreference(value)) {
-                          setLocalePreference(value);
-                        }
+                        if (isLocale(value)) void saveLocale(value);
                       },
                     },
                   },
@@ -1058,11 +1182,13 @@ export function AppSettingsRoute({
                       type: "toggle",
                       checked: appPreferences?.launchAtLogin ?? false,
                       disabled:
-                        !appPreferencesAvailability.launchAtLogin ||
-                        !appPreferences ||
-                        appPreferences.launchAtLoginStatus === "requires-approval" ||
-                        appPreferencesPending,
+                        !desktopOnly &&
+                        (!appPreferencesAvailability.launchAtLogin ||
+                          !appPreferences ||
+                          appPreferences.launchAtLoginStatus === "requires-approval" ||
+                          appPreferencesPending),
                       onChange: (event) => {
+                        if (desktopOnly) return requestDesktopApp("launch-at-login");
                         void updateAppPreferences({
                           launchAtLogin: event.target.checked,
                         });
@@ -1081,10 +1207,12 @@ export function AppSettingsRoute({
                       type: "toggle",
                       checked: appPreferences?.showInMenuBar ?? false,
                       disabled:
-                        !appPreferencesAvailability.showInMenuBar ||
-                        !appPreferences ||
-                        appPreferencesPending,
+                        !desktopOnly &&
+                        (!appPreferencesAvailability.showInMenuBar ||
+                          !appPreferences ||
+                          appPreferencesPending),
                       onChange: (event) => {
+                        if (desktopOnly) return requestDesktopApp("menu-bar");
                         void updateAppPreferences({
                           showInMenuBar: event.target.checked,
                         });
@@ -1099,13 +1227,55 @@ export function AppSettingsRoute({
                       type: "toggle",
                       checked: appPreferences?.showInDock ?? false,
                       disabled:
-                        !appPreferencesAvailability.showInDock ||
-                        !appPreferences ||
-                        appPreferencesPending,
+                        !desktopOnly &&
+                        (!appPreferencesAvailability.showInDock ||
+                          !appPreferences ||
+                          appPreferencesPending),
                       onChange: (event) => {
+                        if (desktopOnly) return requestDesktopApp("dock");
                         void updateAppPreferences({
                           showInDock: event.target.checked,
                         });
+                      },
+                    },
+                  },
+                  ...(appPreferencesAvailability.sideChat
+                    ? [
+                        {
+                          id: "app.side-chat",
+                          title: m.settings_side_chat(),
+                          description: m.settings_side_chat_description(),
+                          keywords: ["side chat", "侧边聊天"],
+                          control: {
+                            type: "toggle" as const,
+                            checked: appPreferences?.sideChatEnabled ?? false,
+                            disabled: !appPreferences || appPreferencesPending,
+                            onChange: (event: { target: { checked: boolean } }) => {
+                              void updateAppPreferences({
+                                sideChatEnabled: event.target.checked,
+                              });
+                            },
+                          },
+                        },
+                      ]
+                    : []),
+                  {
+                    id: "app.keep-awake-lid-closed",
+                    title: m.settings_keep_awake_lid_closed(),
+                    description: keepAwakeDescription,
+                    keywords: ["sleep", "caffeinate", "休眠", "合盖"],
+                    control: {
+                      type: "toggle",
+                      checked: keepAwakeApprovalDialogOpen || keepAwakeOn,
+                      disabled:
+                        !desktopOnly &&
+                        (!appPreferencesAvailability.keepAwakeWhenLidClosed ||
+                          !appPreferences ||
+                          keepAwakeStatus === "unavailable" ||
+                          appPreferencesPending),
+                      onChange: (event) => {
+                        if (desktopOnly) return requestDesktopApp("keep-awake");
+                        void handleKeepAwakeChange(event);
                       },
                     },
                   },
@@ -1189,6 +1359,7 @@ export function AppSettingsRoute({
                     },
                   ]
                 : []),
+              onboardingReplay,
             ],
           },
           {
@@ -1198,7 +1369,7 @@ export function AppSettingsRoute({
             sections: [
               {
                 id: "profile.account",
-                title: m.settings_account(),
+                title: `${m.settings_account()} · ${profile?.email ?? auth.userEmail}`,
                 items: [
                   {
                     id: "account.avatar",
@@ -1232,11 +1403,11 @@ export function AppSettingsRoute({
                             </Button>
                             <input
                               ref={fileInput}
-                              accept="image/*"
+                              accept={avatarTypes.join(",")}
                               aria-label={m.settings_profile_choose_avatar()}
                               className="hidden"
                               onChange={(event) => {
-                                uploadAvatar(event.target.files?.[0]);
+                                chooseAvatar(event.target.files?.[0]);
                                 event.target.value = "";
                               }}
                               type="file"
@@ -1412,11 +1583,14 @@ export function AppSettingsRoute({
                       type: "toggle",
                       checked: systemNotificationsChecked,
                       disabled:
-                        !appPreferencesAvailability.notifications ||
-                        !appPreferences ||
-                        systemNotificationsStatus === "unsupported" ||
-                        appPreferencesPending,
-                      onChange: handleSystemNotificationsChange,
+                        !desktopOnly &&
+                        (!appPreferencesAvailability.notifications ||
+                          !appPreferences ||
+                          systemNotificationsStatus === "unsupported" ||
+                          appPreferencesPending),
+                      onChange: desktopOnly
+                        ? () => requestDesktopApp("notifications")
+                        : handleSystemNotificationsChange,
                     },
                   },
                   {
@@ -1609,7 +1783,10 @@ export function AppSettingsRoute({
                               setSideChatShortcutConflict(false);
                               return setSideChatShortcut(null);
                             },
-                            disabled: sideChatShortcutRegistrationPending,
+                            // Side Chat turned off in General takes no chord.
+                            disabled:
+                              sideChatShortcutRegistrationPending ||
+                              appPreferences?.sideChatEnabled === false,
                             ...(sideChatShortcutConflict
                               ? {
                                   errorMessage: m.settings_shortcut_conflict(),
@@ -1677,6 +1854,7 @@ export function AppSettingsRoute({
                         { id: "auto", label: m.settings_meeting_auto() },
                       ],
                       onChange: (value) => {
+                        if (desktopOnly) return requestDesktopApp("meeting");
                         void clientSettings.update({
                           meetingStartRecording: value === "auto" ? "auto" : "reminder",
                         });
@@ -1692,6 +1870,7 @@ export function AppSettingsRoute({
                       checked: clientSettings.settings.meetingHideRecorder,
                       disabled: clientSettingsPending,
                       onChange: (event) => {
+                        if (desktopOnly) return requestDesktopApp("meeting");
                         void clientSettings.update({
                           meetingHideRecorder: event.target.checked,
                         });
@@ -1707,6 +1886,7 @@ export function AppSettingsRoute({
                       checked: clientSettings.settings.meetingSmartSummary,
                       disabled: clientSettingsPending,
                       onChange: (event) => {
+                        if (desktopOnly) return requestDesktopApp("meeting");
                         void clientSettings.update({
                           meetingSmartSummary: event.target.checked,
                         });
@@ -1947,17 +2127,7 @@ export function AppSettingsRoute({
           },
           browserCategory,
           taskLabelsCategory,
-          {
-            ...modelTemplates.category,
-            keywords: ["BYOK", "API Key", "Codex", "Claude", "OAuth"],
-            sections: [
-              ...subscriptionAccounts.sections,
-              ...modelTemplates.category.sections,
-            ],
-            ...(subscriptionAccounts.detail
-              ? { detail: subscriptionAccounts.detail }
-              : {}),
-          },
+          models.category,
         ],
       },
       {
@@ -1997,8 +2167,11 @@ export function AppSettingsRoute({
                     control: {
                       type: "button",
                       label: m.settings_computer_use_manage(),
-                      disabled: !computerUse.available || computerUse.pending,
-                      onPress: computerUse.open,
+                      disabled:
+                        !desktopOnly && (!computerUse.available || computerUse.pending),
+                      onPress: desktopOnly
+                        ? () => requestDesktopApp("computer-use")
+                        : computerUse.open,
                     },
                   },
                   {
@@ -2010,8 +2183,11 @@ export function AppSettingsRoute({
                     control: {
                       type: "button",
                       label: m.settings_computer_use_refresh(),
-                      disabled: !computerUse.available || computerUse.pending,
-                      onPress: computerUse.refresh,
+                      disabled:
+                        !desktopOnly && (!computerUse.available || computerUse.pending),
+                      onPress: desktopOnly
+                        ? () => requestDesktopApp("computer-use")
+                        : computerUse.refresh,
                     },
                   },
                 ],
@@ -2064,6 +2240,50 @@ export function AppSettingsRoute({
       },
     ],
   });
+  // A guest account has no profile to edit: it can sign up or be discarded.
+  const guestAccountItems: SettingsPanelItem[] = [
+    {
+      id: "account.guest-sign-up",
+      title: m.guest_banner_sign_up(),
+      description: m.settings_guest_sign_up_description(),
+      control: {
+        type: "custom",
+        content: (
+          <Button
+            disabled={!auth.beginGuestSignUp}
+            hierarchy="primary"
+            isPending={guestSignUpPending}
+            onPress={beginGuestSignUp}
+            size="sm"
+          >
+            {m.guest_banner_sign_up()}
+          </Button>
+        ),
+      },
+    },
+    {
+      id: "account.guest-discard",
+      title: m.settings_guest_discard(),
+      description: m.settings_guest_discard_description(),
+      control: {
+        type: "custom",
+        content: (
+          <Button
+            hierarchy="secondary-gray"
+            onPress={() => setGuestDiscardOpen(true)}
+            size="sm"
+          >
+            {m.settings_guest_discard()}
+          </Button>
+        ),
+      },
+    },
+  ];
+  const registry = guest
+    ? createSettingsRegistry({
+        groups: guestSettingsGroups(accountRegistry.groups, guestAccountItems),
+      })
+    : accountRegistry;
 
   return (
     <>
@@ -2107,6 +2327,30 @@ export function AppSettingsRoute({
           ]}
         />
       ) : null}
+      {guestDiscardOpen && guest ? (
+        <Dialog
+          isOpen
+          isDismissable
+          onOpenChange={setGuestDiscardOpen}
+          title={m.settings_guest_discard_confirm_title()}
+          description={m.settings_guest_discard_confirm_description()}
+          actions={[
+            {
+              label: m.settings_profile_cancel(),
+              hierarchy: "secondary-gray",
+              onPress: () => setGuestDiscardOpen(false),
+            },
+            {
+              label: m.settings_guest_discard(),
+              hierarchy: "destructive",
+              onPress: () => {
+                setGuestDiscardOpen(false);
+                auth.signOut();
+              },
+            },
+          ]}
+        />
+      ) : null}
       {notificationPermissionDialogOpen ? (
         <Dialog
           isOpen
@@ -2129,6 +2373,39 @@ export function AppSettingsRoute({
               },
             },
           ]}
+        />
+      ) : null}
+      {keepAwakeApprovalDialogOpen ? (
+        <Dialog
+          isOpen
+          isDismissable
+          onOpenChange={(open) => {
+            if (!open) cancelKeepAwakeApproval();
+          }}
+          title={m.settings_keep_awake_lid_closed_approval_title()}
+          description={m.settings_keep_awake_lid_closed_approval_description()}
+          actions={[
+            {
+              label: m.settings_profile_cancel(),
+              hierarchy: "secondary-gray",
+              onPress: cancelKeepAwakeApproval,
+            },
+            {
+              label: m.settings_keep_awake_lid_closed_open_login_items(),
+              hierarchy: "primary",
+              onPress: () => {
+                setKeepAwakeApprovalDialogOpen(false);
+                void openLoginItemsSettings();
+              },
+            },
+          ]}
+        />
+      ) : null}
+      {avatarCropFile ? (
+        <AvatarCropDialog
+          file={avatarCropFile}
+          onCancel={() => setAvatarCropFile(undefined)}
+          onConfirm={uploadAvatar}
         />
       ) : null}
       {nameDialogOpen ? (

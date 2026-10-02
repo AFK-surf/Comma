@@ -115,9 +115,7 @@ config :alert_router, :github_webhook,
 config :elixir, :time_zone_database, Tz.TimeZoneDatabase
 
 # Text formats the agent runtime reads (any valid UTF-8 — see SalixAgent.Tools
-# binary_content?/1) but the mime library doesn't know by default. Needed so
-# LiveView's allow_upload accepts them as chat attachments
-# (BridgeForTeams.AssistantChats.attachment_upload_extensions/0). The mime lib
+# binary_content?/1) but the mime library doesn't know by default. The mime lib
 # bakes this in at compile time — `mix deps.compile mime --force` after edits.
 config :mime, :types, %{
   "text/tab-separated-values" => ["tsv"],
@@ -217,7 +215,12 @@ config :comma_core, Oban,
   name: Comma.Oban,
   repo: Comma.Repo,
   peer: {Oban.Peers.Postgres, []},
-  queues: [comma_external: 4, comma_recommendations: 8, comma_recommendation_control: 2],
+  queues: [
+    comma_external: 4,
+    comma_recommendations: 8,
+    comma_recommendation_control: 2,
+    comma_notifications: 4
+  ],
   plugins: [
     {Comma.ObanPlugins.OperationLifeline, rescue_after: operation_claim_timeout_ms, limit: 1_000},
     {Oban.Plugins.Pruner, max_age: 86_400},
@@ -230,7 +233,6 @@ config :comma_core, Oban,
   shutdown_grace_period: 30_000
 
 config :comma_core, :start_oban, true
-config :comma_core, :chat_suggestions, true
 config :comma_core, :operation_claim_timeout_ms, operation_claim_timeout_ms
 config :comma_core, :profile_avatar, adapter: Comma.ProfileAvatar.Storage.GCS, bucket: nil
 

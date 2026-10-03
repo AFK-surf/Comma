@@ -155,3 +155,28 @@ test("adjacent briefing paragraphs render as separated blocks", async ({ page })
     await stub.close();
   }
 });
+
+test("the briefing scroll area takes keyboard focus without the browser's focus ring", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub();
+
+  try {
+    await page.clock.setFixedTime(new Date("2026-08-27T09:15:00Z"));
+    await openBriefing(page, stub.baseUrl);
+
+    const viewport = page.locator(
+      ".comma-recommendations-scroll > .comma-scroll-area__viewport"
+    );
+    await expect(viewport).toBeVisible();
+
+    // A key press first, so the focus that follows matches :focus-visible and
+    // would draw the default ring around the whole rail.
+    await page.keyboard.press("Shift");
+    await viewport.focus();
+    await expect(viewport).toBeFocused();
+    await expect(viewport).toHaveCSS("outline-style", "none");
+  } finally {
+    await stub.close();
+  }
+});

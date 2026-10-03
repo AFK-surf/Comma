@@ -98,10 +98,6 @@ html[data-comma-window-role="side-chat"] #root {
   );
 }
 
-.comma-side-chat-host .comma-scroll-area__viewport:focus {
-  outline: none;
-}
-
 .comma-chat-route[data-variant="side-chat"] .comma-chat-thread {
   --comma-chat-thread-top-inset: var(--spacing-2xl);
 

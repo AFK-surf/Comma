@@ -860,6 +860,12 @@
     overscroll-behavior: contain;
   }
 
+  /* Focus only lets the keyboard scroll the area; the browser's default ring
+     would outline a whole rail or thread in the system accent color. */
+  .comma-scroll-area__viewport:focus {
+    outline: none;
+  }
+
   /* Armed by `syncEdgeTransition` once an edge state has held: the first state
      of an area lands with its content instead of easing in after it. */
   .comma-scroll-area__viewport[data-edge-transition="true"] {

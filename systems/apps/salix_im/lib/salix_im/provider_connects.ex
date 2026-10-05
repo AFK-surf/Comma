@@ -13,11 +13,13 @@ defmodule SalixIM.ProviderConnects do
   alias SalixIM.Triage.ExpressionContext
 
   alias SalixIM.{
+    ConversationServer,
     GroupDirectory,
     ProviderAttachments,
     ProviderConversationInput,
     ProviderIdentity,
     ProviderIdentityBarrier,
+    RouterConversationInput,
     SlackScopes
   }
 
@@ -2642,11 +2644,58 @@ defmodule SalixIM.ProviderConnects do
             Map.get(payload, :session_id)
           )
 
+          ensure_provider_participant(group_id, metadata)
+
           {:ok, :queued}
 
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  # Telegram inbound (and any future provider that routes through this funnel
+  # without first binding a provider thread, like Slack's `channel_created` or
+  # a meeting handoff) never registered a `provider` Participant on the Router
+  # Conversation. `delivery_target_ids/1` only counts `actor_type` members of
+  # `agent` or `provider`, so a Conversation with just agent+user participants
+  # leaves the wake queue empty and `ConversationDelivery.deliver` is never
+  # invoked - agent replies stay inside the Router log and never reach the
+  # provider.
+  #
+  # Slack/Feishu build the provider member in their own `conversation_ingress.ex`
+  # before calling `append_provider_input`; telegram funnels straight through
+  # `enqueue_group_router_im_provider_message/5` and never had that step. We
+  # ensure the provider member as a side effect of a successful inbound so the
+  # delivery path wakes. The participant payload carries `chat_id` and
+  # `connect_id` from the inbound metadata (via `provider_target/1`), so
+  # `deliver_telegram` can resolve its routing.
+  #
+  # This is best-effort: the inbound write is already committed by
+  # `append_provider_input/4`, and a missing provider member here only delays
+  # the first outbound for that conversation. We swallow it.
+  defp ensure_provider_participant(group_id, metadata) do
+    with {:ok, conversation_id} <-
+           conversation_id_for(group_id),
+         {:ok, participant_attrs} <-
+           ProviderConversationInput.participant_attrs(%{"metadata" => metadata}) do
+      ConversationServer.ensure_group_conversation_provider_participant(
+        group_id,
+        conversation_id,
+        participant_attrs
+      )
+    else
+      _ -> :ok
+    end
+  end
+
+  defp conversation_id_for(group_id) do
+    case RouterConversationInput.ensure(group_id) do
+      {:ok, %{"conversation_id" => conversation_id}} when is_binary(conversation_id) ->
+        {:ok, conversation_id}
+
+      _ ->
+        {:error, :no_conversation}
     end
   end
 

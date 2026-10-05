@@ -2663,10 +2663,11 @@ defmodule SalixIM.ProviderConnects do
   # invoked - agent replies stay inside the Router log and never reach the
   # provider.
   #
-  # Slack/Feishu build the provider member in their own `conversation_ingress.ex`
-  # before calling `append_provider_input`; telegram funnels straight through
-  # `enqueue_group_router_im_provider_message/5` and never had that step. We
-  # ensure the provider member as a side effect of a successful inbound so the
+  # Slack builds the provider member in its `conversation_ingress.ex`, but that
+  # member lives on the bound `agent_task` conversation, not on this Router
+  # conversation - so even Slack never had a `provider` Participant here.
+  # Telegram (and every other provider reaching this funnel) never had that
+  # step at all. We ensure the provider member as a side effect of a successful inbound so the
   # delivery path wakes. The participant payload carries `chat_id` and
   # `connect_id` from the inbound metadata (via `provider_target/1`), so
   # `deliver_telegram` can resolve its routing.

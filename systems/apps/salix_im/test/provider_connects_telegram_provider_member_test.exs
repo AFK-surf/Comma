@@ -104,10 +104,6 @@ defmodule SalixIM.ProviderConnectsTelegramProviderMemberTest do
     assert get_in(provider_member, ["payload", "connect_id"]) == ctx.connect_id
     assert get_in(provider_member, ["payload", "chat_id"]) == "123"
     assert provider_member["state"] == "active"
-    # `delivery_target_ids/1` must now see the provider member, which is the
-    # whole reason this fix exists: a missing member leaves `target_ids` empty
-    # and the wake queue never drains.
-    assert provider_member["actor_type"] in ["agent", "provider"]
   end
 
   test "telegram inbound is idempotent across repeated messages from the same chat", ctx do

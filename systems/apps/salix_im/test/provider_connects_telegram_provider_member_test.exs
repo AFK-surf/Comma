@@ -104,6 +104,7 @@ defmodule SalixIM.ProviderConnectsTelegramProviderMemberTest do
     assert get_in(provider_member, ["payload", "connect_id"]) == ctx.connect_id
     assert get_in(provider_member, ["payload", "chat_id"]) == "123"
     assert provider_member["state"] == "active"
+    assert get_in(provider_member, ["notification_filter", "messages"]) == "all"
   end
 
   test "telegram inbound is idempotent across repeated messages from the same chat", ctx do

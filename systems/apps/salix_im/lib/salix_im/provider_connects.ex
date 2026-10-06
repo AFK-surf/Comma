@@ -2676,17 +2676,25 @@ defmodule SalixIM.ProviderConnects do
   # `append_provider_input/4`, and a missing provider member here only delays
   # the first outbound for that conversation. We swallow it.
   defp ensure_provider_participant(group_id, metadata) do
-    with {:ok, conversation_id} <-
-           conversation_id_for(group_id),
-         {:ok, participant_attrs} <-
-           ProviderConversationInput.participant_attrs(%{"metadata" => metadata}) do
-      ConversationServer.ensure_group_conversation_provider_participant(
-        group_id,
-        conversation_id,
-        participant_attrs
-      )
-    else
-      _ -> :ok
+    try do
+      with {:ok, conversation_id} <-
+             conversation_id_for(group_id),
+           {:ok, participant_attrs} <-
+             ProviderConversationInput.participant_attrs(%{"metadata" => metadata}) do
+        ConversationServer.ensure_group_conversation_provider_participant(
+          group_id,
+          conversation_id,
+          Map.put(
+            participant_attrs,
+            "notification_filter",
+            %{"messages" => "all", "statuses" => "none"}
+          )
+        )
+      else
+        _ -> :ok
+      end
+    catch
+      :exit, _ -> :ok
     end
   end
 

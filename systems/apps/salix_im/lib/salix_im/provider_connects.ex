@@ -2667,8 +2667,8 @@ defmodule SalixIM.ProviderConnects do
   # member lives on the bound `agent_task` conversation, not on this Router
   # conversation - so even Slack never had a `provider` Participant here.
   # Telegram (and every other provider reaching this funnel) never had that
-  # step at all. We ensure the provider member as a side effect of a successful inbound so the
-  # delivery path wakes. The participant payload carries `chat_id` and
+  # step at all. We ensure the provider member as a side effect of a
+  # successful inbound so the delivery path wakes. The participant payload carries `chat_id` and
   # `connect_id` from the inbound metadata (via `provider_target/1`), so
   # `deliver_telegram` can resolve its routing.
   #
